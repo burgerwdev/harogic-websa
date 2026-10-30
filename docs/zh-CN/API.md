@@ -11,6 +11,20 @@
 
 ## 1. HTTP 接口
 
+### `GET /api/sdr/plugins`
+
+返回 `{plugins, sstv_modes}`。`plugins` 保留 `analog`、`digital`、`audio`、`ddc`
+类型，仅前两者是接收模式。模式项包含 `id`、`label`、`category`、`description`、`aliases`、
+`provider`、`implemented`、`available`、可空 `unavailableReason`、`audioEnhancement`、
+`common`、`outputs`、可空 `audioCompanion`、`sideband`、可空 `inputRateHz`、
+`minimumRateHz`、`defaultBandwidthHz`、`minBandwidthHz`、`maxBandwidthHz`、
+`bandwidthPresetsHz`、`bandwidthEditable`、必填 `startupTimeoutMs`；处理阶段项保留原有最小字段。
+带宽以 Hz 表示，遵循各模式控制语义；上边带高截止不是双边总 RF 宽度。
+STATUS 滤波限制与后端准入可能更严格。可用性表示已安装提供者和已实现接口，不表示信号锁定。
+服务在重启前缓存依赖探测；浏览器原子发布完整目录与 SSTV 元数据，缺失或失败的提供者给出明确原因。
+`startupTimeoutMs` 是接收器准备确认期限：原生模式 3000 ms，stdin/RTTY 进程 5000 ms，
+OnAir 15000 ms，GNSS-SDR 25000 ms；它不是信号捕获或定位期限，不触发自动重试。
+
 ### `GET /api/state`
 
 返回完整设备状态（JSON，与 WS `STATUS` 同构）。
@@ -340,6 +354,35 @@ AUD2 使用 96 字节头，后接有限交错 f32 PCM；总字节数为 `96 + fr
 | 8 | UTF-8 | JSON 信封，长度必须与声明一致 |
 
 信封字段为 `version=1`、`channel`（槽位 1–3）、`channel_id`、`epoch`、`seq`、`input_index`、`input_rate`、`input_fraction_num`、`input_fraction_den`、`delay_seconds`、`delay_known`、`causal_presentation`、`timing_kind`、`mode`、`event`。三个 u64 位置/分数字段使用十进制字符串。时钟单位和标志与 AUD2 相同。`timing_kind` 为 `sample`、`protocol_provenance` 或 `causal_presentation`；协议来源位置不代表恢复了样本时间戳。FT8 结果保留搜索窗口时刻，不使用异步完成时刻。`event` 携带模式结果；序号零携带 `{type:'start'}`。
+
+外部提供者发送 `event:{type:'decoder-result',provider,mode,kind,data}`；`mode` 必须与
+SDE2 信封一致，`kind` 为 `text`、`table`、`image` 或 `status`。外部结果使用
+`delay_known:false` 与 `timing_kind:'causal_presentation'`；当前输入位置不是恢复出的消息
+时间戳。原有流身份、FIFO 与 ACK 规则继续适用。Multimon 文本位于 `data.text`，rtl_433
+保留设备 JSON 对象。OnAir 保留带版本的解码内容（船舶、包、弱信号消息、图像条带与状态）。
+图像条带含 `id,w,h,y,rows,pw,ph,png`，`png` 为实际尺寸 `pw × ph` 的 base64 PNG。
+`preview`、`scale` 表示缩小的初始预览，后续条带覆盖其声明的行区域。
+`image_end` 仅将同一流身份的对应图像标为完成，停止接收不推断完成。
+OnAir 的虚拟 kHz 输入标签与实际调谐分开：`sourceFrequencyHz`、`onairFrequencyHz`、
+`frequencyOffsetHz` 描述映射；报告的 dial/RF 字段换算回实际频率，同时保留上游原值。
+EOF 排空返回 `upstreamCompletionKnown:false`，因为上游协议没有完成确认。
+实时重配置则排空当前可取结果，发送 `state:'stopped'`、`reason:'reconfigured'`、
+`upstreamCompletionKnown:false` 的 `status` 后停止旧提供者，不使用离线 EOF 的等待窗口。
+旧流的普通尾部结果不会更改已确认的当前模式。
+
+GPS 使用 `provider:'gnss-sdr'`、`mode:'gps'`、`kind:'table'`，`data.table` 为
+`satellites`、`pvt` 或 `navigation`，对象行位于 `data.rows`。卫星与 PVT 表替换旧快照，
+导航子帧作为历史记录保留。卫星行包含 `channel`、`prn`、`cn0_db_hz`、`doppler_hz`、
+`acquisition`、`tracking`、`nav_word_valid`、`tow_ms`、`pseudorange_valid` 与
+`pseudorange_m`；`stale`、`tracking_stale`、`observables_stale`、`age_ms` 表明时效。
+PVT 独立报告 `valid`、`lat_deg`、`lon_deg`、`height_m`、`valid_sats`、GPS 周/TOW、
+UTC、DOP 与局部速度。启动时 `valid:false` 且坐标为空，两秒无监测更新后定位失效；
+保留的过期坐标不代表当前定位。导航行包含真实 300 位 GPS LNAV 子帧与上游校验有效标志。
+每条桥接记录附带 `input_samples`、`input_received_bytes`、`input_rate_hz`、`center_hz`、
+`gnss_version`、`pre_2009_file`；这些描述已写入 FIFO 的输入，不是精确解码完成位置。
+SDE2 外层仍承载实际流身份与时钟。EOF 后收集三秒监测结果并停止 GNSS-SDR，报告
+`upstreamCompletionKnown:false`，因为上游 FIFO 不提供输入消耗完成确认，部分末尾观测量
+仍需后续样本才能推进。重配置状态同时设置 `fix.valid:false`，清空当前定位快照。
 
 AM 按源样本时钟的 20 Hz 网格发送 `event.type:'am-info'`，不随浏览器绘制或音频回调块大小变化；SDE2 信封沿用上述源时钟与延迟标志。事件字段如下：
 

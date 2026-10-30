@@ -20,6 +20,7 @@ sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent.par
 
 from playwright.sync_api import sync_playwright  # noqa: E402
 from rust_iq_browser import free_port, start_service, stop  # noqa: E402
+from viewport_baseline import wait_ui_ready  # noqa: E402
 
 
 def state(url: str) -> dict:
@@ -176,8 +177,9 @@ def main() -> int:
         page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
         page.on('console', lambda m: errors.append(f'console: {m.text[:160]}') if m.type == 'error' else None)
 
-        page.goto(f'{args.url}/', wait_until='networkidle')
-        page.wait_for_timeout(3000)
+        page.goto(f'{args.url}/', wait_until='domcontentloaded')
+        page.wait_for_selector('#sdr-demod-group input[type="search"]', state='attached')
+        wait_ui_ready(page)
 
         print('1) the spectrum is drawn')
         painted = painted_pixels(page)
@@ -628,8 +630,8 @@ def main() -> int:
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
         page.wait_for_timeout(1500)
 
-        page.reload(wait_until='networkidle')
-        page.wait_for_timeout(2500)
+        page.reload(wait_until='domcontentloaded')
+        wait_ui_ready(page)
         after = scale_state()
         check('a manual scale survives a reload',
               after['applied'] == '1.5' and after['stored'] == '1.5',
@@ -644,8 +646,8 @@ def main() -> int:
               f"applied {auto['applied']}, stored {auto['stored']}")
 
         print('N) native AUD2 audio reaches browser playback')
-        page.goto(args.url, wait_until='networkidle')
-        page.wait_for_timeout(1500)
+        page.goto(args.url, wait_until='domcontentloaded')
+        wait_ui_ready(page)
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
         page.wait_for_timeout(2500)
         button = page.locator('#btn-sdr-audio')
@@ -662,8 +664,8 @@ def main() -> int:
         check('native audio delivery did not fail', audio_dbg.endswith('error='), audio_dbg)
 
         print('N) native FT8 decode reaches the browser pane')
-        page.goto(args.url, wait_until='networkidle')
-        page.wait_for_timeout(1500)
+        page.goto(args.url, wait_until='domcontentloaded')
+        wait_ui_ready(page)
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
         post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'ft8', 'ifbw': 2400, 'pitch': 700,
                         'volume': 1.0, 'squelch': -140.0, 'agc': True})

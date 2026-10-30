@@ -7,11 +7,12 @@ once:
   * the AD9363 TX sample-rate floor (521 kHz),
   * the DAC scale, because `tx()` casts to int16 with no scale,
   * the measured reference-crystal error (1.98 ppm on this unit),
-  * the cyclic-buffer transmit and the exit cleanup.
+  * cyclic transmission and persistent streaming-buffer setup and cleanup.
 
-A tool builds one complex64 buffer and uses `Radio`. The class opens the radio,
+A tool builds complex64 samples and uses `Radio`. The class opens the radio,
 applies the crystal trim, sets the LO, the rate and the gain, and restores the
-crystal on exit. The signal generator stays in the tool.
+crystal on exit. Streaming tools share queue priming and draining here; waveform
+generation, sample clocks and continuity deadlines stay in the mode tool.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import argparse
 import signal
 import sys
 import time
+from typing import NamedTuple
 
 #: libiio context URI of the bench Pluto.
 DEFAULT_URI = 'ip:192.168.2.1'
@@ -118,6 +120,22 @@ def add_radio_args(parser: argparse.ArgumentParser, *, default_lo: float,
                         help='leave xo_correction alone (do not correct the crystal)')
     parser.add_argument('--uri', default=DEFAULT_URI, help='libiio context URI')
     parser.add_argument('--dry-run', action='store_true', help=dry_run_help)
+
+
+class StreamStart(NamedTuple):
+    """Activation interval and sample counts after priming the hardware queue.
+
+    Sample zero starts within the activation call, whose host UTC interval is
+    [utc_start, utc_start + activation_seconds]. libiio1 retains the most recently
+    submitted block as writable until the next push, so queued_samples excludes
+    it. Both counts include only the zero samples submitted during priming.
+    """
+
+    monotonic_start: float
+    utc_start: float
+    activation_seconds: float
+    submitted_samples: int
+    queued_samples: int
 
 
 class Radio:
@@ -231,9 +249,53 @@ class Radio:
                         f'--rds-rt-cycle-seconds, or --rds-buffer off.'
                     ) from None
 
-    def open_stream(self) -> None:
-        """Switch to chunked one-shot pushes."""
+    def open_stream(self, kernel_buffers: int | None = None) -> None:
+        """Switch to persistent one-shot pushes, optionally setting queue depth.
+
+        Omitting kernel_buffers preserves the backend's existing configuration.
+        Pass an explicit depth to use drain_stream after the final signal chunk.
+        """
+        import iio
+
+        self._stream_version1 = iio.version[0] >= 1
+        self._stream_buffers = kernel_buffers
+        if kernel_buffers is not None:
+            if not self._stream_version1:
+                self.sdr._txdac.set_kernel_buffers_count(kernel_buffers)
+            elif hasattr(self.sdr, '_tx_buffer_num_blocks'):
+                self.sdr._tx_buffer_num_blocks = kernel_buffers
+            else:
+                raise RuntimeError('pyadi libiio1 backend cannot configure streaming blocks')
         self.sdr.tx_cyclic_buffer = False
+
+    def prime_stream(self, zero, minimum_blocks: int = 1) -> StreamStart:
+        """Submit silence and measure the call that activates sample zero.
+
+        libiio1's first push only fills a writable block; its second enqueues it.
+        minimum_blocks counts submissions, including that pending writable block.
+        """
+        submitted = 0
+        if self._stream_version1:
+            self.push_chunk(zero)
+            submitted += 1
+        mono0, utc0 = time.monotonic(), time.time()
+        self.push_chunk(zero)
+        activation_seconds = time.monotonic() - mono0
+        submitted += 1
+        while submitted < minimum_blocks:
+            self.push_chunk(zero)
+            submitted += 1
+        queued = submitted - int(self._stream_version1)
+        return StreamStart(mono0, utc0, activation_seconds,
+                           submitted * zero.size, queued * zero.size)
+
+    def drain_stream(self, zero) -> None:
+        """Flush the configured DMA queue, including libiio1's pending block."""
+        if self._stream_buffers is None:
+            raise ValueError('drain_stream requires open_stream(kernel_buffers=...)')
+        for _ in range(self._stream_buffers + 2):
+            self.push_chunk(zero)
+        time.sleep(self._stream_buffers * zero.size / self.rate)
 
     def push_chunk(self, part) -> None:
         self.sdr.tx(part)

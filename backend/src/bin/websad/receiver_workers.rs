@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use websa_channelizer::{encode_audio, encode_decode_event, AudioFrameMetadata, MAX_BASEBAND_SAMPLES};
-use websa_channelizer::receiver::{AudioBlock, Ft8Job, Ft8Result, InputClock, Receiver, ReceiverConfig, ReceiverEvent, SamplePosition};
+use websa_channelizer::receiver::{AudioBlock, Ft8Job, Ft8Result, InputClock, PreparedDecoder, Receiver, ReceiverConfig, ReceiverEvent, SamplePosition};
 
 const WORKERS: usize = 2;
 const INPUT_CAPACITY: usize = 8;
@@ -77,7 +77,6 @@ impl ChannelConfig {
             || !self.nr_strength.is_finite() || !(0.0..=1.0).contains(&self.nr_strength)
             || !self.nr_atten_db.is_finite() || !(0.0..=100.0).contains(&self.nr_atten_db)
             || !matches!(self.nr_algorithm.as_str(), "wiener" | "dfn")
-            || !matches!(self.mode.as_str(), "am" | "dsb" | "nfm" | "wfm" | "usb" | "lsb" | "cw" | "pm" | "ft8" | "sstv" | "drm" | "drmplus" | "radiofax")
             || !(8_000..=192_000).contains(&self.audio_rate)
             || self.sstv_mode.is_some_and(|index| index >= websa_dsp::digital::sstv::SSTV_MODES.len())
             || !matches!(self.radiofax_acquisition.as_str(), "auto" | "manual")
@@ -93,12 +92,26 @@ impl ChannelConfig {
         {
             return Err(format!("invalid receiver configuration for channel {}", self.channel));
         }
+        websa_channelizer::catalog::validate(&self.mode, self.if_bw)?;
+        if matches!(self.mode.as_str(), "ais" | "aprs" | "ft4" | "wspr" | "meteor" | "adsb") {
+            websa_channelizer::external::onair::validate_frequency(&self.mode, self.freq.round() as u64)?;
+        }
         Ok(())
+    }
+
+    fn resets_receiver(&self, next: &Self) -> bool {
+        self.enabled != next.enabled || self.freq != next.freq || self.mode != next.mode
+            || self.if_bw != next.if_bw || self.pitch != next.pitch || self.sstv_mode != next.sstv_mode
+            || self.radiofax_acquisition != next.radiofax_acquisition || self.radiofax_ioc != next.radiofax_ioc
+            || self.radiofax_lpm != next.radiofax_lpm || self.radiofax_modulation != next.radiofax_modulation
+            || self.radiofax_polarity != next.radiofax_polarity || self.radiofax_clock_recovery != next.radiofax_clock_recovery
+            || self.audio_rate != next.audio_rate || self.stereo != next.stereo
     }
 
     fn receiver_config(&self, input_rate: f64) -> ReceiverConfig {
         ReceiverConfig {
             mode: self.mode.clone(), input_rate, audio_rate: self.audio_rate, if_bw: self.if_bw,
+            center_hz: self.freq.max(0.0).round() as u64,
             am_sync: self.am_sync,
             am_sync_generation: self.am_sync_generation,
             pitch: self.pitch, agc: self.agc, gain: self.volume as f32, squelch_dbm: self.squelch,
@@ -114,6 +127,60 @@ impl ChannelConfig {
             radiofax_phase_pixels: self.radiofax_phase_pixels,
             radiofax_clock_ppm: self.radiofax_clock_ppm,
         }
+    }
+}
+
+struct PreparedChannel {
+    config: ChannelConfig,
+    decoder: Option<PreparedDecoder>,
+}
+
+/// Admission owns these processes until sequence zero transfers them to a worker.
+#[derive(Default)]
+pub(super) struct PreparedDecoders {
+    selected: [bool; 3],
+    channels: [Option<PreparedChannel>; 3],
+    previous: [Option<PreparedChannel>; 3],
+    rollback: bool,
+}
+
+impl PreparedDecoders {
+    pub fn new(configs: &[ChannelConfig]) -> Result<Self, String> {
+        Self::prepare_with(configs, |config| {
+            if websa_channelizer::catalog::is_external(&config.mode) {
+                PreparedDecoder::new(&config.mode, config.freq.max(0.0).round() as u64).map(Some)
+            } else { Ok(None) }
+        })
+    }
+
+    fn prepare_with(configs: &[ChannelConfig], mut prepare: impl FnMut(&ChannelConfig) -> Result<Option<PreparedDecoder>, String>) -> Result<Self, String> {
+        let mut result = Self::default();
+        let mut seen = [false; 3];
+        for config in configs {
+            config.validate()?;
+            let slot = config.channel as usize - 1;
+            if seen[slot] { return Err(format!("duplicate receiver channel {}", config.channel)); }
+            seen[slot] = true;
+            if config.enabled {
+                let decoder = prepare(config)?;
+                result.selected[slot] = true;
+                result.channels[slot] = Some(PreparedChannel { config: config.clone(), decoder });
+            }
+        }
+        Ok(result)
+    }
+
+    fn matches(&self, slot: usize, config: &ChannelConfig) -> bool {
+        self.previous[slot].as_ref().into_iter().chain(self.channels[slot].as_ref())
+            .any(|ready| !ready.config.resets_receiver(config))
+    }
+
+    fn take(&mut self, slot: usize, config: &ChannelConfig) -> Option<PreparedChannel> {
+        if self.previous[slot].as_ref().is_some_and(|ready| !ready.config.resets_receiver(config)) {
+            self.previous[slot].take()
+        } else if self.channels[slot].as_ref().is_some_and(|ready| !ready.config.resets_receiver(config)) {
+            self.channels[slot].take()
+        } else { None }
     }
 }
 
@@ -205,6 +272,7 @@ struct Packet {
     power_dbm: Option<f64>,
     iq: Vec<f32>,
     radiofax_new_page: bool,
+    prepared: Option<PreparedDecoder>,
 }
 
 struct SearchJob {
@@ -227,7 +295,7 @@ struct SearchResult {
 enum Work {
     Packet(Packet),
     Search(SearchResult),
-    FinishRadiofax { slot:usize, generation:u64 },
+    FinishRadiofax { slot:usize, generation:u64, live:bool },
     Deactivate { slot:usize, generation:u64, reply:mpsc::SyncSender<()> },
 }
 
@@ -259,6 +327,8 @@ struct SquelchState {
 
 pub(super) struct ReceiverWorkers {
     configs: [Arc<ChannelConfig>; 3],
+    prepared: PreparedDecoders,
+    active: [Option<(u64, u32, u32)>; 3],
     power: [Option<f64>; 3],
     levels: [Option<InputLevel>; 3],
     radiofax_new_page: [bool; 3],
@@ -275,6 +345,8 @@ impl ReceiverWorkers {
         self.shared.stopping.store(true, Ordering::Release);
         for generation in &self.shared.generations {generation.fetch_add(1, Ordering::AcqRel);}
         self.inputs.clear();
+        self.prepared = PreparedDecoders::default();
+        self.active = [None; 3];
         self.levels=[None;3];
         self.squelch=[None;3];
     }
@@ -297,6 +369,7 @@ impl ReceiverWorkers {
         }
         let mut workers = Self {
             configs: std::array::from_fn(|slot| Arc::new(ChannelConfig::for_slot(slot as u32 + 1))),
+            prepared: PreparedDecoders::default(), active: [None; 3],
             power: [None; 3],
             levels: [None; 3],
             squelch: [None; 3],
@@ -392,7 +465,75 @@ impl ReceiverWorkers {
         }
         self.finish()?;
         self.power = [None; 3];
+        self.active = [None; 3];
         Ok(())
+    }
+
+    /// Select resources to construct outside the service lock, before changing a producer.
+    pub fn preparation_needed(&self, configs: &[ChannelConfig], restart: bool) -> Vec<ChannelConfig> {
+        configs.iter().filter(|config| {
+            let Some(slot) = config.channel.checked_sub(1).map(|slot| slot as usize).filter(|&slot| slot < 3) else { return false; };
+            config.enabled && websa_channelizer::catalog::is_external(&config.mode)
+                && !self.prepared.matches(slot, config)
+                && (restart || self.configs[slot].resets_receiver(config) || self.active[slot].is_none())
+        }).cloned().collect()
+    }
+
+    pub fn missing_preparations(&self, configs: &[ChannelConfig]) -> Vec<ChannelConfig> {
+        self.preparation_needed(configs, true)
+    }
+
+    /// Retain the old admission until its pending sequence zero has drained.
+    /// The returned token rolls back only candidates that have not been consumed.
+    pub fn exchange_prepared(&mut self, mut batch: PreparedDecoders) -> PreparedDecoders {
+        let mut displaced = PreparedDecoders { selected: batch.selected, rollback: !batch.rollback,
+            ..PreparedDecoders::default() };
+        for slot in 0..3 {
+            if !batch.selected[slot] { continue; }
+            if batch.rollback {
+                displaced.channels[slot] = self.prepared.channels[slot].take();
+                self.prepared.channels[slot] = self.prepared.previous[slot].take();
+            } else {
+                displaced.previous[slot] = self.prepared.previous[slot].take();
+                self.prepared.previous[slot] = self.prepared.channels[slot].take();
+                self.prepared.channels[slot] = batch.channels[slot].take();
+            }
+        }
+        displaced
+    }
+
+    pub fn install_prepared(&mut self, batch: PreparedDecoders) {
+        drop(self.exchange_prepared(batch));
+    }
+
+    /// Remove unused candidates after committing controls; drop them outside the service lock.
+    pub fn release_prepared(&mut self, configs: &[ChannelConfig]) -> PreparedDecoders {
+        let mut released = PreparedDecoders::default();
+        for slot in 0..3 {
+            released.previous[slot] = self.prepared.previous[slot].take();
+            if self.prepared.channels[slot].is_some() && !configs.iter().any(|config|
+                config.channel as usize == slot + 1 && config.enabled && self.prepared.matches(slot, config)) {
+                released.selected[slot] = true;
+                released.channels[slot] = self.prepared.channels[slot].take();
+            }
+        }
+        released
+    }
+
+    /// Release a cancelled transition's candidates only after the current identity is active.
+    /// A new registry identity whose sequence zero has not arrived still needs its candidate.
+    pub fn discard_staged(&mut self, registry: &[ChannelRegistryEntry]) -> PreparedDecoders {
+        let mut discarded = PreparedDecoders::default();
+        for row in registry {
+            let Some(slot) = row.channel.checked_sub(1).map(|slot| slot as usize).filter(|&slot| slot < 3) else { continue; };
+            let generation = self.shared.generations[slot].load(Ordering::Acquire);
+            if row.state == "active" && self.active[slot] == Some((generation, row.channel_id, row.epoch)) {
+                discarded.selected[slot] = true;
+                discarded.channels[slot] = self.prepared.channels[slot].take();
+                discarded.previous[slot] = self.prepared.previous[slot].take();
+            }
+        }
+        discarded
     }
 
     pub fn configure(&mut self, configs: &[ChannelConfig]) -> Result<(), String> {
@@ -406,18 +547,20 @@ impl ReceiverWorkers {
             seen[slot] = true;
             desired[slot] = config.clone();
         }
+        // Preparation failures must leave every active configuration and generation intact.
+        for (slot, config) in desired.iter().enumerate() {
+            if config.enabled && websa_channelizer::catalog::is_external(&config.mode)
+                && (self.configs[slot].resets_receiver(config) || self.active[slot].is_none())
+                && !self.prepared.matches(slot, config) {
+                return Err(format!("external decoder for channel {} was not prepared before admission", config.channel));
+            }
+        }
         for (slot, config) in desired.into_iter().enumerate() {
             if *self.configs[slot] != config {
-                if self.configs[slot].enabled != config.enabled || self.configs[slot].freq != config.freq
-                    || self.configs[slot].mode != config.mode || self.configs[slot].if_bw != config.if_bw
-                    || self.configs[slot].pitch != config.pitch || self.configs[slot].sstv_mode != config.sstv_mode
-                    || self.configs[slot].radiofax_acquisition != config.radiofax_acquisition
-                    || self.configs[slot].radiofax_ioc != config.radiofax_ioc || self.configs[slot].radiofax_lpm != config.radiofax_lpm
-                    || self.configs[slot].radiofax_modulation != config.radiofax_modulation || self.configs[slot].radiofax_polarity != config.radiofax_polarity
-                    || self.configs[slot].radiofax_clock_recovery != config.radiofax_clock_recovery
-                    || self.configs[slot].audio_rate != config.audio_rate || self.configs[slot].stereo != config.stereo {
+                if self.configs[slot].resets_receiver(&config) {
                     self.bump_generation(slot)?;
                     self.retire_backlog()?;
+                    self.active[slot] = None;
                 }
                 if self.configs[slot].enabled && !config.enabled {
                     let generation=self.shared.generations[slot].load(Ordering::Acquire);
@@ -505,6 +648,7 @@ impl ReceiverWorkers {
         { return Err("receiver IQ registry clock mismatch".into()); }
         let slot = row.channel as usize - 1;
         if !self.configs[slot].enabled { return Err(format!("IQ submitted for disabled receiver {}", row.channel)); }
+        let generation = self.shared.generations[slot].load(Ordering::Acquire);
         let mut iq = Vec::with_capacity(samples * 2);
         let mut power = 0.0_f64;
         for bytes in frame[56..].chunks_exact(4) {
@@ -513,6 +657,13 @@ impl ReceiverWorkers {
             power += f64::from(value) * f64::from(value);
             iq.push(value);
         }
+        let prepared = if seq == 0 {
+            let decoder = self.prepared.take(slot, &self.configs[slot]).and_then(|ready| ready.decoder);
+            if decoder.is_none() && websa_channelizer::catalog::is_external(&self.configs[slot].mode) {
+                return Err(format!("external decoder for channel {} was not prepared before IQ admission", row.channel));
+            }
+            decoder
+        } else { None };
         let packet = Packet {
             slot, generation: self.shared.generations[slot].load(Ordering::Acquire),
             config: Arc::clone(&self.configs[slot]), channel_id, epoch, seq, rate, frequency,
@@ -520,10 +671,12 @@ impl ReceiverWorkers {
             clock: InputClock { first_sample_index: input_index, input_rate: row.input_rate,
                 delay_input_samples: delay * row.input_rate / rate }, iq,
             radiofax_new_page: std::mem::replace(&mut self.radiofax_new_page[slot], false),
+            prepared,
         };
         let pending = Pending::new(&self.shared);
         match self.inputs[slot % WORKERS].try_send(PendingWork { work:Work::Packet(packet), pending }) {
             Ok(()) => {
+                if seq == 0 { self.active[slot] = Some((generation, channel_id, epoch)); }
                 self.levels[slot] = if samples == 0 { None } else {
                     Some(InputLevel { channel_id, epoch,
                         generation: self.shared.generations[slot].load(Ordering::Acquire),
@@ -591,13 +744,22 @@ impl ReceiverWorkers {
     }
     /// Close selected radiofax pages while their current stream identities are valid.
     pub fn finish_radiofax(&mut self, channels: &[u32]) -> Result<ReceiverFrames, String> {
+        self.close_channels(channels, false)
+    }
+
+    /// Preserve the old identity's available output without an EOF wait on capture.
+    pub fn retire_channels(&mut self, channels: &[u32]) -> Result<ReceiverFrames, String> {
+        self.close_channels(channels, true)
+    }
+
+    fn close_channels(&mut self, channels: &[u32], live: bool) -> Result<ReceiverFrames, String> {
         let mut frames=self.finish()?;
         for &channel in channels {
             let slot=channel.checked_sub(1).filter(|&slot|slot<3).ok_or("invalid radiofax channel")? as usize;
             let generation=self.shared.generations[slot].load(Ordering::Acquire);
             let pending=Pending::new(&self.shared);
             self.inputs[slot%WORKERS].try_send(PendingWork {
-                work:Work::FinishRadiofax {slot,generation},pending,
+                work:Work::FinishRadiofax {slot,generation,live},pending,
             }).map_err(|error|format!("receiver finish queue failure: {error}"))?;
         }
         frames.append(self.finish()?);
@@ -656,7 +818,7 @@ struct ChannelState {
 }
 
 impl ChannelState {
-    fn new(packet: &Packet) -> Result<Self, String> {
+    fn new(packet: &mut Packet) -> Result<Self, String> {
         if packet.seq != 0 {
             return Err(format!("receiver identity must start with IQ sequence zero: channel={} identity={}/{} generation={} seq={} samples={} input_index={} rate={} input_rate={} frequency={} mode={}",
                 packet.slot + 1, packet.channel_id, packet.epoch, packet.generation, packet.seq,
@@ -670,11 +832,15 @@ impl ChannelState {
             audio_index: 0, audio_format: None,
             protocol_timing: None,
             last_clock: packet.clock,
-            receiver: Receiver::new(packet.config.receiver_config(packet.rate))?,
+            receiver: Receiver::new_prepared(packet.config.receiver_config(packet.rate), packet.prepared.take())?,
         })
     }
 
-    fn finish_radiofax(&mut self, slot:usize, frames:&mut ReceiverFrames)->Result<(),String> {
+    fn close(&mut self, slot:usize, frames:&mut ReceiverFrames, live:bool)->Result<(),String> {
+        let events = if live { self.receiver.retire_external()? } else { self.receiver.finish_external()? };
+        for event in events {
+            frames.decode.push(self.event(slot,self.last_clock,event)?);
+        }
         if self.mode!="radiofax" {return Ok(());}
         self.receiver.finish_radiofax()?;
         for event in self.receiver.take_radiofax_events()? {
@@ -710,7 +876,8 @@ impl ChannelState {
             if let Some((clock,position,known))=self.protocol_timing {
                 (clock,position,known,"protocol_provenance")
             } else {(clock,position,false,"causal_presentation")}
-        } else if matches!(self.mode.as_str(), "sstv" | "radiofax") {
+        } else if matches!(self.mode.as_str(), "sstv" | "radiofax")
+            || event.get("type").and_then(serde_json::Value::as_str) == Some("decoder-result") {
             // Image updates are presented after decoding the current block; the
             // decoder does not report an exact contributing pixel sample.
             (clock,position,false,"causal_presentation")
@@ -801,11 +968,11 @@ fn run_realtime(input: mpsc::Receiver<PendingWork>, output: mpsc::SyncSender<Out
                 result
             }
             Work::Search(completed) => process_search(completed, &mut states, &shared),
-            Work::FinishRadiofax {slot,generation} => {
+            Work::FinishRadiofax {slot,generation,live} => {
                 if shared.current(slot,generation) {
                     if let Some(state)=states[slot].as_mut() {
                         let mut frames=ReceiverFrames::default();
-                        state.finish_radiofax(slot,&mut frames).map(|_|Some(Output {
+                        state.close(slot,&mut frames,live).map(|_|Some(Output {
                             slot,generation,frames,squelch:None,
                         }))
                     } else {Ok(None)}
@@ -840,7 +1007,7 @@ fn run_realtime(input: mpsc::Receiver<PendingWork>, output: mpsc::SyncSender<Out
     }
 }
 
-fn process_packet(packet: Packet, states: &mut [Option<ChannelState>; 3],
+fn process_packet(mut packet: Packet, states: &mut [Option<ChannelState>; 3],
     search: &mpsc::SyncSender<SearchJob>, shared: &Arc<Shared>) -> Result<Option<Output>, String> {
     if !shared.current(packet.slot, packet.generation) { return Ok(None); }
     let mut frames = ReceiverFrames::default();
@@ -854,8 +1021,8 @@ fn process_packet(packet: Packet, states: &mut [Option<ChannelState>; 3],
                 packet.slot + 1, packet.channel_id, packet.epoch, packet.generation, state.generation,
                 packet.seq, state.next_seq, packet.config.mode, state.mode));
         }
-        if let Some(previous) = states[packet.slot].as_mut() { previous.finish_radiofax(packet.slot,&mut frames)?; }
-        states[packet.slot] = Some(ChannelState::new(&packet)?);
+        if let Some(previous) = states[packet.slot].as_mut() { previous.close(packet.slot,&mut frames,true)?; }
+        states[packet.slot] = Some(ChannelState::new(&mut packet)?);
     }
     let state = states[packet.slot].as_mut().unwrap();
     if packet.radiofax_new_page { state.receiver.request_radiofax_page(); }
@@ -946,6 +1113,15 @@ mod tests {
 
     #[test]
     fn radiofax_terminal_drain_publishes_partial_under_retiring_identity() {
+        radiofax_retirement_order(false);
+    }
+
+    #[test]
+    fn live_retirement_keeps_old_tail_before_new_start_and_all_iq() {
+        radiofax_retirement_order(true);
+    }
+
+    fn radiofax_retirement_order(live: bool) {
         let mut config=ChannelConfig {mode:"radiofax".into(),freq:7.8e6,if_bw:3_000.0,
             ..ChannelConfig::default()};
         let mut workers=ReceiverWorkers::new().unwrap();
@@ -973,7 +1149,7 @@ mod tests {
             }).count();
         }
         assert!(images>0);
-        let closed=workers.finish_radiofax(&[1]).unwrap();
+        let closed=if live {workers.retire_channels(&[1])} else {workers.finish_radiofax(&[1])}.unwrap();
         let events:Vec<serde_json::Value>=closed.decode.iter().map(|frame|
             serde_json::from_slice(&frame[8..]).unwrap()).collect();
         assert!(events.iter().all(|event|event["epoch"]==7));
@@ -993,6 +1169,15 @@ mod tests {
         assert!(events.iter().all(|event|event["event"]["type"]!="radiofax-image"));
         assert_eq!(events.last().unwrap()["epoch"],8);
         assert_eq!(events.last().unwrap()["event"]["type"],"start");
+        for seq in 1..=INPUT_CAPACITY as u32 * 4 {
+            workers.submit(&frame(seq,u64::from(seq-1)*1_500,8,config.freq,&vec![0.1,0.0].repeat(1_500)),&registry).unwrap();
+            workers.finish().unwrap();
+        }
+        let stats=workers.stats();
+        assert_eq!(stats["submitted"],stats["completed"]);
+        assert_eq!(stats["submitted_samples"],stats["completed_samples"]);
+        assert_eq!(stats["completed_samples"],(16+INPUT_CAPACITY*4)*1_500);
+        assert_eq!(stats["queue_full"],0);
     }
 
     #[test]
@@ -1049,6 +1234,7 @@ mod tests {
                         channel_id:slot as u32 + 1, epoch:1, seq:1, rate:48_000.0, frequency:0.0,
                         clock:InputClock {first_sample_index:0,input_rate:48_000.0,delay_input_samples:0.0},
                         power_dbm:None, iq:vec![0.1, 0.0], radiofax_new_page:false,
+                        prepared: None,
                     }),
                     pending:Pending::new(&shared),
                 }).unwrap_or_else(|_| panic!("test input queue full"));
@@ -1366,5 +1552,129 @@ mod tests {
         workers.configure(&configs).unwrap();
         let retired = workers.poll().unwrap();
         assert!(retired.audio.is_empty() && retired.decode.is_empty());
+    }
+
+    #[test]
+    fn failed_preparation_preserves_active_generation_and_contiguous_input() {
+        let mut workers = ReceiverWorkers::new().unwrap();
+        let config = ChannelConfig { freq: 100e6, ..ChannelConfig::default() };
+        workers.configure(&[config.clone()]).unwrap();
+        let registry = [ChannelRegistryEntry { channel: 1, channel_id: 42, epoch: 7,
+            frequency_hz: config.freq, output_rate: 48_000.0, input_rate: 48_000.0,
+            group_delay_samples: 0.0, state: "active" }];
+        let frame = |seq| encode_baseband(BasebandMagic::Primary, seq, 48_000.0,
+            config.freq, 42, 7, u64::from(seq.saturating_sub(1)) * 1024, 0.0,
+            &if seq == 0 { Vec::new() } else { vec![0.1, 0.0].repeat(1024) }).unwrap();
+        workers.submit(&frame(0), &registry).unwrap();
+        workers.submit(&frame(1), &registry).unwrap();
+        workers.finish().unwrap();
+        let generation = workers.shared.generations[0].load(Ordering::Acquire);
+        let active = workers.active;
+        let replacement = ChannelConfig { freq: 101e6, ..config.clone() };
+        let prepared = PreparedDecoders::prepare_with(&[replacement], |_| Err("controlled constructor failure".into()));
+        assert!(matches!(&prepared, Err(error) if error == "controlled constructor failure"));
+        assert_eq!(*workers.configs[0], config);
+        assert_eq!(workers.shared.generations[0].load(Ordering::Acquire), generation);
+        assert_eq!(workers.active, active);
+        workers.submit(&frame(2), &registry).unwrap();
+        let output = workers.finish().unwrap();
+        assert!(!output.audio.is_empty());
+        assert_eq!(workers.stats()["completed"], 3);
+        assert_eq!(workers.stats()["queue_full"], 0);
+    }
+
+    #[test]
+    fn slow_admission_completes_before_producer_and_preserves_every_frame() {
+        let config = ChannelConfig { freq: 100e6, ..ChannelConfig::default() };
+        let candidate = config.clone();
+        let (entered, entering) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(0);
+        let preparation = thread::spawn(move || PreparedDecoders::prepare_with(&[candidate], |_| {
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            Ok(None)
+        }));
+        entering.recv().unwrap();
+        let mut workers = ReceiverWorkers::new().unwrap();
+        // Admission can remain blocked indefinitely without admitting any IQ.
+        assert_eq!(workers.stats()["submitted"], 0);
+        assert_eq!(workers.stats()["pending"], 0);
+        release.send(()).unwrap();
+        workers.install_prepared(preparation.join().unwrap().unwrap());
+        workers.configure(&[config.clone()]).unwrap();
+        let registry = [ChannelRegistryEntry { channel: 1, channel_id: 43, epoch: 8,
+            frequency_hz: config.freq, output_rate: 48_000.0, input_rate: 48_000.0,
+            group_delay_samples: 0.0, state: "active" }];
+        let blocks = INPUT_CAPACITY * 4;
+        let mut audio_sequence = 0;
+        let mut audio_index = 0;
+        for seq in 0..=blocks as u32 {
+            let frame = encode_baseband(BasebandMagic::Primary, seq, 48_000.0, config.freq,
+                43, 8, u64::from(seq.saturating_sub(1)) * 1024, 0.0,
+                &if seq == 0 { Vec::new() } else { vec![0.1, 0.0].repeat(1024) }).unwrap();
+            workers.submit(&frame, &registry).unwrap();
+            for audio in workers.finish().unwrap().audio {
+                assert_eq!(u32::from_le_bytes(audio[32..36].try_into().unwrap()), 43);
+                assert_eq!(u32::from_le_bytes(audio[36..40].try_into().unwrap()), 8);
+                assert_eq!(u32::from_le_bytes(audio[8..12].try_into().unwrap()), audio_sequence);
+                assert_eq!(u64::from_le_bytes(audio[64..72].try_into().unwrap()), audio_index);
+                audio_sequence += 1;
+                audio_index += u32::from_le_bytes(audio[12..16].try_into().unwrap()) as u64;
+            }
+        }
+        assert!(audio_sequence > blocks as u32);
+        assert_eq!(workers.stats()["submitted"], blocks + 1);
+        assert_eq!(workers.stats()["completed"], blocks + 1);
+        assert_eq!(workers.stats()["submitted_samples"], blocks * 1024);
+        assert_eq!(workers.stats()["completed_samples"], blocks * 1024);
+        assert_eq!(workers.stats()["queue_full"], 0);
+    }
+
+    #[test]
+    fn replacement_admission_preserves_pending_old_start_and_consumed_rollback() {
+        for retune in [false, true] {
+            for consume_old in [false, true] {
+                let mut workers = ReceiverWorkers::new().unwrap();
+                let old = ChannelConfig { freq: 100e6, ..ChannelConfig::default() };
+                let next = ChannelConfig { freq: if retune {101e6} else {100e6}, ..old.clone() };
+                workers.install_prepared(PreparedDecoders::new(&[old.clone()]).unwrap());
+                workers.configure(&[old.clone()]).unwrap();
+                let rollback = workers.exchange_prepared(PreparedDecoders::new(&[next.clone()]).unwrap());
+                assert!(workers.prepared.matches(0, &old));
+                assert!(workers.prepared.matches(0, &next));
+                workers.configure(&[old.clone()]).unwrap();
+                if consume_old {
+                    let registry = [ChannelRegistryEntry { channel: 1, channel_id: 42, epoch: 7,
+                        frequency_hz: old.freq, output_rate: 48_000.0, input_rate: 48_000.0,
+                        group_delay_samples: 0.0, state: "active" }];
+                    let start = encode_baseband(BasebandMagic::Primary, 0, 48_000.0,
+                        old.freq, 42, 7, 0, 0.0, &[]).unwrap();
+                    workers.submit(&start, &registry).unwrap();
+                    workers.finish().unwrap();
+                    assert!(workers.prepared.previous[0].is_none());
+                    assert!(workers.prepared.channels[0].is_some());
+                }
+                let rejected = workers.exchange_prepared(rollback);
+                assert_eq!(workers.prepared.matches(0, &old), !consume_old);
+                assert!(workers.prepared.previous[0].is_none());
+                assert!(rejected.channels[0].is_some());
+                assert_eq!(workers.stats()["queue_full"], 0);
+            }
+        }
+    }
+
+    #[test]
+    fn committed_admission_releases_only_retired_candidate() {
+        let mut workers = ReceiverWorkers::new().unwrap();
+        let old = ChannelConfig { freq: 100e6, ..ChannelConfig::default() };
+        let next = ChannelConfig { freq: 101e6, ..old.clone() };
+        workers.install_prepared(PreparedDecoders::new(&[old.clone()]).unwrap());
+        let _rollback = workers.exchange_prepared(PreparedDecoders::new(&[next.clone()]).unwrap());
+        let retired = workers.release_prepared(&[next.clone()]);
+        assert!(retired.previous[0].is_some());
+        assert!(!workers.prepared.matches(0, &old));
+        assert!(workers.prepared.matches(0, &next));
+        assert!(workers.prepared.take(0, &next).is_some());
+        assert!(!workers.prepared.matches(0, &next));
     }
 }

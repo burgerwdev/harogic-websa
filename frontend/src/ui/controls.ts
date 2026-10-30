@@ -52,12 +52,12 @@ import { getCapture, isZoomed, minSpanHz, recenterOnCapture, zoomEnabled } from 
 import { resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
-import { initSdrDemodGroup } from './sdrDemodGroup';
+import { initSdrDemodGroup, syncSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
 import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
 import { resetSdrIq, setSdrIqEnabled, setSstvModePin } from '../sdr/iqStream';
 import { clearRadiofax } from '../sdr/radiofaxLog';
-import { sdrModeIds } from '../sdr/registry';
+import { availableSdrModeIds, isModeAvailable, modeDescriptor, modeStartupTimeoutMs } from '../sdr/registry';
 import { resetLimits } from './limits';
 
 // Panel modules (report finding P1-5). controls.ts keeps the wiring (event binding, canvas
@@ -130,7 +130,7 @@ export function connectDevice() { send({ cmd: 'CONNECT' }); }
 // Graph-mode + display-reference requests are owned by ui/graphMode.ts and ui/displayRef.ts.
 // They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
 // divergence); this module only translates them to the DOM.
-import { currentGraphMode, deviceMode, graphMode, graphModeDiverges, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
+import { currentGraphMode, deviceMode, graphMode, graphModeDiverges, GRAPH_MODE_TTL_MS, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
 import { resetDisplayRefMode, setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
 import { refLevel } from './refState';
 
@@ -267,6 +267,8 @@ export function disconnectSdrSession(): void {
   setSdrIqEnabled(false);
   resetSdrIq();
   setDecodeActive(false);
+  const picker = document.getElementById('sdr-demod-group');
+  if (picker) syncSdrDemodGroup(picker, sdrDemod.get());
 }
 
 function amSyncSessionAvailable(): boolean {
@@ -345,7 +347,8 @@ function syncModeButtons(): void {
 export function setGraphMode(mode: string, { restore = false, handoffHz }: { restore?: boolean; handoffHz?: number } = {}) {
   if (deviceMode.get() === 'server') {
     const target = mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
-    if (trackServerExit(target) && target === 'sdr') beginSdrEntry(handoffHz);
+    const timeoutMs = target === 'sdr' ? Math.max(GRAPH_MODE_TTL_MS, modeStartupTimeoutMs(sdrDemod.get())) : GRAPH_MODE_TTL_MS;
+    if (trackServerExit(target, timeoutMs) && target === 'sdr') beginSdrEntry(handoffHz);
     return;
   }
   const target: 'std' | 'rta' | 'sdr' =
@@ -359,7 +362,7 @@ export function setGraphMode(mode: string, { restore = false, handoffHz }: { res
     setMeasButtons(false);
   }
   // A newer request replaces the previous one and restarts its timeout (discipline 2).
-  requestGraphMode(target);
+  requestGraphMode(target, target === 'sdr' ? Math.max(GRAPH_MODE_TTL_MS, modeStartupTimeoutMs(sdrDemod.get())) : GRAPH_MODE_TTL_MS);
   cancelSdrTuneRequest();
   cancelSdrCanvasGesture();
   cancelSdrFilterEdit();
@@ -437,6 +440,8 @@ export function syncGraphModeStatus(mode: string) {
   syncLevelAvailability(mode);
   syncResolutionAvailability(mode);
   setDecodeActive(S.deviceConnected && mode === 'sdr');
+  const picker = document.getElementById('sdr-demod-group');
+  if (picker) syncSdrDemodGroup(picker, sdrDemod.get());
   if (!isGraphMode(mode)) {
     if (mode === 'server') {
       resetGraphMode();
@@ -730,8 +735,9 @@ export function sdrToCenter() {
 export function applySdrDemod(restoringMode = false, filterOnly = false) {
   const mode = sdrDemod.get();
   setSdrAudioMode(1, mode);
-  if (!filterSpec(mode).editable && sdrIfbw.get() !== filterSpec(mode).defaultHz) {
-    sdrIfbw.set(filterSpec(mode).defaultHz);
+  const descriptor = modeDescriptor(mode);
+  if (descriptor && !descriptor.bandwidthEditable && sdrIfbw.get() !== descriptor.defaultBandwidthHz) {
+    sdrIfbw.set(descriptor.defaultBandwidthHz);
   }
   const ifbw = sdrIfbw.get();
   const deemph = sdrDeemph.get();
@@ -875,6 +881,8 @@ export function listenAtFreq(hz: number) {
 
 function syncSdrButtons() {
   const mode = sdrDemod.get();
+  const picker = document.getElementById('sdr-demod-group');
+  if (picker) syncSdrDemodGroup(picker, mode);
   document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
     el.classList.toggle('active', (el as HTMLElement).dataset.sdrDemod === mode);
   });
@@ -913,7 +921,7 @@ function sendReceiverEdit(edit: ReceiverEdit): void {
     if (receiverInFlight?.requestId !== requestId) return;
     finishReceiverEdit(false);
     S.setStatusError(t('sdr_filter_timeout'));
-  }, 3000) };
+  }, modeStartupTimeoutMs(edit.mode)) };
   const liveAudio = 'volume' in edit.payload ? {
     volume: sdrVolume.get(), squelch: sdrSquelch.get(), agc: sdrAgc.get(), am_sync: sdrAmSync.get(),
     deemph_us: sdrDeemph.get(), nr: sdrNr.get(), nr_strength: sdrNrStrength.get(),
@@ -965,6 +973,7 @@ export function rejectSdrFilterRequest(responseTo?: string, requestId?: string |
 
 /** The same user selection action serves the registry buttons and the M shortcut. */
 export function selectSdrDemod(id: string): void {
+  if (!amSyncSessionAvailable() || !isModeAvailable(id)) return;
   cancelSdrTuneRequest();
   cancelSdrCanvasGesture();
   cancelSdrTuningEdit();
@@ -981,7 +990,8 @@ export function selectSdrDemod(id: string): void {
 /** Both click and keyboard bandwidth choices are explicit manual choices. */
 export function selectSdrIfbw(ifbw: number): void {
   const spec = filterSpec(sdrDemod.get());
-  if (!spec.editable || !Number.isFinite(ifbw) || ifbw < spec.minimumHz) return;
+  if (!spec.editable || !Number.isFinite(ifbw) || ifbw < spec.minimumHz
+      || ifbw > (spec.maximumHz ?? Infinity)) return;
   sdrIfbw.set(ifbw);
   renderSdrState();
   syncSdrButtons();
@@ -1538,10 +1548,8 @@ export function bindActions() {
     sdrSquelch.set(Number.isFinite(wanted) ? wanted : -110);
     applySdrDemod();
   });
-  // The demod group is generated from the DSP plugin registry, so the mode buttons and the
-  // kernels cannot disagree; the handler is the same path the panel always used.
-  // The FT8 decode window: its toggle lives next to the readout, its rows come from the log, and a
-  // row click tunes the receiver (the only action an FT8 operator takes on a decode).
+  // All catalog selections use the same acknowledged receiver edit path.
+  // Decode rows tune the receiver through the existing channel action.
   // A row tunes the *dial* so the signal lands inside the decoder's band (see `ft8DialFor`).
   initDecodeWindow({
     onTune: (hz) => {
@@ -1569,7 +1577,9 @@ export function bindActions() {
   if (demodGroup) {
     void initSdrDemodGroup(demodGroup, {
       onSelect: selectSdrDemod,
-    });
+      selected: () => sdrDemod.get(),
+      canSelect: amSyncSessionAvailable,
+    }).then(() => { syncSdrButtons(); renderSdrTuningUi(); refreshDecodeWindow(); requestRender(); });
   }
   bindSdrFilter({ onCommit: selectSdrIfbw, onView: viewSdrPassband });
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
@@ -2217,7 +2227,7 @@ function sdrCycleIfbw(dir: number) {
 function sdrCycleDemod() {
   // The cycle is the registry's list (analog then digital), not a copy of it: a mode added to the
   // DSP appears here without another edit.
-  const modes = sdrModeIds();
+  const modes = availableSdrModeIds();
   if (modes.length === 0) return;                 // manifest not loaded yet: keep the current mode
   const current = sdrDemod.get();
   const index = modes.indexOf(current);

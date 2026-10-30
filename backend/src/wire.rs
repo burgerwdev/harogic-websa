@@ -22,6 +22,7 @@ pub struct BasebandFramer {
     epoch: u64,
     center_hz: f64,
     rate: f64,
+    input_rate: f64,
     block_samples: usize,
     next_packet: Option<u64>,
     next_sample: Option<u64>,
@@ -50,7 +51,6 @@ impl BasebandFramer {
         magic: BasebandMagic,
     ) -> Option<Self> {
         if !center_hz.is_finite() || !(1.0..=1e7).contains(&rate)
-            || (rate / 30.0).ceil() > MAX_BASEBAND_SAMPLES as f64
             || channel_id == 0 || channel_id > u32::MAX as u64
             || epoch == 0 || epoch > u32::MAX as u64
         {
@@ -62,7 +62,8 @@ impl BasebandFramer {
             epoch,
             center_hz,
             rate,
-            block_samples: (rate / 30.0).ceil() as usize,
+            input_rate: rate,
+            block_samples: ((rate / 30.0).ceil() as usize).min(MAX_BASEBAND_SAMPLES),
             next_packet: None,
             next_sample: None,
             wire_seq: 0,
@@ -74,14 +75,20 @@ impl BasebandFramer {
         })
     }
 
+    /// Capture clock used for the causal source index of split output chunks.
+    pub fn with_source_rate(mut self, input_rate: f64) -> Option<Self> {
+        if !input_rate.is_finite() || input_rate < self.rate { return None; }
+        self.input_rate = input_rate;
+        Some(self)
+    }
+
     pub fn push(&mut self, output: &FineOutput<'_>) -> Result<Vec<Vec<u8>>, &'static str> {
         if self.finished
             || output.channel_id != self.channel_id
             || output.epoch != self.epoch
             || output.output_rate != self.rate
             || output.iq.len() % 2 != 0
-            || self.pending.len().checked_add(output.iq.len())
-                .is_none_or(|len| len / 2 > MAX_BASEBAND_SAMPLES)
+            || output.iq.len() / 2 > 65_536
             || output.iq.iter().any(|value| !value.is_finite())
             || output.input_index == u64::MAX
             || !output.delay_samples.is_finite()
@@ -127,25 +134,28 @@ impl BasebandFramer {
             )?);
             self.started = true;
         }
-        self.pending
-            .extend(output.iq.iter().map(|value| *value * IQ_SCALE));
-        if self.pending.len() / 2 >= self.block_samples {
-            self.wire_seq = self
-                .wire_seq
-                .checked_add(1)
-                .ok_or("baseband wire sequence overflow")?;
-            frames.push(encode_baseband(
-                self.magic,
-                self.wire_seq,
-                self.rate,
-                self.center_hz,
-                self.channel_id,
-                self.epoch,
-                self.pending_input_index,
-                self.pending_delay,
-                &self.pending,
-            )?);
-            self.pending.clear();
+        let mut consumed = 0usize;
+        while consumed < output.iq.len() / 2 {
+            if self.pending.is_empty() {
+                let advance = (consumed as f64 * self.input_rate / self.rate).round();
+                if advance >= u64::MAX as f64 { return Err("baseband source clock overflow"); }
+                self.pending_input_index = output.input_index.checked_add(advance as u64)
+                    .ok_or("baseband source clock overflow")?;
+                self.pending_delay = output.delay_samples;
+            }
+            let count = (MAX_BASEBAND_SAMPLES - self.pending.len() / 2)
+                .min(output.iq.len() / 2 - consumed);
+            self.pending.extend(output.iq[2 * consumed..2 * (consumed + count)]
+                .iter().map(|value| *value * IQ_SCALE));
+            consumed += count;
+            if self.pending.len() / 2 >= self.block_samples {
+                self.wire_seq = self.wire_seq.checked_add(1)
+                    .ok_or("baseband wire sequence overflow")?;
+                frames.push(encode_baseband(self.magic, self.wire_seq, self.rate,
+                    self.center_hz, self.channel_id, self.epoch, self.pending_input_index,
+                    self.pending_delay, &self.pending)?);
+                self.pending.clear();
+            }
         }
         Ok(frames)
     }
@@ -368,6 +378,79 @@ mod tests {
     }
 
     #[test]
+    fn wide_packets_split_repeatedly_at_bound_with_exact_source_clock_and_tail() {
+        for magic in [BasebandMagic::Primary, BasebandMagic::Aux] {
+            let mut framer = BasebandFramer::with_magic(9, 17, 100e6, 4_000_000.0, magic)
+                .unwrap().with_source_rate(8_000_000.0).unwrap();
+            let first_input = 901_u64;
+            let delay = 12.25;
+            let sample = |index: usize| {
+                let i = (index % 65_536) as f32 - 32_768.0;
+                [i, -i]
+            };
+            let mut frames = Vec::new();
+            let mut total = 0;
+            let mut next_packet = 19;
+            for count in [16_240, 8_119, 1, 32_761, 2_345].into_iter().cycle().take(40) {
+                let iq: Vec<f32> = (total..total + count).flat_map(sample).collect();
+                frames.extend(framer.push(&FineOutput {
+                    channel_id: 9, epoch: 17, bin: 0, seq: next_packet, stamp: 0,
+                    input_index: first_input + 2 * total as u64,
+                    output_index: total as u64, output_rate: 4_000_000.0,
+                    center_offset_hz: Some(0.0), delay_samples: delay, iq: &iq,
+                }).unwrap());
+                total += count;
+                next_packet += 1;
+            }
+            assert!(total / MAX_BASEBAND_SAMPLES > 3);
+            assert_ne!(total % MAX_BASEBAND_SAMPLES, 0);
+            assert_eq!(frames.len(), 1 + total / MAX_BASEBAND_SAMPLES);
+            let tail = framer.finish().unwrap().unwrap();
+            assert_eq!(u32::from_le_bytes(tail[8..12].try_into().unwrap()) as usize, frames.len());
+            assert_eq!(u32::from_le_bytes(tail[12..16].try_into().unwrap()) as usize,
+                total % MAX_BASEBAND_SAMPLES);
+            frames.push(tail);
+            let mut received = 0;
+            for (seq, frame) in frames.iter().enumerate() {
+                let expected_magic = match magic {
+                    BasebandMagic::Primary => b"IQBF", BasebandMagic::Aux => b"IQAX",
+                };
+                assert_eq!(&frame[..4], expected_magic);
+                assert_eq!(u32::from_le_bytes(frame[4..8].try_into().unwrap()), 2);
+                assert_eq!(u32::from_le_bytes(frame[8..12].try_into().unwrap()) as usize, seq);
+                let count = u32::from_le_bytes(frame[12..16].try_into().unwrap()) as usize;
+                assert!(count <= MAX_BASEBAND_SAMPLES);
+                assert_eq!(frame.len(), 56 + count * 8);
+                assert_eq!(f64::from_le_bytes(frame[16..24].try_into().unwrap()), 4_000_000.0);
+                assert_eq!(u32::from_le_bytes(frame[32..36].try_into().unwrap()), 9);
+                assert_eq!(u32::from_le_bytes(frame[36..40].try_into().unwrap()), 17);
+                assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()),
+                    first_input + 2 * received as u64);
+                assert_eq!(f64::from_le_bytes(frame[48..56].try_into().unwrap()), delay);
+                if seq == 0 {
+                    assert_eq!(count, 0);
+                } else if seq + 1 < frames.len() {
+                    assert_eq!(count, MAX_BASEBAND_SAMPLES);
+                }
+                for (offset, pair) in frame[56..].chunks_exact(8).enumerate() {
+                    let expected = sample(received + offset);
+                    assert_eq!(f32::from_le_bytes(pair[..4].try_into().unwrap()), expected[0] / 32_768.0);
+                    assert_eq!(f32::from_le_bytes(pair[4..].try_into().unwrap()), expected[1] / 32_768.0);
+                }
+                received += count;
+            }
+            assert_eq!(received, total);
+            assert!(framer.finish().is_err());
+            assert!(framer.push(&FineOutput {
+                channel_id: 9, epoch: 17, bin: 0, seq: next_packet, stamp: 0,
+                input_index: first_input + 2 * total as u64,
+                output_index: total as u64, output_rate: 4_000_000.0,
+                center_offset_hz: Some(0.0), delay_samples: delay, iq: &[],
+            }).is_err());
+        }
+    }
+
+    #[test]
     fn matches_python_and_browser_baseband_fixture() {
         let iq = [
             0.0, 0.0, 0.5, -0.5, 0.25, -0.25, 1.0, -1.0, 0.001, 1e-6, -0.001, -1e-6,
@@ -469,7 +552,8 @@ mod tests {
             for rate in [0.5, f64::NAN, f64::INFINITY, 1e9 + 1.0] {
                 assert!(encode_baseband(magic, 0, rate, 100e6, 1, 1, 0, 0.0, &[]).is_err());
             }
-            assert!(BasebandFramer::with_magic(1, 1, 100e6, 1e7, magic).is_none());
+            assert!(BasebandFramer::with_magic(1, 1, 100e6, 1e7, magic).is_some());
+            assert!(BasebandFramer::with_magic(1, 1, 100e6, 1e7 + 1.0, magic).is_none());
             assert!(encode_baseband(magic, 1, 1200.0, 100e6, 1, 1, 0, 0.0, &[]).is_err());
             for (id, epoch) in [(0, 1), (1, 0), (max + 1, 1), (1, max + 1)] {
                 assert!(BasebandFramer::with_magic(id, epoch, 100e6, 1200.0, magic).is_none());

@@ -8,6 +8,8 @@ pub mod rate_plan;
 pub mod receiver;
 pub mod cw;
 pub mod nr;
+pub mod catalog;
+pub mod external;
 mod wire;
 pub mod timing;
 

@@ -28,7 +28,10 @@ impl RatePlan {
             "drm" => (Some(48_000.0), 0.0, 0.125, 250.0),
             "radiofax" => (Some(12_000.0), 12_000.0, 0.125, 100.0),
             "drmplus" => (Some(96_000.0), 0.0, 0.125, 1_000.0),
-            _ => return Err("unsupported channel mode"),
+            _ => match crate::catalog::external_rates(mode) {
+                Some((rate, minimum)) => (Some(rate as f64), minimum as f64, 0.125, 100.0),
+                None => return Err("unsupported channel mode"),
+            },
         };
         let transition = (occupied_bandwidth_hz * relative_transition).max(minimum_transition);
         let needed = (occupied_bandwidth_hz + 2.0 * transition).max(minimum_rate);
@@ -138,5 +141,39 @@ mod tests {
         assert!(narrow.output_rate >= 300_000.0);
         assert!(narrow.stopband_hz < 5_000.0,
             "WFM processing cadence must not widen the requested RF filter");
+    }
+    #[test]
+    fn external_clocks_preserve_exact_decoder_contract_and_reject_wideband() {
+        for (mode, width, exact) in [("pocsag1200", 12_500.0, 22_050.0),
+            ("ism", 200_000.0, 250_000.0), ("ais", 125_000.0, 250_000.0),
+            ("meteor", 150_000.0, 288_000.0)] {
+            let plan = RatePlan::new(976_562.5, mode, width).unwrap();
+            assert_eq!(plan.decoder_rate, Some(exact));
+            assert!(plan.output_rate >= exact);
+            assert!(crate::rational::Rational::from_rates(plan.output_rate, exact as u32, width / 2.0).is_ok());
+        }
+        assert!(RatePlan::new(976_562.5, "adsb", 2_000_000.0).is_err());
+        assert!(RatePlan::new(200_000.0, "ism", 200_000.0).is_err());
+    }
+
+    #[test]
+    fn direct_gps_and_adsb_plans_retain_filter_edges_and_actual_clocks() {
+        for (mode,width,minimum,exact) in [("gps",2_046_000.0,2_600_000.0,4_000_000),
+            ("adsb",1_800_000.0,2_500_000.0,2_000_000)] {
+            assert!(RatePlan::new(976_562.5,mode,width).is_err());
+            for fs in [3_906_250.0,7_812_500.0,15_625_000.0,31_250_000.0,62_500_000.0] {
+                let plan=RatePlan::new(fs,mode,width).unwrap();
+                assert!(plan.output_rate>=minimum);
+                assert_eq!(plan.output_rate,fs/plan.decimate as f64);
+                assert_eq!(plan.decoder_rate,Some(exact as f64));
+                assert!(plan.stopband_hz<=plan.output_rate/2.0);
+                assert!(crate::rational::Rational::from_rates(plan.output_rate,exact,width/2.0).is_ok());
+            }
+        }
+        let gps=RatePlan::new(3_906_250.0,"gps",2_046_000.0).unwrap();
+        assert_eq!(gps.output_rate,3_906_250.0);
+        assert_eq!(gps.stopband_hz,1_278_750.0);
+        assert!(crate::rational::Rational::from_rates(gps.output_rate,4_000_000,1_023_000.0).is_ok());
+        assert!(RatePlan::new(2_500_000.0,"gps",2_046_000.0).is_err());
     }
 }

@@ -13,8 +13,11 @@ const MAX_EVENT_JSON_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FORMATS: usize = 256;
 const HELP: &str = "Usage: sdr_decode --input IQ.f32 --mode MODE --input-rate HZ --bandwidth HZ\n\
     [--pitch HZ] [--audio-rate HZ] [--output-pcm PCM.f32] [--report-json REPORT.json]\n\
-    [--first-sample-index N] [--delay-input-samples N]\n\n\
-Modes: am dsb usb lsb cw nfm wfm pm ft8 sstv drm drmplus radiofax\n\
+    [--first-sample-index N] [--delay-input-samples N] [--center-hz HZ] [--realtime]\n\n\
+Modes: am dsb usb lsb cw nfm wfm pm ft8 sstv drm drmplus radiofax;\n\
+external: pocsag512 pocsag1200 pocsag2400 flex flex_next eas afsk1200 afsk2400\n\
+afsk2400_2 afsk2400_3 hapn4800 fsk9600 dtmf zvei1 zvei2 zvei3 dzvei pzvei\n\
+eea eia ccir morse_cw ufsk1200 clipfsk ism ais aprs ft4 wspr meteor adsb gps rtty rtty-reverse.\n\
 Input: little-endian interleaved f32 I,Q pairs at the stated input rate.\n\
 Output: little-endian interleaved f32 PCM, with actual sample rate and channel count\n\
 recorded in formats. A PCM file requires a single format; a format change is an error.\n\
@@ -22,6 +25,10 @@ The JSON report goes to stdout unless --report-json is supplied. Events are reta
 up to 100000 events / 64 MiB serialized JSON; exceeding either limit is an error.\n\
 FT8 jobs run synchronously, including the final buffered window at EOF. Input windows\n\
 must include any desired caller-supplied leading/trailing padding; none is added.\n\
+External decoders require configured executable dependencies. stdin providers drain at EOF;\n\
+OnAir reports its bounded drain without claiming upstream completion. --center-hz sets RF metadata.\n\
+--realtime paces input by its sample clock for live or wall-clock decoder providers.\n\
+OnAir FT4/WSPR recording replay is rejected: these modes require UTC-aligned live IQ.\n\
 Listener defaults: 48000 Hz, pitch 700 Hz, AGC enabled, squelch open, NR disabled.\n";
 
 struct Args {
@@ -30,6 +37,7 @@ struct Args {
     report_json: Option<PathBuf>,
     config: ReceiverConfig,
     clock: InputClock,
+    realtime: bool,
 }
 
 fn value<T: std::str::FromStr>(flag: &str, text: String) -> Result<T, String> {
@@ -43,6 +51,7 @@ fn parse_args() -> Result<Option<Args>, String> {
     let mut mode = None;
     let mut input_rate = None;
     let mut bandwidth = None;
+    let mut realtime = false;
     let mut config = ReceiverConfig { squelch_dbm: -200.0, ..ReceiverConfig::default() };
     let mut clock = InputClock { first_sample_index: 0, input_rate: 0.0, delay_input_samples: 0.0 };
     let mut args = env::args().skip(1);
@@ -51,9 +60,10 @@ fn parse_args() -> Result<Option<Args>, String> {
             print!("{HELP}");
             return Ok(None);
         }
+        if flag == "--realtime" { realtime = true; continue; }
         if !matches!(flag.as_str(), "--input" | "--output-pcm" | "--report-json" | "--mode"
             | "--input-rate" | "--bandwidth" | "--pitch" | "--audio-rate"
-            | "--first-sample-index" | "--delay-input-samples") {
+            | "--first-sample-index" | "--delay-input-samples" | "--center-hz") {
             return Err(format!("unknown argument {flag}; use --help"));
         }
         let text = args.next().ok_or_else(|| format!("missing value for {flag}"))?;
@@ -68,10 +78,14 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--audio-rate" => config.audio_rate = value(&flag, text)?,
             "--first-sample-index" => clock.first_sample_index = value(&flag, text)?,
             "--delay-input-samples" => clock.delay_input_samples = value(&flag, text)?,
+            "--center-hz" => config.center_hz = value(&flag, text)?,
             _ => unreachable!(),
         }
     }
     config.mode = mode.ok_or("--mode is required")?;
+    if matches!(config.mode.as_str(), "ft4" | "wspr") {
+        return Err("OnAir FT4/WSPR require UTC-aligned live IQ; arbitrary recording replay is unsupported, and --realtime does not restore source UTC alignment".into());
+    }
     config.input_rate = input_rate.ok_or("--input-rate is required")?;
     config.if_bw = bandwidth.ok_or("--bandwidth is required")?;
     clock.input_rate = config.input_rate;
@@ -82,7 +96,7 @@ fn parse_args() -> Result<Option<Args>, String> {
         return Err("--output-pcm must have .f32 extension (interleaved f32le PCM)".into());
     }
     Ok(Some(Args {
-        input: input.ok_or("--input is required")?, output_pcm, report_json, config, clock,
+        input: input.ok_or("--input is required")?, output_pcm, report_json, config, clock, realtime,
     }))
 }
 
@@ -304,6 +318,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = vec![0_u8; BLOCK_COMPLEX * 8];
     let mut iq = Vec::with_capacity(BLOCK_COMPLEX * 2);
     let mut complex_samples = 0_u64;
+    let started = std::time::Instant::now();
     loop {
         let mut filled = 0;
         while filled < bytes.len() {
@@ -327,10 +342,15 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let output = receiver.process(&iq, clock, None)?;
         sink.output(&mut receiver, output)?;
         complex_samples = complex_samples.checked_add((iq.len() / 2) as u64).ok_or("input sample count overflow")?;
+        if args.realtime {
+            let target = std::time::Duration::from_secs_f64(complex_samples as f64 / args.config.input_rate);
+            if let Some(wait) = target.checked_sub(started.elapsed()) { std::thread::sleep(wait); }
+        }
     }
     if let Some(job) = receiver.flush_ft8()? { sink.events(receiver.accept_ft8(job.decode()))?; }
     receiver.finish_radiofax()?;
     sink.events(receiver.take_radiofax_events()?)?;
+    sink.events(receiver.finish_external()?)?;
     if let Some(pcm) = sink.pcm.as_mut() { pcm.flush()?; }
     let report = Report {
         schema_version: 1,

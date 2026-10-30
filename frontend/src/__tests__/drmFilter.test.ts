@@ -1,11 +1,18 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { send } from '../core/wsSend';
 import { applySdrDemod } from '../ui/controls';
 import { sdrDemod, sdrIfbw } from '../ui/sdrState';
+import { setPluginManifest } from '../sdr/registry';
+import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 
+beforeEach(() => {
+	setPluginManifest(['drm', 'drmplus'].map((id) => receiverPlugin(id)));
+});
+
 afterEach(() => {
+	setPluginManifest(null);
 	vi.mocked(send).mockClear();
 	localStorage.clear();
 });

@@ -13,17 +13,17 @@ rustfft = "6.4.1"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+prost = "0.11.9"
 subtle = "2.6.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs", "signal"] }
 websa-dsp = { path = "../dsp/core" }
 df = { package = "deep_filter", path = "../dsp/deepfilter", default-features = false, features = ["tract"] }
 ndarray = "0.15"
+tokio-tungstenite = "0.29"
 
 [features]
 bench-instrument = []
 
-[dev-dependencies]
-tokio-tungstenite = "0.29"
 
 [build-dependencies]
 cc = "1"

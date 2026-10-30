@@ -10,6 +10,7 @@ import { demodBandHz, sdrDemod, sdrFilterByMode, sdrFilterLimits, sdrIfbw, sdrLi
 import { getCapture, passbandViewActive } from './spectrumViewport';
 import { convertUnitValue, toUnit, units } from '../core/units';
 import type { UnitCommitDetail } from '../core/units';
+import { modeDescriptor } from '../sdr/registry';
 
 export interface SdrFilterSpec {
 	editable: boolean;
@@ -20,40 +21,32 @@ export interface SdrFilterSpec {
 	labelKey: string;
 	/** The native DSP's real lower bound. SSB needs a positive guard, so it is 101 Hz. */
 	minimumHz: number;
+	maximumHz?: number;
 }
 
-const AM_PRESETS = [3_000, 4_500, 6_000, 9_000, 12_000] as const;
-const SSB_PRESETS = [1_800, 2_400, 2_700, 3_000, 6_000] as const;
-const CW_PRESETS = [100, 200, 500, 1_000, 2_000] as const;
-const NFM_PRESETS = [9_000, 12_000, 12_500, 15_000, 25_000] as const;
-const WFM_PRESETS = [100_000, 150_000, 180_000, 200_000, 250_000] as const;
-const PM_PRESETS = [6_000, 9_000, 12_000, 15_000, 25_000] as const;
-
-function spec(editable: boolean, defaultHz: number, presets: readonly number[],
-	unit: 'Hz' | 'kHz', labelKey: string, minimumHz: number): SdrFilterSpec {
-	return { editable, defaultHz, presets, unit, labelKey, minimumHz };
-}
-
-const SPECS: Record<string, SdrFilterSpec> = {
-	am: spec(true, 6_000, AM_PRESETS, 'kHz', 'sdr_filter_bandwidth', 50),
-	dsb: spec(true, 6_000, AM_PRESETS, 'kHz', 'sdr_filter_bandwidth', 50),
-	usb: spec(true, 2_400, SSB_PRESETS, 'kHz', 'sdr_filter_high_cutoff', 101),
-	lsb: spec(true, 2_400, SSB_PRESETS, 'kHz', 'sdr_filter_high_cutoff', 101),
-	cw: spec(true, 500, CW_PRESETS, 'Hz', 'sdr_filter_bandwidth', 50),
-	nfm: spec(true, 12_000, NFM_PRESETS, 'kHz', 'sdr_filter_bandwidth', 50),
-	wfm: spec(true, 180_000, WFM_PRESETS, 'kHz', 'sdr_filter_bandwidth', 50),
-	pm: spec(true, 12_000, PM_PRESETS, 'kHz', 'sdr_filter_bandwidth', 50),
-	ft8: spec(false, 3_000, [3_000], 'kHz', 'ft8_filter_fixed', 50),
-	sstv: spec(false, 3_000, [3_000], 'kHz', 'sstv_filter_fixed', 50),
-	radiofax: spec(false, 3_000, [3_000], 'kHz', 'radiofax_filter_fixed', 50),
-	drm: spec(false, 12_000, [12_000], 'kHz', 'drm_filter_fixed', 50),
-	drmplus: spec(false, 100_000, [100_000], 'kHz', 'drmplus_filter_fixed', 50),
+// Labels describe native display semantics; all bandwidth geometry comes from the catalog.
+const FILTER_LABELS: Record<string, string> = {
+	usb: 'sdr_filter_high_cutoff', lsb: 'sdr_filter_high_cutoff',
+	ft8: 'ft8_filter_fixed', sstv: 'sstv_filter_fixed', radiofax: 'radiofax_filter_fixed',
+	drm: 'drm_filter_fixed', drmplus: 'drmplus_filter_fixed',
+};
+const UNKNOWN_SPEC: SdrFilterSpec = {
+	editable: false, defaultHz: 6_000, presets: [], unit: 'kHz',
+	labelKey: 'sdr_filter_bandwidth', minimumHz: 1,
 };
 
-const UNKNOWN_SPEC = spec(false, 6_000, [6_000], 'kHz', 'sdr_filter_bandwidth', 50);
-
 export function filterSpec(mode: string): SdrFilterSpec {
-	return SPECS[mode] ?? UNKNOWN_SPEC;
+	const descriptor = modeDescriptor(mode);
+	if (descriptor) return {
+		editable: descriptor.bandwidthEditable,
+		defaultHz: descriptor.defaultBandwidthHz,
+		presets: descriptor.bandwidthPresetsHz,
+		unit: descriptor.defaultBandwidthHz < 1_000 ? 'Hz' : 'kHz',
+		labelKey: FILTER_LABELS[mode] ?? 'sdr_filter_bandwidth',
+		minimumHz: descriptor.minBandwidthHz,
+		maximumHz: descriptor.maxBandwidthHz,
+	};
+	return UNKNOWN_SPEC;
 }
 
 /** Shared admission bounds for numeric and spectrum-edge controls. */
@@ -62,7 +55,8 @@ export function filterRange(mode: string): { min: number; max: number | null } {
 	const limits = sdrFilterLimits.get();
 	return {
 		min: Math.max(specForMode.minimumHz, limits?.mode === mode ? limits.min_hz : 0),
-		max: limits?.mode === mode ? limits.max_hz : Infinity,
+		max: limits?.mode === mode && limits.max_hz === null ? null
+			: Math.min(specForMode.maximumHz ?? Infinity, limits?.mode === mode ? limits.max_hz ?? Infinity : Infinity),
 	};
 }
 
@@ -75,12 +69,14 @@ export function filterValueForMode(mode: string): number {
 	const remembered = sdrFilterByMode.get()[mode];
 	return remembered !== undefined && filterSpec(mode).editable
 		&& Number.isFinite(remembered) && remembered >= filterSpec(mode).minimumHz
+		&& remembered <= (filterSpec(mode).maximumHz ?? Infinity)
 		? remembered : filterSpec(mode).defaultHz;
 }
 
 /** STATUS is the only caller: pending text or previews never become mode preferences. */
 export function rememberConfirmedFilter(mode: string, hz: number): void {
-	if (!filterSpec(mode).editable || !Number.isFinite(hz) || hz < filterSpec(mode).minimumHz) return;
+	if (!filterSpec(mode).editable || !Number.isFinite(hz) || hz < filterSpec(mode).minimumHz
+		|| hz > (filterSpec(mode).maximumHz ?? Infinity)) return;
 	if (sdrFilterByMode.get()[mode] !== hz) sdrFilterByMode.set({ ...sdrFilterByMode.get(), [mode]: hz });
 }
 
@@ -181,10 +177,10 @@ function commitInput(el: HTMLInputElement): void {
 		rejectInput(el, 'sdr_filter_too_narrow', { min: valueText(specForMode.minimumHz, specForMode) });
 		return;
 	}
-	const limits = sdrFilterLimits.get();
-	if (limits?.mode === mode && (limits.max_hz === null || hz < limits.min_hz || hz > limits.max_hz)) {
-		rejectInput(el, limits.max_hz === null ? 'sdr_filter_no_range' : 'sdr_filter_outside_range', {
-			min: inputValueText(limits.min_hz), max: inputValueText(limits.max_hz ?? 0),
+	const limits = filterRange(mode);
+	if (limits.max === null || hz < limits.min || hz > limits.max) {
+		rejectInput(el, limits.max === null ? 'sdr_filter_no_range' : 'sdr_filter_outside_range', {
+			min: inputValueText(limits.min), max: inputValueText(limits.max ?? 0),
 		});
 		return;
 	}
@@ -278,10 +274,9 @@ export function renderSdrFilter(): void {
 	} else if (specForMode.editable) {
 		stateText = t('sdr_filter_confirmed', { value: valueText(shownHz, specForMode) });
 	}
-	const limits = sdrFilterLimits.get();
-	const rangeText = specForMode.editable && limits?.mode === mode
-		? limits.max_hz === null ? t('sdr_filter_no_range')
-			: t('sdr_filter_range', { min: inputValueText(limits.min_hz), max: inputValueText(limits.max_hz) })
+	const rangeText = specForMode.editable && (range.max === null || Number.isFinite(range.max))
+		? range.max === null ? t('sdr_filter_no_range')
+			: t('sdr_filter_range', { min: inputValueText(range.min), max: inputValueText(range.max) })
 		: '';
 	const passbandText = t('passband') + ': ' + t('sdr_filter_passband_value', {
 		lo: edgeText(bandLo, specForMode), hi: edgeText(bandHi, specForMode), unit: specForMode.unit,
@@ -294,7 +289,7 @@ export function renderSdrFilter(): void {
 	if (el) {
 		el.disabled = !specForMode.editable || range.max === null;
 		el.min = String(toUnit(range.min, 'sdr_ifbw'));
-		el.max = limits?.mode === mode && limits.max_hz !== null ? String(toUnit(limits.max_hz, 'sdr_ifbw')) : '';
+		el.max = range.max !== null && Number.isFinite(range.max) ? String(toUnit(range.max, 'sdr_ifbw')) : '';
 		el.step = 'any';
 		el.dataset.unit = units().sdr_ifbw ?? 'kHz';
 		// Only an edited draft survives STATUS/rejection renders. A successful commit clears the

@@ -368,6 +368,18 @@ impl DevState {
         self.finish_radiofax_channels(&[1,2,3],registry)
     }
 
+    pub(super) fn retire_receiver_channels(&mut self,channels:&[u32],registry:Arc<[sdr_pipeline::ChannelRegistryEntry]>)->Result<(),String> {
+        if self.receiver_failure.is_some() {return Ok(());}
+        if let Some(workers)=self.receiver_workers.as_mut() {
+            let output=workers.retire_channels(channels)?;
+            self.decode_snapshots.observe(&output.decode)?;
+            self.pending_receiver.audio.extend(output.audio);
+            self.pending_receiver.decode.extend(output.decode);
+            self.retiring_registry=registry;
+        }
+        Ok(())
+    }
+
     pub(super) fn finish_radiofax_channels(&mut self,channels:&[u32],registry:Arc<[sdr_pipeline::ChannelRegistryEntry]>)->Result<(),String> {
         if self.receiver_failure.is_some() {return Ok(());}
         if let Some(workers)=self.receiver_workers.as_mut() {

@@ -273,9 +273,8 @@
                 <input type="number" id="input-sdr-locate-anchor" step="any" data-i18n-title="sdr_locate_anchor_tip"><span class="cur-val">MHz</span></span>
             </div>
             <div class="param-row"><label data-i18n="demod">Demod</label>
-              <!-- Buttons are generated from the DSP plugin registry (ui/sdrDemodGroup.ts): the
-                   mode list lives in dsp/core/src/plugin.rs, not here. -->
-              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-demod-group"></div></div>
+              <!-- Common modes, search and the full catalog share the receiver selection action. -->
+              <div id="sdr-demod-group"></div></div>
             <div class="param-row"><label data-i18n="decode">Decode</label>
               <!-- The decode window (ui/decodeWindow.ts) shows what the demodulator decoded: the
                    FT8 table or the CW text, depending on the mode. One toggle for both, enabled
@@ -869,17 +868,14 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.10.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.11.0 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>
 
-<!-- FT8 decode table: floating, draggable by its head, resizable by its corner. The rows
-     are built by ui/ft8Window.ts from sdr/ft8Log.ts (newest first). It lives in <body>, outside
-     the zoomed frame, and carries the UI scale itself (core/uiScale.ts) like the keypad: a
-     fixed-position element inside the zoomed card has its left/top rendered in zoomed
-     coordinates while pointer clientX/Y stay viewport coordinates, which threw the window
-     off the cursor on scaled UIs (the drag bug this placement fixes). -->
+<!-- One live Decode surface for native and external results. It stays outside the zoomed
+     analyzer frame so floating geometry uses viewport pixels; the popup adopts this same
+     subtree while the opener retains receiver state, subscriptions and history. -->
 <div class="decode-window" id="decode-window" style="display:none;">
   <div class="decode-window-head" id="decode-window-head">
     <span id="decode-window-title">FT8</span>
@@ -907,8 +903,11 @@
            value="100" data-i18n-title="ft8_opacity_tip" data-i18n-attr="title" title="Opacity" />
     <button class="btn" id="btn-decode-utc" data-i18n="ft8_utc_toggle" data-i18n-title="ft8_utc_tip" data-i18n-attr="title" title="Show UTC time">UTC</button>
     <button class="btn" id="btn-decode-clear" data-i18n="clear">Clear</button>
+    <button class="btn" id="btn-decode-popout" data-i18n="decode_popout">Pop out</button>
+    <button class="btn" id="btn-decode-dock" data-i18n="decode_dock" hidden>Dock</button>
     <button class="btn" id="btn-decode-close" data-i18n="gnss_close">Close</button>
   </div>
+  <div id="decode-popout-error" class="decode-popout-error" role="alert" hidden></div>
   <div class="decode-sstv-confirm" id="sstv-clear-confirm" role="group" aria-labelledby="sstv-clear-prompt" style="display:none;">
     <span id="sstv-clear-prompt" data-i18n="sstv_confirm_clear_all">Delete every stored SSTV picture (all modes)?</span>
     <button type="button" class="btn" id="btn-sstv-delete-all" data-i18n="sstv_delete_all">Delete all</button>
@@ -922,6 +921,7 @@
            title="Regular expression over the message text" />
   </div>
   <div class="decode-window-body" id="decode-window-body">
+    <section id="decode-window-results" class="decoder-results" style="display:none;"></section>
     <table id="decode-window-table">
       <thead><tr>
         <th id="decode-window-time-th" data-sortable data-col="0" data-i18n="ft8_time">Time</th>

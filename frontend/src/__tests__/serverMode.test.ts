@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import page from '../../index.html?raw';
+import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../audio/sdrAudio', () => ({
   prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
@@ -196,6 +197,24 @@ describe('Server mode', () => {
     }
   });
 
+  it('keeps Server-to-SDR startup pending for the selected external receiver deadline', async () => {
+    localStorage.setItem('web-sa-sdr-demod', 'gps');
+    await load();
+    // Share load()'s fresh module graph after resetModules.
+    const { setPluginManifest } = await import('../sdr/registry');
+    setPluginManifest([receiverPlugin('gps', { kind: 'digital', provider: 'gnss-sdr', startupTimeoutMs: 25000 })]);
+    receive('server', { graph_mode: 'sdr' }, { connected: false });
+    vi.advanceTimersByTime(1000);
+    click('btn-server-back');
+    const exit = commands('SET_MODE').at(-1)!;
+    expect(exit).toMatchObject({ mode: 'sdr' });
+    vi.advanceTimersByTime(20000);
+    click('btn-server-back');
+    expect(commands('SET_MODE').at(-1)).toBe(exit);
+    vi.advanceTimersByTime(5000);
+    click('btn-server-back');
+    expect(commands('SET_MODE').at(-1)?.request_id).not.toBe(exit.request_id);
+  });
   it.each([false, true])('restores SDR once after Server opens the device (browser reload: %s)', async reload => {
     localStorage.setItem('web-sa-sdr-audio', '1');
     localStorage.setItem('web-sa-sdr-center', '7100000');

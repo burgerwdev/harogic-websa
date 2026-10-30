@@ -152,6 +152,59 @@ fn map_clocks(
     Ok(clocks)
 }
 
+/// One raw-capture route. The native cascade owns NCO/FIR history; scratch is reused.
+pub(super) struct DirectChannel {
+    handle: *mut websa_channelizer::Channel,
+    pub id: u64,
+    pub rate: f64,
+    pub delay: f64,
+    decimate: u64,
+    epoch: u64,
+    origin: u64,
+    next_seq: u64,
+    input: u64,
+    output: u64,
+    scratch: Vec<f32>,
+    pub framer: BasebandFramer,
+}
+unsafe impl Send for DirectChannel {}
+impl Drop for DirectChannel {
+    fn drop(&mut self) { unsafe { websa_channelizer::channel_close(self.handle); } }
+}
+impl DirectChannel {
+    pub fn new(slot:u32,id:u64,epoch:u64,fs:f64,center:f64,frequency:f64,
+        plan:&websa_channelizer::rate_plan::RatePlan,origin:u64,seq:u64)->Result<Self,String> {
+        let framer = if slot==1 {BasebandFramer::new(id,epoch,frequency,plan.output_rate)}
+            else {BasebandFramer::new_aux(id,epoch,frequency,plan.output_rate)}
+            .and_then(|framer|framer.with_source_rate(fs)).ok_or("direct framer rejected")?;
+        let handle=websa_channelizer::channel_open_planned(fs,center-frequency,plan);
+        if handle.is_null() {return Err("direct channel filter rejected".into());}
+        let delay=unsafe {websa_channelizer::channel_delay(handle)};
+        Ok(Self {handle,id,rate:plan.output_rate,delay,decimate:plan.decimate as u64,
+            epoch,origin,next_seq:seq,input:0,output:0,
+            scratch:vec![0.0;2*(16240/plan.decimate as usize+2)],framer})
+    }
+    pub fn process(&mut self,seq:u64,stamp:u64,input_index:u64,raw:&[i16])->Result<Vec<Vec<u8>>,String> {
+        if seq!=self.next_seq || input_index!=self.origin+self.input || raw.len()!=2*16240 {
+            return Err("direct source sequence/clock mismatch".into());
+        }
+        let first=self.origin.checked_add((self.output+1).checked_mul(self.decimate)
+            .ok_or("direct sample clock overflow")?).and_then(|n|n.checked_sub(1))
+            .ok_or("direct sample clock overflow")?;
+        let count=unsafe {websa_channelizer::channel_process(self.handle,raw.as_ptr(),
+            16240,self.scratch.as_mut_ptr(),(self.scratch.len()/2) as i32)};
+        if count<0 {return Err("direct channel processing failed".into());}
+        let frames=self.framer.push(&websa_channelizer::FineOutput {channel_id:self.id,epoch:self.epoch,
+            bin:0,seq,stamp,input_index:first,output_index:self.output,output_rate:self.rate,
+            center_offset_hz:None,delay_samples:self.delay,iq:&self.scratch[..2*count as usize]})
+            .map_err(str::to_owned)?;
+        self.input+=16240;
+        self.output+=count as u64;
+        self.next_seq=self.next_seq.checked_add(1).ok_or("direct sequence overflow")?;
+        Ok(frames)
+    }
+}
+
 
 pub(super) struct FineState {
     pub bank: FineBank,
@@ -476,11 +529,14 @@ pub(super) struct Pipeline {
 }
 impl Ddc {
     pub(super) fn finish_framers(&mut self, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
-        if self.service_configs.as_ref().is_none_or(|configs| configs[0].enabled) {
+        if !self.direct.contains_key(&1) && self.service_configs.as_ref().is_none_or(|configs| configs[0].enabled) {
             frames.extend(self.framer.finish().map_err(str::to_owned)?);
         }
         for (_, _, framer) in self.aux.values_mut() {
             frames.extend(framer.finish().map_err(str::to_owned)?);
+        }
+        for route in self.direct.values_mut() {
+            frames.extend(route.framer.finish().map_err(str::to_owned)?);
         }
         Ok(())
     }
@@ -513,6 +569,8 @@ impl Ddc {
         let metrics = if let Some(fine) = &self.fine { fine.metrics_ref() }
             else if let Some(worker) = &self.fine_worker { worker.timing.lock().clone() }
             else { FineMetrics::default() };
+        let mut clocks=metrics.clocks.to_vec();
+        clocks.extend(self.direct.iter().map(|(&slot,route)| (u64::from(slot),route.input,route.output)));
         Snapshot { capture_center:self.capture_center, usable_bandwidth:self.usable_bandwidth,
             generation:self.generation,
             rate:self.channel_rate(), taps:self.stream.taps_per_phase(), device_decimate:self.device_decimate,
@@ -521,7 +579,7 @@ impl Ddc {
             registry:self.registry.clone(),
             selected_bins:self.stream.bins().len(),
             pool_timing:self.stream.timings(),
-            stamp_gaps:self.stamp_gaps, fine:metrics.fine, framer:metrics.framer, clocks:metrics.clocks,
+            stamp_gaps:self.stamp_gaps, fine:metrics.fine, framer:metrics.framer, clocks:clocks.into(),
             fine_packets:metrics.packets, slow:metrics.slow,
             consumer_gap:self.pipeline_timing.consumer_gap.snapshot(),
             snapshot_total:self.pipeline_timing.snapshot_total.snapshot(),
@@ -642,12 +700,14 @@ impl Pipeline {
         let join = thread::Builder::new().name("sdr-pfb".into()).spawn(move || {
             let setup = (|| {
                 let frequencies: Vec<_> = config.aux.iter().map(|(_, f)| *f).collect();
-                let device_decimate = capture_decimate(config.center, config.listen, &frequencies, config.display_decimate, config.taps);
+                let device_decimate = if let Some(channels)=&channels {
+                    service_ddc::service_capture_decimate(config.center,config.display_decimate,config.taps,channels)?
+                } else {capture_decimate(config.center, config.listen, &frequencies, config.display_decimate, config.taps)};
                 if let Some(channels)=&channels {
                     let fs=IQ_FS/device_decimate as f64;
                     let m=PFB_BINS.min((fs/BIN_SPACING).round() as i64).max(2);
                     let mut bins=Vec::new();
-                    for c in channels.iter().filter(|c|c.enabled) {
+                    for c in channels.iter().filter(|c|c.enabled && !service_ddc::is_direct(c)) {
                         let signed=signed_bin(c.freq,config.center);
                         for neighbour in signed-PLAN_NEIGHBOURS..=signed+PLAN_NEIGHBOURS {
                             if (-m/2..m/2).contains(&neighbour) {
@@ -698,7 +758,8 @@ impl Pipeline {
                             None => ddc.finish_framers(&mut frames),
                         };
                         let clocks = ddc.sample_clocks();
-                        aux = ddc.aux.iter().map(|(&ch, (_, f, _))| (ch, *f)).collect::<Vec<_>>().into();
+                        aux = ddc.registry.iter().filter(|r|r.channel!=1)
+                            .map(|r|(r.channel,r.frequency_hz)).collect::<Vec<_>>().into();
                         let snapshot = ddc.pipeline_snapshot(aux.clone());
                         *shared.lock() = snapshot.clone();
                         let tail = PipelineOutput { frames, pan:std::mem::take(&mut ddc.pan) };
@@ -862,6 +923,255 @@ mod tests {
 
     fn plan() -> Ddc {
         Ddc::configured(100e6, 100e6, 3, 50e6, &mut None, &[], 16).unwrap()
+    }
+
+    const DIRECT_TEST_FS: f64 = 7_812_500.0;
+    const DIRECT_TEST_PACKET: u64 = 16_240;
+
+    fn direct_test_plan() -> websa_channelizer::rate_plan::RatePlan {
+        // GPS L1 C/A occupied width, without depending on an installed decoder/catalog entry.
+        websa_channelizer::rate_plan::RatePlan::new(DIRECT_TEST_FS, "am", 2_046_000.0).unwrap()
+    }
+
+    fn direct_test_tone(first: u64, frequency: f64, amplitude: f64) -> Vec<i16> {
+        (first..first + DIRECT_TEST_PACKET).flat_map(|index| {
+            let phase = std::f64::consts::TAU * frequency * index as f64 / DIRECT_TEST_FS;
+            [(amplitude * phase.cos()).round() as i16, (amplitude * phase.sin()).round() as i16]
+        }).collect()
+    }
+
+    fn direct_test_iq(frames: &[Vec<u8>]) -> Vec<[f64; 2]> {
+        frames.iter().flat_map(|frame| frame[56..].chunks_exact(8).map(|sample| {
+            [f32::from_le_bytes(sample[..4].try_into().unwrap()) as f64,
+                f32::from_le_bytes(sample[4..].try_into().unwrap()) as f64]
+        })).collect()
+    }
+
+    fn assert_direct_test_clocks(channel: &DirectChannel, input: u64, output: u64) {
+        let (mut native_input, mut native_output) = (0, 0);
+        assert_eq!(unsafe { websa_channelizer::channel_clock(channel.handle,
+            &mut native_input, &mut native_output) }, 0);
+        assert_eq!((native_input, native_output), (input, output));
+        assert_eq!((channel.input, channel.output), (input, output));
+    }
+
+    #[test]
+    fn direct_raw_i16_nco_sign_and_wire_full_scale_are_preserved() {
+        let plan = direct_test_plan();
+        for (offset, residual, amplitude) in [(600_000.0, 25_000.0, 16_384.0),
+            (-600_000.0, -25_000.0, 8_192.0)] {
+            let mut channel = DirectChannel::new(1, 7, 11, DIRECT_TEST_FS, 100e6,
+                100e6 + offset, &plan, 0, 0).unwrap();
+            let mut frames = Vec::new();
+            for packet in 0..5 {
+                let first = packet * DIRECT_TEST_PACKET;
+                frames.extend(channel.process(packet, first, first,
+                    &direct_test_tone(first, offset + residual, amplitude)).unwrap());
+            }
+            frames.extend(channel.framer.finish().unwrap());
+            let iq = direct_test_iq(&frames);
+            let settled = &iq[(2.0 * channel.delay).ceil() as usize + 32..];
+            let rms = (settled.iter().map(|s| s[0] * s[0] + s[1] * s[1]).sum::<f64>()
+                / settled.len() as f64).sqrt();
+            assert!((rms - amplitude / 32768.0).abs() < 0.002, "offset {offset}: rms {rms}");
+            let (mut re, mut im) = (0.0, 0.0);
+            for pair in settled.windows(2) {
+                re += pair[0][0] * pair[1][0] + pair[0][1] * pair[1][1];
+                im += pair[0][0] * pair[1][1] - pair[0][1] * pair[1][0];
+            }
+            let measured = im.atan2(re) * plan.output_rate / std::f64::consts::TAU;
+            assert!((measured - residual).abs() < 2.0,
+                "offset {offset}: expected residual {residual}, measured {measured}");
+        }
+    }
+
+    #[test]
+    fn direct_gps_occupied_edges_survive_and_stopband_is_attenuated() {
+        let plan = direct_test_plan();
+        let edge = plan.occupied_bandwidth_hz / 2.0;
+        for (probe, pass) in [(edge, true), (-edge, true),
+            (plan.stopband_hz + 50_000.0, false), (-plan.stopband_hz - 50_000.0, false)] {
+            let mut channel = DirectChannel::new(2, 9, 12, DIRECT_TEST_FS, 100e6,
+                100e6 + 350_000.0, &plan, 0, 0).unwrap();
+            let mut frames = Vec::new();
+            for packet in 0..5 {
+                let first = packet * DIRECT_TEST_PACKET;
+                frames.extend(channel.process(packet, first, first,
+                    &direct_test_tone(first, 350_000.0 + probe, 16_384.0)).unwrap());
+            }
+            frames.extend(channel.framer.finish().unwrap());
+            let iq = direct_test_iq(&frames);
+            let settled = &iq[(2.0 * channel.delay).ceil() as usize + 32..];
+            let gain = (settled.iter().map(|s| s[0] * s[0] + s[1] * s[1]).sum::<f64>()
+                / settled.len() as f64).sqrt() / 0.5;
+            if pass {
+                assert!((0.97..1.03).contains(&gain), "occupied edge {probe}: gain {gain}");
+            } else {
+                assert!(gain < 0.001, "stopband {probe}: gain {gain}");
+            }
+        }
+    }
+
+    #[test]
+    fn direct_packet_counts_and_wire_source_indices_survive_retune_origin() {
+        let plan = direct_test_plan();
+        assert_eq!(plan.decimate, 3, "exercise a decimation phase crossing fixed packet boundaries");
+        let decimate = plan.decimate as u64;
+        for (slot, id, epoch, origin, first_seq) in [(1, 7, 11, 0, 0),
+            (2, 8, 12, 9 * DIRECT_TEST_PACKET + 17, 103)] {
+            let mut channel = DirectChannel::new(slot, id, epoch, DIRECT_TEST_FS, 100e6,
+                100e6 + 250_000.0, &plan, origin, first_seq).unwrap();
+            let mut frames = Vec::new();
+            for packet in 0..31 {
+                let consumed = packet * DIRECT_TEST_PACKET;
+                frames.extend(channel.process(first_seq + packet, 1_000_000 + packet,
+                    origin + consumed, &direct_test_tone(consumed, 250_000.0, 16_384.0)).unwrap());
+                let input = consumed + DIRECT_TEST_PACKET;
+                assert_direct_test_clocks(&channel, input, input / decimate);
+                assert_eq!(channel.next_seq, first_seq + packet + 1);
+            }
+            frames.extend(channel.framer.finish().unwrap());
+            assert!(frames.len() >= 4, "exercise multiple wire blocks and a flushed tail");
+            let mut delivered = 0;
+            for (seq, frame) in frames.iter().enumerate() {
+                assert_eq!(&frame[..4], if slot == 1 { b"IQBF" } else { b"IQAX" });
+                assert_eq!(u32::from_le_bytes(frame[8..12].try_into().unwrap()) as usize, seq);
+                let count = u32::from_le_bytes(frame[12..16].try_into().unwrap()) as u64;
+                assert_eq!(count == 0, seq == 0);
+                assert_eq!(frame.len(), 56 + count as usize * 8);
+                assert_eq!(f64::from_le_bytes(frame[16..24].try_into().unwrap()), plan.output_rate);
+                assert_eq!(f64::from_le_bytes(frame[24..32].try_into().unwrap()), 100e6 + 250_000.0);
+                assert_eq!(u32::from_le_bytes(frame[32..36].try_into().unwrap()) as u64, id);
+                assert_eq!(u32::from_le_bytes(frame[36..40].try_into().unwrap()) as u64, epoch);
+                assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()),
+                    origin + (delivered + 1) * decimate - 1);
+                assert_eq!(f64::from_le_bytes(frame[48..56].try_into().unwrap()), channel.delay);
+                delivered += count;
+            }
+            assert_eq!(delivered, 31 * DIRECT_TEST_PACKET / decimate);
+        }
+    }
+
+    #[test]
+    fn direct_source_gaps_are_rejected_without_consuming_filter_or_framer_state() {
+        let plan = direct_test_plan();
+        let origin = 7 * DIRECT_TEST_PACKET + 1;
+        let make = || DirectChannel::new(2, 8, 12, DIRECT_TEST_FS, 100e6,
+            100e6 + 250_000.0, &plan, origin, 91).unwrap();
+        let mut actual = make();
+        let mut expected = make();
+        let raw = direct_test_tone(0, 260_000.0, 16_384.0);
+        assert_eq!(actual.process(91, 100, origin, &raw).unwrap(),
+            expected.process(91, 100, origin, &raw).unwrap());
+        let next = origin + DIRECT_TEST_PACKET;
+        for (seq, input_index, len) in [(93, next, raw.len()), (91, next, raw.len()),
+            (92, next + 1, raw.len()), (92, next - 1, raw.len()), (92, next, raw.len() - 2)] {
+            assert_eq!(actual.process(seq, 101, input_index, &raw[..len]).unwrap_err(),
+                "direct source sequence/clock mismatch");
+            assert_direct_test_clocks(&actual, DIRECT_TEST_PACKET,
+                DIRECT_TEST_PACKET / plan.decimate as u64);
+            assert_eq!(actual.next_seq, 92);
+        }
+        let raw = direct_test_tone(DIRECT_TEST_PACKET, 260_000.0, 16_384.0);
+        assert_eq!(actual.process(92, 101, next, &raw).unwrap(),
+            expected.process(92, 101, next, &raw).unwrap());
+        assert_eq!(actual.framer.finish().unwrap(), expected.framer.finish().unwrap());
+        assert_direct_test_clocks(&actual, 2 * DIRECT_TEST_PACKET,
+            2 * DIRECT_TEST_PACKET / plan.decimate as u64);
+    }
+
+    #[test]
+    fn mixed_direct_retune_and_disable_preserve_tails_and_narrow_bytes() {
+        let center = 1_575_420_000.0;
+        let mut configs: Vec<_> = (1..=3).map(receiver_workers::ChannelConfig::for_slot).collect();
+        configs[0].freq = center;
+        configs[1].enabled = true;
+        configs[1].freq = center;
+        configs[1].mode = "gps".into();
+        configs[1].if_bw = 2_046_000.0;
+        let mut baseline_configs = configs.clone();
+        baseline_configs[1].enabled = false;
+        let mut baseline = Ddc::configured_service(center, 6_250_000.0, &mut None,
+            16, DIRECT_TEST_FS, &baseline_configs).unwrap();
+        let mut mixed = Ddc::configured_service(center, 6_250_000.0, &mut None,
+            16, DIRECT_TEST_FS, &configs).unwrap();
+        assert_eq!(mixed.direct.len(), 1);
+        assert!(mixed.direct.contains_key(&2));
+        assert_eq!(mixed.bank.clocks().unwrap().len(), 1);
+        let old_id = mixed.direct[&2].id;
+        let decimate = mixed.direct[&2].decimate;
+        let primary_id = mixed.channel_registry()[0].channel_id;
+        let mut expected_frames = Vec::new();
+        let mut mixed_frames = Vec::new();
+        baseline.resume_fine().unwrap();
+        mixed.resume_fine().unwrap();
+        for _ in 0..8 {
+            expected_frames.extend(baseline.packet().unwrap());
+            mixed_frames.extend(mixed.packet().unwrap());
+        }
+        expected_frames.extend(baseline.suspend_fine().unwrap());
+        mixed_frames.extend(mixed.suspend_fine().unwrap());
+        let retune_origin = mixed.input_pos;
+        let retune_seq = mixed.next_seq;
+        configs[1].freq += 100_000.0;
+        let retired = mixed.configure_service_channel(configs[1].clone()).unwrap();
+        assert!(retired.iter().any(|frame| frame.starts_with(b"IQAX") && frame.len() > 56
+            && u32::from_le_bytes(frame[32..36].try_into().unwrap()) as u64 == old_id));
+        mixed_frames.extend(retired);
+        let new_id = mixed.direct[&2].id;
+        assert_ne!(new_id, old_id);
+        assert_eq!(mixed.direct[&2].origin, retune_origin);
+        assert_eq!(mixed.direct[&2].next_seq, retune_seq);
+        assert_eq!(mixed.channel_registry()[0].channel_id, primary_id);
+        assert_eq!(mixed.channel_registry()[1].frequency_hz, configs[1].freq);
+        baseline.resume_fine().unwrap();
+        mixed.resume_fine().unwrap();
+        for _ in 0..8 {
+            expected_frames.extend(baseline.packet().unwrap());
+            mixed_frames.extend(mixed.packet().unwrap());
+        }
+        expected_frames.extend(baseline.suspend_fine().unwrap());
+        mixed_frames.extend(mixed.suspend_fine().unwrap());
+        configs[1].enabled = false;
+        let disabled = mixed.configure_service_channel(configs[1].clone()).unwrap();
+        assert!(disabled.iter().any(|frame| frame.starts_with(b"IQAX") && frame.len() > 56
+            && u32::from_le_bytes(frame[32..36].try_into().unwrap()) as u64 == new_id));
+        mixed_frames.extend(disabled);
+        assert!(mixed.direct.is_empty());
+        assert_eq!(mixed.channel_registry().iter().map(|row| row.channel).collect::<Vec<_>>(), vec![1]);
+        let after_disable = mixed_frames.len();
+        for _ in 0..8 {
+            expected_frames.extend(baseline.packet().unwrap());
+            mixed_frames.extend(mixed.packet().unwrap());
+        }
+        finish(&mut baseline, &mut expected_frames);
+        finish(&mut mixed, &mut mixed_frames);
+        assert!(mixed_frames[after_disable..].iter().all(|frame| !frame.starts_with(b"IQAX")));
+        for (id, origin) in [(old_id, 0), (new_id, retune_origin)] {
+            let frames: Vec<_> = mixed_frames.iter().filter(|frame| frame.starts_with(b"IQAX")
+                && u32::from_le_bytes(frame[32..36].try_into().unwrap()) as u64 == id).collect();
+            assert!(frames.len() >= 2, "each identity needs a marker and its flushed tail");
+            let mut samples = 0;
+            for (seq, frame) in frames.into_iter().enumerate() {
+                assert_eq!(u32::from_le_bytes(frame[8..12].try_into().unwrap()) as usize, seq);
+                let count = u32::from_le_bytes(frame[12..16].try_into().unwrap()) as u64;
+                assert_eq!(count == 0, seq == 0);
+                assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()),
+                    origin + (samples + 1) * decimate - 1);
+                samples += count;
+            }
+            assert_eq!(samples, 8 * DIRECT_TEST_PACKET / decimate);
+        }
+        let narrow: Vec<_> = mixed_frames.iter().filter(|frame| frame.starts_with(b"IQBF")).collect();
+        assert!(!narrow.is_empty());
+        assert_eq!(narrow.len(), expected_frames.len());
+        for (actual, expected) in narrow.into_iter().zip(&expected_frames) {
+            // Each independent plan allocates an epoch; all signal bytes and clocks must match.
+            assert_eq!(&actual[..36], &expected[..36]);
+            assert_eq!(&actual[40..], &expected[40..]);
+            assert_eq!(u32::from_le_bytes(actual[36..40].try_into().unwrap()) as u64, mixed.stream.epoch());
+        }
+        assert_eq!(mixed.bank.clocks().unwrap(), baseline.bank.clocks().unwrap());
     }
 
     #[test]

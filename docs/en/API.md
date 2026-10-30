@@ -12,6 +12,23 @@ Native backend (`backend/`) external interfaces: **HTTP REST** + **WebSocket** (
 
 ## 1. HTTP Endpoints
 
+### `GET /api/sdr/plugins`
+
+Returns `{plugins, sstv_modes}`. `plugins` retains the `analog`, `digital`, `audio` and `ddc`
+kinds; only the first two are receiver modes. Mode entries expose `id`, `label`, `category`,
+`description`, `aliases`, `provider`, `implemented`, `available`, nullable `unavailableReason`,
+`audioEnhancement`, `common`, `outputs`, nullable `audioCompanion`, `sideband`, nullable
+`inputRateHz`, `minimumRateHz`, `defaultBandwidthHz`, `minBandwidthHz`, `maxBandwidthHz`,
+`bandwidthPresetsHz`, `bandwidthEditable` and required `startupTimeoutMs`. Stage entries keep their original minimal fields.
+Bandwidth values are Hz in the mode's control convention; an upper-sideband high cutoff is
+not a full two-sided RF width. STATUS filter limits and backend admission can be tighter.
+Availability describes the installed provider and implemented interface, not reception lock.
+The service caches dependency discovery until restart; browser loading publishes the complete
+catalog and SSTV metadata atomically. Missing or failed providers carry explicit reasons.
+`startupTimeoutMs` is the receiver preparation acknowledgement deadline: native modes
+3000 ms, stdin/RTTY companions 5000 ms, OnAir 15000 ms and GNSS-SDR 25000 ms.
+It is not a signal-acquisition or position-fix deadline and does not trigger retries.
+
 ### `GET /api/state`
 
 Returns the full device state (JSON, same shape as WS `STATUS`).
@@ -350,6 +367,55 @@ Playback feedback is internal browser messaging, not a WebSocket acknowledgement
 | 8 | UTF-8 | JSON envelope, exactly the declared length |
 
 Envelope fields: `version=1`, `channel` (slot 1–3), `channel_id`, `epoch`, `seq`, `input_index`, `input_rate`, `input_fraction_num`, `input_fraction_den`, `delay_seconds`, `delay_known`, `causal_presentation`, `timing_kind`, `mode`, `event`. The three u64 position/fraction fields are decimal strings. Clock units and flags match AUD2. `timing_kind` is `sample`, `protocol_provenance`, or `causal_presentation`; protocol provenance does not imply a recovered sample timestamp. FT8 results retain their search-window time rather than asynchronous completion time. `event` contains mode-specific results; sequence zero carries `{type:'start'}`.
+
+External providers emit `event:{type:'decoder-result',provider,mode,kind,data}`. `mode` must
+match the SDE2 envelope; `kind` is `text`, `table`, `image` or `status`. Provider output uses
+`delay_known:false` and `timing_kind:'causal_presentation'`; the current input anchor is not
+a recovered message timestamp. Native stream identity, FIFO delivery and ACK rules still apply.
+Multimon text is in `data.text`; rtl_433 preserves the device JSON object. OnAir retains its
+versioned decoder payload (vessels, packets, decodes, image strips and status). Image strips
+carry `id,w,h,y,rows,pw,ph,png`; `png` is base64 PNG with actual dimensions `pw × ph`.
+`preview` and `scale` describe a reduced initial preview, and later strips overlay their declared
+rows. `image_end` marks only the matching stream-bound picture complete; stopping does not.
+OnAir's virtual kHz source labels are separate from actual receiver tuning:
+`sourceFrequencyHz`, `onairFrequencyHz` and `frequencyOffsetHz` describe the mapping;
+reported dial/RF fields are translated back while their upstream values remain available.
+Its EOF drain reports `upstreamCompletionKnown:false` because the upstream protocol has no
+completion acknowledgement. Live reconfiguration instead drains available results and emits a
+`status` with `state:'stopped'`, `reason:'reconfigured'` and `upstreamCompletionKnown:false`,
+then stops the old provider without an EOF grace interval. Ordinary retiring results never
+change the confirmed selected mode.
+
+GPS uses `provider:'gnss-sdr'`, `mode:'gps'` and `kind:'table'` with
+`data.table` equal to `satellites`, `pvt` or `navigation`; `data.rows` holds objects.
+Satellite and PVT tables are replacement snapshots. Satellite rows identify
+`channel`, `prn`, `system`, `signal`, `cn0_db_hz`, `doppler_hz`, `acquisition`,
+`tracking`, `nav_word_valid`, `tow_ms`, `pseudorange_valid` and `pseudorange_m`.
+`acquisition_evidence` identifies the real upstream success-monitor or tracking
+symbol evidence; GNSS-SDR's raw acquisition flag is retained separately.
+`stale`, `tracking_stale`, `observables_stale` and `age_ms` qualify reception state.
+PVT rows expose independent `valid`, `stale`, `age_ms`, `lat_deg`, `lon_deg`,
+`height_m`, `valid_sats`, `week`, `tow_ms`, `utc_time`, DOP and local velocity.
+Startup has `valid:false` and null coordinates; fixes expire after two seconds
+without monitor updates. Retained stale coordinates are not a current fix.
+Navigation rows are history records: PRN, TOW, the actual 300-bit GPS LNAV
+subframe with parity, and the upstream parity-valid indication.
+Every bridge record includes `input_samples` (samples forwarded into its FIFO),
+`input_received_bytes`, `input_rate_hz`, `center_hz`, `gnss_version` and
+`pre_2009_file`. These counters describe the bridge's input, not the exact decode
+completion position. The surrounding SDE2 identity and clock remain authoritative.
+`sourceFrequencyHz` and `center_hz` report actual RF tuning; `nominalCarrierHz`
+remains 1575420000. `bench:true` identifies reception at the exact translated
+400–450 MHz frequency opted into through `WEBSA_GPS_BENCH_HZ`; ordinary GPS
+L1 reception reports `bench:false`. The opt-in changes no baseband decoder model.
+EOF closes the FIFO, drains monitor events for three seconds, stops GNSS-SDR and
+reports `upstreamCompletionKnown:false`; upstream requires additional samples to
+advance some final observables and provides no consumed-input acknowledgement.
+GPS retire status also sets `fix.valid:false`, clearing current snapshots.
+Prepared GPS receivers emit no periodic snapshots until the first IQ input;
+waiting for activation does not consume the input-stall timeout. Channel snapshots
+follow acquisition sample-stamp generations, rejecting older UDP observations and
+resetting on each newer acquisition even when it reuses the same PRN.
 
 AM emits `event.type:'am-info'` on a 20 Hz source-sample grid, independent of browser rendering and audio callback sizes. Its SDE2 envelope uses the source clock and delay flags above. Payload fields are:
 

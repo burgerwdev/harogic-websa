@@ -10,7 +10,7 @@
 import { createParam, resetAll } from '../core/params';
 import { toUnit } from '../core/units';
 import { t } from '../core/i18n';
-import { isDigitalMode } from '../sdr/registry';
+import { modeDescriptor } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { sstvBandHz } from '../sdr/sstvLog';
 import { radiofaxBandHz } from '../sdr/radiofaxLog';
@@ -41,7 +41,7 @@ export const sdrListenHz = createParam<number>('sdr.listen', {
 });
 /** Demodulation mode id from the backend plugin registry. */
 export const sdrDemod = createParam<string>('sdr.demod', {
-	fallback: 'am', scope: 'sdr', persistKey: 'web-sa-sdr-demod',
+	fallback: 'am', scope: 'sdr', persistKey: 'web-sa-sdr-demod', ttlMs: Infinity, // Receiver watchdog owns expiry.
 });
 
 // The legacy pane stored Auto and the viewed mode separately. Only Auto off made that
@@ -111,7 +111,7 @@ export const sdrRadiofaxClockPpm = createParam<number>('sdr.radiofaxClockPpm', {
 });
 /** IF passband in Hz (also what the listen-band overlay draws). */
 export const sdrIfbw = createParam<number>('sdr.ifbw', {
-	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz,
+	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz, ttlMs: Infinity,
 });
 /** Native CW pitch from STATUS; the panel has no pitch setting. */
 export const sdrPitchHz = createParam<number>('sdr.pitch', { fallback: 700, scope: 'sdr', ...hz });
@@ -166,7 +166,7 @@ export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get(
 	}
 	if (demod === 'sstv') return sstvBandHz();
 	if (demod === 'radiofax') return radiofaxBandHz();
-	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
+	if (demod === 'ft8') return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
 	const guard = Math.max(100, Math.min(300, ifBw * 0.1));
 	if (demod === 'usb') return [guard, ifBw];
 	if (demod === 'lsb') return [-ifBw, -guard];
@@ -175,6 +175,9 @@ export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get(
 		const center = Math.max(100, pitch);
 		return [center - half, center + half];
 	}
+	const descriptor = modeDescriptor(demod);
+	if (descriptor?.sideband === 'upper') return [0, ifBw];
+	if (descriptor?.sideband === 'lower') return [-ifBw, 0];
 	return [-ifBw / 2, ifBw / 2];
 }
 /** FM de-emphasis time constant in microseconds (-1 = per-mode default). */

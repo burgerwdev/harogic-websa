@@ -8,10 +8,64 @@ pub(super) fn channel_plan(rate:f64, config:&ChannelConfig)->Result<RatePlan,Str
         "ft8" => config.if_bw.max(3_200.0)*2.0,
         "sstv" => config.if_bw.max(3_000.0)*2.0,
         "radiofax" => config.if_bw.max(3_000.0)*2.0,
+        mode if websa_channelizer::catalog::is_external(mode)
+            && websa_channelizer::catalog::mode(mode).is_some_and(|descriptor| descriptor.sideband == "upper")
+            => config.if_bw * 2.0,
         "cw" => config.if_bw+config.pitch*2.0,
         _ => config.if_bw,
     };
     RatePlan::new(rate,&config.mode,occupied).map_err(str::to_owned)
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum SourcePlan {
+    Coarse(RatePlan),
+    Direct(RatePlan),
+}
+impl SourcePlan {
+    pub fn plan(&self) -> &RatePlan { match self { Self::Coarse(p) | Self::Direct(p) => p } }
+    pub fn is_direct(&self) -> bool { matches!(self, Self::Direct(_)) }
+}
+
+/// Decoder input floors above a coarse channel require original capture samples.
+pub(super) fn is_direct(config: &ChannelConfig) -> bool {
+    websa_channelizer::catalog::external_rates(&config.mode)
+        .is_some_and(|(_, minimum)| minimum as f64 > COARSE_RATE)
+}
+
+pub(super) fn source_plan(fs: f64, config: &ChannelConfig) -> Result<SourcePlan, String> {
+    if is_direct(config) { channel_plan(fs, config).map(SourcePlan::Direct) }
+    else {
+        let bins=PFB_BINS.min((fs/BIN_SPACING).round() as i64).max(2);
+        channel_plan(fs/(bins/2) as f64, config).map(SourcePlan::Coarse)
+    }
+}
+
+pub(super) fn validate_source_frequency(center:f64, bandwidth:f64, fs:f64, taps:usize,
+    frequency:f64, source:&SourcePlan)->Result<(),String> {
+    if source.is_direct() {
+        if !frequency.is_finite() || (frequency-center).abs()+source.plan().stopband_hz>bandwidth/2.0 {
+            return Err("channel filter and transition exceed usable capture bandwidth".into());
+        }
+        Ok(())
+    } else { Ddc::validate_service_frequency(center,bandwidth,fs,taps,frequency,source.plan()) }
+}
+
+pub(super) fn service_capture_decimate(center:f64,display:i32,taps:usize,
+    configs:&[ChannelConfig])->Result<i32,String> {
+    let frequencies:Vec<_>=configs.iter().filter(|c|c.enabled).map(|c|c.freq).collect();
+    let listen=frequencies.first().copied().unwrap_or(center);
+    let maximum=capture_decimate(center,listen,&frequencies,display,taps);
+    for power in (0..=6).rev() {
+        let decimate=1<<power;
+        if decimate>maximum {continue;}
+        let fs=IQ_FS/decimate as f64;
+        if configs.iter().filter(|c|c.enabled).all(|config|source_plan(fs,config)
+            .and_then(|source|validate_source_frequency(center,fs*0.8,fs,taps,config.freq,&source)).is_ok()) {
+            return Ok(decimate);
+        }
+    }
+    Err("receiver passbands do not fit a shared device capture".into())
 }
 
 /// Fit a requested RF point to the nearest flat coarse passband inside a valid window.
@@ -63,8 +117,9 @@ impl Ddc {
         let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
         let mut bins = Vec::new();
         for config in configs.iter().filter(|c| c.enabled) {
-            let plan = channel_plan(COARSE_RATE,config)?;
-            Self::validate_service_frequency(center, bandwidth, fs, taps, config.freq, &plan)?;
+            let source = source_plan(fs,config)?;
+            validate_source_frequency(center, bandwidth, fs, taps, config.freq, &source)?;
+            if source.is_direct() {continue;}
             let signed = signed_bin(config.freq, center);
             for neighbour in signed - PLAN_NEIGHBOURS..=signed + PLAN_NEIGHBOURS {
                 if (-m / 2..m / 2).contains(&neighbour) {
@@ -82,17 +137,28 @@ impl Ddc {
             3, COARSE_RATE * 3.0, CONSUMER_BUDGET).ok_or("fine bank unavailable")?;
         let mut framers = BTreeMap::new();
         let mut registry = Vec::new();
+        let mut direct = BTreeMap::new();
         for config in configs.iter().filter(|c| c.enabled) {
-            let plan = channel_plan(stream.sample_rate,config)?;
-            let signed = signed_bin(config.freq, center);
-            let bin = signed.rem_euclid(m) as u32;
-            let offset = signed as f64 * BIN_SPACING - (config.freq - center);
+            let source = source_plan(fs,config)?;
             let id = u64::from(config.channel);
-            bank.subscribe_planned(id, bin, offset, plan).map_err(str::to_owned)?;
-            let (rate, delay) = bank.channel_metadata(id).ok_or("service channel metadata absent")?;
-            let framer = if config.channel == 1 { BasebandFramer::new(id, epoch as u64, config.freq, rate) }
-                else { BasebandFramer::new_aux(id, epoch as u64, config.freq, rate) }.ok_or("service framer rejected")?;
-            framers.insert(config.channel, (id, config.freq, framer));
+            let (rate,delay) = if source.is_direct() {
+                let route=sdr_pipeline::DirectChannel::new(config.channel,id,epoch as u64,fs,
+                    center,config.freq,source.plan(),0,0)?;
+                let metadata=(route.rate,route.delay);
+                direct.insert(config.channel,route);
+                metadata
+            } else {
+                let signed = signed_bin(config.freq, center);
+                let bin = signed.rem_euclid(m) as u32;
+                let offset = signed as f64 * BIN_SPACING - (config.freq - center);
+                bank.subscribe_planned(id, bin, offset, source.plan().clone()).map_err(str::to_owned)?;
+                let (rate, delay) = bank.channel_metadata(id).ok_or("service channel metadata absent")?;
+                let framer = if config.channel == 1 { BasebandFramer::new(id, epoch as u64, config.freq, rate) }
+                    else { BasebandFramer::new_aux(id, epoch as u64, config.freq, rate) }
+                    .and_then(|framer|framer.with_source_rate(fs)).ok_or("service framer rejected")?;
+                framers.insert(config.channel, (id, config.freq, framer));
+                (rate,delay)
+            };
             registry.push(sdr_pipeline::ChannelRegistryEntry { channel:config.channel, channel_id:config.channel,
                 epoch,frequency_hz:config.freq,output_rate:rate,input_rate:fs,group_delay_samples:delay,state:"active" });
         }
@@ -106,7 +172,7 @@ impl Ddc {
         let generation = hardware.as_ref().map_or(0, |c| c.geometry.generation);
         #[cfg(test)]
         let cost_profile=websa_channelizer::FineCostBudget::new([1.0;23],1.0,f64::MAX).ok_or("cost metadata rejected")?;
-        Ok(Self { stream:Box::new(stream),fine:Some(fine),fine_worker:None,carry:Vec::new(),pan:Vec::new(),
+        Ok(Self { stream:Box::new(stream),fine:Some(fine),fine_worker:None,direct,carry:Vec::new(),pan:Vec::new(),
             capture_center:center,usable_bandwidth:bandwidth,decimate:1,listen:primary.freq,next_seq:0,
             input_pos:0,stamp_gaps:0,last_stamp:None,generation,device_decimate:if hardware.is_some() {
                 ((IQ_FS/fs).round() as u64).max(1) } else {1},hardware:hardware.take(),capture_failed:false,
@@ -122,9 +188,7 @@ impl Ddc {
         if !center.is_finite() || display_decimate<1 || !matches!(taps,4|8|16) {
             return Err("invalid service capture geometry".into());
         }
-        let frequencies:Vec<_>=configs.iter().filter(|c|c.enabled).map(|c|c.freq).collect();
-        let listen=frequencies.first().copied().unwrap_or(center);
-        let device_decimate=capture_decimate(center,listen,&frequencies,display_decimate,taps);
+        let device_decimate=service_capture_decimate(center,display_decimate,taps,configs)?;
         let fs=if self.hardware.is_some() {IQ_FS/device_decimate as f64} else {self.stream.input_sample_rate()};
         let bandwidth=if self.hardware.is_some() {fs*0.8} else {self.usable_bandwidth};
         // Build the entire replacement before touching the capture or old framers.
@@ -203,21 +267,29 @@ impl Ddc {
             self.service_configs = Some(configs);
             return Ok(Vec::new());
         }
-        let plan = channel_plan(self.stream.sample_rate,&config)?;
+        let fs=self.stream.input_sample_rate();
+        let source = source_plan(if config.enabled {fs} else {IQ_FS},&config)?;
+        let old_direct=self.direct.contains_key(&config.channel);
         let old_id = self.registry.iter().find(|r|r.channel==config.channel).map(|r|u64::from(r.channel_id));
-        if config.enabled { self.bank.check_planned_admission(old_id,&plan).map_err(str::to_owned)?; }
-        if config.enabled { Self::validate_service_frequency(self.capture_center,self.usable_bandwidth,
-            self.stream.input_sample_rate(),self.stream.taps_per_phase(),config.freq,&plan)?; }
+        if config.enabled && !source.is_direct() {
+            self.bank.check_planned_admission(if old_direct {None} else {old_id},source.plan()).map_err(str::to_owned)?;
+        }
+        if config.enabled { validate_source_frequency(self.capture_center,self.usable_bandwidth,
+            fs,self.stream.taps_per_phase(),config.freq,&source)?; }
         let mut candidate=configs.clone();
         candidate[slot]=config.clone();
         let bin=signed_bin(config.freq,self.capture_center).rem_euclid(self.stream.bin_count() as i64) as u32;
-        let selected=self.stream.bins().len()+usize::from(config.enabled && !self.stream.bins().contains(&bin));
+        let selected=self.stream.bins().len()+usize::from(config.enabled && !source.is_direct() && !self.stream.bins().contains(&bin));
         super::service_cost::admit_service_cached(&candidate,self.stream.input_sample_rate(),self.stream.taps_per_phase(),selected)?;
+        let next_id = self.next_id.checked_add(1).filter(|&id|id<=u32::MAX as u64).ok_or("channel ID exhausted")?;
+        let next_direct=if config.enabled && source.is_direct() {
+            Some(sdr_pipeline::DirectChannel::new(config.channel,next_id,self.stream.epoch(),fs,
+                self.capture_center,config.freq,source.plan(),self.input_pos,self.next_seq)?)
+        } else {None};
         self.stream.flush_pending().map_err(str::to_owned)?;
         let mut frames = std::mem::take(&mut self.carry);
         frames.extend(self.drain()?);
-        let next_id = self.next_id.checked_add(1).filter(|&id|id<=u32::MAX as u64).ok_or("channel ID exhausted")?;
-        if config.enabled {
+        if config.enabled && !source.is_direct() {
             let signed = signed_bin(config.freq,self.capture_center);
             let bin = signed.rem_euclid(self.stream.bin_count() as i64) as u32;
             if !self.stream.bins().contains(&bin) {
@@ -227,28 +299,36 @@ impl Ddc {
                 self.bank.remap_bins(&bins).map_err(str::to_owned)?;
             }
             let offset = signed as f64*BIN_SPACING-(config.freq-self.capture_center);
-            if let Some(id)=old_id { self.bank.retune_planned(id,next_id,bin,offset,plan) }
-            else { self.bank.subscribe_planned(next_id,bin,offset,plan) }.map_err(str::to_owned)?;
-        } else if let Some(id)=old_id { self.bank.unsubscribe(id); }
+            if let Some(id)=old_id.filter(|_|!old_direct) { self.bank.retune_planned(id,next_id,bin,offset,source.plan().clone()) }
+            else { self.bank.subscribe_planned(next_id,bin,offset,source.plan().clone()) }.map_err(str::to_owned)?;
+        } else if let Some(id)=old_id.filter(|_|!old_direct) { self.bank.unsubscribe(id); }
+        if let Some(mut previous)=self.direct.remove(&config.channel) {
+            frames.extend(previous.framer.finish().map_err(str::to_owned)?);
+        }
         if config.channel==1 {
-            if old_id.is_some() {
+            if old_id.is_some() && !old_direct {
                 if let Some(tail)=self.framer.finish().map_err(str::to_owned)? { frames.push(tail); }
             }
             if config.enabled {
-                let rate=self.bank.channel_metadata(next_id).ok_or("channel metadata absent")?.0;
-                self.framer=BasebandFramer::new(next_id,self.stream.epoch(),config.freq,rate).ok_or("framer rejected")?;
+                if !source.is_direct() {
+                    let rate=self.bank.channel_metadata(next_id).ok_or("channel metadata absent")?.0;
+                    self.framer=BasebandFramer::new(next_id,self.stream.epoch(),config.freq,rate)
+                        .and_then(|framer|framer.with_source_rate(fs)).ok_or("framer rejected")?;
+                }
                 self.channel_id=next_id; self.listen=config.freq;
             }
         } else {
             if let Some((_,_,mut framer))=self.aux.remove(&config.channel) {
                 if let Some(tail)=framer.finish().map_err(str::to_owned)? { frames.push(tail); }
             }
-            if config.enabled {
+            if config.enabled && !source.is_direct() {
                 let rate=self.bank.channel_metadata(next_id).ok_or("channel metadata absent")?.0;
-                let framer=BasebandFramer::new_aux(next_id,self.stream.epoch(),config.freq,rate).ok_or("framer rejected")?;
+                let framer=BasebandFramer::new_aux(next_id,self.stream.epoch(),config.freq,rate)
+                    .and_then(|framer|framer.with_source_rate(fs)).ok_or("framer rejected")?;
                 self.aux.insert(config.channel,(next_id,config.freq,framer));
             }
         }
+        if let Some(route)=next_direct {self.direct.insert(config.channel,route);}
         self.next_id=next_id;
         configs[slot]=config;
         self.service_configs=Some(configs);
@@ -260,13 +340,53 @@ impl Ddc {
         let configs=self.service_configs.as_ref().ok_or("service configs missing")?;
         let mut registry=Vec::new();
         for c in configs.iter().filter(|c|c.enabled) {
-            let id=if c.channel==1 {self.channel_id} else {self.aux.get(&c.channel).ok_or("aux identity missing")?.0};
-            let (rate,delay)=self.bank.channel_metadata(id).ok_or("channel metadata missing")?;
+            let (id,rate,delay)=if let Some(route)=self.direct.get(&c.channel) {
+                (route.id,route.rate,route.delay)
+            } else {
+                let id=if c.channel==1 {self.channel_id} else {self.aux.get(&c.channel).ok_or("aux identity missing")?.0};
+                let (rate,delay)=self.bank.channel_metadata(id).ok_or("channel metadata missing")?;
+                (id,rate,delay)
+            };
             registry.push(sdr_pipeline::ChannelRegistryEntry{channel:c.channel,channel_id:id as u32,
                 epoch:self.stream.epoch() as u32,frequency_hz:c.freq,output_rate:rate,
                 input_rate:self.stream.input_sample_rate(),group_delay_samples:delay,state:"active"});
         }
         self.registry=registry.into();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod source_plan_tests {
+    use super::*;
+
+    #[test]
+    fn rtty_upper_sideband_plan_retains_both_protocol_tones() {
+        use websa_channelizer::{channel_open_planned,channel_process_float,channel_close};
+        for mode in ["rtty","rtty-reverse"] {
+            let mut config=ChannelConfig::for_slot(1);
+            config.mode=mode.into();
+            config.if_bw=3_400.0;
+            let plan=channel_plan(COARSE_RATE,&config).unwrap();
+            assert_eq!(plan.occupied_bandwidth_hz,6_800.0);
+            for tone in [2_125.0,2_295.0] {
+                let handle=channel_open_planned(COARSE_RATE,0.0,&plan);
+                assert!(!handle.is_null());
+                let input:Vec<f32>=(0..32_768).flat_map(|index| {
+                    let phase=2.0*std::f64::consts::PI*tone*index as f64/COARSE_RATE;
+                    [phase.cos() as f32,phase.sin() as f32]
+                }).collect();
+                let capacity=32_768/plan.decimate as usize+2;
+                let mut output=vec![0.0;2*capacity];
+                let count=unsafe {channel_process_float(handle,input.as_ptr(),32_768,
+                    output.as_mut_ptr(),capacity as i32)};
+                unsafe {channel_close(handle);}
+                assert!(count>512);
+                let power=output[2*512..2*count as usize].chunks_exact(2)
+                    .map(|iq|f64::from(iq[0]).powi(2)+f64::from(iq[1]).powi(2))
+                    .sum::<f64>()/(count as usize-512) as f64;
+                assert!((0.98..1.02).contains(&power),"{mode} tone {tone} power {power}");
+            }
+        }
     }
 }

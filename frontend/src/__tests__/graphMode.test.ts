@@ -58,6 +58,29 @@ describe('graph mode handshake', () => {
     expect(pendingGraphMode()).toBeNull();          // follow the backend again
     expect(currentGraphMode()).toBe('std');
   });
+  it('keeps extended startup intent until its deadline and cancels the watchdog on confirmation', () => {
+    const timeout = vi.fn();
+    setGraphModeTimeoutHandler(timeout);
+    requestGraphMode('sdr', 25000);
+    vi.advanceTimersByTime(20000);
+    expect(pendingGraphMode()).toBe('sdr');
+    expect(timeout).not.toHaveBeenCalled();
+    confirmGraphMode('sdr');
+    vi.advanceTimersByTime(6000);
+    expect(currentGraphMode()).toBe('sdr');
+    expect(pendingGraphMode()).toBeNull();
+    expect(timeout).not.toHaveBeenCalled();
+  });
+  it('expires an extended startup request at the supplied deadline', () => {
+    const timeout = vi.fn();
+    setGraphModeTimeoutHandler(timeout);
+    requestGraphMode('sdr', 25000);
+    vi.advanceTimersByTime(24999);
+    expect(pendingGraphMode()).toBe('sdr');
+    vi.advanceTimersByTime(1);
+    expect(pendingGraphMode()).toBeNull();
+    expect(timeout).toHaveBeenCalledExactlyOnceWith('sdr', 'std');
+  });
 
   it('a superseding request restarts the timeout (the old one cannot fire)', () => {
     const seen: string[] = [];

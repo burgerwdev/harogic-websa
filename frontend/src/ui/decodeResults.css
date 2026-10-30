@@ -1,0 +1,23 @@
+.decoder-results { padding: 8px; color: var(--text); }
+.decoder-result { padding: 8px 0; border-bottom: 1px solid var(--card-border); overflow-wrap: anywhere; }
+.decoder-result-header, .decoder-retention { color: var(--label); font-size: 11px; margin: 0 0 5px; }
+.decoder-result pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.decoder-result details { margin-top: 6px; }
+.decoder-result summary { color: var(--label); cursor: pointer; }
+.decoder-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 4px 0 8px; }
+.decoder-fields dt { color: var(--label); }
+.decoder-fields dd { margin: 0; }
+.decoder-table-scroll { overflow: auto; max-height: 420px; margin: 4px 0 10px; }
+.decoder-results table { border-collapse: collapse; width: 100%; font: inherit; }
+.decoder-results th, .decoder-results td { padding: 4px 7px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--card-border); white-space: nowrap; overflow-wrap: normal; min-width: 45px; }
+.decoder-results td.decoder-message-cell { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 180px; }
+.decoder-results th { position: sticky; top: 0; background: var(--panel); color: var(--label); }
+.decoder-image { position: relative; width: 100%; overflow: hidden; background: #202020; }
+.decoder-image img { position: absolute; left: 0; width: 100%; object-fit: fill; }
+.decode-popout-error { padding: 8px; color: var(--text); background: var(--panel-2); white-space: normal; }
+.decode-window [hidden] { display: none !important; }
+.decode-window-head { flex-wrap: wrap; }
+.decode-popup-body { margin: 0; overflow: hidden; background: var(--panel); }
+.decode-window.decode-window-popout { left: 0 !important; top: 0 !important; width: calc(100vw / var(--decode-scale, 1)) !important; height: calc(100vh / var(--decode-scale, 1)) !important; min-width: 0; min-height: 0; max-width: none; max-height: none; border-radius: 0; box-shadow: none; }
+.decode-window-popout .decode-resize-layer { display: none; }
+.decode-window-popout .decode-window-head { cursor: default; }

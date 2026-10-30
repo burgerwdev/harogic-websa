@@ -126,7 +126,7 @@ impl DevState {
                 new.channel==old.channel && new.channel_id==old.channel_id && new.epoch==old.epoch))
                 .map(|old|old.channel).collect();
             if !changed.is_empty() {
-                if let Err(error)=self.finish_radiofax_channels(&changed,registry.clone()) {self.latch_receiver_failure(error);}
+                if let Err(error)=self.retire_receiver_channels(&changed,registry.clone()) {self.latch_receiver_failure(error);}
             }
             self.retiring_registry = registry;
             self.pending_iq.extend(retiring);

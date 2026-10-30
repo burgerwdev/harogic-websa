@@ -41,7 +41,7 @@ const input = (id: string) => el(id) as HTMLInputElement | null;
 function text(id: string, value: string): void { const node = el(id); if (node) node.textContent = value; }
 function note(id: string, value: string): void { const node = el(id); if (node) { node.textContent = value; node.hidden = !value; } }
 function clearPending(): void { if (pending) window.clearTimeout(pending.timer); pending = null; }
-function issue(command: Record<string, unknown>, target?: string, action?: ServerAction): void {
+function issue(command: Record<string, unknown>, target?: string, action?: ServerAction, timeoutMs = GRAPH_MODE_TTL_MS): void {
   if (!connected || pending) return;
   localError = '';
   const id = `server-${++sequence}-${Date.now()}`;
@@ -49,7 +49,7 @@ function issue(command: Record<string, unknown>, target?: string, action?: Serve
     pending = null; stopTransition(); localError = t('server_timeout');
     if (!visible) note('mode-hint', localError);
     render();
-  }, GRAPH_MODE_TTL_MS) };
+  }, timeoutMs) };
   const dispatch = () => {
     if (pending?.id === id && connected) send({ ...command, request_id: id });
   };
@@ -71,9 +71,9 @@ export function requestServerMode(): void {
   returnMode = currentGraphMode();
   issue({ cmd: 'SET_MODE', mode: 'server' }, 'server');
 }
-export function trackServerExit(mode: GraphMode): boolean {
+export function trackServerExit(mode: GraphMode, timeoutMs = GRAPH_MODE_TTL_MS): boolean {
   if (!visible || !connected || pending) return false;
-  issue({ cmd: 'SET_MODE', mode }, mode);
+  issue({ cmd: 'SET_MODE', mode }, mode, undefined, timeoutMs);
   return true;
 }
 export function setServerConnection(next: boolean): void {

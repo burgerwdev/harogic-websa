@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DecodeSequence, MAX_DECODE_BYTES, type DecodeEnvelope } from '../sdr/decodeProtocol';
+import { consumeDecode } from '../sdr/iqStream';
+import { setDecodeChannelMode, decodeWindowMode } from '../ui/decodeWindow';
+import { clearDecoderLog, decoderLog } from '../sdr/decoderLog';
+import { renderDecoderResults } from '../ui/decoderResults';
 
 function frame(overrides: Partial<DecodeEnvelope> = {}): ArrayBuffer {
   const value: DecodeEnvelope = { version: 1, channel: 1, channel_id: 17, epoch: 9, seq: 0,
@@ -18,6 +22,65 @@ function amEvent(overrides: Record<string, unknown> = {}): DecodeEnvelope['event
     ...overrides } as DecodeEnvelope['event'];
 }
 describe('native decoded stream boundaries', () => {
+  it('retains a retiring provider result without rolling back the confirmed pane', () => {
+    clearDecoderLog(1);
+    setDecodeChannelMode(1, 'am');
+    const sequence = new DecodeSequence();
+    sequence.accept(frame({ mode: 'ism' }));
+    consumeDecode(sequence.accept(frame({ mode: 'ism', seq: 1, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data: { model: 'Weather', temperature_C: 21.5 },
+    } })));
+    expect(decodeWindowMode()).toBe('am');
+    expect(decoderLog(1, 'ism').entries[0].source).toBe('9:17');
+    expect(decoderLog(1, 'ism').entries[0].data).toMatchObject({ temperature_C: 21.5 });
+    clearDecoderLog(1);
+  });
+  it('invalidates only the failed channel GPS fix while retaining navigation history', () => {
+    const stream = new DecodeSequence();
+    for (const channel of [1, 2]) {
+      clearDecoderLog(channel);
+      consumeDecode(stream.accept(frame({ channel, channel_id: channel, mode: 'gps' })));
+      for (const [index, data] of [
+        { table: 'satellites', rows: [{ prn: 7, tracking: true, cn0_db_hz: 42 }] },
+        { table: 'pvt', rows: [{ valid: true, lat_deg: 55.12345, lon_deg: 21.12345 }] },
+        { table: 'navigation', rows: [{ prn: 7, nav_message: 'received navigation bits' }] },
+      ].entries()) consumeDecode(stream.accept(frame({ channel, channel_id: channel, mode: 'gps', seq: index + 1,
+        event: { type: 'decoder-result', provider: 'gnss-sdr', mode: 'gps', kind: 'table', data } })));
+    }
+    const host = document.createElement('section');
+    renderDecoderResults(host, 1, 'gps', false);
+    expect(host.textContent).toContain('Valid position fix');
+    consumeDecode(stream.accept(frame({ channel: 1, channel_id: 1, mode: 'gps', seq: 4,
+      event: { type: 'error', message: 'GNSS receiver failed' } })));
+    renderDecoderResults(host, 1, 'gps', false);
+    expect(host.textContent).not.toContain('Valid position fix');
+    expect(host.textContent).not.toContain('55.12345');
+    expect(host.textContent).toContain('received navigation bits');
+    expect(decoderLog(1, 'gps').entries).toHaveLength(1);
+    expect(decoderLog(2, 'gps').entries).toHaveLength(3);
+    clearDecoderLog(1);
+    clearDecoderLog(2);
+  });
+  it('accepts provider fields and keeps their stream mode authoritative', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'ism' }));
+    const data = { model: 'weather', temperature_C: 18.7, extra: { battery: 'OK' } };
+    expect(stream.accept(frame({ mode: 'ism', seq: 1, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data,
+    } })).event.data).toEqual(data);
+    expect(() => stream.accept(frame({ mode: 'ism', seq: 2, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'aprs', kind: 'table', data,
+    } }))).toThrow(/decoder result/);
+  });
+  it('rejects excessive result nesting before delivery', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'ism' }));
+    let data: unknown = 1;
+    for (let index = 0; index < 15; index++) data = { nested: data };
+    expect(() => stream.accept(frame({ mode: 'ism', seq: 1, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data,
+    } }))).toThrow(/structure limit/);
+  });
   it('keeps all three channel clocks independent when one changes identity', () => {
     const stream = new DecodeSequence();
     for (const channel of [1, 2, 3]) stream.accept(frame({ channel, channel_id: channel }));
@@ -324,6 +387,48 @@ describe('native decoded stream boundaries', () => {
       stream.resetSdrIq();
       sdrAmSync.reset();
     } finally { vi.unstubAllGlobals(); document.body.innerHTML = ''; }
+  });
+  it.each(['closed', 'receiver-failed', 'disabled'])('removes live GPS fixes on %s while preserving navigation history', async (failure) => {
+    class Receiver {
+      static current: Receiver;
+      onmessage: ((event: { data: { type: string; message?: string } }) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+      constructor() { Receiver.current = this; }
+      postMessage(): void {}
+      terminate(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('Worker', Receiver);
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // Load an isolated consumer and log after installing Worker for this lifecycle.
+      const stream = await import('../sdr/iqStream');
+      const log = await import('../sdr/decoderLog');
+      const view = await import('../ui/decoderResults');
+      stream.setSdrIqEnabled(true);
+      const sequence = new DecodeSequence();
+      stream.consumeDecode(sequence.accept(frame({ mode: 'gps' })));
+      for (const [index, data] of [
+        { table: 'pvt', rows: [{ valid: true, lat_deg: 55.12345, lon_deg: 21.12345 }] },
+        { table: 'satellites', rows: [{ prn: 7, tracking: true }] },
+        { table: 'navigation', rows: [{ prn: 7, nav_message: 'received navigation bits' }] },
+      ].entries()) stream.consumeDecode(sequence.accept(frame({ mode: 'gps', seq: index + 1,
+        event: { type: 'decoder-result', provider: 'gnss-sdr', mode: 'gps', kind: 'table', data } })));
+      const host = document.createElement('section');
+      view.renderDecoderResults(host, 1, 'gps', false);
+      expect(host.querySelector('tbody')?.textContent).toContain('received navigation bits');
+      expect(host.textContent).toContain('55.12345');
+      if (failure === 'receiver-failed') stream.failSdrReceiver('GNSS receiver failed');
+      else if (failure === 'disabled') stream.setSdrIqEnabled(false);
+      else Receiver.current.onmessage!({ data: { type: 'closed', message: 'Stream disconnected' } });
+      view.renderDecoderResults(host, 1, 'gps', false);
+      expect(host.textContent).not.toContain('55.12345');
+      expect(host.textContent).not.toContain('Valid position fix');
+      expect(host.textContent).toContain('received navigation bits');
+      expect(log.decoderLog(1, 'gps').entries).toHaveLength(1);
+      stream.setSdrIqEnabled(false);
+      stream.resetSdrIq();
+    } finally { quiet.mockRestore(); vi.unstubAllGlobals(); }
   });
   it('reports the original rejected stream error using a browser-valid close code', async () => {
     const messages: Array<{ type: string; message?: string }> = [];

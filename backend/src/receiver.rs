@@ -23,6 +23,8 @@ pub type ReceiverEvent = Value;
 #[serde(default)]
 pub struct ReceiverConfig {
     pub mode: String,
+    /// Tuned RF frequency supplied to external decoders; zero is valid for offline baseband.
+    pub center_hz: u64,
     /// IQ cadence after channelization, distinct from InputClock's source clock.
     pub input_rate: f64,
     pub audio_rate: u32,
@@ -52,7 +54,7 @@ pub struct ReceiverConfig {
 }
 impl Default for ReceiverConfig {
     fn default() -> Self {
-        Self { mode: "am".into(), input_rate: 48_000.0, audio_rate: 48_000,
+        Self { mode: "am".into(), center_hz: 0, input_rate: 48_000.0, audio_rate: 48_000,
             if_bw: 6_000.0, pitch: 700.0, agc: true, am_sync: false, am_sync_generation: 0, gain: 1.0,
             squelch_dbm: -110.0, nr: false, nr_strength: 0.6,
             nr_algorithm: "wiener".into(), nr_atten_db: 10.0, deemph_us: -1.0,
@@ -65,8 +67,9 @@ impl Default for ReceiverConfig {
 }
 impl ReceiverConfig {
     fn validate(&self) -> Result<(), String> {
-        if !matches!(self.mode.as_str(), "am"|"dsb"|"usb"|"lsb"|"cw"|"nfm"|"wfm"|"pm"|"ft8"|"sstv"|"drm"|"drmplus"|"radiofax") {
-            return Err(format!("unsupported receiver mode {}", self.mode));
+        crate::catalog::validate(&self.mode, self.if_bw)?;
+        if matches!(self.mode.as_str(), "ais" | "aprs" | "ft4" | "wspr" | "meteor" | "adsb") {
+            crate::external::onair::validate_frequency(&self.mode, self.center_hz)?;
         }
         if clock_ratio(self.input_rate).is_none() || !(8_000..=192_000).contains(&self.audio_rate)
             || !self.if_bw.is_finite() || self.if_bw <= 0.0 || !self.pitch.is_finite()
@@ -79,7 +82,18 @@ impl ReceiverConfig {
         if self.mode == "cw" && !(100.0..=1600.0).contains(&self.pitch) {
             return Err("CW requires a 100–1600 Hz pitch".into());
         }
-        let listen_mode = if matches!(self.mode.as_str(), "ft8"|"sstv"|"radiofax") { "usb" } else { self.mode.as_str() };
+        let descriptor = crate::catalog::mode(&self.mode).ok_or("receiver mode unavailable")?;
+        if crate::catalog::is_external(&self.mode) {
+            if self.input_rate < descriptor.minimum_rate_hz as f64 {
+                return Err(format!("{} requires at least {} complex samples/s before exact adaptation",
+                    self.mode, descriptor.minimum_rate_hz));
+            }
+            let edge = if descriptor.sideband == "upper" { self.if_bw } else { self.if_bw / 2.0 };
+            if edge >= self.input_rate / 2.0 {
+                return Err("external decoder occupied bandwidth must fit below IQ Nyquist".into());
+            }
+        }
+        let listen_mode = descriptor.audio_companion.as_deref().unwrap_or(&self.mode);
         if let Some(spec) = analog::spec_for(listen_mode) {
             let (low, high) = spec.band_hz(self.if_bw.max(50.0), self.pitch);
             if low.abs().max(high.abs()) >= self.input_rate / 2.0 {
@@ -255,11 +269,33 @@ impl Ft8Window {
     }
 }
 
+/// A ready external process, prepared before admitting a new IQ producer.
+/// Its protocol cadence is fixed by the catalog, independently of fine IQ rate.
+pub struct PreparedDecoder {
+    mode: String,
+    center_hz: u64,
+    decoder: crate::external::ExternalDecoder,
+}
+
+impl PreparedDecoder {
+    pub fn new(mode: &str, center_hz: u64) -> Result<Self, String> {
+        let descriptor = crate::catalog::mode(mode).ok_or("receiver mode unavailable")?;
+        let rate = descriptor.input_rate_hz.ok_or("external decoder rate unavailable")?;
+        let decoder = crate::external::ExternalDecoder::new(mode, rate, center_hz)?;
+        Ok(Self { mode: mode.into(), center_hz, decoder })
+    }
+
+    pub fn matches(&self, mode: &str, center_hz: u64) -> bool {
+        self.mode == mode && self.center_hz == center_hz
+    }
+}
+
 pub struct Receiver {
     config: ReceiverConfig,
     epoch: u64,
     analog: Option<AnalogDemod>,
     digital: Option<Box<dyn DigitalDemodulator>>,
+    external: Option<crate::external::ExternalDecoder>,
     adapter: Option<Rational>,
     converted: Vec<f32>,
     listener: AudioChain,
@@ -293,8 +329,24 @@ pub struct Receiver {
 impl Receiver {
     pub fn new(config: ReceiverConfig) -> Result<Self, String> {
         config.validate()?;
+        let prepared = if crate::catalog::is_external(&config.mode) {
+            Some(PreparedDecoder::new(&config.mode, config.center_hz)?)
+        } else { None };
+        Self::new_prepared(config, prepared)
+    }
+
+    /// Bind an admitted decoder to the actual fine-channel cadence without spawning.
+    pub fn new_prepared(config: ReceiverConfig, prepared: Option<PreparedDecoder>) -> Result<Self, String> {
+        config.validate()?;
+        let external = match prepared {
+            Some(prepared) if prepared.matches(&config.mode, config.center_hz) => Some(prepared.decoder),
+            Some(_) => return Err("prepared decoder does not match receiver configuration".into()),
+            None if crate::catalog::is_external(&config.mode) => return Err("external decoder was not prepared before IQ admission".into()),
+            None => None,
+        };
         let mode = config.mode.as_str();
-        let listen_mode = if matches!(mode, "ft8"|"sstv"|"radiofax") { "usb" } else { mode };
+        let descriptor = crate::catalog::mode(mode).ok_or("receiver mode unavailable")?;
+        let listen_mode = descriptor.audio_companion.as_deref().unwrap_or(mode);
         let mut demod_config = DemodConfig::new(config.input_rate, config.if_bw);
         demod_config.pitch = config.pitch;
         let mut analog = analog::spec_for(listen_mode).map(|spec|
@@ -304,8 +356,7 @@ impl Receiver {
             demod.set_am_sync(config.am_sync);
             if config.deemph_us >= 0.0 { demod.set_deemph_us(config.deemph_us); }
         }
-        let decoder_rate = match mode { "ft8" => FT8_RATE, "sstv" => 8_000, "radiofax" => 12_000,
-            "drm" => 48_000, "drmplus" => 96_000, _ => 0 };
+        let decoder_rate = descriptor.input_rate_hz.unwrap_or(0);
         let mut digital = if matches!(mode, "sstv"|"drm"|"drmplus"|"radiofax") {
             digital::build(mode, decoder_rate as f64)
         } else { None };
@@ -322,7 +373,7 @@ impl Receiver {
                 "drm" => config.if_bw / 2.0,
                 "ft8" => 3_200.0,
                 "sstv" | "radiofax" => 3_000.0,
-                _ => unreachable!(),
+                _ => if descriptor.sideband == "upper" { config.if_bw } else { config.if_bw / 2.0 },
             };
             Some(Rational::from_rates(config.input_rate, decoder_rate, passband)
                 .map_err(|error| format!("decoder rate conversion: {error}"))?)
@@ -341,7 +392,7 @@ impl Receiver {
         let ft8 = if mode == "ft8" { Some(Ft8Window::new()) } else { None };
         let audio_format = analog.as_ref().map(|_|(config.audio_rate,
             if config.mode == "wfm" && config.stereo {2} else {1}));
-        Ok(Self { config, epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed), analog, digital,
+        Ok(Self { config, epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed), analog, digital, external,
             adapter, converted: Vec::new(), listener, side_listener, side_pcm:AnalogPcm::default(), pcm: AnalogPcm::default(),
             side: Vec::new(), nr, nr_right, nr_scratch: Vec::new(), cw, ft8, pushes: 0,
             nr_left_output: Vec::new(), nr_right_output: Vec::new(),
@@ -354,9 +405,10 @@ impl Receiver {
     pub fn epoch(&self) -> u64 { self.epoch }
     /// Geometry changes replace only this channel's state. Listening changes retain decoder history.
     pub fn configure(&mut self, config: ReceiverConfig) -> Result<(), String> {
-        config.validate()?;
         if config == self.config && !self.radiofax_new_page { return Ok(()); }
+        config.validate()?;
         let geometry_changed = config.mode != self.config.mode || config.input_rate != self.config.input_rate
+            || config.center_hz != self.config.center_hz
             || config.audio_rate != self.config.audio_rate || config.if_bw != self.config.if_bw
             || config.pitch != self.config.pitch || config.sstv_mode != self.config.sstv_mode
             || config.stereo != self.config.stereo;
@@ -466,6 +518,9 @@ impl Receiver {
         if digital_iq.iter().any(|sample| !sample.is_finite())
             || !decoder_clock.delay_input_samples.is_finite() {
             return Err("decoder rate conversion exceeded finite sample or clock bounds".into());
+        }
+        if let Some(external) = self.external.as_mut() {
+            out.events.extend(external.push_iq(digital_iq)?.into_iter().map(|event| event.into_value()));
         }
         if let Some(ft8) = self.ft8.as_mut() {
             out.ft8_job = ft8.extract(digital_iq, decoder_clock, self.epoch)?;
@@ -654,7 +709,7 @@ impl Receiver {
             if !samples.is_empty() {
                 let mut audio_clock = clock;
                 // Only the asymmetric modes retain the IF selection FIR.
-                let if_delay = if matches!(self.config.mode.as_str(), "usb"|"lsb"|"cw"|"ft8"|"sstv"|"radiofax") {128.0} else {0.0};
+                let if_delay = if matches!(analog.id(), "usb" | "lsb" | "cw") {128.0} else {0.0};
                 audio_clock.delay_input_samples += (if_delay + 64.0) * clock.input_rate / self.config.input_rate;
                 if let Some(delay) = self.nr.latency_samples() {
                     audio_clock.delay_input_samples += delay as f64 * clock.input_rate / self.config.audio_rate as f64;
@@ -718,6 +773,21 @@ impl Receiver {
                 "windowRate":result.clock.input_rate,"epoch":self.epoch}));
         }
         events
+    }
+    /// Retire a live protocol identity without waiting for OnAir's EOF poll window.
+    pub fn retire_external(&mut self) -> Result<Vec<ReceiverEvent>, String> {
+        match self.external.take() {
+            Some(mut decoder) => Ok(decoder.retire()?.into_iter().map(|event| event.into_value()).collect()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// End the protocol input, drain bounded external results, and reap its process.
+    pub fn finish_external(&mut self) -> Result<Vec<ReceiverEvent>, String> {
+        match self.external.take() {
+            Some(mut decoder) => Ok(decoder.finish()?.into_iter().map(|event| event.into_value()).collect()),
+            None => Ok(Vec::new()),
+        }
     }
     /// Search the complete remaining transmission at EOF without adding synthetic samples.
     pub fn flush_ft8(&mut self) -> Result<Option<Ft8Job>, String> {
@@ -847,6 +917,25 @@ mod tests {
             input_rate:if mode == "wfm" {240_000.0} else if mode == "drmplus" {96_000.0} else if mode == "radiofax" {12_000.0} else {48_000.0},
             if_bw:if mode == "wfm" {180_000.0} else if mode == "drmplus" {90_000.0} else if mode == "radiofax" {3_000.0} else {6_000.0},
             ..ReceiverConfig::default() }
+    }
+    #[test]
+    fn protocol_usb_companion_retains_actual_analog_fir_delay() {
+        let clock = InputClock { first_sample_index: 0, input_rate: 48_000.0, delay_input_samples: 0.0 };
+        let iq: Vec<f32> = (0..8192).flat_map(|i| {
+            let phase = i as f32 * std::f32::consts::TAU * 1200.0 / 48_000.0;
+            [phase.cos() * 0.2, phase.sin() * 0.2]
+        }).collect();
+        let mut reference = Receiver::new(mode_config("usb")).unwrap();
+        let expected = reference.process(&iq, clock, None).unwrap();
+        assert!(!expected.audio.is_empty());
+        for protocol in ["ft4", "wspr"] {
+            // Isolate the existing USB listener from optional process dependencies.
+            let mut receiver = Receiver::new(mode_config("usb")).unwrap();
+            receiver.config.mode = protocol.into();
+            let output = receiver.process(&iq, clock, None).unwrap();
+            assert_eq!(output.audio[0].clock.delay_input_samples, expected.audio[0].clock.delay_input_samples);
+            assert_eq!(output.audio[0].samples, expected.audio[0].samples);
+        }
     }
 
     #[test]

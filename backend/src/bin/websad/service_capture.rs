@@ -44,7 +44,6 @@ impl DevState {
         let center_minimum=minimum.max(self.caps()["fmin"].as_f64().unwrap_or(9e3));
         let center_maximum=maximum.min(self.caps()["fmax"].as_f64().unwrap_or(9e9));
         let hardware=self.hardware_shim.is_some();
-        let plan=service_ddc::channel_plan(COARSE_RATE,&configs[0])?;
         // RF limits constrain the tuner center, not the edges of its IQ window.
         // A retained off-screen receiver can still require a wider device capture.
         for power in (0..=6).rev() {
@@ -57,36 +56,42 @@ impl DevState {
             let mut center=requested_center.clamp(center_minimum,center_maximum);
             let mut next=configs.clone();
             if (pan || center!=requested_center) && next[0].enabled {
-                let occupied_half=half-plan.occupied_bandwidth_hz/2.0;
+                let Ok(source)=service_ddc::source_plan(fs,&next[0]) else {continue;};
+                let plan=source.plan();
+                let edge=if source.is_direct() {plan.stopband_hz} else {plan.occupied_bandwidth_hz/2.0};
+                let occupied_half=half-edge;
                 let listen_half=if pan {display_half_width(display as i32).min(occupied_half)} else {occupied_half};
-                if listen_half<0.0 {return Err("channel occupied bandwidth exceeds capture".into());}
+                if listen_half<0.0 {continue;}
                 let lo=(center-listen_half).max(minimum);
                 let hi=(center+listen_half).min(maximum);
                 if !pan && !(lo..=hi).contains(&next[0].freq) {continue;}
-                if pan && !(lo..=hi).contains(&next[0].freq) {
-                    next[0].freq=service_ddc::fit_passband_frequency(center,next[0].freq,lo,hi,taps,&plan)?;
+                if source.is_direct() {
+                    if pan {next[0].freq=next[0].freq.clamp(lo,hi);}
+                } else if pan && !(lo..=hi).contains(&next[0].freq) {
+                    next[0].freq=service_ddc::fit_passband_frequency(center,next[0].freq,lo,hi,taps,plan)?;
                 } else {
                     // Panning a short-tap wide channel can enter a gap between coarse
                     // passbands. Fit the center, preserving the user's listen frequency.
                     center=service_ddc::fit_passband_frequency(next[0].freq,center,
                         center_minimum.max(next[0].freq-listen_half),
-                        center_maximum.min(next[0].freq+listen_half),taps,&plan)?;
+                        center_maximum.min(next[0].freq+listen_half),taps,plan)?;
                 }
             }
             let frequencies:Vec<_>=next.iter().filter(|c|c.enabled).map(|c|c.freq).collect();
             let listen=frequencies.first().copied().unwrap_or(center);
             let actual_decimate=if hardware {capture_decimate(center,listen,&frequencies,display as i32,taps)} else {1};
             if actual_decimate<device_decimate {continue;}
-            let device_decimate=actual_decimate;
-            let fs=IQ_FS/device_decimate as f64;
-            let bandwidth=fs*0.8;
+            let mut fits=true;
             for config in next.iter().filter(|c|c.enabled) {
                 if !(minimum..=maximum).contains(&config.freq) {
                     return Err(format!("channel frequency outside device limits: channel {} requested {} Hz; valid RF range {minimum}..={maximum} Hz", config.channel, config.freq));
                 }
-                let plan=service_ddc::channel_plan(COARSE_RATE,config)?;
-                Ddc::validate_service_frequency(center,bandwidth,fs,taps,config.freq,&plan)?;
+                let Ok(source)=service_ddc::source_plan(fs,config) else {fits=false;break;};
+                if service_ddc::validate_source_frequency(center,bandwidth,fs,taps,config.freq,&source).is_err() {
+                    fits=false;break;
+                }
             }
+            if !fits {continue;}
             return Ok(CaptureConfig {center,display,taps,configs:next,device_decimate,source_rate:fs,bandwidth});
         }
         Err("requested capture window exceeds device limits".into())
@@ -294,5 +299,30 @@ mod tests {
             }
             assert!(state.parse_channel_config(&json!({"freq":outside})).is_err());
         }
+    }
+
+    #[test]
+    fn gps_capture_plan_preserves_edges_and_agrees_with_runtime_geometry() {
+        let mut state=state_with_expanded_sweep_limits();
+        let center=1_575_420_000.0;
+        state.sdr_center=center;
+        state.sdr_listen=center;
+        let mut configs=state.channel_configs();
+        configs[0].freq=center;
+        configs[0].mode="gps".into();
+        configs[0].if_bw=2_046_000.0;
+        let capture=state.fit_service_capture(center,2048,16,configs.clone(),false).unwrap();
+        assert_eq!(capture.source_rate,3_906_250.0);
+        assert_eq!(capture.device_decimate,service_ddc::service_capture_decimate(center,2048,16,&configs).unwrap());
+        let source=service_ddc::source_plan(capture.source_rate,&configs[0]).unwrap();
+        assert!(source.is_direct());
+        let edge=capture.bandwidth/2.0-source.plan().stopband_hz;
+        assert!(service_ddc::validate_source_frequency(center,capture.bandwidth,capture.source_rate,
+            16,center+edge,&source).is_ok());
+        assert!(service_ddc::validate_source_frequency(center,capture.bandwidth,capture.source_rate,
+            16,center+edge+1.0,&source).is_err());
+        configs[1].enabled=true;
+        configs[1].freq=center+30_000_000.0;
+        assert!(state.fit_service_capture(center,2048,16,configs,false).is_err());
     }
 }

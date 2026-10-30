@@ -22,6 +22,39 @@ Synthetic digital-mode playback needs the checkout's tracked `tests/fixtures/` i
 `runtime/`. The root launcher sets the working directory; `WEBSA_FIXTURES` overrides the
 fixture directory, which otherwise defaults to `tests/fixtures` relative to that directory.
 
+Optional external receivers are installed independently with
+`tools/setup-sdr-decoders.sh --prefix "$HOME/.local/share/websa/decoders"`.
+The script pins and verifies multimon-ng, rtl_433 and OnAir, builds the first two serially,
+preserves sources/licenses, and leaves system packages and running services alone.
+Source the generated `env.sh` before launching your WebSA instance; it exports
+`WEBSA_MULTIMON_PATH`, `WEBSA_RTL433_PATH` and `WEBSA_ONAIR_SERVER`.
+Provider discovery is cached for the service lifetime; restart that instance after changing dependencies.
+The main runtime package does not bundle these GPL tools. OnAir's portable build is Linux x86_64;
+the setup script records its corresponding-source URL and checksum with the binary notices.
+For fixture verification, place normalized interleaved f32le IQ in
+`$WEBSA_FIXTURES/external/<mode>.f32` at the mode catalog's exact input rate.
+Missing files reject the configuration. FT4/WSPR require UTC-aligned live input and reject
+unaligned file/looping-fixture replay; pacing a recording alone does not establish slot alignment.
+
+GPS L1 C/A uses `tools/setup-gnss-decoder.sh` for the separately licensed GNSS-SDR
+executable and `cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websa-gnss`
+for the native process bridge. Install that bridge into the decoder prefix's `bin`
+directory and source its `gnss-env.sh`. The installer supports an isolated dependency
+prefix and a build-only Python/Mako virtual environment via `--dependency-prefix`
+and `--python`; the runtime bridge is Rust. See [GPS setup and real-recording provenance](../../tools/README.md#gps-l1-ca-from-sdr-iq).
+
+GPS requires at least 2.6 MSps before adaptation and exactly 4 MSps at the provider
+FIFO; a centered 3.90625 MSps capture can be adapted while preserving the configured
+band and filter transitions. The CTTC real-recording replay is verified. A cold-start
+435 MHz Pluto/SAN-90 run at gain −30 dB and 3.90625 MSps capture produced a valid
+four-satellite PVT solution after 63.41 seconds, with 3.653 m horizontal error
+against the synthetic target and no receiver error. This verifies the tested
+translated GPS bench path; passive sky reception remains unverified.
+Normal and reverse RTTY are implemented by the independent OnAir companion:
+run `tools/setup-rtty-decoder.sh`, source its `rtty-env.sh`, then restart the service.
+Both 45.45-baud/170-Hz modes decoded known text in offline fixtures and over the
+435 MHz Pluto/SAN-90 bench. See [RTTY setup and replay](../../tools/README.md#independent-rtty-companion).
+
 To rebuild, use Linux, Rust stable ≥1.95, a C/C++ toolchain, CMake,
 pkg-config and Node.js 22.22+, 24.15+ or ≥26 (the frontend test stack's floor; a plain Vite
 build accepts 22.12+). Python 3.12 or 3.13 supports tests, fixtures and bench tools; it is
@@ -56,6 +89,19 @@ to select it; status and stop read saved endpoint/ownership metadata. Keep one p
 See [FAQ notes](FAQ_NOTES.md) and [the tools guide](../../tools/README.md) for service and hardware configuration.
 
 The Pluto bench dispatcher supports `radiofax` and `wefax` through the same streaming transmitter. Use `python3 tools/pluto_tx.py radiofax --dry-run` without hardware, or add `--image chart.png --ioc 576 --lpm 120` for a page. Image height keeps its aspect ratio unless `--lines` is set. `--modulation am`, `--polarity inverted`, framing durations, offset, repeat and pause follow the mode's help. Default FM uses APT, 30 s phasing, 1500–2300 Hz image tones and APT stop. 180 LPM needs manual receiver settings. Full pages stream at the radio's accepted rate in fixed chunks; dry-run builds only a short head. See the [tools guide](../../tools/README.md) for examples.
+
+`tools/pluto_tx.py` also dispatches DTMF/APRS/AIS/FT4/WSPR and synthetic GPS.
+Digital and GPS generators use the shared `pluto_radio.Radio` streaming APIs
+`open_stream`, `prime_stream`, `push_chunk` and `drain_stream` with four queued
+buffers. Install the GPS source with `tools/setup-gps-simulator.sh`.
+The GPS CLI permits only a requested 435 MHz carrier; LO readback must be within
+100 Hz. Before waveform generation, it negotiates a sample-rate readback within
+20 Hz of the request and divisible by ten, then generates at that exact rate.
+Its default TX rate is 2.6 MSps, independently of the exact 4 MSps receiver-provider
+input. GPS gain defaults to −70 dB; the selected bench setting is explicit
+`--gain -30`. A completed transmission alone does not establish GPS RF decoding.
+See the [transmit guide](../../tools/README.md#rf-transmit-and-capture) for the
+synthetic scenario, receive opt-in and continuity limits.
 
 **Memory-limited hosts: builds must be serial and isolated.** Run Rust builds, Rust tests and
 browser suites sequentially; do not use parallel Make. Cargo `-j 1` limits only one invocation,

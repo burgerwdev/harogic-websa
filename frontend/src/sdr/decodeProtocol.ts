@@ -2,10 +2,12 @@
 import type { DrmReceiverStatus } from './drmLog';
 import type { RadiofaxClockSource, RadiofaxClockStatus, RadiofaxStage } from './radiofaxLog';
 import { parseRadiofaxTransmissionId } from './radiofaxLog';
+import { readDecoderImageStrip, type DecoderResultKind } from './decoderLog';
 export const MAX_DECODE_BYTES = 2 * 1024 * 1024;
 const U64_MAX = (1n << 64n) - 1n;
 export interface ReceiverEvent {
 	type: string;
+	provider?: string; mode?: string; kind?: DecoderResultKind; data?: unknown;
 	snapshotAck?: boolean;
 	text?: string; endsLine?: boolean; share?: number; rms?: number; keyed?: boolean;
 	centerHz?: number; pitchHz?: number; afcHz?: number; wpm?: number;
@@ -67,6 +69,35 @@ function uint64(value: unknown): bigint {
 function record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
+/** Bound both retained text and DOM work while preserving unfamiliar sensor fields. */
+function validateDecoderData(data: unknown, image: boolean): void {
+	let remaining = 16_384;
+	const visit = (value: unknown, depth: number, key = ''): void => {
+		if (--remaining < 0 || depth > 12) throw new Error('Decoder result exceeds structure limit');
+		if (value === null || typeof value === 'boolean') return;
+		if (typeof value === 'number' && Number.isFinite(value)) return;
+		if (typeof value === 'string') {
+			if (value.length > (image && key === 'png' ? MAX_DECODE_BYTES : 65_536)) throw new Error('Decoder result exceeds text limit');
+			return;
+		}
+		if (Array.isArray(value)) {
+			if (value.length > 1024) throw new Error('Decoder result exceeds row limit');
+			for (const item of value) visit(item, depth + 1);
+			return;
+		}
+		if (record(value)) {
+			const entries = Object.entries(value);
+			if (entries.length > 128) throw new Error('Decoder result exceeds field limit');
+			for (const [field, item] of entries) {
+				if (field.length > 256) throw new Error('Decoder result field is too long');
+				visit(item, depth + 1, field);
+			}
+			return;
+		}
+		throw new Error('Invalid decoder result value');
+	};
+	visit(data, 0);
+}
 function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 	if (!record(value) || value.version !== 1 || !record(value.event)) throw new Error('Invalid SDE2 envelope');
 	for (const key of ['channel', 'channel_id', 'epoch', 'seq']) {
@@ -81,6 +112,20 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		throw new Error('Invalid receiver snapshotAck');
 	}
 	const d = value.event;
+	if (d.type === 'decoder-result') {
+		if (typeof d.provider !== 'string' || !d.provider || d.provider.length > 64
+			|| typeof d.mode !== 'string' || d.mode !== value.mode
+			|| !['text', 'table', 'image', 'status'].includes(String(d.kind))
+			|| d.data === undefined || d.data === null) throw new Error('Invalid decoder result');
+		validateDecoderData(d.data, d.kind === 'image');
+		if ((d.kind === 'table' || d.kind === 'status') && !record(d.data) && !Array.isArray(d.data) && typeof d.data !== 'string') {
+			throw new Error('Invalid decoder result data');
+		}
+		if (d.kind === 'image') {
+			if (!record(d.data)) throw new Error('Invalid decoder image');
+			readDecoderImageStrip(d.data);
+		}
+	}
 	for (const key of ['share', 'rms', 'centerHz', 'pitchHz', 'afcHz', 'wpm', 'frequencyHz', 'timeOffsetS', 'snrDb', 'count',
 		'peakDevHz', 'pilotPct', 'rdsPi', 'rdsGroups', 'carrierHz', 'pilotDevHz', 'pilotSnrDb', 'width', 'height', 'row', 'rows',
 		'pushes', 'attempts', 'bufferedSamples', 'bufferedSeconds', 'level', 'srcLevel', 'index', 'signalLevel',

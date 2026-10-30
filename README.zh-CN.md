@@ -33,6 +33,7 @@
   音频电平及左右声道示波器。该指示仅表示存在导频，当前节目的左右声道内容仍可能相同。
   默认启用立体声，原生音频流输出双声道；显式关闭立体声时使用单声道。
 - **AM 分析** — 默认包络检波，可切换带积分载波跟踪的同步检波；显示恢复的 RF 载波频率、锁定状态、平滑后的调制度与输入电平、音频电平及最终 PCM 波形。标题 badge 显示同步锁定状态，悬停提供时序详情；检波开关位于载波频率旁。
+- **解码提供者与模式选择** — 可选 multimon-ng 增加寻呼、数据包、音调与选择呼叫，rtl_433 解码 ISM 设备，OnAir Web 提供 AIS、APRS、FT4、WSPR、Meteor LRPT 和 ADS-B；独立伴随程序提供正常/反向 RTTY，以及从 SDR IQ 解出的 GPS L1 C/A 导航。安装方式见[工具指南](tools/README.md)与[开发指南](docs/zh-CN/DEVELOPMENT.md)。常用按钮、快速搜索和分类 More 侧面板共享后端能力目录，文本、表格和图像复用可弹出/停靠的 Decode 悬浮窗，不创建第二个接收会话。时序、带宽与验证范围见[已知限制](docs/zh-CN/KNOWN_ISSUES.md)。
 - **触发与辅助** — RTA 设备电平触发与扫描模式软件触发；限制线与通过/失败余量；归一化；PNG/CSV 导出。
   RTA 捕获完成由设备与帧元数据确认；fixture 输入不模拟硬件触发命中。
 - **界面** — 侧边导航条、可选虚拟键盘、幅度单位与外部增益/线损补偿、深浅主题、中英文；全局界面缩放统一使用底部控件，SRV 模式同样适用
@@ -211,6 +212,8 @@ harogic-websa/
 - `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；随项目附带供配合自有 SDK 使用
 - `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
 - 官方 [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 为 **GNU LGPL v2.1 或更高版本**，在构建时下载，不纳入仓库。`tools/soapy-htra-stream-format.patch` 是本项目的兼容补丁，只应用于私有构建副本。
+- 可选 [multimon-ng](https://github.com/EliasOenal/multimon-ng) 与 [rtl_433](https://github.com/merbanan/rtl_433) 使用 GPL v2；[OnAir](https://github.com/adswill/OnAir) 使用 GPL v3，并有组件各自条款。它们作为独立安装的进程运行，不把解调代码复制进 MIT 主程序。安装脚本保留源码构建工具的固定源码/许可证，以及 OnAir 二进制说明和对应源码信息；再分发须遵守上游各项条款。
+- `tools/companions/rtty/main.cpp` 使用 **GPL-3.0-or-later**，作为独立编译的进程链接 OnAir RTTY 解码器，是主程序 MIT 许可证的明确例外；`backend/src/external/rtty.rs` 通过管道通信。参见 [RTTY 安装与回放](tools/README.md#independent-rtty-companion)。
 - 截图使用真实 SAN-90 拍摄（SDR 数字模式截图使用 PlutoSDR 作为信号源）
 - `tools/vendor/ggmorse/`：CW（莫尔斯）解码器来自 Georgi Gerganov 的
   [ggmorse](https://github.com/ggerganov/ggmorse)，**MIT** 协议，保留上游提交

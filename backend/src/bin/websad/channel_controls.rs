@@ -78,8 +78,8 @@ impl DevState {
         };
         let feasible = |width: f64, primary: &mut ChannelConfig| {
             primary.if_bw = width;
-            service_ddc::channel_plan(COARSE_RATE, primary).and_then(|plan| {
-                Ddc::validate_service_frequency(center, bandwidth, fs, taps, primary.freq, &plan)
+            service_ddc::source_plan(fs, primary).and_then(|source| {
+                service_ddc::validate_source_frequency(center, bandwidth, fs, taps, primary.freq, &source)
             }).is_ok()
         };
         if !feasible(minimum, &mut primary) {
@@ -133,6 +133,12 @@ impl DevState {
         config.enabled = boolean(data, "enabled", config.enabled)?;
         config.freq = number(data, &["freq", "listen"], config.freq)?;
         config.mode = text(data, &["mode", "demod"], &config.mode)?;
+        if config.mode != self.channel_configs()[(channel - 1) as usize].mode
+            && websa_channelizer::catalog::is_external(&config.mode)
+            && alias(data, &["ifbw", "if_bw"])?.is_none() {
+            config.if_bw = websa_channelizer::catalog::mode(&config.mode)
+                .ok_or("unsupported receiver mode")?.default_bandwidth_hz;
+        }
         let am_sync = boolean(data, "am_sync", config.am_sync)?;
         if am_sync != config.am_sync {
             config.am_sync_generation = config.am_sync_generation.checked_add(1)
@@ -184,7 +190,7 @@ impl DevState {
         if config.enabled && !(minimum..=maximum).contains(&config.freq) {
             return Err(format!("channel frequency outside device limits: channel {} requested {} Hz; valid RF range {minimum}..={maximum} Hz", config.channel, config.freq));
         }
-        service_ddc::channel_plan(COARSE_RATE,&config)?;
+        service_ddc::source_plan(IQ_FS, &config)?;
         if !(-200.0..=0.0).contains(&config.squelch) { return Err("squelch must be in -200..=0 dB".into()); }
         if !(0.0..=2.0).contains(&config.volume) { return Err("volume must be in 0..=2".into()); }
         if config.pitch <= 0.0 || config.pitch > 20_000.0 { return Err("pitch must be in (0, 20000] Hz".into()); }
@@ -206,23 +212,41 @@ impl DevState {
         Ok(())
     }
 
-    /// Primary tuning may move the shared capture; auxiliary tuning remains capture-bound.
+    /// Tuning retains the capture when it fits; wider channels can widen the shared source.
     pub(super) fn channel_recapture(&self, config: &ChannelConfig) -> Result<Option<service_capture::CaptureConfig>, String> {
-        if config.channel != 1 || !config.enabled || config.freq == self.sdr_listen {
+        if !config.enabled {
             return Ok(None);
+        }
+        if self.pipeline.is_none() && self.ddc.is_none() {
+            // There is no live source to retain. The fallback capture status is
+            // not negotiated hardware geometry and must not drive admission.
+            let mut configs = self.channel_configs();
+            configs[(config.channel - 1) as usize] = config.clone();
+            let fit=self.fit_service_capture(self.sdr_center,self.sdr_decimate,
+                self.sdr_pfb_taps_per_phase,configs.clone(),false);
+            return match fit {
+                Err(_) if config.channel==1 && config.freq!=self.sdr_listen =>
+                    self.fit_service_capture(config.freq,self.sdr_decimate,
+                        self.sdr_pfb_taps_per_phase,configs,false).map(Some),
+                result => result.map(Some),
+            };
         }
         let fs = self.capture_bandwidth() / 0.8;
         let center = self.capture_center();
         let bandwidth = self.capture_bandwidth();
-        let plan = service_ddc::channel_plan(COARSE_RATE, config)?;
-        let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
-        if (-m / 2..m / 2).contains(&signed_bin(config.freq, center))
-            && (config.freq - center).abs() + plan.occupied_bandwidth_hz / 2.0 <= bandwidth / 2.0 {
-            return Ok(None);
+        if let Ok(source) = service_ddc::source_plan(fs, config) {
+            let plan = source.plan();
+            let edge = if source.is_direct() { plan.stopband_hz } else { plan.occupied_bandwidth_hz / 2.0 };
+            let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
+            if (source.is_direct() || (-m / 2..m / 2).contains(&signed_bin(config.freq, center)))
+                && (config.freq - center).abs() + edge <= bandwidth / 2.0 {
+                return Ok(None);
+            }
         }
         let mut configs = self.channel_configs();
-        configs[0] = config.clone();
-        self.fit_service_capture(config.freq,self.sdr_decimate,self.sdr_pfb_taps_per_phase,configs,false).map(Some)
+        configs[(config.channel - 1) as usize] = config.clone();
+        let requested_center = if config.channel == 1 && config.freq != self.sdr_listen { config.freq } else { center };
+        self.fit_service_capture(requested_center,self.sdr_decimate,self.sdr_pfb_taps_per_phase,configs,false).map(Some)
     }
 
     pub(super) fn apply_channel_config(&mut self, data: &Value) -> Result<(), String> {
@@ -240,17 +264,25 @@ impl DevState {
             || old.radiofax_acquisition!=config.radiofax_acquisition || old.radiofax_ioc!=config.radiofax_ioc
             || old.radiofax_lpm!=config.radiofax_lpm || old.radiofax_modulation!=config.radiofax_modulation
             || old.radiofax_polarity!=config.radiofax_polarity || old.radiofax_clock_recovery!=config.radiofax_clock_recovery;
+        let staged_fixtures = if geometry_changed && self.hardware_shim.is_none() && self.swp.mode == "sdr" {
+            let mut candidate = configs.clone();
+            candidate[(channel - 1) as usize] = config.clone();
+            Some(match self.fixture_sources.as_ref() {
+                Some(current) => current.staged(&candidate)?,
+                None => service_fixture::FixtureSources::new().staged(&candidate)?,
+            })
+        } else { None };
         let recapture = self.channel_recapture(&config)?;
         if geometry_changed && config.enabled && recapture.is_none() {
             // Replay IQ clocks describe receiver output, not the shared RF capture grid.
             let fs = self.capture_bandwidth() / 0.8;
-            let plan=service_ddc::channel_plan(COARSE_RATE,&config)?;
-            Ddc::validate_service_frequency(self.capture_center(),self.capture_bandwidth(),fs,
-                self.sdr_pfb_taps_per_phase,config.freq,&plan)?;
+            let source=service_ddc::source_plan(fs,&config)?;
+            service_ddc::validate_source_frequency(self.capture_center(),self.capture_bandwidth(),fs,
+                self.sdr_pfb_taps_per_phase,config.freq,&source)?;
         }
         if geometry_changed && self.pipeline.is_none() && self.ddc.is_none() && self.receiver_failure.is_none() {
             if let Some(workers)=self.receiver_workers.as_mut() {
-                match workers.finish_radiofax(&[channel]).and_then(|output| {
+                match workers.retire_channels(&[channel]).and_then(|output| {
                     self.decode_snapshots.observe(&output.decode)?;
                     Ok(output)
                 }) {
@@ -303,6 +335,7 @@ impl DevState {
         }
         self.sdr_aux = json!({"2":configs[1], "3":configs[2]});
         self.sdr_channels = configs;
+        if let Some(fixtures) = staged_fixtures { self.fixture_sources = Some(fixtures); }
         if self.receiver_failure.is_none() {
             if let Some(workers) = self.receiver_workers.as_mut() {
                 if let Err(error)=workers.configure(&self.sdr_channels) {self.latch_receiver_failure(error);}
@@ -461,9 +494,10 @@ mod tests {
         for width in [maximum, maximum + 1.0] {
             let mut config = state.channel_configs()[0].clone();
             config.if_bw = width;
-            let result = service_ddc::channel_plan(COARSE_RATE, &config).and_then(|plan| {
-                Ddc::validate_service_frequency(state.capture_center(), state.capture_bandwidth(),
-                    state.capture_bandwidth() / 0.8, state.sdr_pfb_taps_per_phase, config.freq, &plan)
+            let fs = state.capture_bandwidth() / 0.8;
+            let result = service_ddc::source_plan(fs, &config).and_then(|source| {
+                service_ddc::validate_source_frequency(state.capture_center(), state.capture_bandwidth(),
+                    fs, state.sdr_pfb_taps_per_phase, config.freq, &source)
             });
             assert_eq!(result.is_ok(), width == maximum, "width={width}");
         }
@@ -495,26 +529,118 @@ mod tests {
         assert_eq!(capture.configs[1].freq, 120e6);
         assert!(capture.configs[1].enabled);
         let aux = state.parse_channel_config(&json!({"channel": 2, "freq": 130e6})).unwrap();
-        assert!(state.channel_recapture(&aux).unwrap().is_none());
+        assert!(state.channel_recapture(&aux).is_err());
         let inside = state.parse_channel_config(&json!({"channel": 1, "freq": 105e6, "mode": "am", "ifbw": 6000})).unwrap();
         assert!(state.channel_recapture(&inside).unwrap().is_none());
         state.sdr_channels[1].freq = 90e6;
         assert!(state.channel_recapture(&config).is_err());
     }
+
+    #[test]
+    fn auxiliary_outside_narrow_capture_widens_without_moving_primary() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        state.sdr_decimate = 2048;
+        let fs = IQ_FS / 8.0;
+        let bandwidth = fs * 0.8;
+        state.ddc = Some(SendDdc(Ddc::configured_service(100e6, bandwidth, &mut None,
+            16, fs, &state.channel_configs()).unwrap()));
+        state.hardware_shim = Some("geometry-only".into());
+        let aux = state.parse_channel_config(&json!({
+            "channel":2,"enabled":true,"freq":110e6,"mode":"am","ifbw":6000,
+        })).unwrap();
+        let capture = state.channel_recapture(&aux).unwrap().unwrap();
+        assert_eq!(capture.center, 100e6);
+        assert_eq!(capture.configs[0].freq, 100e6);
+        assert_eq!(capture.configs[1], aux);
+        assert!(capture.source_rate > fs);
+        assert!(capture.bandwidth > bandwidth);
+        assert_eq!(state.capture_bandwidth(), bandwidth);
+    }
+
+    #[test]
+    fn same_frequency_gps_mode_widens_source_capture() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.sdr_center = 1_575_420_000.0;
+        state.sdr_listen = state.sdr_center;
+        state.sdr_decimate = 2048;
+        let fs = IQ_FS / 32.0;
+        let bandwidth = fs * 0.8;
+        state.ddc = Some(SendDdc(Ddc::configured_service(state.sdr_center, bandwidth, &mut None,
+            16, fs, &state.channel_configs()).unwrap()));
+        state.hardware_shim = Some("geometry-only".into());
+        let mut config = state.channel_configs()[0].clone();
+        config.mode = "gps".into();
+        config.if_bw = 2_046_000.0;
+        assert_eq!(config.freq, state.sdr_listen);
+        assert!(service_ddc::source_plan(fs, &config).is_err());
+        let capture = state.channel_recapture(&config).unwrap().unwrap();
+        assert_eq!(capture.center, state.sdr_center);
+        assert_eq!(capture.configs[0], config);
+        assert!(capture.source_rate > fs);
+        let source = service_ddc::source_plan(capture.source_rate, &config).unwrap();
+        assert!(source.is_direct());
+        service_ddc::validate_source_frequency(capture.center, capture.bandwidth,
+            capture.source_rate, capture.taps, config.freq, &source).unwrap();
+        assert_eq!(state.capture_bandwidth(), bandwidth);
+    }
+
+    #[test]
+    fn cold_gps_enable_uses_candidate_capture_instead_of_status_fallback() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.hardware_shim=Some("geometry-only".into());
+        state.sdr_center=434_750_000.0;
+        state.sdr_listen=1_000_000_000.0;
+        state.sdr_decimate=16;
+        let mut configs=state.channel_configs();
+        configs[0].enabled=false;
+        configs[0].freq=state.sdr_listen;
+        state.sdr_channels=configs.clone();
+        assert!(state.pipeline.is_none() && state.ddc.is_none());
+        assert_eq!(state.capture_bandwidth(),50_000_000.0);
+        let mut gps=configs[0].clone();
+        gps.enabled=true;
+        gps.freq=435_000_000.0;
+        gps.mode="gps".into();
+        gps.if_bw=2_046_000.0;
+        let capture=state.channel_recapture(&gps).unwrap().unwrap();
+        assert_eq!(capture.center,434_750_000.0);
+        assert_eq!(capture.source_rate,3_906_250.0);
+        assert_eq!(capture.device_decimate,16);
+        assert_eq!(capture.configs[0],gps);
+        let source=service_ddc::source_plan(capture.source_rate,&gps).unwrap();
+        service_ddc::validate_source_frequency(capture.center,capture.bandwidth,
+            capture.source_rate,capture.taps,gps.freq,&source).unwrap();
+        assert_eq!(state.sdr_listen,1_000_000_000.0);
+    }
+
+    #[test]
+    fn cold_primary_far_retune_moves_capture_center() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.hardware_shim=Some("geometry-only".into());
+        state.sdr_center=1_000_000_000.0;
+        state.sdr_listen=state.sdr_center;
+        state.sdr_decimate=16;
+        let mut config=state.channel_configs()[0].clone();
+        config.enabled=true;
+        config.freq=14_000_000.0;
+        let capture=state.channel_recapture(&config).unwrap().unwrap();
+        assert_eq!(capture.center,14_000_000.0);
+        assert_eq!(capture.configs[0],config);
+        assert_eq!(state.sdr_center,1_000_000_000.0);
+    }
 }
 
-pub(super) async fn plugins() -> Json<Value> {
-    use websa_dsp::plugin::{plugins, PluginKind};
+pub(super) async fn plugins() -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    use websa_channelizer::catalog;
     use websa_dsp::digital::sstv::{mode_vis, SSTV_MODES};
-    let manifest: Vec<_> = [("analog", PluginKind::Analog), ("digital", PluginKind::Digital),
-        ("audio", PluginKind::Audio), ("ddc", PluginKind::Ddc)].into_iter()
-        .flat_map(|(kind, family)| plugins(family).iter().map(move |plugin| json!({
-            "kind":kind, "id":plugin.id, "implemented":plugin.implemented,
-            "audioEnhancement":plugin.audio_enhancement,
-        }))).collect();
+    let manifest = tokio::task::spawn_blocking(catalog::manifest).await
+        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":format!("decoder catalog failed: {error}")}))))?;
     let modes: Vec<_> = SSTV_MODES.iter().enumerate().map(|(index, (name, mode))| {
         let (width, height) = mode.resolution();
         json!({"index":index,"name":name,"vis":mode_vis(*mode),"width":width,"height":height})
     }).collect();
-    Json(json!({"plugins":manifest,"sstv_modes":modes}))
+    Ok(Json(json!({"plugins":manifest,"sstv_modes":modes})))
 }

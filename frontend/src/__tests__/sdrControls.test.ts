@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 vi.mock('../audio/sdrAudio', () => ({
@@ -51,6 +52,10 @@ async function load() {
 	const state = await import('../ui/sdrState');
 	const { send } = await import('../core/wsSend');
 	const store = await import('../core/store');
+	const { setPluginManifest } = await import('../sdr/registry');
+	setPluginManifest(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm', 'ft8', 'drm', 'drmplus', 'sstv', 'radiofax'].map((id) => receiverPlugin(id)));
+	const { deviceMode } = await import('../ui/graphMode');
+	deviceMode.confirm('sdr');
 	store.setDeviceConnected(true);
 	return { controls, state, send };
 }
@@ -68,6 +73,24 @@ function key(value: string) {
 }
 
 describe('SDR control intent and STATUS', () => {
+	it('cycles only available modes and refuses selection outside receiver control', async () => {
+		const { controls, state, send } = await load();
+		// These instances must follow resetModules so they share the controls state.
+		const { setPluginManifest } = await import('../sdr/registry');
+		const { graphMode, deviceMode } = await import('../ui/graphMode');
+		setPluginManifest([receiverPlugin('am'), receiverPlugin('ism', { available: false }), receiverPlugin('cw')]);
+		graphMode.confirm('sdr');
+		controls.bindCanvas();
+		key('M');
+		expect(state.sdrDemod.get()).toBe('cw');
+		vi.mocked(send).mockClear();
+		controls.selectSdrDemod('ism');
+		expect(state.sdrDemod.get()).toBe('cw');
+		deviceMode.confirm('server');
+		controls.selectSdrDemod('am');
+		expect(state.sdrDemod.get()).toBe('cw');
+		expect(send).not.toHaveBeenCalled();
+	});
 	it.each([null, 145.5e6])('starts fresh at the swept centre or marker (%s), ignoring non-SDR receiver defaults', async (marker) => {
 		const { controls, state } = await load();
 		const store = await import('../core/store');
@@ -102,10 +125,10 @@ describe('SDR control intent and STATUS', () => {
 	it.each(['wfm', 'cw', 'ft8'].flatMap((mode) => ['keyboard', 'panel'].map((via) => ({ mode, via }))))(
 		'$via selection gives $mode its usable IF bandwidth', async ({ mode, via }) => {
 		const { controls, state, send } = await load();
-		const { graphMode } = await import('../ui/graphMode');
+		const { graphMode, deviceMode } = await import('../ui/graphMode');
 		const { setPluginManifest } = await import('../sdr/registry');
-		setPluginManifest(['am', mode].map((id) => ({ id, kind: id === 'ft8' ? 'digital' as const : 'analog' as const,
-			implemented: true, audioEnhancement: false })));
+		setPluginManifest(['am', mode].map((id) => receiverPlugin(id)));
+		deviceMode.confirm('sdr');
 		graphMode.confirm('sdr');
 		state.sdrIfbw.confirm(mode === 'wfm' ? 6000 : 180000);
 		controls.bindCanvas();
@@ -284,6 +307,48 @@ describe('SDR control intent and STATUS', () => {
 		expect(state.sdrIfbw.confirmedValue()).toBe(6000);
 		expect(state.sdrIfbw.get()).toBe(6000);
 	});
+	it('keeps external receiver mode and filter pending beyond three seconds until its matching ACK', async () => {
+		const { controls, state, send } = await load();
+		// Resolve the fresh registry instance after this test's resetModules boundary.
+		const { pluginManifest, setPluginManifest } = await import('../sdr/registry');
+		setPluginManifest([...(pluginManifest() ?? []), receiverPlugin('gps', {
+			kind: 'digital', provider: 'gnss-sdr', startupTimeoutMs: 25000,
+			defaultBandwidthHz: 2_000_000, minBandwidthHz: 2_000_000, maxBandwidthHz: 2_000_000,
+			bandwidthPresetsHz: [2_000_000], bandwidthEditable: false, audioCompanion: null, outputs: ['table'],
+		})]);
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
+		controls.selectSdrDemod('gps');
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string; ifbw: number };
+		vi.advanceTimersByTime(20000);
+		expect(state.sdrDemod.pending()).toBe(true);
+		expect(state.sdrDemod.get()).toBe('gps');
+		expect(state.sdrIfbw.pending()).toBe(true);
+		expect(state.sdrIfbw.get()).toBe(request.ifbw);
+		controls.syncSdrPanel({ ...status('sdr', 'gps', { if_bw: request.ifbw }),
+			response_to: 'SET_SDR_CHANNEL', request_id: request.request_id });
+		expect(state.sdrDemod.pending()).toBe(false);
+		expect(state.sdrDemod.confirmedValue()).toBe('gps');
+		vi.advanceTimersByTime(6000);
+		expect(state.sdrDemod.get()).toBe('gps');
+		expect(state.sdrIfbw.get()).toBe(request.ifbw);
+	});
+	it('uses the selected receiver startup deadline when entering SDR', async () => {
+		const { controls, state } = await load();
+		// Static imports would retain registry/graph state from before resetModules.
+		const { pluginManifest, setPluginManifest } = await import('../sdr/registry');
+		setPluginManifest([...(pluginManifest() ?? []), receiverPlugin('gps', { kind: 'digital', provider: 'gnss-sdr', startupTimeoutMs: 25000 })]);
+		const graph = await import('../ui/graphMode');
+		graph.deviceMode.confirm('std');
+		graph.graphMode.confirm('std');
+		state.sdrDemod.confirm('gps');
+		controls.setGraphMode('sdr');
+		vi.advanceTimersByTime(20000);
+		expect(graph.pendingGraphMode()).toBe('sdr');
+		graph.confirmGraphMode('sdr');
+		vi.advanceTimersByTime(6000);
+		expect(graph.currentGraphMode()).toBe('sdr');
+		expect(graph.pendingGraphMode()).toBeNull();
+	});
 
 	it('learns mode memory from external STATUS rather than only local edits', async () => {
 		const { controls, state } = await load();
@@ -294,12 +359,12 @@ describe('SDR control intent and STATUS', () => {
 	});
 
 	it('retries rejected saved mode memory at its recommendation, then restores the confirmed mode', async () => {
-		localStorage.setItem('web-sa-sdr-filter-by-mode', '{"cw":900000000}');
+		localStorage.setItem('web-sa-sdr-filter-by-mode', '{"cw":900000}');
 		const { controls, state, send } = await load();
 		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
 		controls.selectSdrDemod('cw');
 		const restored = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string; ifbw: number };
-		expect(restored.ifbw).toBe(900000000);
+		expect(restored.ifbw).toBe(900000);
 		controls.rejectSdrFilterRequest('SET_SDR_CHANNEL', restored.request_id);
 		const fallback = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string; mode: string; ifbw: number };
 		expect(fallback).toEqual(expect.objectContaining({ mode: 'cw', ifbw: 500 }));

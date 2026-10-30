@@ -2083,7 +2083,28 @@ impl DevState {
         })
     }
 
+    fn auto_receiver_preparation_required(&self) -> bool {
+        self.swp.mode == "sdr" && self.receiver_failure.is_none()
+            && self.auto.observation_status == -12
+            && self.auto.session.as_ref().is_some_and(|session| !session.display_only
+                && session.config == self.config_version && self.auto.observation_config == session.config
+                && self.auto.observation > session.seen && session.remaining > 0
+                && std::time::Instant::now() < session.deadline)
+    }
+
+    fn missing_receiver_preparations(&self) -> Vec<receiver_workers::ChannelConfig> {
+        let configs = self.channel_configs();
+        match self.receiver_workers.as_ref() {
+            Some(workers) => workers.missing_preparations(&configs),
+            None => configs.into_iter().filter(|config| config.enabled
+                && websa_channelizer::catalog::is_external(&config.mode)).collect(),
+        }
+    }
+
     fn advance_auto(&mut self) -> bool {
+        if self.auto_receiver_preparation_required() && !self.missing_receiver_preparations().is_empty() {
+            return false;
+        }
         let Some(mut session) = self.auto.session.take() else { return false; };
         if session.mode != self.swp.mode || session.config != self.config_version {
             return self.finish_auto("cancelled", None);
@@ -2293,6 +2314,7 @@ struct Ddc {
     stream: Box<PfbStream>,
     fine: Option<sdr_pipeline::FineState>,
     fine_worker: Option<sdr_pipeline::FineWorker>,
+    direct: BTreeMap<u32, sdr_pipeline::DirectChannel>,
     carry: Vec<Vec<u8>>,
     pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64)>,
     capture_center: f64,
@@ -2425,7 +2447,8 @@ impl Ddc {
         bank.subscribe(1, bin, offset, decimate)
             .map_err(str::to_owned)?;
         let framer =
-            BasebandFramer::new(1, epoch as u64, listen, rate).ok_or("baseband frame metadata rejected")?;
+            BasebandFramer::new(1, epoch as u64, listen, rate)
+                .and_then(|framer|framer.with_source_rate(fs)).ok_or("baseband frame metadata rejected")?;
         let fine = sdr_pipeline::FineState::new(bank, framer, fs, epoch, listen);
         let registry = fine.registry.clone();
         let generation = hardware.as_ref().map_or(0, |c| c.geometry.generation);
@@ -2433,6 +2456,7 @@ impl Ddc {
             stream: Box::new(stream),
             fine: Some(fine),
             fine_worker: None,
+            direct: BTreeMap::new(),
             carry: Vec::new(),
             pan: Vec::new(),
             capture_center: center,
@@ -2620,6 +2644,7 @@ impl Ddc {
             .filter(|&id| id <= u32::MAX as u64)
             .ok_or("fine channel ID exhausted")?;
         let next = BasebandFramer::new(id, self.stream.epoch(), listen, self.channel_rate())
+            .and_then(|framer|framer.with_source_rate(self.stream.input_sample_rate()))
             .ok_or("baseband frame metadata rejected")?;
         self.stream.flush_pending().map_err(str::to_owned)?;
         let mut frames = std::mem::take(&mut self.carry);
@@ -2689,7 +2714,8 @@ impl Ddc {
                 .ok_or("fine channel ID exhausted")?
         } else { self.next_id };
         let next = enabled
-            .then(|| BasebandFramer::new_aux(id, self.stream.epoch(), freq, self.channel_rate()))
+            .then(|| BasebandFramer::new_aux(id, self.stream.epoch(), freq, self.channel_rate())
+                .and_then(|framer|framer.with_source_rate(self.stream.input_sample_rate())))
             .flatten();
         if enabled && next.is_none() {
             return Err("aux frame metadata rejected".into());
@@ -2783,6 +2809,9 @@ impl Ddc {
         self.input_pos += N as u64;
         let seq = self.next_seq;
         let mut frames = Vec::new();
+        for route in self.direct.values_mut() {
+            frames.extend(route.process(seq,stamp,self.input_pos-N as u64,&raw)?);
+        }
         let mut retries = 0;
         loop {
             let started = std::time::Instant::now();
@@ -3061,7 +3090,23 @@ impl CommandError {
     }
 }
 
+#[cfg(test)]
 fn dispatch(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool, CommandError> {
+    prepare_receiver_recovery(state, cmd, data)?;
+    dispatch_ready(state, cmd, data)
+}
+
+fn prepare_receiver_recovery(state: &mut DevState, cmd: &str, data: &Value) -> Result<(), CommandError> {
+    let recovery = matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC")
+        && state.receiver_failure.is_some() && ["mode", "demod"].iter().any(|field| data.get(*field).is_some());
+    let mode_change = cmd == "SET_MODE" && data["mode"].as_str().is_some_and(|mode| mode != state.swp.mode);
+    if (recovery || mode_change) && !state.reap_failed_receivers() {
+        return Err(CommandError::new("receiver_retiring", "Receiver is still stopping; retry shortly"));
+    }
+    Ok(())
+}
+
+fn dispatch_ready(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool, CommandError> {
     let previous = matches!(cmd, "SET_FREQ" | "SET_RTA" | "SET_RBW" | "SET_VBW"
         | "SET_SWEEP" | "SET_POINTS" | "SET_SPUR" | "SET_WINDOW" | "SET_DETECTOR"
         | "SET_FRAMEDET" | "SET_TRACEGRID" | "SET_REF" | "SET_AMP" | "SET_REFCK"
@@ -3092,9 +3137,6 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
         }
         let restart=state.receiver_failure.is_some()
             && ["mode","demod"].iter().any(|field|data.get(*field).is_some());
-        if restart && !state.reap_failed_receivers() {
-            return Err(CommandError::new("receiver_retiring","Receiver is still stopping; retry shortly"));
-        }
         state.apply_channel_config(data).map_err(|error|CommandError::new("bad_parameter",&error))?;
         if state.hardware_shim.is_none() {
             let configs=state.channel_configs();
@@ -3183,7 +3225,6 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 // fails; acquisition must not overlap an unreaped child.
                 state.server.lock().stop().map_err(device)?;
             }
-            if !state.reap_failed_receivers() {return Err(CommandError::new("receiver_retiring","Receiver is still stopping; retry shortly"));}
             if mode != next {
                 // One vendor session at a time: drop (join) the old owner before the next opens.
                 let registry=state.stream_registry();
@@ -3725,15 +3766,15 @@ async fn api_config(State(app): State<Arc<App>>, headers: HeaderMap, body: Strin
     let reply_app = app.clone();
     let response_to = cmd.clone();
     let request_id = command_request_id(&data);
-    let revision=match service_preflight::preflight(&app,&cmd,&data).await {
-        Ok(revision)=>revision,
+    let mut admission=match service_preflight::preflight(&app,&cmd,&data).await {
+        Ok(admission)=>admission,
         Err(error)=>return (StatusCode::BAD_REQUEST,Json(with_request_id(command_error_reply(error_body(&error,"bad_parameter"),&cmd),request_id.as_ref()))).into_response(),
     };
     let reply = match tokio::task::spawn_blocking(move || {
+        let revision = admission.revision;
         let mut state = app.state.lock().unwrap();
-        if state.config_version!=revision {return Err(CommandError::new("configuration_changed","configuration changed during admission; retry command"));}
         let same_capture = state.swp.mode == "sdr" && cmd != "SET_MODE" && cmd != "CONNECT";
-        match dispatch(&mut state, &cmd, &data) {
+        let reply = match admission.dispatch(&mut state, &cmd, &data) {
             Ok(changed) => {
                 if changed && !same_capture {
                     app.epoch.fetch_add(1, Ordering::AcqRel);
@@ -3757,10 +3798,14 @@ async fn api_config(State(app): State<Arc<App>>, headers: HeaderMap, body: Strin
                     drop(state);
                     let status = snapshot.build();
                     app.state.publish_status(snapshot.revision, status);
+                } else {
+                    drop(state);
                 }
                 Err(error)
             },
-        }
+        };
+        drop(admission);
+        reply
     })
     .await
     {
@@ -3860,8 +3905,35 @@ fn cw_keying(text: &str, wpm: f64, rate: f64) -> Vec<f32> {
 /// Publisher: one acquisition step per mode, fanned out by each client's query filter.
 async fn publisher(app: Arc<App>) {
     let mut status_due = tokio::time::Instant::now();
+    let mut preparing: Option<tokio::task::JoinHandle<(u64, Vec<receiver_workers::ChannelConfig>, Result<receiver_workers::PreparedDecoders, String>)>> = None;
+    let mut preparation_failed = None;
     loop {
         let started = tokio::time::Instant::now();
+        let mut prepared = None;
+        if preparing.as_ref().is_some_and(|task| task.is_finished()) {
+            match preparing.take().unwrap().await {
+                Ok(result) => prepared = Some(result),
+                Err(error) => {
+                    eprintln!("WebSA decoder preparation worker failed: {error}");
+                    break;
+                }
+            }
+        }
+        if preparing.is_none() && prepared.is_none() {
+            let candidate = {
+                let state = app.state.lock().unwrap();
+                let restarting = state.swp.mode == "sdr" && state.receiver_failure.is_none()
+                    && ((state.hardware_shim.is_some() && state.pipeline.is_none() && state.ddc.is_none())
+                        || state.auto_receiver_preparation_required());
+                let missing = if restarting { state.missing_receiver_preparations() } else { Vec::new() };
+                (!missing.is_empty() && preparation_failed != Some((state.config_version, state.auto.seq)))
+                    .then_some((state.config_version, state.channel_configs(), missing))
+            };
+            if let Some((revision, configs, missing)) = candidate {
+                preparing = Some(tokio::task::spawn_blocking(move ||
+                    (revision, configs, receiver_workers::PreparedDecoders::new(&missing))));
+            }
+        }
         let (iq_clients, aux_clients, display_clients, audio_clients,decode_clients) = {
             let clients = app.clients.lock();
             (
@@ -3878,13 +3950,46 @@ async fn publisher(app: Arc<App>) {
         let compute = app.clone();
         let send_status = status_due.elapsed() >= STATUS_PERIOD;
         let result = tokio::task::spawn_blocking(move || {
+            let mut discarded_preparation = None;
             let mut state = compute.state.lock().unwrap();
+            let mut preparation_error = None;
+            let mut failed_revision = None;
+            if let Some((revision, configs, result)) = prepared {
+                if state.config_version == revision && state.channel_configs() == configs && state.swp.mode == "sdr"
+                    && state.receiver_failure.is_none() {
+                    match result {
+                        Ok(batch) => {
+                            if state.receiver_workers.is_none() {
+                                match receiver_workers::ReceiverWorkers::new() {
+                                    Ok(workers) => state.receiver_workers = Some(workers),
+                                    Err(error) => preparation_error = Some(error),
+                                }
+                            }
+                            if let Some(workers) = state.receiver_workers.as_mut() {
+                                discarded_preparation = Some(workers.exchange_prepared(batch));
+                            } else {
+                                discarded_preparation = Some(batch);
+                            }
+                        }
+                        Err(error) => preparation_error = Some(error),
+                    }
+                    if let Some(error) = preparation_error.as_ref() {
+                        if state.auto.session.is_some() { state.finish_auto("failed", None); }
+                        failed_revision = Some((revision, state.auto.seq));
+                        eprintln!("WebSA receiver preparation failed: {error}");
+                    }
+                }
+                else if let Ok(batch) = result { discarded_preparation = Some(batch); }
+            }
             let mode = state.swp.mode.clone();
             let epoch = compute.epoch.load(Ordering::Acquire);
             let mut display: Vec<Bytes> = Vec::new();
             let mut iq_frame: Vec<Vec<u8>> = Vec::new();
             let mut aux_frame: Vec<Vec<u8>> = Vec::new();
             let mut msgs: Vec<Value> = Vec::new();
+            if let Some(error) = preparation_error {
+                msgs.push(json!({"type":"receiver_preparation_error", "error":error}));
+            }
             let mut hardware = None;
             let acquisition_started = std::time::Instant::now();
             let pace = match mode.as_str() {
@@ -3910,9 +4015,13 @@ async fn publisher(app: Arc<App>) {
                 "sdr" if state.hardware_shim.is_some() => {
                     let listeners = iq_clients + aux_clients + display_clients + audio_clients + decode_clients
                         + usize::from(state.auto.session.is_some());
-                    match state.take_hardware_presentation(listeners) {
-                        Ok(output) => hardware = output,
-                        Err(error) => state.hardware_presentation_failed(error),
+                    let waiting = state.pipeline.is_none() && state.ddc.is_none()
+                        && state.receiver_failure.is_none() && !state.missing_receiver_preparations().is_empty();
+                    if !waiting {
+                        match state.take_hardware_presentation(listeners) {
+                            Ok(output) => hardware = output,
+                            Err(error) => state.hardware_presentation_failed(error),
+                        }
                     }
                     Duration::from_millis(1)
                 }
@@ -3954,6 +4063,7 @@ async fn publisher(app: Arc<App>) {
             }
             let display_version = state.freq_version;
             drop(state);
+            drop(discarded_preparation);
             if let Some(hardware) = hardware {
                 match hardware.finish() {
                     Ok(mut output) => {
@@ -3991,6 +4101,8 @@ async fn publisher(app: Arc<App>) {
                 state.reap_failed_receivers();
                 if let Some(message)=service_stream::publish_receiver_failure(&mut state,&compute) {msgs.push(message);}
             }
+            let mut unused_preparation = None;
+            let mut superseded_preparation = None;
             let auto_changed = {
                 let mut state = compute.state.lock().unwrap();
                 let before = state.config_version;
@@ -4002,10 +4114,22 @@ async fn publisher(app: Arc<App>) {
                     compute.display_version.store(state.freq_version, Ordering::Release);
                     state.publish_identities(&compute.identities);
                 }
+                let configs = state.channel_configs();
+                if let Some(workers) = state.receiver_workers.as_mut() {
+                    superseded_preparation = Some(workers.release_prepared(&configs));
+                }
+                if !state.auto_receiver_preparation_required() {
+                    let registry = state.stream_registry();
+                    if let Some(workers) = state.receiver_workers.as_mut() {
+                        unused_preparation = Some(workers.discard_staged(&registry));
+                    }
+                }
                 changed
             };
+            drop(unused_preparation);
+            drop(superseded_preparation);
             let mut status = None;
-            if send_status || auto_changed {
+            if send_status || auto_changed || failed_revision.is_some() {
                 let snapshot = compute.state.lock().unwrap().status_snapshot();
                 let mut built = snapshot.build();
                 let clients = compute.clients.lock();
@@ -4021,16 +4145,17 @@ async fn publisher(app: Arc<App>) {
                     status = Some((snapshot.revision, built));
                 }
             }
-            (display, iq_frame, aux_frame, msgs, status, pace, epoch, display_version)
+            (display, iq_frame, aux_frame, msgs, status, pace, epoch, display_version, failed_revision)
         })
         .await;
-        let (display, iq_frame, aux_frame, msgs, status, pace, epoch, display_version) = match result {
+        let (display, iq_frame, aux_frame, msgs, status, pace, epoch, display_version, failed_revision) = match result {
             Ok(value) => value,
             Err(error) => {
                 eprintln!("WebSA acquisition worker failed: {error}");
                 break;
             }
         };
+        if let Some(revision) = failed_revision { preparation_failed = Some(revision); }
         if send_status {
             status_due = tokio::time::Instant::now();
         }
@@ -4090,6 +4215,7 @@ async fn publisher(app: Arc<App>) {
             tokio::time::sleep(rest).await;
         }
     }
+    if let Some(task) = preparing { drop(task.await); }
 }
 
 /// Display frames use latest-wins per client (Python FRAME_POLICY): POWR/RTAF replace the
@@ -4489,8 +4615,8 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                         }
                         continue;
                     }
-                    let revision=match service_preflight::preflight(&app,&cmd,&data).await {
-                        Ok(revision)=>revision,
+                    let mut admission=match service_preflight::preflight(&app,&cmd,&data).await {
+                        Ok(admission)=>admission,
                         Err(error)=>{
                             let error=with_request_id(CommandError::new("bad_parameter",&error).reply_payload(&cmd),request_id.as_ref()).to_string();
                             if !send_frame(&mut sink,Message::Text(error.into())).await {break false;}
@@ -4504,10 +4630,10 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                         .flatten();
                     let error_request_id = request_id.clone();
                     let reply = match tokio::task::spawn_blocking(move || {
+                        let revision = admission.revision;
                         let mut state = worker_app.state.lock().unwrap();
-                        if state.config_version!=revision {return Some(Err(with_request_id(CommandError::new("configuration_changed","configuration changed during admission; retry command").reply_payload(&cmd),error_request_id.as_ref()).to_string()));}
                         let same_capture = state.swp.mode == "sdr" && cmd != "SET_MODE" && cmd != "CONNECT";
-                        match dispatch(&mut state, &cmd, &data) {
+                        let reply = match admission.dispatch(&mut state, &cmd, &data) {
                             Ok(changed) => {
                                 if changed && !same_capture {
                                     worker_app.epoch.fetch_add(1, Ordering::AcqRel);
@@ -4531,10 +4657,14 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                                     drop(state);
                                     let status = snapshot.build();
                                     worker_app.state.publish_status(snapshot.revision, status);
+                                } else {
+                                    drop(state);
                                 }
                                 Some(Err(with_request_id(error.reply_payload(&cmd),error_request_id.as_ref()).to_string()))
                             },
-                        }
+                        };
+                        drop(admission);
+                        reply
                     })
                     .await
                     {
@@ -4712,6 +4842,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+    // Resolve decoder dependencies before device state exists; command preflight uses cached
+    // capabilities and must never run child probes while holding the device mutex.
+    tokio::task::spawn_blocking(websa_channelizer::catalog::manifest).await?;
     let (golden, schema) = load_golden();
     let port: u16 = std::env::var("WEBSA_PORT")
         .ok()

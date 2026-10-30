@@ -24,6 +24,17 @@ impl DcBlock {
     pub fn reference() -> Self {
         Self::new(DEFAULT_A)
     }
+
+    /// Filter one sample without allocating. State persists across input blocks;
+    /// the first sample initializes the DC estimate without a startup impulse.
+    pub fn process_sample(&mut self, sample: f32) -> f32 {
+        let prev = self.prev.unwrap_or(sample);
+        let delta = (sample - prev) * self.a as f32;
+        // Keep the recursion in f64 so a slow fade retains precision.
+        self.y = self.a * self.y + delta as f64;
+        self.prev = Some(sample);
+        self.y as f32
+    }
 }
 
 impl AudioStage for DcBlock {
@@ -37,16 +48,9 @@ impl AudioStage for DcBlock {
             return;
         }
         out.reserve(input.len());
-        let mut prev = self.prev.unwrap_or(input[0]);
-        for sample in input {
-            let delta = (*sample - prev) * self.a as f32;
-            // The recursion itself is f64 (the reference does the same) so a slow fade cannot
-            // lose precision sample by sample.
-            self.y = self.a * self.y + delta as f64;
-            prev = *sample;
-            out.push(self.y as f32);
+        for &sample in input {
+            out.push(self.process_sample(sample));
         }
-        self.prev = Some(prev);
     }
 
     fn reset(&mut self) {

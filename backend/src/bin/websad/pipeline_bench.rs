@@ -7,7 +7,7 @@
 //! never a product admission limit. JSON contains separate warmup, measurement,
 //! and shutdown boundaries; payloads are inspected and immediately released.
 use super::sdr_pipeline::{ChannelRegistryEntry, Pipeline, PipelineConfig, PipelineOutput, Snapshot};
-use super::receiver_workers::{ChannelConfig, ReceiverFrames, ReceiverWorkers};
+use super::receiver_workers::{ChannelConfig, PreparedDecoders, ReceiverFrames, ReceiverWorkers};
 use super::{capture_decimate, hardware_pan, FrontEnd, BIN_SPACING, COARSE_RATE, IQ_FS};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -592,6 +592,11 @@ fn execute(options: &Options) -> Value {
             Ok(workers) => workers,
             Err(error) => return json!({"passed":false,"requested":requested,"admission":admission,"errors":[error]}),
         };
+        let prepared = match PreparedDecoders::new(&product_configs) {
+            Ok(prepared) => prepared,
+            Err(error) => return json!({"passed":false,"requested":requested,"admission":admission,"errors":[error]}),
+        };
+        workers.install_prepared(prepared);
         if let Err(error) = workers.configure(&product_configs) {
             return json!({"passed":false,"requested":requested,"admission":admission,"errors":[error]});
         }

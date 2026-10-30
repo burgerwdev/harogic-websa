@@ -7,11 +7,13 @@ use websa_channelizer::{encode_baseband, BasebandMagic};
 
 /// Independent native-receiver inputs for the fake device. These signals are
 /// already in normalized ADC units, so IQv2 encoding must not scale them again.
+#[derive(Clone)]
 pub(super) struct FixtureSources {
     slots: BTreeMap<u32, FixtureSlot>,
     registry: Arc<[ChannelRegistryEntry]>,
 }
 
+#[derive(Clone)]
 struct FixtureSlot {
     config: ChannelConfig,
     entry: ChannelRegistryEntry,
@@ -21,6 +23,7 @@ struct FixtureSlot {
     iq: Vec<f32>,
 }
 
+#[derive(Clone)]
 enum FixtureSource {
     Replay { iq: Arc<[f32]>, period_samples: usize },
     Cw { key: Arc<[f32]> },
@@ -57,6 +60,9 @@ pub(super) fn fixture(path: &str) -> Result<Arc<[f32]>, String> {
 
 impl FixtureSource {
     fn for_mode(mode: &str) -> Result<(Self, f64), String> {
+        if matches!(mode, "ft4" | "wspr") {
+            return Err("OnAir FT4/WSPR require UTC-aligned live IQ; looping fixture replay is unsupported".into());
+        }
         static FT8: LazyLock<Result<Arc<[f32]>, String>> =
             LazyLock::new(|| fixture("ft8/ft8_cq_iq.bin"));
         static SSTV: LazyLock<Result<Arc<[f32]>, String>> =
@@ -84,6 +90,13 @@ impl FixtureSource {
                 return Ok((Self::Analog, 48_000.0));
             }
             "radiofax" => return Ok((Self::Radiofax, 12_000.0)),
+            mode if websa_channelizer::catalog::is_external(mode) => {
+                let info = websa_channelizer::catalog::mode(mode).ok_or("external mode descriptor missing")?;
+                let rate = info.input_rate_hz.ok_or("external fixture rate missing")? as f64;
+                // External recordings are explicit inputs, never synthetic successful decodes.
+                // Place normalized f32le IQ at this exact advertised rate under WEBSA_FIXTURES.
+                (fixture(&format!("external/{mode}.f32"))?, rate, None)
+            }
             _ => return Err(format!("no fixture source for receiver mode {mode}")),
         };
         let period_samples = period.unwrap_or(iq.len() / 2);
@@ -199,6 +212,12 @@ impl FixtureSources {
         Self { slots: BTreeMap::new(), registry: Arc::from([]) }
     }
 
+    /// Build the complete replacement before channel controls retire any live identity.
+    pub(super) fn staged(&self, configs: &[ChannelConfig]) -> Result<Self, String> {
+        let mut staged = self.clone();
+        staged.configure(configs)?;
+        Ok(staged)
+    }
     pub(super) fn configure(&mut self, configs: &[ChannelConfig]) -> Result<(), String> {
         let mut seen = [false; 3];
         let mut replacements = Vec::new();
@@ -272,5 +291,24 @@ impl FixtureSources {
 
     fn refresh_registry(&mut self) {
         self.registry = self.slots.values().map(|slot| slot.entry.clone()).collect::<Vec<_>>().into();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_fixture_staging_preserves_live_identity_and_samples() {
+        let mut source = FixtureSources::new();
+        let mut config = ChannelConfig::for_slot(1);
+        config.freq = 100_000_000.0;
+        source.configure(&[config.clone()]).unwrap();
+        source.step().unwrap();
+        let mut reference = source.clone();
+        let registry = source.registry();
+        config.mode = "ft4".into();
+        assert!(source.staged(&[config]).err().unwrap().contains("UTC-aligned"));
+        assert_eq!(source.registry()[0].epoch, registry[0].epoch);
+        assert_eq!(source.step().unwrap(), reference.step().unwrap());
     }
 }

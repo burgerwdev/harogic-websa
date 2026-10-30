@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
+import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../audio/sdrAudio', () => ({
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
@@ -44,6 +45,8 @@ async function load() {
 	const ws = await import('../core/ws');
 	const controls = await import('../ui/controls');
 	const fit = await import('../ui/refAutoScale');
+	const { setPluginManifest } = await import('../sdr/registry');
+	setPluginManifest(['am', 'cw', 'ft8', 'sstv', 'radiofax', 'drm'].map((id) => receiverPlugin(id)));
 	ws.connectWS();
 	socket.onopen!();
 	return { ws, controls, fit };

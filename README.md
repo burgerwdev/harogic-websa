@@ -39,6 +39,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
 - **SDR filter** — per-mode presets and exact Hz/kHz/MHz entry. Drag the spectrum passband edges
   to adjust bandwidth, or its top frequency handle to tune. View focuses the passband for fine adjustment.
 - **Digital modes** — FT8 decoding, CW decoding, DRM/DRM+ reception, SSTV picture decoding (18 modes) and HF radiofax reception. Radiofax uses a 12 kHz USB path, IOC 288/576, 60/90/120/240 LPM, continuous pages and PNG export. The FT8 window supports QSO highlighting, regex filtering and column sorting. Current decoder and playback limits are documented in [KNOWN_ISSUES](docs/en/KNOWN_ISSUES.md).
+- **Decoder providers and selection** — optional multimon-ng adds paging, packet, tone and selective-call modes; rtl_433 decodes ISM devices; OnAir Web supplies AIS, APRS, FT4, WSPR, Meteor LRPT and ADS-B. Separate companions provide normal/reverse RTTY and GPS L1 C/A navigation from SDR IQ. Install providers using the [tooling guide](tools/README.md) and [Development](docs/en/DEVELOPMENT.md). Common buttons, quick search and a categorized More drawer share the backend capability catalog. Decode text, tables and images reuse the floating window, which can be popped out and docked without a second receiver session. See [limits](docs/en/KNOWN_ISSUES.md) for timing, bandwidth and verification scope.
 - **FM stereo and RDS** — WFM recovers L/R from the 19 kHz pilot and 38 kHz difference signal.
   It decodes RDS PI, station name and RadioText from 57 kHz. The FM pane shows a pilot-based
   STEREO/MONO badge, deviation, audio level and L/R scope. The badge reports the pilot, not
@@ -233,6 +234,8 @@ regeneration, guards, document/version checks and hardware prerequisites.
 - `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
 - Official [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` is **GNU LGPL v2.1 or later** and is downloaded at build time, not vendored. `tools/soapy-htra-stream-format.patch` is this project's compatibility patch and is applied only to a private build copy.
+- Optional [multimon-ng](https://github.com/EliasOenal/multimon-ng) and [rtl_433](https://github.com/merbanan/rtl_433) use GPL v2; [OnAir](https://github.com/adswill/OnAir) uses GPL v3 with component-specific notices. They run as independently installed processes, not copied decoder code in the MIT host. The setup script preserves pinned sources/licenses for source-built tools and OnAir's binary notices plus corresponding-source information; redistributors must retain the applicable upstream terms.
+- `tools/companions/rtty/main.cpp` is **GPL-3.0-or-later**, a separately built companion linked to OnAir's RTTY decoder. It is an explicit exception to the host's MIT license; `backend/src/external/rtty.rs` communicates with that executable through pipes. See [RTTY setup and replay](tools/README.md#independent-rtty-companion).
 - Screenshots taken on a real SAN-90 (the SDR digital-mode shots use a PlutoSDR as the signal source)
 - `tools/vendor/ggmorse/`: the CW (Morse) decoder is
   [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at

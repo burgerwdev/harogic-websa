@@ -21,6 +21,37 @@
 fixture。根目录启动脚本设置工作目录；fixture 默认从该目录下的 `tests/fixtures` 读取，
 可通过 `WEBSA_FIXTURES` 覆盖目录。
 
+可选外部接收器通过
+`tools/setup-sdr-decoders.sh --prefix "$HOME/.local/share/websa/decoders"` 独立安装。
+脚本固定并校验 multimon-ng、rtl_433 和 OnAir，串行构建前两者，保留源码与许可证，
+不更改系统软件包或运行中的服务。启动自己的 WebSA 实例前加载生成的 `env.sh`，其中导出
+`WEBSA_MULTIMON_PATH`、`WEBSA_RTL433_PATH` 和 `WEBSA_ONAIR_SERVER`。
+提供者探测结果在服务生命周期内缓存；更改依赖后须重启该实例。
+主 runtime 包不包含这些 GPL 工具。OnAir portable 仅限 Linux x86_64；脚本在二进制
+许可证说明旁记录对应源码 URL 与校验和。
+验证 fixture 时，将规范化的交错 f32le IQ 放在
+`$WEBSA_FIXTURES/external/<mode>.f32`，采样率须等于模式目录声明的精确输入速率。
+缺少文件时拒绝配置。FT4/WSPR 需要与 UTC 对齐的实时输入，拒绝无时间对齐信息的文件及循环
+fixture 回放；仅按实时速率播放录音不能证明时隙对齐。
+
+GPS L1 C/A 的独立 GNSS-SDR 进程通过 `tools/setup-gnss-decoder.sh` 安装；原生 Rust 桥接器
+通过 `cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websa-gnss` 构建，
+将其安装到解码器前缀的 `bin` 目录后加载 `gnss-env.sh`。安装脚本支持 `--dependency-prefix`
+指定本地依赖开发文件，支持 `--python` 指定仅用于构建的 Python/Mako 虚拟环境；生产桥接器
+不依赖 Python。输入是 SDR IQ，不是设备 SDK 内置 GNSS 状态。参见
+[GPS 安装和真实录音来源](../../tools/README.md#gps-l1-ca-from-sdr-iq)。
+
+GPS 在适配前要求至少 2.6 MSps，提供者 FIFO 输入则为精确 4 MSps；居中的
+3.90625 MSps 采集可在保留配置带宽和滤波过渡带的前提下适配。CTTC 真实录音回放
+已经验证。435 MHz Pluto/SAN-90 冷启动台架以 gain −30 dB、3.90625 MSps 采集，
+在 63.41 秒后得到四颗卫星支持的有效 PVT，与合成目标的水平误差为 3.653 m，
+未报告接收器错误。该结果验证了所测试的 GPS 频移台架路径；被动天空接收仍未验证。
+正常与反向 RTTY
+均已由独立 OnAir 伴随程序实现：运行 `tools/setup-rtty-decoder.sh`，加载其
+`rtty-env.sh` 后重启服务。两种 45.45 baud/170 Hz 模式均已通过离线 fixture
+和 435 MHz Pluto/SAN-90 台架解出已知文本。参见
+[RTTY 安装与回放](../../tools/README.md#independent-rtty-companion)。
+
 源码重建使用 Linux、Rust stable ≥1.95、C/C++ 工具链、CMake、pkg-config
 和 Node.js 22.22+、24.15+ 或 ≥26（前端测试栈的最低要求；单独 Vite 构建接受 22.12+）。
 Python 3.12 或 3.13 用于测试、fixture 和台架工具，不承载生产后端。原生音频解码在构建时
@@ -54,6 +85,17 @@ CSS 字体路径使用 `frontend/public/` 对应的 `/fonts/`，由 Vite 加上 
 服务与硬件配置见[FAQ 说明](FAQ_NOTES.md)和[工具指南](../../tools/README.md)。
 
 Pluto 台架统一入口支持 `radiofax` 和 `wefax`，两者使用同一个流式发射脚本。无需硬件时运行 `python3 tools/pluto_tx.py radiofax --dry-run`；发送图片可加 `--image chart.png --ioc 576 --lpm 120`。图片默认按比例调整高度，`--lines` 可指定行数。AM、反相极性、协议头时长、音频偏移、重复与间隔均见该模式的 `--help`。默认 FM 包含 APT、30 秒定相、1500–2300 Hz 图像音调及 APT 停止；180 LPM 需手动配置接收器。完整页面按设备实际接受的采样率分固定块发送，dry-run 只合成短片头。示例见[工具指南](../../tools/README.md)。
+
+`tools/pluto_tx.py` 还分派 DTMF/APRS/AIS/FT4/WSPR 和合成 GPS。数字模式与 GPS
+使用共享 `pluto_radio.Radio` 的 `open_stream`、`prime_stream`、`push_chunk`
+和 `drain_stream` 流式 API，队列包含四个缓冲区。GPS 源通过
+`tools/setup-gps-simulator.sh` 安装。GPS CLI 只允许请求 435 MHz 载波，LO 回读
+与其偏差不得超过 100 Hz。波形生成前先协商实际采样率，要求回读值与请求值相差
+不超过 20 Hz 且能被十整除，随后严格按该实际速率生成。默认 TX 采样率为
+2.6 MSps，与接收提供者的精确 4 MSps 输入分开。GPS gain 默认仍为 −70 dB；
+所选台架值须显式传入 `--gain -30`。发射完成本身不能证明 GPS 射频解码通过。
+合成场景、接收端显式启用方式和连续性限制见
+[发射指南](../../tools/README.md#rf-transmit-and-capture)。
 
 **内存受限主机必须串行、隔离构建。** Rust 构建、Rust 测试和浏览器套件依次运行，
 不要使用并行 Make。Cargo `-j 1` 只限制当前调用，不能限制其他构建或浏览器。

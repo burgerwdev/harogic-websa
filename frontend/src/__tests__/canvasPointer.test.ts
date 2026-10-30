@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 vi.mock('../audio/sdrAudio', () => ({
@@ -85,7 +86,7 @@ async function load(zoom = false) {
 	S.setRtaMode(false);
 	graph.graphMode.confirm('sdr');
 	graph.deviceMode.confirm('sdr');
-	setPluginManifest([{ id: 'am', kind: 'analog', implemented: true, audioEnhancement: false }]);
+	setPluginManifest([receiverPlugin('am')]);
 	state.sdrDemod.confirm('am');
 	state.sdrListenHz.confirm(10_000_000);
 	state.sdrCenterHz.confirm(10_000_000);

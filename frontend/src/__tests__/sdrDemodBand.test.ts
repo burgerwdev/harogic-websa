@@ -5,6 +5,7 @@ import {
 import { clearDrm, setDrmDecode } from '../sdr/drmLog';
 import { audioCompanionFor, loadPluginManifest, setPluginManifest, setSstvModeTable } from '../sdr/registry';
 import { demodBandHz } from '../ui/sdrState';
+import { receiverPlugin } from './pluginFixtures';
 
 beforeEach(async () => {
 	setPluginManifest(null);
@@ -13,14 +14,7 @@ beforeEach(async () => {
 	vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
 		ok: true,
 		json: async () => ({
-			plugins: [
-				...['usb', 'wfm'].map((id) => ({
-					kind: 'analog', id, implemented: true, audioEnhancement: false,
-				})),
-				...['ft8', 'drm', 'drmplus', 'sstv'].map((id) => ({
-					kind: 'digital', id, implemented: true, audioEnhancement: false,
-				})),
-			],
+			plugins: ['usb', 'wfm', 'ft8', 'drm', 'drmplus', 'sstv'].map((id) => receiverPlugin(id)),
 			sstv_modes: [{ index: 0, name: 'Robot 36', vis: 8, width: 320, height: 240 }],
 		}),
 	}));
@@ -34,6 +28,16 @@ afterEach(() => {
 });
 
 describe('the band the SDR view highlights', () => {
+	it('projects new decoder geometry from its descriptor instead of the FT8 band', () => {
+		setPluginManifest([
+			receiverPlugin('ais', { sideband: 'symmetric', defaultBandwidthHz: 25_000 }),
+			receiverPlugin('ft4', { kind: 'digital', sideband: 'upper' }),
+			receiverPlugin('lower-protocol', { kind: 'digital', sideband: 'lower' }),
+		]);
+		expect(demodBandHz('ais', 25_000)).toEqual([-12_500, 12_500]);
+		expect(demodBandHz('ft4', 3_000)).toEqual([0, 3_000]);
+		expect(demodBandHz('lower-protocol', 3_000)).toEqual([-3_000, 0]);
+	});
 	it('follows native sideband carrier guards and signed filter edges', () => {
 		expect(demodBandHz('usb', 2400)).toEqual([240, 2400]);
 		expect(demodBandHz('lsb', 2400)).toEqual([-2400, -240]);

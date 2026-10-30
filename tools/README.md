@@ -105,6 +105,198 @@ Input is interleaved f32le IQ. Add `--output-pcm /tmp/audio.f32` for interleaved
 f32le PCM; the report supplies its actual rate and channel count. A single PCM
 file rejects format changes, while report-only runs retain each format span.
 The decoder adds no input padding and flushes the remaining FT8 window at EOF.
+External modes use the same receiver: for example, `--mode pocsag1200 --input-rate 22050
+--bandwidth 12500` consumes normalized FM IQ, while `--mode ism --input-rate 250000
+--bandwidth 200000` supplies CF32 to rtl_433. Configure `WEBSA_MULTIMON_PATH`,
+`WEBSA_RTL433_PATH`, or `WEBSA_ONAIR_SERVER` (otherwise executables are found on PATH).
+The service's `/api/sdr/plugins` reports the installed capabilities and bandwidth contracts.
+rtl_433 receives exactly 250 kS/s at every tuned frequency, including bands above 800 MHz;
+the adapter applies its rate option after upstream frequency-dependent defaults.
+Use `--center-hz` for the tuned RF frequency and `--realtime` to pace recordings by their
+sample clock for live or wall-clock decoders. OnAir AIS requires `--center-hz 162000000`.
+OnAir FT4/WSPR require UTC-aligned live IQ. CLI recording replay and looping fake-device
+fixtures reject these modes: pacing a recording does not restore its original UTC slot phase.
+stdin providers close input, drain results and reap at EOF; OnAir has no consumed/flush ACK,
+so its bounded drain reports that upstream completion is unknown. Replay never pads IQ.
+
+### ADS-B / Mode S aircraft
+
+The `adsb` mode uses the stock OnAir 3.3 Web aircraft decoder and appears under
+aviation. Tune to 1090 MHz; the Web factory accepts centers from 1087 through
+1093 MHz. The host requires at least 2.5 MS/s receiver IQ, filters a fixed
+1.8 MHz occupied bandwidth (±900 kHz), and resamples to the decoder's exact
+2 MS/s input. A wide capture selects the direct IQ route automatically. The
+private rtl_tcp source accepts 2 MS/s without a hardware device; OnAir still
+must advertise its `adsb` Web capability for the mode to become available.
+
+The rate and frequency contract comes from upstream
+[`web_decoders.cpp`](https://github.com/adswill/OnAir/blob/v3.3.0/server/web/web_decoders.cpp)
+(`kSpecs`, `AdsbDec`). The Web slice uses `ChannelFilter`/`ExactResampler`
+([`web_dsp.cpp`](https://github.com/adswill/OnAir/blob/v3.3.0/server/web/web_dsp.cpp),
+[`exact_resampler.cpp`](https://github.com/adswill/OnAir/blob/v3.3.0/core/src/dsp/exact_resampler.cpp));
+the host's ±900 kHz pass edge stays below the 2 MS/s Nyquist edge. Upstream
+[`adsb_rx.cpp`](https://github.com/adswill/OnAir/blob/v3.3.0/core/src/adsb/adsb_rx.cpp)
+documents a sensitivity penalty for its 2 MS/s, 1.75 MHz frontend compared with
+the desktop default of 4 MS/s and 3.5 MHz. The Web decoder's rate therefore does
+not imply equal sensitivity to that wider desktop path.
+
+Aircraft snapshots retain ICAO address, callsign, altitude in feet, latitude and
+longitude, speed in knots, track, vertical rate, squawk and other available
+fields. Each snapshot replaces the preceding aircraft table. Source and OnAir
+virtual center frequencies accompany results; absent position fields are not
+invented. Reception and offline recordings are supported; the Pluto transmit
+tool does not provide ADS-B transmission.
+
+For an offline synthetic fixture, an independently installed OnAir CLI can write
+CF32 samples without opening a radio. Its ADS-B synthetic default is **4 MS/s**;
+`--rate` configures file input and does not override synthetic generation:
+OnAir 3.3's CLI does not handle bare `--help` as a help-only invocation and may
+open its default radio. Select `--synthetic` explicitly for the recipe below.
+
+```sh
+onair-cli --synthetic --standard adsb --freq 1090 --snr 99 --secs 10 \
+  --record /tmp/adsb-4Msps.cf32
+backend/target/release/sdr_decode --input /tmp/adsb-4Msps.cf32 --mode adsb \
+  --input-rate 4000000 --center-hz 1090000000 --bandwidth 1800000 \
+  --realtime --report-json /tmp/adsb-decode.json
+```
+
+These commands describe an offline decoder check, not RF sensitivity validation.
+As with the other OnAir modes, EOF has a bounded result drain without a consumed
+sample acknowledgement.
+
+### GPS L1 C/A from SDR IQ
+
+The `gps` mode runs the independent GPL GNSS-SDR 0.0.20 receiver behind a native
+MIT `websa-gnss` process bridge. GPS requires at least 2,600,000 complex samples/s
+before rate adaptation; the provider FIFO consumes exactly 4,000,000 complex
+samples/s. Normal reception is at 1575.420 MHz with a fixed 2.046 MHz channel
+bandwidth. A centered 3.90625 MSps capture can therefore be adapted to 4 MSps;
+capture admission also includes the filter transitions and tuning offset.
+It decodes the selected SDR IQ; the device SDK's built-in GNSS status is a
+different receiver.
+
+```sh
+bash tools/setup-gnss-decoder.sh
+cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websa-gnss --bin sdr_decode
+install -m755 backend/target/release/websa-gnss "${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders/bin/websa-gnss"
+source "${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders/gnss-env.sh"
+backend/target/release/sdr_decode --input gps.cf32 --mode gps \
+  --input-rate 4000000 --bandwidth 2046000 --center-hz 1575420000 \
+  --realtime --report-json /tmp/gps.json
+```
+
+The installer preserves the pinned source archive, GPL notices and serial build
+directory. `--archive FILE` reuses its SHA256-checked source archive;
+`--dependency-prefix DIR` locates locally extracted development packages.
+GNU Radio, Boost headers and the other development prerequisites listed by
+`--help` must be present. `WEBSA_GNSS_SDR_PATH` selects GNSS-SDR and
+`WEBSA_GNSS_BRIDGE_PATH` selects the native bridge. Restart WebSA after installation
+because capability discovery is cached. No hardware receiver is opened by the
+GNSS-SDR process; WebSA remains the sole IQ capture owner.
+
+Structured `satellites`, `navigation` and `pvt` tables report actual PRNs, C/N0
+in dB-Hz, acquisition/tracking/navigation-word validity, decoded navigation bits,
+and position/velocity/time. No-fix is explicit, and a received position expires
+when monitor updates become stale. The upstream FIFO source does not acknowledge
+EOF: the bridge drains for a finite interval and reports
+`upstreamCompletionKnown:false`. Live reconfiguration starts a new GNSS receiver.
+An ordinary VHF antenna does not establish GPS reception; use a suitable passive
+receive setup or a recording. No GPS L1-band transmission is part of this workflow.
+
+A provenance-bearing real recording is the [CTTC 2013-04-04 GPS capture](https://sourceforge.net/projects/gnss-sdr/files/data/2013_04_04_GNSS_SIGNAL_at_CTTC_SPAIN.tar.gz/download):
+100 seconds at 4 MSps, zero IF, signed 16-bit interleaved I/Q, 1,600,000,000 raw
+bytes (approximately 1.15 GB compressed). Convert each signed sample to f32le
+by dividing by 32768 before using the command above. The upstream
+[first-fix tutorial](https://gnss-sdr.org/my-first-fix/) reports latitude 41.2749°,
+longitude 1.98754°, height 100.795 m and GPS navigation subframes from multiple
+PRNs. A production Receiver replay of all 400 million complex samples completed
+in 103.65 seconds, forwarding all 3.2 GB of converted CF32 with zero malformed
+monitor packets. It tracked PRNs 1, 11, 17, 20 and 32, decoded 67 navigation
+subframes and emitted 232 valid PVT snapshots. The final valid solution was
+41.2748489°, 1.98766735°, height 78.13 m, with five satellites and GPS week 1734.
+This establishes real-recording decoding through the integration, not passive
+sky reception or translated RF performance. For this historical recording set
+`WEBSA_GNSS_PRE_2009_FILE=true` to select GNSS-SDR's historical week-rollover
+interpretation; leave it unset for live reception.
+
+For an explicitly enabled translated bench signal, set `WEBSA_GPS_BENCH_HZ=435000000`
+before starting WebSA and tune the GPS receiver to that exact frequency. The setting
+must contain only decimal digits and lie from 400000000 through 450000000 Hz;
+other non-L1 centers remain rejected. Normal 1575.420 MHz reception stays available.
+The host passes the actual center via `websa-gnss --center-hz HZ`; this changes
+receive validation and provenance only, not the GPS baseband signal model.
+Results mark `bench:true`, retain actual `center_hz`/`sourceFrequencyHz`, and
+identify `nominalCarrierHz:1575420000` separately. A translated generated-signal
+result is a bench decoder result, not passive sky reception. This receiver option
+does not start or configure a transmitter.
+
+### Independent RTTY companion
+
+`rtty` and `rtty-reverse` use a separately installed GPL-3.0-or-later companion
+linked to OnAir's mature `HfdigRtty` decoder. They do not depend on the stock
+OnAir Web RTTY factory, which its upstream policy filters out. The MIT host
+passes protocol IQ through its raw USB demodulator at 48 kS/s → 8 kHz mono;
+listener AGC, gain, squelch and noise reduction do not affect decoding.
+
+```sh
+bash tools/setup-rtty-decoder.sh
+source "${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders/rtty-env.sh"
+```
+
+The installer needs Git and a C++17 compiler, fetches pinned OnAir revision
+`6b97328b1939f569b161c5066fbea8053a76c130`, and compiles only the RTTY source
+and standalone companion. No GUI, sound routing, full OnAir build or SDR driver
+is required. `--source /path/to/OnAir` uses a clean checkout of that revision;
+`--prefix DIR` selects the independent installation directory. Sources and
+GPL notices remain separate from the MIT host; retain corresponding sources
+when redistributing the companion. `WEBSA_RTTY_PATH` selects the executable.
+Restart the service after installation because capability discovery is cached.
+
+Select **RTTY** or **RTTY (reverse)** from the mode catalog. Both use ITA2,
+five data bits, one start bit and 1.5 stop bits. Default baud/shift are
+45.45/170 Hz; normal uses the lower tone as mark and reverse uses the upper.
+Tune to the USB dial below the pair; the decoder searches 300–3300 Hz for both
+tones. For example, lower/upper tones at +2125/+2295 Hz fit the fixed 3400 Hz
+passband. Decoded text handles letters/figures shifts; tables report actual
+pair frequencies, quality, character count and framing errors. Searching or
+pair lock alone is not evidence that valid text has been decoded.
+
+Alternate settings are service startup environment variables:
+`WEBSA_RTTY_BAUD=45.45|50|75|100`, `WEBSA_RTTY_SHIFT=170|200|425|450|850`,
+`WEBSA_RTTY_LOW_TONE=0` (auto, or lower-tone Hz with both tones within
+300–3300 Hz), and `WEBSA_RTTY_USOS=0|1` (unshift on space, default off).
+Polarity is selected per receiver by mode; the other settings apply to newly
+created RTTY decoders. The standalone companion accepts matching `--baud`,
+`--shift`, `--low-tone`, `--usos` and `--reverse` arguments, reads 8 kHz f32le
+mono from stdin, and writes JSON lines to stdout.
+
+Generate an independent known-text IQ recording and optional oracle WAV:
+
+```sh
+python3 tools/fixtures/rtty_iq.py /tmp/rtty.f32 --wav /tmp/rtty.wav
+backend/target/release/sdr_decode --input /tmp/rtty.f32 --mode rtty \
+  --input-rate 48000 --bandwidth 3400 --report-json /tmp/rtty-report.json
+python3 tools/fixtures/rtty_iq.py /tmp/rtty-reverse.f32 --reverse
+backend/target/release/sdr_decode --input /tmp/rtty-reverse.f32 --mode rtty-reverse \
+  --input-rate 48000 --bandwidth 3400 --report-json /tmp/rtty-reverse-report.json
+```
+
+The generator uses independent ITA2 tables and continuous-phase FSK, with a
+two-tone acquisition preamble and repeated letters/figures payload. Its JSON
+sidecar records exact rate, tones, polarity and expected text (CR is omitted
+by OnAir's display). It requires NumPy and never accesses hardware. A separate
+decoder such as minimodem can receive the WAV with explicit mark/space
+2125/2295 Hz at 45.45 baud; swap those frequencies for reverse. These commands
+describe acceptance checks, not a claim that a recording or RF run passed.
+
+Normal and reverse 45.45-baud/170-Hz RTTY decoded the known text, digits and
+punctuation through the production Receiver in both offline fixtures and the
+435 MHz Pluto-to-SAN-90 bench. The RF runs used the existing `usb --wav` path
+and explicit gain −30 dB; each stopped on matching text within 31 seconds,
+without receiver errors. These results apply to those tested settings.
+
+
 
 ## Browser and service benches
 
@@ -173,6 +365,44 @@ Real Pluto-to-SAN-90 RF at 435 MHz also received complete IOC576/120 LPM 1810×6
 and IOC288/240 LPM 905×256 test pages, with phasing clock recovery and no missing rows.
 Generator clock trim is device-specific; inspect the selected radio's options
 before relying on RF frequency accuracy.
+
+The dispatcher also provides `dtmf`, `aprs`, `ais`, `ft4`, `wspr` and `gps`.
+Digital modes and GPS share `pluto_radio.Radio` and its persistent streaming
+API: `open_stream(kernel_buffers=4)`, `prime_stream(...)`, `push_chunk(...)`
+and `drain_stream(...)`. The shared layer owns radio setup, queue priming,
+draining and cleanup; each generator owns its waveform, sample clock and
+continuity deadlines. FT4/WSPR align to UTC slots; Pluto has no timestamped TX,
+so transport startup uncertainty remains part of the bench evidence.
+
+Install the independent GPS simulator with `bash tools/setup-gps-simulator.sh`.
+The GPS command generates a stationary synthetic 2022 scenario at
+25.2° N, 55.36° E, 10 m, with signal time advanced by sample count. Use
+`python3 tools/pluto_tx.py gps --dry-run` for a bounded offline probe or
+`python3 tools/pluto_tx.py gps --duration 180 --gain -30` for the selected bench
+setting. The GPS hardware-gain default remains −70 dB; −30 dB is an explicit
+bench choice, not a changed default. Set `WEBSA_GNSS_PRE_2009_FILE=false` for
+this simulator's receiver, and use the translated receive opt-in described above.
+
+The GPS CLI accepts only a requested `--lo 435000000`; it rejects other carriers,
+including GPS L1. Before generating the waveform or starting TX, it negotiates
+an actual sample-rate readback within 20 Hz of the request and divisible by ten.
+The default TX request is 2.6 MSps; waveform generation and signal-time accounting
+use the exact accepted rate. This TX rate is independent of the receiver's
+2.6 MSps minimum and exact 4 MSps provider input. LO readback may differ from
+435 MHz by at most 100 Hz; actual LO, translation and rate are reported. Failure
+to meet either rate or LO constraint stops transmission. GPS uses a bounded
+producer queue and uninterrupted chunks; a missed host continuity deadline stops
+RF. These deadlines do not measure hardware DMA underruns.
+
+The cold-start translated GPS RF run recorded in
+`rf-gps-cold-fixed-minus30.json` passed through the Pluto-to-SAN-90 path at
+435 MHz, explicit gain −30 dB and 3.90625 MSps capture adapted to the exact
+4 MSps provider input. After 63.41 seconds, four satellites supported a valid
+PVT solution at 25.20001599° N, 55.35996828° E, height 7.319 m, versus the
+synthetic target 25.2° N, 55.36° E, 10 m: horizontal error was 3.653 m.
+The receiver reported no error. The transmitter was interrupted with exit
+status 130 and restored its crystal trim. This establishes the tested translated
+bench path; passive sky reception remains unverified.
 
 With the native service running and the transmitter coupled to the SAN-90,
 capture the channelized IQ for native analysis and repeatable replay:

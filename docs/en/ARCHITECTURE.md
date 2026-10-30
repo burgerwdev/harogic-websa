@@ -6,9 +6,10 @@ The native Rust service owns device configuration, acquisition, channelization a
 
 ```text
 Browser controls → HTTP/WS commands → native mode owner → retained SDK session
-SDK IQ + FFT → bounded capture queue → ordered PFB workers → fine DDC/framer
-                                                   ├→ IQBF/IQAX consumers
-                                                   └→ receiver workers → AUD2/SDE2 → browser
+SDK IQ + FFT → bounded capture queue ┬→ ordered PFB workers → fine DDC ┐
+                                    └→ direct raw IQ DDC ─────────────┤
+                                                                    └→ framer → IQBF/IQAX consumers
+                                                                               └→ receiver workers → AUD2/SDE2 → browser
 SDK SWP/RTA traces → display publisher → browser spectrum/density/waterfall
 ```
 
@@ -57,9 +58,17 @@ These are current implementation paths. `tools/checks/check_doc_paths.py` checks
 
 At full capture bandwidth the input is 62.5 MSps with 50 MHz usable bandwidth. The shared oversampled-by-two PFB has 128 bins and hop 64: bin spacing is 488.28125 kHz, while each coarse stream runs at 976.5625 kSps. Narrow device captures adjust geometry. Bin count, coarse spacing and coarse sample rate are different quantities; none is the number of product receivers.
 
-The prototype supports 4, 8 or 16 taps per phase, with 16 as the service default. Passband and alias rejection depend on this selection and frequency offset. Fine plans must fit the selected coarse bin's usable passband. A wide signal cannot be cut at a bin edge and treated as equivalent reception. Wideband modes beyond the supported channel envelope are rejected.
+The prototype supports 4, 8 or 16 taps per phase, with 16 as the service default. Passband and alias rejection depend on this selection and frequency offset. Coarse-route fine plans must fit the selected bin's usable passband. A wide signal cannot be cut at a bin edge and treated as equivalent reception. Modes whose descriptor minimum IQ rate exceeds the coarse cadence use a direct branch from the shared raw capture, with their own mixer and multistage anti-alias decimator. Their occupied band and transition must fit the usable capture bandwidth; the route does not reconstruct adjacent PFB bins.
 
 Each receiver has its own frequency, mode, occupied bandwidth, `RatePlan`, oscillator phase, filter history and output rate. Fine DDC mixes and performs multistage anti-alias decimation; an exact protocol rate is adapted at the receiver input when needed. Audio playback rate is not a universal lower bound on IQ rate. USB/LSB envelopes include the sideband edge, CW includes pitch, FT8 retains at least the positive 3.2 kHz band, and SSTV the positive 3 kHz band. The UI selects a 12 kHz DRM receive window, while a direct API request can use another admitted value; the shown window follows `±confirmed_ifbw/2`, not FAC occupancy, so it does not imply automatic reception across 4.5–20 kHz. The DRM+ UI uses a fixed 100 kHz channel; this is not a claim that its outermost OFDM carriers lie exactly at ±50 kHz.
+
+Both routes publish the actual channel clock after integer decimation, `source_rate / decimate`, even when it differs from a decoder's required rate. The receiver's existing `Rational` adapter supplies exact protocol input, including 4 MSps or 2 MSps where required by the descriptor. Framing and registry metadata retain the actual channel rate; changing a header does not perform rate conversion.
+
+GPS requires at least 2.6 MSps before adaptation and exactly 4 MSps at the GNSS-SDR FIFO. Its 2.046 MHz occupied band plus two 255.75 kHz transitions requires 2.5575 MHz of sampling bandwidth. A centered 3.90625 MSps capture therefore retains the configured waveform and can be interpolated to 4 MSps; capture-edge admission still includes the full filter envelope and tuning offset.
+
+The rational adapter precomputes clock increments and caches at most 256 exact fractional-phase selectors for small reduced ratios, including GPS's 128/125 conversion. Larger ratios retain the bounded interpolated filter grid. The cache changes phase-selection work, not filter coefficients, sample counts, or source-clock precision.
+
+With no live capture, channel admission plans the candidate receivers against the configured capture center and display width; the status fallback bandwidth is not a measured or negotiated source rate.
 
 The final fine-channel FIR uses the requested RF transition width, independently of the selected output sample rate. A decoder rate floor or integer decimation step does not widen this filter. WFM retains the processing cadence needed by stereo/RDS, but a narrow RF filter can remove those components. RF bandwidth is distinct from the fixed 15 kHz WFM programme-audio low-pass.
 
@@ -69,11 +78,13 @@ A main-channel retune outside the capture range validates every enabled channel 
 
 The raw acquisition queue holds 64 packets. PFB uses four fixed workers with at most six tasks in flight and collects results in input order. The fine/framer handoff is bounded at two. Two fixed receiver workers own mutable channel DSP state; a separate FT8 worker runs searches without blocking real-time monitoring. DFN templates are prepared before capture, then mutable processing state is owned by each receiver.
 
-The baseband producer and worker accept at most 65536 complex samples per block. IQ values must be finite, `input_index` must not be `u64::MAX`, and the source rate must be in 1..1e9 Sps. Receiver workers release each queued item's pending-work count exactly once on stop or failure. Disabling the primary channel preserves active auxiliary tails during recapture and stop. Framer finish processes only active channels.
+The baseband producer and worker accept at most 65536 complex samples per block. The framer splits accumulated uneven packets at that bound, preserving every sample and the causal capture index of each frame's first sample. It applies the fixed ADC normalization of 1/32768 and emits any remaining tail with the next wire sequence at finish. IQ values must be finite, `input_index` must not be `u64::MAX`, and the source rate must be in 1..1e9 Sps. Receiver workers release each queued item's pending-work count exactly once on stop or failure. Disabling the primary channel preserves active auxiliary tails during recapture and stop. Framer finish processes only active channels.
 
 The backend supports three independently configured slots. The current product UI exposes the main slot and disables auxiliary slots on entering SDR. Coarse bins and internal benchmark channel counts do not advertise additional product channels. Mixing, recording and dynamic channel counts are not delivered features.
 
-Admission checks channel count, aggregate output rate and fine/framer cost before changing capture, identity or registry. Fine/framer calibration runs before capture and is reused in the process. Its cost policy reserves a factor of two: `2 × sum(cost_per_coarse_sample × coarse_rate) <= 1e9 ns/s`. This is a conservative internal budget, not proof of SDK, PFB, receiver, network or recording capacity.
+These three slots share one RF capture. Each enabled slot selects either a coarse PFB stream or a direct raw IQ branch according to its mode descriptor's minimum rate. Direct and coarse receivers can coexist within the same capture, but slot budgets do not combine into a wider receiver. Capture selection must accommodate every enabled slot's passband and transition before committing a change.
+
+Admission checks channel count, aggregate output rate and DDC/framer cost before changing capture, identity or registry. Calibration measures the selected coarse or direct kernel and its framing cycle before capture, then reuses the profile in the process. A direct route is charged its measured cost per raw input sample at the full capture rate; a coarse route is charged per coarse input sample at its coarse rate. The policy reserves a factor of two: `2 × sum(cost_per_source_sample × source_rate) <= 1e9 ns/s`. This is a conservative internal CPU budget, not proof of SDK, PFB, receiver, network or recording capacity. Direct-route availability and admission do not establish hardware reception or RF interoperability qualification.
 
 Display delivery can replace stale frames for slow viewers. Raw IQ and spectrum processing use bounded queue backpressure until explicit failure. Ordered IQ, PCM and decoder outputs fail on queue overflow without dropping samples. Audio capacity feedback counts queued and unacknowledged PCM. Decoder batches have bounded size and are acknowledged after FIFO application. ACK-enabled decode sockets allow up to 16 outstanding events and 4 MiB of wire bytes, with cumulative acknowledgement keyed by `(channel, channel_id, epoch)` and a 5 s deadline for the oldest outstanding event, including during batch and snapshot sends. Already admitted receiver audio and decoder events, including initial snapshots, survive retunes and capture-epoch transitions and reach subscribers FIFO before retiring tails and new receiver identities. Decoder queue retirement preserves unaffected channels. Capture-epoch fences still apply to raw IQ, display data and admission of new packets. See [API](API.md) for wire and feedback contracts.
 
@@ -95,9 +106,46 @@ AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM
 
 ### DSP and playback boundaries
 
-The current mode registry covers AM, DSB, USB, LSB, CW, NFM, WFM, PM, FT8, SSTV, radiofax, DRM and DRM+. Native receivers reuse the shared Rust DSP directly. Analog listening can use AGC, squelch, gain and noise reduction; digital decoding consumes its original protocol input. Listener enhancements must not alter FT8/SSTV/radiofax/DRM input.
+The native mode registry covers AM, DSB, USB, LSB, CW, NFM, WFM, PM, FT8, SSTV, radiofax, DRM and DRM+. Native receivers reuse the shared Rust DSP directly. Analog listening can use AGC, squelch, gain and noise reduction; digital decoding consumes its original protocol input. Listener enhancements must not alter protocol input.
 
 `Receiver` validates audio rate (8000..192000 Hz), IF and mode-band geometry, and CW decoder pitch (100..1600 Hz) before DSP construction. It also checks finite IQ, source clocks and finite output PCM. Production receiver and offline entry points validate input; direct raw `Pipeline` and `AnalogDemod` trait callers must still supply finite input.
+
+`backend/src/catalog.rs` extends the existing `/api/sdr/plugins` registry with provider,
+availability, category/search metadata, filter geometry, exact input rate, audio companion and
+result kinds. The browser consumes these descriptors; missing executables or capabilities remain
+visible but unavailable. Independent providers in `backend/src/external/` consume already-selected
+IQ: multimon-ng receives an unenhanced FM discriminator at 22,050 Hz as signed-16 PCM;
+rtl_433 receives 250 kSps CF32; OnAir receives fixed-scale CU8 over a private loopback rtl_tcp
+source at 250 kSps (AIS/APRS/FT4/WSPR), 288 kSps (Meteor), or 2 MSps (ADS-B).
+GPS uses a native CF32 FIFO/Protobuf bridge to GNSS-SDR at 4 MSps; RTTY uses raw USB
+48 kSps IQ converted to 8 kHz audio for its independent companion. DTMF alone removes
+discriminator DC before PCM quantization, preventing carrier offset from dominating tone energy.
+WebSA retains sole hardware ownership.
+OnAir's source identity is verified while stopped, and runtime Web capabilities—not its desktop
+mode list—control availability. Child lifetimes, input queues and result sizes are bounded;
+failures remain explicit. Stream retirement owns child shutdown and preserves identity-bearing results.
+The subprocess pump writes up to eight times and at most 1 MiB per turn, then
+drains bounded output. It polls pipe readiness only when no progress is possible;
+there is no fixed delay per write limiting wideband IQ throughput. Queue bounds
+remain unchanged, and sustained consumer backpressure fails explicitly.
+
+External process startup is an admission operation, not work for the first IQ packet.
+HTTP/WS preflight prepares a mode/frequency-bound decoder outside the device-state lock,
+then commits it only if the configuration revision and request still match. The worker binds
+that prepared decoder to the actual fine-channel rate at sequence zero; no child is spawned
+on the realtime worker. Failed preparation retains the previous receiver generation.
+Autonomous capture recovery and hardware Auto changes demand preparation before restarting;
+normal reception does not keep an idle spare decoder. Live reconfiguration drains available
+results and stops the retiring provider without the offline EOF grace interval. Admitted stdin
+bytes are written before retirement; a stalled flush fails explicitly. OnAir does not acknowledge
+protocol completion, so unfinished work at a live switch remains explicitly unknown.
+
+The picker keeps common modes in the settings panel and uses search plus a categorized More
+drawer for the complete installed catalog. Generic decoded text, tables and image strips share
+the existing Decode surface. Its session-local history is limited to 200 results / 8 MiB per
+channel, including decoded image-strip memory; each picture retains at most 512 strips.
+The optional same-origin popup adopts that same DOM subtree, logs and subscriptions. Closing
+or docking restores the floating surface; theme, language and scale follow the opener.
 
 A runtime DFN error propagates through `Receiver` to the scoped receiver failure path; it does not silently switch algorithms mid-stream. Initialization failure or unsupported DFN operation uses an explicit Wiener selection. DRM/DRM+ retain NR preferences with effective NR Off. An NR toggle keeps decoder history and continuous `audio_index`; source provenance advances over any discarded reducer tail.
 

@@ -10,6 +10,7 @@ import { clearSstv, setSstvDecoderState, updateSstvPicture } from './sstvLog';
 import { appendRadiofaxRows, endRadiofaxStream, parseRadiofaxTransmissionId, setRadiofaxDecoderState } from './radiofaxLog';
 import type { DecodeEnvelope, ReceiverEvent } from './decodeProtocol';
 import type { Ft8Report } from './types';
+import { addDecoderResult, clearDecoderLog, clearGpsSnapshots } from './decoderLog';
 
 export interface ChannelRegistryEntry {
   channel: number;
@@ -101,7 +102,10 @@ function reportError(message: string): void {
   if (streamFailed && streamFailedRegistry === null) streamFailedRegistry = confirmedRegistry ?? [];
   lastError = message;
   connected = false;
-  for (const channel of [1, 2, 3] as const) { endRadiofaxStream(channel); setAmInfo(null, channel); setDecodeError(channel, message); }
+  for (const channel of [1, 2, 3] as const) {
+    clearGpsSnapshots(channel);
+    endRadiofaxStream(channel); setAmInfo(null, channel); setDecodeError(channel, message);
+  }
   console.error(`SDR decoded stream: ${message}`);
   document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'decode', message } }));
   const status = document.getElementById('cur-sdr-level');
@@ -226,6 +230,7 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
   if (d.type === 'start') {
     identityChanges++;
     pictures.delete(channel);
+    clearGpsSnapshots(channel);
     setDecodeChannelMode(channel, envelope.mode);
     setCwLevel(0, false, {}, channel);
     clearDrm(channel);
@@ -239,6 +244,10 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
     return;
   }
   switch (d.type) {
+    case 'decoder-result':
+      if (!d.provider || d.mode !== envelope.mode || !d.kind || d.data === undefined) throw new Error('Invalid decoder result');
+      addDecoderResult({ provider: d.provider, mode: d.mode, kind: d.kind, data: d.data }, identity, channel);
+      break;
     case 'am-info': {
       const info: AmInfo = {
         syncEnabled: d.syncEnabled === true, syncLocked: d.syncLocked === true, syncGeneration: d.amSyncGeneration!,
@@ -333,6 +342,7 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
       break;
     }
     case 'error':
+      clearGpsSnapshots(channel);
       setAmInfo(null, channel);
       setDecodeError(channel, d.message ?? 'Decoder failed');
       document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', {
@@ -366,7 +376,7 @@ export function setSdrIqEnabled(on: boolean): void {
     worker?.terminate();
     worker = null;
     connected = false;
-    for (const channel of [1, 2, 3] as const) endRadiofaxStream(channel);
+    for (const channel of [1, 2, 3] as const) { clearGpsSnapshots(channel); endRadiofaxStream(channel); }
     if (failedRegistry === null) clearAmState();
   }
   publishIqDebug();
@@ -377,6 +387,7 @@ export function resetSdrIq(): void {
   pictures.clear();
   for (const channel of [1, 2, 3] as const) {
     clearFt8Spots(channel); clearCwLog(channel); clearDrm(channel); clearSstv(channel);
+    clearDecoderLog(channel);
     endRadiofaxStream(channel);
     setWfmInfo(null, channel); setAmInfo(null, channel); setFt8DecoderState(null, channel);
     setDecodeError(channel, failedRegistry === null ? null : lastError);

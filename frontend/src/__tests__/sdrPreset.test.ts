@@ -26,6 +26,8 @@ import { commitRefLevel } from '../ui/panels/refAmp';
 import { getDisplayRef } from '../ui/displayRef';
 import { getY } from '../render/plot';
 import { appendRadiofaxRows, radiofaxStatus, setRadiofaxChannel } from '../sdr/radiofaxLog';
+import { setPluginManifest } from '../sdr/registry';
+import { receiverPlugin } from './pluginFixtures';
 
 const sdrPersisted = (): string[] =>
 	Object.keys(localStorage).filter((k) => k.startsWith('web-sa-sdr-'));
@@ -34,9 +36,11 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	localStorage.clear();
 	resetAll('sdr');
+	setPluginManifest(['am', 'cw'].map((id) => receiverPlugin(id)));
 });
 
 afterEach(() => {
+	setPluginManifest(null);
 	vi.clearAllTimers();
 	vi.useRealTimers();
 	document.body.replaceChildren();
