@@ -27,6 +27,7 @@ import { setWaterfall } from '../ui/panels/waterfall';
 import { getDisplayRef, pendingDisplayRef, resetDisplayRefMode } from '../ui/displayRef';
 import { commitRefLevel } from '../ui/panels/refAmp';
 import { setWS } from '../core/wsSend';
+import { peakListVisible } from '../ui/measurePrefs';
 
 const SWP_STATUS = {
 	cmd: 'STATUS',
@@ -512,6 +513,34 @@ describe('waterfall table replacement during STATUS', () => {
 		setWaterfall(false);
 		updateStatus(structuredClone(report));
 		expect(table.style.display).toBe('');
+	});
+});
+
+describe('peak list table replacement during STATUS', () => {
+	afterEach(() => {
+		peakListVisible.set(false);
+		S.setMeasOn(false);
+		updateStatus(structuredClone(SWP_STATUS));
+		document.body.innerHTML = '';
+	});
+
+	it.each(['std', 'rta', 'sdr'])('keeps the marker table out of the %s layout until PK List is closed', mode => {
+		document.body.innerHTML = '<table id="marker-table"></table><table id="peak-table"></table>';
+		S.setMeasOn(false);
+		const report = { ...structuredClone(mode === 'sdr' ? SDR_STATUS : SWP_STATUS), mode };
+		updateStatus(report);
+		peakListVisible.set(true);
+		const markerTable = document.getElementById('marker-table')!;
+		const peakTable = document.getElementById('peak-table')!;
+		markerTable.style.display = 'none';
+		for (let n = 0; n < 3; n++) {
+			updateStatus(structuredClone(report));
+			expect(markerTable.style.display).toBe('none');
+			expect(peakTable.style.display).toBe('');
+		}
+		peakListVisible.set(false);
+		updateStatus(structuredClone(report));
+		expect(markerTable.style.display).toBe('');
 	});
 });
 

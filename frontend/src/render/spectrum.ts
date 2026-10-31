@@ -568,7 +568,8 @@ function renderRtaView() {
     } else if (peakListVisible.get()) {
       const mt2 = document.getElementById('marker-table');
       if (mt2) mt2.style.display = 'none';
-      if (rp) { updatePeakTable(rp); renderPeakMarks(rp); }
+      updatePeakTable(rp);
+      if (rp) renderPeakMarks(rp);
     } else {
       const mt2 = document.getElementById('marker-table');
       if (mt2) mt2.style.display = '';
@@ -623,13 +624,13 @@ export function renderAll() {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
-  } else if (powers) {
+  } else {
     autoPeakThr(powers);
     if (peakListOn() && c.viewMode === 'std') {
       const mt = document.getElementById('marker-table');
       if (mt) mt.style.display = 'none';
       updatePeakTable(powers);
-      renderPeakMarks(powers);
+      if (powers) renderPeakMarks(powers);
     } else if (c.measOn && c.measTabSel === 'chan') {
       const mt = document.getElementById('marker-table');
       if (mt) mt.style.display = 'none';
@@ -781,8 +782,8 @@ function renderRta() {
   const levelRef = getDisplayTop();
   const yScale = p.h / getDisplayRange();
   const levelTransform = yAxisTransform();
-  S.traces.forEach((_tr, ti) => {
-    if (hideTraces) return;
+  S.traces.forEach((tr, ti) => {
+    if (hideTraces || tr.mode === 'OFF') return;
     const disp = S.rtaDisplays[ti];
     if (!disp || disp.length < 2) return;
     const dn = Math.min(n, disp.length);   // guard against point-count mismatch
@@ -849,9 +850,11 @@ function renderRta() {
     ctx.restore();
   }
   // Markers on the active RTA trace (length-guarded)
-  const actDisp = S.rtaDisplays[S.activeTraceIdx] || d.spec;
-  renderMarkersOnCanvas(actDisp.length >= 2 ? actDisp : d.spec);
-  renderOSD(actDisp.length >= 2 ? actDisp : d.spec);
+  const actDisp = getDisplayPowers();
+  if (actDisp && actDisp.length >= 2) {
+    renderMarkersOnCanvas(actDisp);
+    renderOSD(actDisp);
+  }
 }
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)

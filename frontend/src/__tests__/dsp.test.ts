@@ -278,7 +278,7 @@ describe('多 Marker Tracking', () => {
     document.body.innerHTML = previous;
   });
 
-  it('后续帧优先跟随邻近峰而不是跳到远端更强杂散', () => {
+  it('后续帧重新寻找最强峰而不锁定旧频率附近的较弱峰', () => {
     const previous = document.body.innerHTML;
     document.body.innerHTML = '<input id="input-peakthr" value="-80">';
     const powers = new Float32Array(1000).fill(-100);
@@ -297,7 +297,7 @@ describe('多 Marker Tracking', () => {
     }));
 
     expect(updateTrackingMarkers()).toBe(true);
-    expect(S.markers[0].idx).toBe(520);
+    expect(S.markers[0].idx).toBe(100);
 
     S.markers.forEach(marker => { marker.enabled = false; marker.mode = 'OFF'; marker.tracking = false; });
     document.body.innerHTML = previous;

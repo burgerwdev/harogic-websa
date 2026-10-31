@@ -10,6 +10,7 @@ import { setWaterfall } from './panels/waterfall';
 import { waterfallOn } from './waterfallState';
 import { syncSpectrumZoomUi } from './spectrumZoomUi';
 import { measurementsAvailable } from './measurementAvailability';
+import { peakListVisible } from './measurePrefs';
 
 //: Waterfall state before the measurement took it over (null = not measuring).
 let waterfallBeforeMeasure: boolean | null = null;
@@ -63,7 +64,7 @@ export function applyMeasUI() {
   const mt = document.getElementById('marker-table');
   // STATUS refreshes this UI between render frames; it must keep the waterfall's table
   // replacement in effect or the spectrum resizes twice for every report.
-  if (mt) mt.style.display = (waterfallOn.get() || inMeas || chanTab) ? 'none' : '';
+  if (mt) mt.style.display = (waterfallOn.get() || peakListVisible.get() || inMeas || chanTab) ? 'none' : '';
   syncChanTableVisibility();
   const ht = document.getElementById('harmonic-table');
   if (ht) ht.style.display = (S.measOn && S.viewMode === 'harm') ? '' : 'none';

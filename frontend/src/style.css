@@ -672,7 +672,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .harmonic-table td.harm-dim { color: var(--table-cell-dim); background: var(--panel); }
 .harmonic-table .harm-h { color: var(--text); font-weight: bold; }
 .harmonic-table .harm-dbc { color: var(--table-cell-dim); }
-.pk-cell { border: 1px solid var(--inner-border); padding: 3px 6px; text-align: center; color: var(--table-cell); background: var(--panel-2); font: 11px monospace; }
+.pk-cell, .pk-empty { border: 1px solid var(--inner-border); padding: 3px 6px; text-align: center; color: var(--table-cell); background: var(--panel-2); font: 11px monospace; }
 .pk-empty { border: 1px solid var(--inner-border); }
 .pk-f { color: var(--text); }
 .pk-id { color: var(--label); font-weight: bold; }
@@ -1023,7 +1023,7 @@ select:focus { border-color: var(--text); }
 .harmonic-table td.harm-dim { color: var(--table-cell-dim); background: var(--panel); }
 .harmonic-table .harm-h { color: var(--text); font-weight: bold; }
 .harmonic-table .harm-dbc { color: var(--table-cell-dim); }
-.pk-cell { border: 1px solid var(--inner-border); padding: 3px 6px; text-align: center; color: var(--table-cell); background: var(--panel-2); font: 11px monospace; }
+.pk-cell, .pk-empty { border: 1px solid var(--inner-border); padding: 3px 6px; text-align: center; color: var(--table-cell); background: var(--panel-2); font: 11px monospace; }
 .pk-empty { border: 1px solid var(--inner-border); }
 .pk-f { color: var(--text); }
 .pk-id { color: var(--label); font-weight: bold; }

@@ -168,8 +168,7 @@ export function setTraceAverage(count: number): void {
 }
 
 /** Export the active trace as CSV (metadata header + freq/power pairs). */
-// Peaks exactly as the peak list shows them (`n` is the list order, strongest first is
-// a coincidence of the ordering — the CSV reports the delta to the strongest explicitly).
+// Peaks exactly as the peak list shows them (strongest first).
 export function exportPeakListCsv(): void {
   const peaks = S.peakMarks as any[] | null;
   if (!peaks || !peaks.length) return;

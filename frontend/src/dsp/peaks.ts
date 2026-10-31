@@ -35,11 +35,12 @@ export function getTraceDisplay(t: S.TraceState): Float32Array | null {
 }
 
 export function getDisplayPowers(): Float32Array | null {
-  if (S.rtaMode) return (S.rtaDisplays[S.activeTraceIdx] || (S.rtaData && S.rtaData.spec)) as Float32Array;
   const t = S.traces[S.activeTraceIdx];
-  if (t.powers) return getTraceDisplay(t);
-  const any = S.traces.find(x => x.powers);
-  return any ? getTraceDisplay(any) : null;
+  if (!t || t.mode === 'OFF') return null;
+  // Marker, cursor and peak-list readouts belong to the selected processed trace.
+  // Raw live frames and other traces have different Hold/Average/View histories.
+  if (S.rtaMode) return S.rtaDisplays[S.activeTraceIdx] ?? null;
+  return getTraceDisplay(t);
 }
 
 export function findExtremesOrdered(_dir: string, isPeak: boolean): ExtremaItem[] {
@@ -47,7 +48,7 @@ export function findExtremesOrdered(_dir: string, isPeak: boolean): ExtremaItem[
   const disp = getDisplayPowers();
   if (!disp) return [];
   const smoothed = smoothBins.get() > 1;
-  const raw = (t && t.powers) ? t.powers : disp;
+  const raw = (S.rtaMode ? S.rtaDisplays[S.activeTraceIdx] : t?.powers) ?? disp;
   const thr = peakThr.get();
   const isNorm = !!(t && t.reference && t.isNormalized);
   const EXCURSION = 6;
