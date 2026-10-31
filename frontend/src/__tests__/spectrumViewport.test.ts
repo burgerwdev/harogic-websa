@@ -183,17 +183,29 @@ describe('module state', () => {
 		expect(getView()).toEqual({ lo: 1020e6, hi: 1040e6 });
 	});
 
-	it.each(['view', 'capture', 'invalid', 'reset'] as const)('cancels deferred receiver focus after a superseding %s change', change => {
+	it.each(['view', 'span', 'invalid', 'reset'] as const)('cancels deferred receiver focus after a superseding %s change', change => {
 		setView({ lo: 940e6, hi: 960e6 }, 1);
 		const next = { lo: 1000e6, hi: 1100e6 };
 		recenterOnCapture(1020e6, next, 1);
 		if (change === 'view') setView({ lo: 930e6, hi: 950e6 }, 1);
-		else if (change === 'capture') setCapture({ lo: 910e6, hi: 1010e6 });
+		else if (change === 'span') setCapture({ lo: 910e6, hi: 960e6 });
 		else if (change === 'invalid') setCapture(null);
 		else resetViewport();
 		setCapture(next);
-		expect(getView()).toEqual(change === 'view' ? { lo: 1030e6, hi: 1050e6 }
-			: change === 'capture' ? { lo: 1040e6, hi: 1060e6 } : next);
+		expect(getView()).toEqual(change === 'view' ? { lo: 1030e6, hi: 1050e6 } : next);
+	});
+
+	it.each([NaN, Infinity, 0, -1])('ignores an invalid receiver focus minimum span (%s)', minimum => {
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		recenterOnCapture(980e6, CAP, minimum);
+		expect(getView()).toEqual({ lo: 940e6, hi: 960e6 });
+	});
+
+	it('caps a coarse-grid minimum span at the actual capture width', () => {
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		recenterOnCapture(1000e6, CAP, 200e6);
+		expect(getView()).toEqual(CAP);
+		expect(isZoomed()).toBe(false);
 	});
 
 	it('drops the view when the capture span changes', () => {

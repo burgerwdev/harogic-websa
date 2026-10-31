@@ -331,6 +331,68 @@ describe('canvas pointer ownership', () => {
 		expect(locate.sdrLocateClickPending()).toBe(false);
 	});
 
+	it.each([false, true].flatMap(zoom => ['SET_SDR_CHANNEL', 'STATUS'].map(responseTo => ({ zoom, responseTo }))))(
+		'keeps the capture center and displayed window after a plot tune $responseTo with zoom $zoom', async ({ zoom, responseTo }) => {
+		const { controls, state, viewport, send } = await load(zoom);
+		if (zoom) viewport.setView({ lo: 9_840_000, hi: 10_160_000 }, 1);
+		const before = viewport.getView();
+		pointer('pointerdown', 570);
+		pointer('pointerup', 570);
+		const command = vi.mocked(send).mock.calls[0][0] as { freq: number; request_id: string };
+		controls.syncSdrPanel({ connected: true, mode: 'sdr', config_version: 2,
+			response_to: responseTo, request_id: command.request_id,
+			sdr: { center: 10_000_000, decimate: 128, listen: command.freq, demod: 'am', if_bw: 40_000,
+				actual: { start: 9_800_000, stop: 10_200_000 } } });
+		expect(command.freq).not.toBe(10_000_000);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', channel: 1 }));
+		expect(state.sdrListenHz.get()).toBe(command.freq);
+		expect(state.sdrCenterHz.get()).toBe(10_000_000);
+		expect(viewport.getCapture()).toEqual({ lo: 9_800_000, hi: 10_200_000 });
+		expect(viewport.getView()).toEqual(before);
+	});
+
+	it('preserves plot tuning and then follows the newest queued input frequency', async () => {
+		const { controls, viewport, send } = await load(true);
+		const before = { lo: 9_920_000, hi: 10_080_000 };
+		viewport.setView(before, 1);
+		pointer('pointerdown', 570);
+		pointer('pointerup', 570);
+		const first = vi.mocked(send).mock.calls[0][0] as { freq: number; request_id: string };
+		document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="10.1">');
+		controls.applySdrTune();
+		expect(send).toHaveBeenCalledTimes(1);
+		const report = (freq: number, requestId: string, version: number) => controls.syncSdrPanel({
+			connected: true, mode: 'sdr', config_version: version, response_to: 'SET_SDR_CHANNEL', request_id: requestId,
+			sdr: { center: 10_000_000, decimate: 128, listen: freq, demod: 'am', if_bw: 40_000,
+				actual: { start: 9_800_000, stop: 10_200_000 } },
+		});
+		report(first.freq, first.request_id, 2);
+		expect(viewport.getView()).toEqual(before);
+		const last = vi.mocked(send).mock.calls.at(-1)![0] as { freq: number; request_id: string };
+		expect(last.freq).toBe(10_100_000);
+		report(last.freq, last.request_id, 3);
+		expect(viewport.getView()).toEqual({ lo: 10_020_000, hi: 10_180_000 });
+	});
+
+	it('keeps a zoomed frequency axis after dragging the listening badge', async () => {
+		const { controls, viewport, send } = await load(true);
+		const before = { lo: 9_920_000, hi: 10_080_000 };
+		viewport.setView(before, 1);
+		const { sdrBadgeGeometry } = await import('../ui/sdrBadgeGesture');
+		const badge = sdrBadgeGeometry()!;
+		const x = badge.left + 5, y = badge.top + badge.height / 2;
+		pointer('pointerdown', x, y);
+		pointer('pointermove', x + 40, y);
+		pointer('pointerup', x + 40, y);
+		const command = vi.mocked(send).mock.calls[0][0] as { freq: number; request_id: string };
+		expect(command.freq).toBeGreaterThan(10_000_000);
+		controls.syncSdrPanel({ connected: true, mode: 'sdr', config_version: 2,
+			response_to: 'SET_SDR_CHANNEL', request_id: command.request_id,
+			sdr: { center: 10_000_000, decimate: 128, listen: command.freq, demod: 'am', if_bw: 40_000,
+				actual: { start: 9_800_000, stop: 10_200_000 } } });
+		expect(viewport.getView()).toEqual(before);
+	});
+
 	it.each(['pointercancel', 'escape', 'lostcapture', 'blur', 'zoom', 'mode', 'disconnect'])('%s cancels ownership and never leaves a release tune', async reason => {
 		const { controls, viewport, locate, send } = await load(true);
 		pointer('pointerdown', 570);

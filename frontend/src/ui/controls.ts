@@ -12,7 +12,7 @@ import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rem
 import { sdrFilterLimits } from './sdrState';
 import { clearPassbandView } from './spectrumViewport';
 import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, moveFilterDrag, setFilterHover, updateFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
-import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession, stopSdrTuneRepeat } from './sdrTuneRequest';
+import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession, sdrTuneFollowsViewport, stopSdrTuneRepeat } from './sdrTuneRequest';
 import { beginSdrLocateClick, cancelSdrLocate, commitSdrLocateClick, updateSdrLocateHover } from './sdrLocate';
 import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
 import { resetCarrierEvidence } from '../dsp/carrierSnap';
@@ -48,7 +48,7 @@ import {
 	spectrumWheelZoom,
 	updateMarqueePreview,
 } from './spectrumZoomGestures';
-import { getCapture, isZoomed, minSpanHz, recenterOnCapture, zoomEnabled } from './spectrumViewport';
+import { getCapture, isValidWindow, isZoomed, minSpanHz, recenterOnCapture, SAME_WINDOW_HZ, zoomEnabled, type FreqWindow } from './spectrumViewport';
 import { resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
@@ -246,6 +246,7 @@ export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string |
 
 /** A lost control/device connection ends the receiver session and all unconfirmed detector intent. */
 export function disconnectSdrSession(): void {
+  acknowledgedSdrCapture = null;
   cancelSdrCanvasGesture();
   resetSdrTuneSession();
   resetCarrierEvidence();
@@ -652,6 +653,23 @@ function replaySdrEntry(): void {
 // Density persistence/grain restored on page load + RTA entry (independent memory keys)
 // ── SDR mode controls ──
 
+// STATUS can acknowledge a capture before its frame arrives. Keep its bounds even
+// when a manual overview drag cancels the automatic focus awaiting that frame.
+let acknowledgedSdrCapture: FreqWindow | null = null;
+
+/** Re-entering an already confirmed frequency is also an explicit display focus. */
+function refocusConfirmedSdrFrequency(hz: number, confirmed: number | null): void {
+  if (currentGraphMode() !== 'sdr' || !S.deviceConnected || !acknowledgedSdrCapture
+      || !getCapture() || !isZoomed() || confirmed === null || !Number.isFinite(confirmed)
+      || !Number.isFinite(hz) || hz <= 0 || Math.abs(hz - confirmed) >= SAME_WINDOW_HZ
+      || Math.abs(sdrCenterHz.get() - (sdrCenterHz.confirmedValue() ?? 0)) >= SAME_WINDOW_HZ
+      || sdrDecimate.get() !== sdrDecimate.confirmedValue()
+      || Math.abs(sdrListenHz.get() - (sdrListenHz.confirmedValue() ?? 0)) >= SAME_WINDOW_HZ) return;
+  recenterOnCapture(confirmed, acknowledgedSdrCapture, minSpanHz(S.freqArray));
+  syncSpectrumZoomUi();
+  requestRender();
+}
+
 function sdrNumber(id: string, fallback: number): number {
   const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
   const v = el ? parseFloat(el.value) : NaN;
@@ -659,14 +677,18 @@ function sdrNumber(id: string, fallback: number): number {
 }
 
 export function applySdr() {
-  cancelSdrTuneRequest();
-  const centerMhz = sdrNumber('input-sdr-center', 1000);
+  const centerMhz = sdrNumber('input-sdr-center', NaN);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
   const center = centerMhz * 1e6;
+  if (!Number.isFinite(center) || center <= 0) return;
+  cancelSdrTuneRequest();
   // Record what the user typed as the intent; the STATUS confirms it later.
   sdrCenterHz.set(center);
   sdrDecimate.set(decimate);
   sdrListenHz.set(center);
+  if (decimate === sdrDecimate.confirmedValue()) {
+    refocusConfirmedSdrFrequency(center, sdrCenterHz.confirmedValue());
+  }
   renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR', center, decimate });
@@ -701,8 +723,9 @@ export function applySdrBw() {
 }
 
 export function applySdrTune() {
-  const listenMhz = sdrNumber('input-sdr-listen', 1000);
+  const listenMhz = sdrNumber('input-sdr-listen', NaN);
   const f = listenMhz * 1e6;
+  refocusConfirmedSdrFrequency(f, sdrListenHz.confirmedValue());
   requestSdrTune(f);
 }
 
@@ -1038,7 +1061,10 @@ function sdrSet(id: string, value: string) {
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
   const active = s?.connected === true && s?.mode === 'sdr';
-  if (!active) sdrAudioSessionReady = false;
+  if (!active) {
+    sdrAudioSessionReady = false;
+    acknowledgedSdrCapture = null;
+  }
   // Server keeps the device exclusively and forces connected=false. That report is not a lost
   // receiver session, and it must not confirm or reset the remembered SDR setup.
   if (s?.mode === 'server') return;
@@ -1091,7 +1117,9 @@ export function syncSdrPanel(s: any) {
       && Math.abs(reportedCenter - previousCenter) >= 0.5)
     || (previousDecimate !== null && Number(sdr.decimate) > 0 && Number(sdr.decimate) !== previousDecimate);
   const listenBeforeAck = sdrListenHz.confirmedValue();
-  if (!confirmSdrTuneReport(Number(primary ? primary.freq : sdr.listen), s.response_to, s.request_id,
+  const reportedListen = Number(primary ? primary.freq : sdr.listen);
+  const followListen = sdrTuneFollowsViewport(reportedListen);
+  if (!confirmSdrTuneReport(reportedListen, s.response_to, s.request_id,
     s.config_version, { acceptSnapshot, contextChanged })) {
     // A stale snapshot still completes its exact request; only the confirmed state
     // stays unchanged, and the latest unsent edit can now proceed.
@@ -1122,20 +1150,24 @@ export function syncSdrPanel(s: any) {
   const displaySpan = a.start != null && a.stop != null
     ? Math.max(Number(a.stop) - Number(a.start), requestedSpan) : requestedSpan;
   confirmSdrAxisWindow(Number(sdr.center), displaySpan, Number(s.config_version), s.response_to, s.request_id);
-  // Capture updates shift the zoom box with the frame. Recenter when the acknowledged
-  // centre or listen frequency actually changed: both name the frequency the viewer is
-  // looking at, and the zoom box must land on it, clamped by the capture's edges.
-  if (s.response_to === 'SET_SDR') {
-    const listen = sdrListenHz.confirmedValue() ?? 0;
-    const previousListen = listenBeforeAck ?? listen;
-    const center = sdrCenterHz.confirmedValue() ?? 0;
-    const capture = getCapture();
-    const moved = listen > 0 && previousListen !== listen || (center > 0 && previousCenter !== center);
-    if (moved && (listen > 0 || center > 0) && capture && isZoomed()) {
-      const expected = Number.isFinite(a.start) && Number.isFinite(a.stop) && a.stop > a.start
-        ? { lo: a.start, hi: a.stop } : capture;
-      recenterOnCapture(listen > 0 ? listen : center, expected, minSpanHz(S.freqArray));
-    }
+  // Follow accepted tuning from channel ACKs and periodic STATUS as well as SET_SDR.
+  // Desired (possibly queued or rejected) frequencies must not move the zoom window.
+  // Defer a capture relocation until its frame arrives so old data keeps its own axis.
+  const listen = sdrListenHz.confirmedValue() ?? 0;
+  const center = sdrCenterHz.confirmedValue() ?? 0;
+  const listenMoved = Number.isFinite(listen) && listen > 0 && listenBeforeAck !== null
+    && Math.abs(listen - listenBeforeAck) > SAME_WINDOW_HZ;
+  const centerMoved = Number.isFinite(center) && center > 0 && previousCenter !== null
+    && Math.abs(center - previousCenter) > SAME_WINDOW_HZ;
+  const capture = getCapture();
+  const expected = Number.isFinite(a.start) && Number.isFinite(a.stop) && a.stop > a.start
+    ? { lo: a.start, hi: a.stop }
+    : centerMoved || !capture ? { lo: Math.max(S.FREQ_MIN, center - requestedSpan / 2),
+      hi: Math.min(S.FREQ_MAX, center + requestedSpan / 2) } : acknowledgedSdrCapture ?? capture;
+  acknowledgedSdrCapture = isValidWindow(expected) ? expected : null;
+  if (((listenMoved && followListen) || centerMoved) && capture && isZoomed() && acknowledgedSdrCapture) {
+    recenterOnCapture(Number.isFinite(listen) && listen > 0 ? listen : center,
+      acknowledgedSdrCapture, minSpanHz(S.freqArray));
   }
   const actualFilter = Number(receiver.if_bw) || 6000;
   if (Number.isFinite(version)) receiverConfigVersion = version;
@@ -1217,6 +1249,8 @@ export function syncSdrPanel(s: any) {
   syncSdrAudioButton();
   syncRefUI();
   setDecodeChannelMode(1, primary && !primary.enabled ? '' : sdrDemod.get());
+  // A tune can settle while spectrum frames are paused; paint the confirmed view now.
+  if (listenMoved || centerMoved) requestRender();
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
 // Turn all markers on/off at once (toggle)
@@ -2026,7 +2060,7 @@ export function bindCanvas() {
     if (gesture.owner === 'tune' && gesture.moved && tune === null) sdrListenHz.reset();
     cancelSdrCanvasGesture(false);
     if (filter !== null) selectSdrIfbw(filter);
-    if (tune !== null) requestSdrTune(tune);
+    if (tune !== null) requestSdrTune(tune, { followViewport: false });
     if (jump !== null) listenAtFreq(jump);
   });
 

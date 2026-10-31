@@ -72,6 +72,217 @@ function key(value: string) {
 	expect(event.defaultPrevented).toBe(true);
 }
 
+describe('SDR zoom follows confirmed tuning', () => {
+	const CENTER = 98e6;
+	const SPAN = 3.125e6;
+	const SELECTION = { lo: 96.8e6, hi: 97.2e6 };
+	const captureAt = (center: number) => ({ lo: center - SPAN / 2, hi: center + SPAN / 2 });
+	function report(center: number, listen: number, version: number, responseTo = 'STATUS', requestId?: string) {
+		const snapshot = status('sdr', 'am', { freq: listen });
+		const capture = captureAt(center);
+		return { ...snapshot, config_version: version, response_to: responseTo, request_id: requestId,
+			sdr: { ...snapshot.sdr, center, listen, actual: { start: capture.lo, stop: capture.hi } } };
+	}
+	async function setupZoom() {
+		const loaded = await load();
+		const viewport = await import('../ui/spectrumViewport');
+		const store = await import('../core/store');
+		const { graphMode } = await import('../ui/graphMode');
+		graphMode.confirm('sdr');
+		store.setSdrMode(true);
+		loaded.controls.syncSdrPanel(report(CENTER, CENTER, 1));
+		viewport.__testSeedCapture(captureAt(CENTER));
+		store.setFreqArray(Float64Array.from({ length: 101 }, (_, i) => captureAt(CENTER).lo + i * SPAN / 100));
+		viewport.zoomEnabled.set(true);
+		viewport.setView(SELECTION, 1);
+		vi.mocked(loaded.send).mockClear();
+		return { ...loaded, viewport };
+	}
+
+	it.each(['center', 'listen'])('refocuses 125 MHz on Enter in the unchanged %s input after moving the overview', async field => {
+		const { controls, send, viewport } = await setupZoom();
+		const center = 125e6;
+		controls.syncSdrPanel(report(center, center, 2));
+		viewport.setCapture(captureAt(center));
+		viewport.setView({ lo: center - 1.2e6, hi: center - 0.8e6 }, 1);
+		document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-center" value="125">' +
+			'<input id="input-sdr-listen" value="125"><select id="select-sdr-decimate"><option value="16">16</option></select>');
+		controls.bindActions();
+		vi.mocked(send).mockClear();
+		const { renderRequestCount } = await import('../render/redraw');
+		const renders = renderRequestCount();
+		const input = document.getElementById(`input-sdr-${field}`) as HTMLInputElement;
+		input.focus();
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+		expect(renderRequestCount()).toBeGreaterThan(renders);
+		if (field === 'listen') expect(send).not.toHaveBeenCalled();
+		// A delayed echo must not repeat the focus after a subsequent overview drag.
+		const moved = { lo: center + 0.8e6, hi: center + 1.2e6 };
+		viewport.setView(moved, 1);
+		controls.syncSdrPanel(report(center, center, 3, field === 'center' ? 'SET_SDR' : 'STATUS'));
+		expect(viewport.getView()).toEqual(moved);
+		// Further Enter presses remain explicit focus actions, including before an ACK.
+		for (let i = 0; i < 2; i++) {
+			input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+			expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+			viewport.setView(moved, 1);
+		}
+	});
+
+	it.each(['lo', 'hi'] as const)('refocuses a resubmitted listen frequency at the %s capture edge', async edge => {
+		const { controls, send, viewport } = await setupZoom();
+		const capture = captureAt(CENTER);
+		controls.syncSdrPanel(report(CENTER, capture[edge], 2));
+		viewport.setView(SELECTION, 1);
+		document.body.insertAdjacentHTML('beforeend', `<input id="input-sdr-listen" value="${capture[edge] / 1e6}">`);
+		controls.applySdrTune();
+		expect(viewport.getView()).toEqual(edge === 'lo'
+			? { lo: capture.lo, hi: capture.lo + 400_000 }
+			: { lo: capture.hi - 400_000, hi: capture.hi });
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('defers a repeated-frequency focus until the acknowledged capture arrives', async () => {
+		const { controls, viewport } = await setupZoom();
+		const center = CENTER + SPAN / 4;
+		controls.syncSdrPanel(report(center, center, 2));
+		viewport.setView(SELECTION, 1); // Cancels the first automatic focus.
+		controls.syncSdrPanel(report(CENTER, CENTER, 1)); // Stale bounds cannot replace the acknowledged capture.
+		document.body.insertAdjacentHTML('beforeend', `<input id="input-sdr-listen" value="${center / 1e6}">`);
+		controls.applySdrTune();
+		expect(viewport.getView()).toEqual(SELECTION);
+		viewport.setCapture(captureAt(center));
+		expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+	});
+
+	it.each(['center', 'listen'])('ignores an empty or invalid %s submission', async field => {
+		const { controls, send, viewport } = await setupZoom();
+		document.body.insertAdjacentHTML('beforeend', `<input id="input-sdr-${field}">`);
+		const input = document.getElementById(`input-sdr-${field}`) as HTMLInputElement;
+		for (const value of ['', 'invalid', 'Infinity', '0', '-1']) {
+			input.value = value;
+			if (field === 'center') controls.applySdr();
+			else controls.applySdrTune();
+			expect(viewport.getView()).toEqual(SELECTION);
+		}
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('keeps a queued return to the confirmed frequency pending until its tune settles', async () => {
+		const { controls, send, viewport } = await setupZoom();
+		const listen = CENTER + 400_000;
+		controls.listenAtFreq(listen);
+		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		document.body.insertAdjacentHTML('beforeend', `<input id="input-sdr-listen" value="${CENTER / 1e6}">`);
+		controls.applySdrTune();
+		expect(viewport.getView()).toEqual(SELECTION);
+		expect(send).toHaveBeenCalledTimes(1);
+		controls.syncSdrPanel(report(CENTER, listen, 2, 'SET_SDR_CHANNEL', first.request_id));
+		const last = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel(report(CENTER, CENTER, 3, 'SET_SDR_CHANNEL', last.request_id));
+		expect(viewport.getView()).toEqual({ lo: CENTER - 200_000, hi: CENTER + 200_000 });
+	});
+
+	it.each(['SET_SDR_CHANNEL', 'STATUS'])('follows a listen change confirmed by %s without resizing', async responseTo => {
+		const { controls, send, viewport } = await setupZoom();
+		const listen = CENTER + 400_000;
+		controls.listenAtFreq(listen);
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		const { renderRequestCount } = await import('../render/redraw');
+		const renders = renderRequestCount();
+		// Unconfirmed input must not strand the view at a rejected frequency.
+		expect(viewport.getView()).toEqual(SELECTION);
+		controls.syncSdrPanel(report(CENTER, listen, 2, responseTo, request.request_id));
+		expect(viewport.getView()).toEqual({ lo: listen - 200_000, hi: listen + 200_000 });
+		expect(renderRequestCount()).toBeGreaterThan(renders);
+		expect(send).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(['SET_SDR', 'SET_SDR_CHANNEL', 'STATUS'].flatMap(responseTo =>
+		['before', 'after'].map(order => ({ responseTo, order }))))(
+		'follows a center change with $responseTo arriving $order the frame', async ({ responseTo, order }) => {
+		const { controls, viewport } = await setupZoom();
+		const center = CENTER + 5e6;
+		if (order === 'after') viewport.setCapture(captureAt(center));
+		controls.syncSdrPanel(report(center, center, 2, responseTo));
+		if (order === 'before') {
+			expect(viewport.getView()).toEqual(SELECTION);
+			viewport.setCapture(captureAt(center));
+		}
+		expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+	});
+
+	it('waits for the new capture when a center report omits actual bounds', async () => {
+		const { controls, viewport } = await setupZoom();
+		const center = CENTER + 5e6;
+		const snapshot = report(center, center, 2, 'SET_SDR');
+		controls.syncSdrPanel({ ...snapshot, sdr: { ...snapshot.sdr, actual: undefined } });
+		expect(viewport.getView()).toEqual(SELECTION);
+		viewport.setCapture(captureAt(center));
+		expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+	});
+
+	it.each(['lo', 'hi'] as const)('clamps the view at the %s capture edge without shrinking', async edge => {
+		const { controls, viewport } = await setupZoom();
+		const capture = captureAt(CENTER);
+		controls.syncSdrPanel(report(CENTER, capture[edge], 2, 'SET_SDR_CHANNEL'));
+		expect(viewport.getView()).toEqual(edge === 'lo'
+			? { lo: capture.lo, hi: capture.lo + 400_000 }
+			: { lo: capture.hi - 400_000, hi: capture.hi });
+	});
+
+	it('keeps the latest receiver target through intermediate capture frames', async () => {
+		const { controls, viewport } = await setupZoom();
+		const first = CENTER + 5e6, latest = CENTER + 10e6;
+		controls.syncSdrPanel(report(first, first, 2, 'SET_SDR_CHANNEL'));
+		controls.syncSdrPanel(report(latest, latest + 400_000, 3, 'SET_SDR_CHANNEL'));
+		viewport.setCapture(captureAt(first));
+		viewport.setCapture(captureAt(latest));
+		expect(viewport.getView()).toEqual({ lo: latest + 200_000, hi: latest + 600_000 });
+	});
+
+	it('ignores stale reports and repeated snapshots after the user moves the overview box', async () => {
+		const { controls, viewport } = await setupZoom();
+		const listen = CENTER + 400_000;
+		controls.syncSdrPanel(report(CENTER, listen, 3, 'SET_SDR_CHANNEL'));
+		viewport.setView(SELECTION, 1);
+		controls.syncSdrPanel(report(CENTER, CENTER, 2, 'SET_SDR_CHANNEL'));
+		controls.syncSdrPanel(report(CENTER, listen, 3));
+		expect(viewport.getView()).toEqual(SELECTION);
+	});
+
+	it('leaves the full capture visible when tuning without a selection', async () => {
+		const { controls, viewport } = await setupZoom();
+		viewport.setView(null);
+		controls.syncSdrPanel(report(CENTER, CENTER + 400_000, 2, 'SET_SDR_CHANNEL'));
+		expect(viewport.isZoomed()).toBe(false);
+		expect(viewport.getView()).toEqual(captureAt(CENTER));
+	});
+
+	it('keeps the selection on rejected input, invalid reports and sub-Hz jitter', async () => {
+		const { controls, send, viewport } = await setupZoom();
+		const { rejectSdrTuneRequest } = await import('../ui/sdrTuneRequest');
+		controls.listenAtFreq(CENTER + 400_000);
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		rejectSdrTuneRequest('SET_SDR_CHANNEL', request.request_id);
+		controls.syncSdrPanel(report(CENTER, NaN, 2, 'SET_SDR_CHANNEL'));
+		controls.syncSdrPanel(report(CENTER, CENTER + 0.1, 3));
+		expect(viewport.getView()).toEqual(SELECTION);
+	});
+
+	it('returns to the full capture when a bandwidth change supersedes deferred tuning', async () => {
+		const { controls, viewport } = await setupZoom();
+		const center = CENTER + 5e6;
+		controls.syncSdrPanel(report(center, center, 2, 'SET_SDR_CHANNEL'));
+		const narrower = { lo: center - SPAN / 4, hi: center + SPAN / 4 };
+		viewport.setCapture(narrower);
+		viewport.setCapture(captureAt(center));
+		expect(viewport.isZoomed()).toBe(false);
+		expect(viewport.getView()).toEqual(captureAt(center));
+	});
+});
+
 describe('SDR control intent and STATUS', () => {
 	it('cycles only available modes and refuses selection outside receiver control', async () => {
 		const { controls, state, send } = await load();

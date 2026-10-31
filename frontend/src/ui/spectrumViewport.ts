@@ -231,7 +231,8 @@ export function viewportVersion(): number {
 /** Apply an acknowledged receiver relocation after its matching acquisition frame arrives. */
 export function recenterOnCapture(hz: number, expected: FreqWindow, minSpan: number): void {
 	pendingRecenter = null;
-	if (!view || !Number.isFinite(hz) || !isValidWindow(expected)) return;
+	if (!view || !Number.isFinite(hz) || !isValidWindow(expected)
+		|| !Number.isFinite(minSpan) || minSpan <= 0) return;
 	if (sameWindow(capture, expected)) {
 		const minimum = Math.min(minSpan, expected.hi - expected.lo);
 		setView(panToCenter(view, hz, expected, minimum), minimum);
@@ -246,10 +247,10 @@ export function recenterOnCapture(hz: number, expected: FreqWindow, minSpan: num
  * Same window → nothing changes. A translated window of the same width (an x-axis
  * band pan) shifts the view by the same amount: the zoom box is pinned to the
  * observation FRAME, the spectrum (and the listen flag on it) slides under it,
- * clamped only at the frame's edges. When the flag slides out the backend replants
- * it and the SET_SDR acknowledgement in controls.ts drops the box onto the new
- * flag. A window whose width changed drops the view: that zoom was selected
- * against a different span. Returns true when the viewport changed.
+ * clamped only at the frame's edges. Confirmed SDR tuning in controls.ts recentres
+ * the box on the receiver once the matching capture arrives; intermediate pans
+ * keep that pending target. A window whose width changed drops the view: that zoom
+ * was selected against a different span. Returns true when the viewport changed.
  */
 export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = SAME_WINDOW_HZ): boolean {
 	if (!isValidWindow(w)) {
@@ -280,6 +281,10 @@ export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = S
 	if (view && recenter && sameWindow(next, recenter.expected)) {
 		const centered = panToCenter(view, recenter.hz, next, Math.min(recenter.minSpan, next.hi - next.lo));
 		view = sameWindow(centered, next) ? null : centered;
+	} else if (view && recenter && sameSpan(next, recenter.expected)) {
+		// Rapid tuning may confirm the newest target before older acquisition frames
+		// drain. Only its matching frame may consume the deferred focus.
+		pendingRecenter = recenter;
 	}
 	version++;
 	return true;

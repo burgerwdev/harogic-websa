@@ -5,8 +5,8 @@ import { requestRender } from '../render/redraw';
 import { renderSdrState, sdrListenHz } from './sdrState';
 
 let serial = 0;
-let inFlight: { id: string; hz: number; timer: number } | null = null;
-let queued: number | null = null;
+let inFlight: { id: string; hz: number; timer: number; followViewport: boolean } | null = null;
+let queued: { hz: number; followViewport: boolean } | null = null;
 let version = -1;
 let timeoutError: { id: string; text: string; version: number } | null = null;
 
@@ -24,11 +24,11 @@ export function cancelSdrTuneRequest(): void {
   sdrListenHz.reset();
 }
 
-function submit(hz: number): void {
+function submit(hz: number, followViewport: boolean): void {
   const id = `sdr-tune-${++serial}`;
   sdrListenHz.set(hz);
   sdrListenHz.touch(hz);
-  inFlight = { id, hz, timer: window.setTimeout(() => {
+  inFlight = { id, hz, followViewport, timer: window.setTimeout(() => {
     if (inFlight?.id !== id) return;
     cancelSdrTuneRequest();
     const text = t('sdr_tune_timeout');
@@ -41,16 +41,22 @@ function submit(hz: number): void {
 }
 
 /** One request in flight; repeated input replaces the single unsent target. */
-export function requestSdrTune(hz: number): void {
+export function requestSdrTune(hz: number, options: { followViewport?: boolean } = {}): void {
   if (!Number.isFinite(hz) || hz <= 0) return;
   clearTimeoutError();
+  const followViewport = options.followViewport !== false;
   if (inFlight) {
-    queued = hz;
+    queued = { hz, followViewport };
     sdrListenHz.set(hz);
     sdrListenHz.touch(hz);
-  } else if (Math.abs(hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(hz);
+  } else if (Math.abs(hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(hz, followViewport);
   renderSdrState();
   requestRender();
+}
+
+/** Read before confirming a report: plot tuning keeps its frequency axis under the pointer. */
+export function sdrTuneFollowsViewport(hz: number): boolean {
+  return !inFlight || inFlight.followViewport || Math.abs(inFlight.hz - hz) >= 0.5;
 }
 
 /** Drop unsent repeat input on blur, while allowing the current request to settle. */
@@ -84,13 +90,15 @@ export function confirmSdrTuneReport(hz: number, responseTo: unknown, requestId:
     const next = queued;
     queued = null;
     sdrListenHz.reset();
-    if (next !== null && Math.abs(next - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(next);
+    if (next !== null && Math.abs(next.hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) {
+      submit(next.hz, next.followViewport);
+    }
     if (!accepted) {
       renderSdrState();
       requestRender();
     }
   } else if (accepted && inFlight) {
-    const target = queued ?? inFlight.hz;
+    const target = queued?.hz ?? inFlight.hz;
     sdrListenHz.set(target);
     sdrListenHz.touch(target);
   }
