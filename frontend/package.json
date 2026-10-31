@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:workbench": "vite --host 127.0.0.1 --port 5186 --strictPort"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

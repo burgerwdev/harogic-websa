@@ -1,0 +1,85 @@
+/* Fixture entry shares the production theme, typography and instrument controls. */
+[hidden] { display: none !important; }
+#fixture-controls { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:8px 16px; border-bottom:1px solid var(--input-border); background:var(--panel); color:var(--text); }
+#fixture-controls label { display:flex; gap:6px; align-items:center; }
+#workbench-app { color:var(--text); }
+#workbench-app button, .mc-window button { cursor:pointer; }
+.mc-banner { display:flex; gap:32px; padding:14px 20px; background:var(--head-bg); border-bottom:1px solid var(--card-border); }
+.mc-banner b { letter-spacing:2px; }
+.mc-desktop { display:grid; grid-template-columns:minmax(0,1fr) 240px; min-height:calc(100vh - 95px); }
+.mc-plots { display:grid; grid-template-rows:45% 55%; min-height:620px; }
+.mc-spectrum { position:relative; overflow:hidden; background:repeating-linear-gradient(0deg,transparent 0 49px,var(--inner-border) 50px),repeating-linear-gradient(90deg,var(--sa-bg) 0 119px,var(--inner-border) 120px); }
+.mc-spectrum>span, .mc-waterfall>span { display:inline-block; padding:12px; opacity:.65; }
+.mc-trace { position:absolute; bottom:12%; width:100%; height:55%; background:var(--sa-trace1); opacity:.4; clip-path:polygon(0% 90%,10% 88%,11% 93%,20% 87%,21% 48%,22% 86%,35% 90%,36% 65%,37% 88%,48% 89%,50% 5%,51% 92%,68% 90%,69% 75%,70% 90%,80% 85%,82% 25%,84% 88%,100% 90%,100% 91%,84% 89%,82% 28%,80% 86%,70% 91%,69% 78%,68% 91%,51% 93%,50% 8%,48% 90%,37% 89%,36% 68%,35% 91%,22% 87%,21% 51%,20% 88%,11% 94%,10% 89%,0% 91%); }
+[data-markers] { position:absolute; inset:0; }
+[data-markers] button { position:absolute; transform:translateX(-50%); z-index:1; white-space:nowrap; }
+.mc-waterfall { background:repeating-linear-gradient(0deg,#091b18bb 0 2px,transparent 3px 5px),linear-gradient(90deg,#02111b 20%,#11452e 21%,#02111b 22%,#082d35 36%,#02111b 38%,#02111b 49%,#328774 50%,#02111b 51%,#02111b 80%,#366e4c 82%,#02111b 84%); border-top:1px solid var(--card-border); }
+.mc-desktop aside { padding:16px; background:var(--panel); border-left:1px solid var(--card-border); }
+.mc-desktop aside button { display:block; width:100%; margin:10px 0; }
+.mc-window { position:fixed; display:flex; flex-direction:column; box-sizing:border-box; border:1px solid var(--input-border); background:var(--panel); color:var(--text); box-shadow:0 8px 35px #0007; container-type:inline-size; font-size:12px; }
+.mc-window:focus-within { border-color:var(--sa-trace1); }
+.mc-head { display:flex; align-items:center; gap:5px; padding:7px 9px; background:var(--head-bg); border-bottom:1px solid var(--card-border); cursor:move; touch-action:none; flex-shrink:0; }
+.mc-head strong { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mc-head button { font-size:11px; padding:2px 7px; }
+.mc-body { padding:12px; overflow:auto; flex:1; min-height:0; }
+.mc-notice { color:var(--sa-dim); line-height:1.7; font-size:11px; }
+.mc-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding:7px 0; }
+.mc-toolbar input[data-search] { flex:1; min-width:160px; }
+.mc-split { display:grid; grid-template-columns:minmax(260px,1fr) minmax(300px,1.15fr); gap:14px; }
+.mc-list { overflow:auto; max-height:360px; }
+.mc-row { display:flex; flex-direction:column; gap:8px; padding:10px; margin-bottom:8px; border:1px solid var(--inner-border); border-left:3px solid var(--channel); }
+.mc-row>button { text-align:left; background:transparent; font-weight:bold; }
+.mc-row div { display:flex; flex-wrap:wrap; gap:4px; }
+.mc-row span, .mc-row small { opacity:.8; font-size:11px; }
+.mc-selected { background:var(--head-bg); outline:1px solid var(--card-border); }
+.mc-channel-heading { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; padding:8px; border-left:3px solid; background:var(--head-bg); }
+.mc-clock { font-size:11px; overflow-wrap:anywhere; opacity:.8; line-height:1.6; }
+.mc-tabs { display:flex; flex-wrap:wrap; gap:4px; padding:10px 0; }
+.mc-tabs [aria-pressed=true] { border-color:var(--sa-trace1); background:var(--head-bg); }
+.mc-body form { display:grid; gap:9px; }
+.mc-body form label { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.mc-body input, .mc-body select { max-width:100%; box-sizing:border-box; }
+.mc-body form input, .mc-body form select { width:175px; }
+.mc-body button, .mc-body input, .mc-body select, #fixture-controls select, #fixture-controls button { color:var(--text); background:var(--input-bg); border:1px solid var(--input-border); border-radius:2px; padding:5px 7px; }
+.mc-body button:disabled { opacity:.4; cursor:default; }
+.mc-window :focus-visible { outline:2px solid var(--sa-marker3); outline-offset:2px; }
+.mc-monitor { display:flex; flex-wrap:wrap; align-items:center; gap:8px; border:1px solid var(--card-border); margin:8px 0; }
+.mc-monitor label { display:flex; align-items:center; gap:6px; }
+.mc-monitor input { width:90px; }
+.mc-task, .mc-preview { border:1px solid var(--card-border); padding:9px; margin-top:9px; overflow-wrap:anywhere; }
+.mc-error, [data-popup-error] { color:var(--sa-warning); overflow-wrap:anywhere; }
+.mc-resize { position:absolute; touch-action:none; }
+.mc-resize-n,.mc-resize-s { left:7px; right:7px; height:5px; cursor:ns-resize; }
+.mc-resize-e,.mc-resize-w { top:7px; bottom:7px; width:5px; cursor:ew-resize; }
+.mc-resize-n { top:-2px; } .mc-resize-s { bottom:-2px; } .mc-resize-e { right:-2px; } .mc-resize-w { left:-2px; }
+.mc-resize-ne,.mc-resize-nw,.mc-resize-se,.mc-resize-sw { width:9px; height:9px; }
+.mc-resize-ne { right:-2px; top:-2px; cursor:nesw-resize; } .mc-resize-sw { left:-2px; bottom:-2px; cursor:nesw-resize; }
+.mc-resize-nw { left:-2px; top:-2px; cursor:nwse-resize; } .mc-resize-se { right:-2px; bottom:-2px; cursor:nwse-resize; }
+.surface-popup-body { margin:0; background:var(--bg); overflow:hidden; }
+.mc-window.surface-popout { position:relative; left:0 !important; top:0 !important; width:calc(100vw / var(--ui,1)) !important; height:calc(100vh / var(--ui,1)) !important; box-shadow:none; }
+.surface-popout .mc-resize { display:none; }
+@container (max-width: 700px) { .mc-split { grid-template-columns:1fr; } .mc-list { max-height:200px; } }
+@container (max-width: 430px) { .mc-editor { display:none; } }
+@media(max-width:750px) { .mc-desktop { grid-template-columns:1fr 170px; } .mc-banner { gap:12px; font-size:11px; } }
+body:has(#workbench-app) { display:block; }
+#workbench-app { width:100%; }
+.surface-popup-body { display:block; }
+.mc-head button, #workbench-app aside button, [data-markers] button { background:var(--input-bg); color:var(--text); border:1px solid var(--input-border); border-radius:2px; padding:4px 7px; }
+.mc-quick-listen { position:fixed; width:min(390px, calc(100vw - 32px)); box-sizing:border-box; padding:16px; border:1px solid var(--input-border); background:var(--panel); color:var(--text); box-shadow:0 12px 45px #0008; }
+.mc-quick-listen::backdrop { background:#0005; }
+.mc-quick-listen form { display:grid; gap:12px; }
+.mc-quick-listen header, .mc-quick-listen label { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.mc-quick-listen input, .mc-quick-listen select, .mc-quick-listen button { background:var(--input-bg); color:var(--text); border:1px solid var(--input-border); padding:6px; min-width:0; }
+.mc-frequency-input { display:flex; width:230px; }
+.mc-frequency-input input { width:100%; }
+.mc-quick-listen [name=target] { max-width:230px; }
+.mc-quick-listen [data-impact] { font-size:12px; line-height:1.6; overflow-wrap:anywhere; border-top:1px solid var(--card-border); }
+.mc-quick-listen [data-listen-submit] { font-weight:bold; padding:9px; cursor:pointer; }
+.mc-quick-listen button:disabled { opacity:.45; cursor:wait; }
+.mc-quick-listen :focus-visible { outline:2px solid var(--sa-marker3); outline-offset:2px; }
+.mc-plots .mc-waterfall { position:relative; }
+[data-listen-status] { overflow-wrap:anywhere; color:var(--sa-text); line-height:1.6; }
+.mc-frequency-input input { flex:1; width:0; }
+.mc-frequency-input select { flex:0 0 70px; }
+.mc-quick-listen [name=mode] { min-width:80px; }
+.mc-quick-listen [data-error]:empty { display:none; }

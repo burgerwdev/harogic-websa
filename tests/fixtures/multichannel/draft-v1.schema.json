@@ -1,0 +1,1022 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:websa:multichannel:draft-v1",
+  "title": "Multichannel draft-v1 portable contract",
+  "description": "P2 draft; not a published native service API. Runtime semantics in MULTICHANNEL_DRAFT.md.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/command"
+    },
+    {
+      "$ref": "#/$defs/snapshot"
+    },
+    {
+      "$ref": "#/$defs/receiver"
+    },
+    {
+      "$ref": "#/$defs/fault"
+    },
+    {
+      "$ref": "#/$defs/reply"
+    },
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "#/$defs/impact"
+    }
+  ],
+  "$defs": {
+    "u64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 20
+    },
+    "stream": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "epoch": {
+          "$ref": "#/$defs/u64"
+        },
+        "channel_id": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "required": [
+        "source_id",
+        "epoch",
+        "channel_id"
+      ],
+      "additionalProperties": false
+    },
+    "baseband": {
+      "type": "object",
+      "properties": {
+        "frequency_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "passband_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "transition_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "minimum_rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "frequency_hz",
+        "passband_hz",
+        "transition_hz",
+        "minimum_rate_hz"
+      ],
+      "additionalProperties": false
+    },
+    "processor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "demodulator",
+            "decoder"
+          ]
+        },
+        "mode": {
+          "type": "string"
+        },
+        "minimum_rate_hz": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "mode",
+        "minimum_rate_hz"
+      ],
+      "additionalProperties": false
+    },
+    "fault": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "enum": [
+            "request",
+            "consumer",
+            "recording",
+            "receiver",
+            "capture"
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "scope",
+        "code",
+        "message",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "purpose": {
+          "enum": [
+            "listen",
+            "digital",
+            "iq"
+          ]
+        },
+        "baseband": {
+          "$ref": "#/$defs/baseband"
+        },
+        "processors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/processor"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "color",
+        "tags",
+        "enabled",
+        "purpose",
+        "baseband",
+        "processors"
+      ],
+      "additionalProperties": false
+    },
+    "clock": {
+      "type": "object",
+      "properties": {
+        "input_index": {
+          "$ref": "#/$defs/u64"
+        },
+        "output_index": {
+          "$ref": "#/$defs/u64"
+        },
+        "fraction_num": {
+          "$ref": "#/$defs/u64"
+        },
+        "fraction_den": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "input_rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "actual_rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "delay_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "utc_reliable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input_index",
+        "output_index",
+        "fraction_num",
+        "fraction_den",
+        "input_rate_hz",
+        "actual_rate_hz",
+        "delay_seconds",
+        "utc_reliable"
+      ],
+      "additionalProperties": false
+    },
+    "configure": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "configure"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/u64"
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/config"
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "expected_revision",
+        "receiver_uid",
+        "config"
+      ],
+      "additionalProperties": false
+    },
+    "scene": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "scene"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/u64"
+        },
+        "configs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "receiver_uid": {
+                "type": "string"
+              },
+              "config": {
+                "$ref": "#/$defs/config"
+              }
+            },
+            "required": [
+              "receiver_uid",
+              "config"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "capture_center_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "expected_revision",
+        "configs",
+        "capture_center_hz"
+      ],
+      "additionalProperties": false
+    },
+    "receiver": {
+      "type": "object",
+      "properties": {
+        "receiver_uid": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "display_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revision": {
+          "$ref": "#/$defs/u64"
+        },
+        "confirmed": {
+          "$ref": "#/$defs/config"
+        },
+        "stream": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/stream"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/clock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "running",
+            "stopped",
+            "interrupted",
+            "failed"
+          ]
+        },
+        "fault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/fault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "receiver_uid",
+        "source_id",
+        "display_number",
+        "revision",
+        "confirmed",
+        "stream",
+        "clock",
+        "state",
+        "fault"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "subscription_id": {
+          "type": "string"
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "iq",
+            "audio",
+            "results"
+          ]
+        },
+        "format": {
+          "enum": [
+            "cf32_le",
+            "pcm_f32",
+            "jsonl"
+          ]
+        },
+        "actual_rate_hz": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "active",
+            "ended",
+            "failed"
+          ]
+        },
+        "fault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/fault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "subscription_id",
+        "receiver_uid",
+        "kind",
+        "format",
+        "actual_rate_hz",
+        "state",
+        "fault"
+      ],
+      "additionalProperties": false
+    },
+    "segment": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "$ref": "#/$defs/stream"
+        },
+        "first_input_index": {
+          "$ref": "#/$defs/u64"
+        },
+        "samples": {
+          "$ref": "#/$defs/u64"
+        },
+        "actual_rate_hz": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "stream",
+        "first_input_index",
+        "samples",
+        "actual_rate_hz",
+        "end_reason"
+      ],
+      "additionalProperties": false
+    },
+    "track": {
+      "type": "object",
+      "properties": {
+        "track_id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "iq",
+            "audio",
+            "results"
+          ]
+        },
+        "format": {
+          "enum": [
+            "cf32_le",
+            "pcm_f32",
+            "jsonl"
+          ]
+        },
+        "source": {
+          "enum": [
+            "baseband",
+            "analysis_audio",
+            "decoder_results"
+          ]
+        },
+        "compression": {
+          "enum": [
+            "zstd_auto_lossless",
+            "none"
+          ]
+        },
+        "state": {
+          "enum": [
+            "preparing",
+            "waiting",
+            "recording",
+            "finalizing",
+            "completed",
+            "failed"
+          ]
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/segment"
+          }
+        },
+        "raw_bytes": {
+          "$ref": "#/$defs/u64"
+        },
+        "stored_bytes": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "required": [
+        "track_id",
+        "kind",
+        "format",
+        "source",
+        "compression",
+        "state",
+        "segments",
+        "raw_bytes",
+        "stored_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "recording": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "preparing",
+            "waiting",
+            "recording",
+            "finalizing",
+            "completed",
+            "failed"
+          ]
+        },
+        "tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/track"
+          }
+        },
+        "fault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/fault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "receiver_uid",
+        "state",
+        "tracks",
+        "fault"
+      ],
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "multichannel-draft-v1"
+        },
+        "transport": {
+          "enum": [
+            "fixture",
+            "native"
+          ]
+        },
+        "revision": {
+          "$ref": "#/$defs/u64"
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "max_channels": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "capacity_target": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "max_channels",
+            "capacity_target",
+            "modes"
+          ],
+          "additionalProperties": false
+        },
+        "capture": {
+          "type": "object",
+          "properties": {
+            "source_id": {
+              "type": "string"
+            },
+            "center_hz": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "usable_bandwidth_hz": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "input_rate_hz": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "epoch": {
+              "$ref": "#/$defs/u64"
+            },
+            "state": {
+              "enum": [
+                "running",
+                "failed"
+              ]
+            }
+          },
+          "required": [
+            "source_id",
+            "center_hz",
+            "usable_bandwidth_hz",
+            "input_rate_hz",
+            "epoch",
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        "receivers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/receiver"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/output"
+          }
+        },
+        "recordings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/recording"
+          }
+        }
+      },
+      "required": [
+        "contract",
+        "transport",
+        "revision",
+        "capabilities",
+        "capture",
+        "receivers",
+        "outputs",
+        "recordings"
+      ],
+      "additionalProperties": false
+    },
+    "command_create": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "create"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/config"
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "config"
+      ],
+      "additionalProperties": false
+    },
+    "command_retire": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "retire"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "receiver_uid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "receiver_uid"
+      ],
+      "additionalProperties": false
+    },
+    "command_output": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "output"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "receiver_uid",
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "command_record_start": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "record_start"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "iq",
+              "audio",
+              "results"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "receiver_uid",
+        "kinds"
+      ],
+      "additionalProperties": false
+    },
+    "command_record_stop": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "record_stop"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "task_id"
+      ],
+      "additionalProperties": false
+    },
+    "command": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configure"
+        },
+        {
+          "$ref": "#/$defs/scene"
+        },
+        {
+          "$ref": "#/$defs/command_create"
+        },
+        {
+          "$ref": "#/$defs/command_retire"
+        },
+        {
+          "$ref": "#/$defs/command_output"
+        },
+        {
+          "$ref": "#/$defs/command_record_start"
+        },
+        {
+          "$ref": "#/$defs/command_record_stop"
+        }
+      ]
+    },
+    "impact": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "faults": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fault"
+          }
+        },
+        "capture_change": {
+          "type": "boolean"
+        },
+        "affected_receivers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "affected_tracks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "candidate_center_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "estimated_cf32_bytes_per_second": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "accepted",
+        "faults",
+        "capture_change",
+        "affected_receivers",
+        "affected_tracks",
+        "candidate_center_hz",
+        "estimated_cf32_bytes_per_second"
+      ],
+      "additionalProperties": false
+    },
+    "reply": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/snapshot"
+        },
+        "fault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/fault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "request_id",
+        "snapshot",
+        "fault"
+      ],
+      "additionalProperties": false
+    },
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "snapshot"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/snapshot"
+            }
+          },
+          "required": [
+            "type",
+            "snapshot"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "fault"
+            },
+            "fault": {
+              "$ref": "#/$defs/fault"
+            }
+          },
+          "required": [
+            "type",
+            "fault"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "stream_boundary"
+            },
+            "receiver_uid": {
+              "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/stream"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "next": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/stream"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "clock": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "receiver_uid",
+            "previous",
+            "next",
+            "reason",
+            "clock"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

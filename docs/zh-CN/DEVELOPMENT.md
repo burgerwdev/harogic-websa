@@ -106,6 +106,24 @@ Pluto 台架统一入口支持 `radiofax` 和 `wefax`，两者使用同一个流
 Rust 测试保留 `--test-threads=1`。使用主机可用的资源控制和明确的内存上限隔离构建与设备进程。
 启动脚本使用脱离终端的后台进程，无需服务管理器。
 
+多信道开发原型通过 `npm --prefix frontend run dev:workbench` 启动，打开
+`http://127.0.0.1:5186/static/dist/workbench.html`。此独立 Vite 页面使用 fixture adapter，
+不连接原生服务、不启动音频或记录文件，生产构建不包含该入口。状态契约与后端离线实验见
+[MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md)。浏览器回归：
+`python tools/e2e/multichannel_workbench.py`（需可用的 Playwright Python 环境）。
+
+原型支持在频谱/瀑布右键选点加入监听，也可点右侧“＋ 监听频点”输入 MHz/kHz/Hz。
+有空位可新建听音信道，满路数时显式选择已有听音信道；预览记录分段影响，服务确认后才开启本地路由。
+同频复用不重新配置接收，当前编辑目标保持不变。该入口仍为 fixture，不产生真实声音。
+
+无硬件原生实验（默认 0.05 秒合成输入；不是容量验收）：
+
+```sh
+cargo run --offline --release -j 1 --manifest-path backend/Cargo.toml --features iq-experiments --bin multichannel_experiment -- /tmp/websa-multichannel-experiment 0.05
+```
+
+产出 `report.json` 和实验 `.wbiq` 文件，保留 CF32 位模式与实际速率。依赖 Zstd 已在本机缓存时可使用 `--offline`。
+
 ## 2. 依赖方向与归属
 
 | 区域 | 职责 |

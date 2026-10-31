@@ -211,9 +211,14 @@ function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLEl
 }
 
 export function renderDecoderResults(host: HTMLElement, channel: number, mode: string, utc: boolean): void {
-  const log = decoderLog(channel, mode);
+  renderDecoderEntries(host, decoderLog(channel, mode).entries, `${channel}:${mode}`, utc, decoderLog(channel, mode).evicted);
+}
+
+/** Shared renderer; development and native adapters supply isolated retained entries. */
+export function renderDecoderEntries(host: HTMLElement, input: readonly DecoderLogEntry[], identity: string, utc: boolean, evicted = 0): void {
+  const log = { entries: input, evicted };
   const entries = [...log.entries].sort((a, b) => Number(b.kind === 'image') - Number(a.kind === 'image'));
-  const signature = `${channel}:${mode}:${utc}:${getLang()}`;
+  const signature = `${identity}:${utc}:${getLang()}`;
   let cache = rendered.get(host);
   if (!cache || cache.signature !== signature) {
     cache = { signature, nodes: new Map() };

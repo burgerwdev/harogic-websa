@@ -36,6 +36,7 @@ import { sstvModeTable, modeDescriptor, modeOutputs } from '../sdr/registry';
 import { clearDecoderLog, subscribeDecoderLog } from '../sdr/decoderLog';
 import { renderDecoderResults } from './decoderResults';
 import { createDecodePopout, type DecodePopout } from './decodePopout';
+import { applyFloatingGeometry, clampFloatingGeometry } from './floatingGeometry';
 import './decodeResults.css';
 import { formatLatLon, geoFor } from '../sdr/ft8Geo';
 import { parseFt8Message } from '../sdr/ft8Message';
@@ -269,17 +270,7 @@ function writeGeometry(geometry: Geometry): void {
 }
 
 function clampToViewport(geometry: Geometry): Geometry {
-	// At least a head's worth of the window stays on screen, so it can always be dragged back.
-	const maxX = Math.max(0, surfaceWindow().innerWidth - 120);
-	const maxY = Math.max(0, surfaceWindow().innerHeight - 40);
-	const maxW = Math.max(260, surfaceWindow().innerWidth);
-	const maxH = Math.max(120, surfaceWindow().innerHeight);
-	return {
-		x: Math.min(Math.max(0, geometry.x), maxX),
-		y: Math.min(Math.max(0, geometry.y), maxY),
-		w: Math.min(Math.max(260, geometry.w), maxW),
-		h: Math.min(Math.max(120, geometry.h), maxH),
-	};
+	return clampFloatingGeometry(geometry, surfaceWindow());
 }
 
 const element = (id: string) => surfaceDocument().getElementById(id) as HTMLElement | null;
@@ -308,11 +299,7 @@ function currentGeometry(win: HTMLElement): Geometry {
 
 /** Write viewport-pixel geometry into the window's styles (local px: it carries the zoom). */
 function applyGeometry(win: HTMLElement, geometry: Geometry): void {
-	const scale = getUiScale();
-	win.style.left = `${geometry.x / scale}px`;
-	win.style.top = `${geometry.y / scale}px`;
-	win.style.width = `${geometry.w / scale}px`;
-	win.style.height = `${geometry.h / scale}px`;
+	applyFloatingGeometry(win, geometry, getUiScale());
 }
 
 /** Move without resizing: border-inclusive DOM dimensions must not feed back into
@@ -1727,6 +1714,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		setOpen(false);
 		return;
 	}
+	portal?.dispose();
 	surface = win;
 	win.dataset.decodeBound = 'true';
 	const head = element('decode-window-head');

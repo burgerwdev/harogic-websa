@@ -70,6 +70,7 @@ export function setUiScale(scale: number) {
 
 export function onUiScaleChange(fn: (scale: number) => void) {
   listeners.add(fn);
+  return () => { listeners.delete(fn); };
 }
 
 /** Apply a scale and remember it. `UI_SCALE_AUTO` forgets the override instead. */

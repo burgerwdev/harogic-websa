@@ -1,0 +1,10 @@
+# Multichannel draft-v1
+
+Portable JSON Schema for the P2 snapshot/receiver/command/event/task boundary. This is
+an intentionally versioned draft, not the native service's current API.
+The corresponding TypeScript definitions live in
+`frontend/src/core/multichannel.ts`; semantics and migration points are documented
+in `docs/en/MULTICHANNEL_DRAFT.md` and its Chinese counterpart.
+
+`fixtureReceiverAdapter.ts` creates the development snapshot and owns simulated
+state. No fixture here replaces original captured IQ or the production contract.

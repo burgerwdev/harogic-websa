@@ -20,6 +20,7 @@ export function toggleTheme(): Theme {
 
 export function onThemeChange(fn: (th: Theme) => void) {
   listeners.add(fn);
+  return () => { listeners.delete(fn); };
 }
 
 // Read a CSS variable (for canvas use; called before each render so the new value is picked up after a theme switch)

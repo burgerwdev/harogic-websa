@@ -14,6 +14,23 @@ pub struct RatePlan {
 }
 
 impl RatePlan {
+    /// Independent IQ plan. The caller aggregates processor/consumer minimum rates;
+    /// an empty processor set is valid and does not create an analog demodulator.
+    pub fn baseband(coarse_rate: f64, passband_hz: f64, transition_hz: f64, minimum_rate_hz: f64) -> Result<Self, &'static str> {
+        if ![coarse_rate, passband_hz, transition_hz, minimum_rate_hz].iter().all(|v| v.is_finite() && *v > 0.0) {
+            return Err("invalid independent baseband requirements");
+        }
+        let needed = (passband_hz + 2.0 * transition_hz).max(minimum_rate_hz);
+        if needed > coarse_rate { return Err("baseband requirements exceed coarse rate"); }
+        let ceiling = (coarse_rate / needed).floor().min(65_536.0) as i32;
+        let decimate = (1..=ceiling).rev().find(|&d| supported_decimation(d)).ok_or("no supported IQ clock")?;
+        let plan = Self { decimate, output_rate: coarse_rate / decimate as f64,
+            occupied_bandwidth_hz: passband_hz, transition_hz, stopband_hz: passband_hz / 2.0 + transition_hz,
+            decoder_rate: None };
+        if !plan.valid_for(coarse_rate) { return Err("baseband filter exceeds supported bounds"); }
+        Ok(plan)
+    }
+
     pub fn new(coarse_rate: f64, mode: &str, occupied_bandwidth_hz: f64) -> Result<Self, &'static str> {
         if !coarse_rate.is_finite() || coarse_rate <= 0.0
             || !occupied_bandwidth_hz.is_finite() || occupied_bandwidth_hz <= 0.0 {
@@ -105,6 +122,16 @@ pub(crate) fn stage_factors(decimate: i32) -> Option<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independent_iq_preserves_actual_clock_and_consumer_floor() {
+        let plan = RatePlan::baseband(976_562.5, 3_000.0, 1_000.0, 6_000.0).unwrap();
+        assert_eq!(plan.output_rate, 976_562.5 / plan.decimate as f64);
+        assert!(plan.output_rate >= 6_000.0);
+        assert_eq!(plan.decoder_rate, None);
+        assert!(RatePlan::baseband(976_562.5, 1e6, 1e3, 6e3).is_err());
+        assert!(RatePlan::baseband(976_562.5, 3e3, f64::NAN, 6e3).is_err());
+    }
 
     #[test]
     fn malformed_public_plan_rejects_unrealizable_or_unbounded_filter() {

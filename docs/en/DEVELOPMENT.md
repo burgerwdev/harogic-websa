@@ -113,6 +113,26 @@ not other builds or browsers. Keep `--test-threads=1` for Rust test runs. Isolat
 the device process with the host's available resource controls and an explicit memory limit.
 The launcher uses a detached background process and does not require a service manager.
 
+Start the multichannel development prototype with `npm --prefix frontend run dev:workbench`, then open
+`http://127.0.0.1:5186/static/dist/workbench.html`. This standalone Vite page uses a fixture adapter,
+connects to no native service, starts no audio and writes no recordings. The production build excludes it.
+See [MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md) for the state contract and native offline experiments.
+Browser regression: `python tools/e2e/multichannel_workbench.py` with a Playwright-enabled Python.
+
+In the prototype, right-click the spectrum/waterfall to listen at that frequency, or use “＋ Listen to frequency” with MHz/kHz/Hz input.
+Create a separate listening receiver when capacity permits, or explicitly choose an existing listening receiver.
+The preview identifies recording boundaries; local routing starts after confirmation and preserves the editing target.
+An already received frequency reuses its stream. This fixture entry produces no real audio.
+
+Hardware-free native experiment (0.05 seconds of synthetic input by default; not capacity acceptance):
+
+```sh
+cargo run --offline --release -j 1 --manifest-path backend/Cargo.toml --features iq-experiments --bin multichannel_experiment -- /tmp/websa-multichannel-experiment 0.05
+```
+
+Produces `report.json` and experimental `.wbiq` files, retaining CF32 bits and actual rates.
+`--offline` requires cached Zstd dependencies.
+
 ## 2. Dependency direction and ownership
 
 | Area | Responsibility |
