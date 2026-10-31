@@ -41,6 +41,11 @@ impl Admission {
                     self.prepared = Some(workers.exchange_prepared(previous));
                 }
             }
+            // A recovery attempt may have created replacement workers after the
+            // latched failure; retire them so the retry can reap.
+            if state.receiver_failure.is_some() {
+                if let Some(workers) = state.receiver_workers.as_mut() { workers.stop_failed(); }
+            }
         } else {
             let configs = if state.swp.mode == "sdr" { state.channel_configs() } else { Vec::new() };
             if let Some(workers) = state.receiver_workers.as_mut() {

@@ -31,12 +31,38 @@ describe('the receiver mode catalog', () => {
 		let selected = 'am';
 		const hooks = { onSelect: vi.fn(), selected: () => selected };
 		expect(await initSdrDemodGroup(container, hooks)).toEqual(['am', 'usb', 'ais', 'ism']);
-		expect([...container.querySelectorAll('.sdr-mode-common button')].map((el) => (el as HTMLElement).dataset.sdrDemod)).toEqual(['am', 'usb']);
-		selected = 'ais';
+		expect([...container.querySelectorAll('.sdr-mode-common button')].map((el) => (el as HTMLElement).dataset.sdrDemod)).toEqual(['am', 'usb', 'ais']);
+		selected = 'ism';
 		syncSdrDemodGroup(container, selected);
-		expect(container.querySelector('.sdr-mode-common [data-sdr-demod="ais"]')?.getAttribute('aria-pressed')).toBe('true');
-		expect(container.querySelector('.sdr-mode-selected')?.textContent).toContain('Automatic Identification System');
+		expect(container.querySelector('.sdr-mode-common [data-sdr-demod="ism"]')?.getAttribute('aria-pressed')).toBe('true');
 		expect(container.querySelector('[data-sdr-demod="dc_block"]')).toBeNull();
+	});
+
+	it('exposes the requested common badges while retaining dependency gating', async () => {
+		const promoted = ['ais', 'adsb', 'aprs', 'wspr', 'ft4', 'radiofax', 'rtty'];
+		const reason = 'RTTY decoder is not installed';
+		setPluginManifest([
+			receiverPlugin('am'), receiverPlugin('usb'),
+			...promoted.map((id) => receiverPlugin(id, {
+				kind: 'digital', common: false, available: id !== 'rtty', unavailableReason: id === 'rtty' ? reason : null,
+			})),
+			receiverPlugin('rtty-reverse', { kind: 'digital', common: false }),
+		]);
+		const container = host();
+		const onSelect = vi.fn();
+		await initSdrDemodGroup(container, { onSelect });
+		const buttons = [...container.querySelectorAll<HTMLButtonElement>('.sdr-mode-common button')];
+		expect(buttons.map((button) => button.dataset.sdrDemod)).toEqual(['am', 'usb', ...promoted]);
+		expect(buttons.map((button) => button.textContent)).toEqual(['AM', 'USB', 'AIS', 'ADS-B', 'APRS', 'WSPR', 'FT4', 'FAX', 'RTTY']);
+		for (const id of promoted) {
+			const button = buttons.find((candidate) => candidate.dataset.sdrDemod === id)!;
+			expect(button.disabled).toBe(id === 'rtty');
+			button.click();
+			if (id === 'rtty') {
+				expect(button.title).toBe(reason);
+				expect(onSelect).not.toHaveBeenCalledWith(id);
+			} else expect(onSelect).toHaveBeenCalledWith(id);
+		}
 	});
 
 	it('searches aliases and selects with the same callback from the keyboard', async () => {

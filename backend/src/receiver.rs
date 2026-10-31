@@ -616,7 +616,7 @@ impl Receiver {
                 if status_due {
                     out.events.push(json!({"type":"sstv-state","running":true,"pushes":self.pushes,
                         "attempts":digital.attempts(),"bufferedSamples":digital.buffered_input(),
-                        "bufferedSeconds":digital.buffered_input() as f64/48000.0,
+                        "bufferedSeconds":digital.buffered_input() as f64/8_000.0,
                         "hasPicture":digital.image().is_some(),"level":digital.audio_level(),"srcLevel":rms(iq)}));
                 }
             }
@@ -917,6 +917,104 @@ mod tests {
             input_rate:if mode == "wfm" {240_000.0} else if mode == "drmplus" {96_000.0} else if mode == "radiofax" {12_000.0} else {48_000.0},
             if_bw:if mode == "wfm" {180_000.0} else if mode == "drmplus" {90_000.0} else if mode == "radiofax" {3_000.0} else {6_000.0},
             ..ReceiverConfig::default() }
+    }
+
+    /// Martin M2 as real audio in I (Q=0), synthesised at an integer rate close
+    /// to the configured fine rate. The plugin's front end takes the real part,
+    /// so this matches what an OTA USB baseband delivers after that stage.
+    fn sstv_martin2_iq(synth_rate: u32, amplitude: f32) -> Vec<f32> {
+        use websa_dsp::digital::sstv::SSTV_MODES;
+        use websa_dsp::digital::sstv::vendor::RgbPixel;
+        use websa_dsp::digital::sstv::vendor::encode::{Encoder, Synthesizer};
+        let (_, mode) = SSTV_MODES.iter().find(|(name, _)| *name == "Martin M2")
+            .expect("Martin M2 in the mode table");
+        let (width, height) = mode.resolution();
+        let pixels = std::iter::repeat(RgbPixel::new(180, 90, 40)).take(width as usize * height as usize);
+        let encoder = Encoder::new(*mode, pixels).expect("encode Martin M2");
+        Synthesizer::new(encoder, synth_rate)
+            .flat_map(|sample| [f32::from(sample) / 32768.0 * amplitude, 0.0])
+            .collect()
+    }
+
+    /// The receiver's digital path must acquire SSTV at every fine rate the
+    /// channelizer can deliver, not only the exact 8 kHz the fixtures use.
+    #[test]
+    fn sstv_acquires_across_fine_channel_rates() {
+        for (fine_rate, synth_rate, block) in
+            [(8_000.0, 8_000_u32, 4096_usize), (8_138.020833333333, 8_138, 4096),
+             (15_258.7890625, 15_258, 4096), (8_138.020833333333, 8_138, 280)] {
+            let config = ReceiverConfig { mode: "sstv".into(), input_rate: fine_rate,
+                if_bw: 3_000.0, ..ReceiverConfig::default() };
+            let mut receiver = Receiver::new(config.clone()).unwrap();
+            let iq = sstv_martin2_iq(synth_rate, 0.4);
+            let mut acquired = 0;
+            for (index, chunk) in iq.chunks(block * 2).enumerate() {
+                receiver.configure(config.clone()).unwrap();
+                let clock = InputClock { first_sample_index: (index * block) as u64,
+                    input_rate: fine_rate, delay_input_samples: 0.0 };
+                for event in receiver.process(chunk, clock, None).unwrap().events {
+                    if event["type"] == "sstv-state" {
+                        assert_eq!(event["bufferedSeconds"].as_f64().unwrap(),
+                            event["bufferedSamples"].as_f64().unwrap() / 8_000.0);
+                    }
+                    if event["type"] == "sstv-image" {
+                        acquired = acquired.max(event["meta"]["lines"].as_u64().unwrap_or(0));
+                    }
+                }
+            }
+            assert!(acquired > 0, "fine rate {fine_rate} block {block} decoded no SSTV lines");
+        }
+    }
+
+    #[test]
+    fn sstv_acquires_at_ota_input_amplitude() {
+        let config = ReceiverConfig { mode: "sstv".into(), input_rate: 8_138.02,
+            if_bw: 3_000.0, ..ReceiverConfig::default() };
+        let mut receiver = Receiver::new(config).unwrap();
+        let iq = sstv_martin2_iq(8_138, 0.0002);
+        let mut acquired = 0;
+        for (block, chunk) in iq.chunks(4096 * 2).enumerate() {
+            let clock = InputClock { first_sample_index: (block * 4096) as u64,
+                input_rate: 8_138.02, delay_input_samples: 0.0 };
+            for event in receiver.process(chunk, clock, None).unwrap().events {
+                if event["type"] == "sstv-image" {
+                    acquired = acquired.max(event["meta"]["lines"].as_u64().unwrap_or(0));
+                }
+            }
+        }
+        assert!(acquired > 0, "OTA-scale input amplitude decoded no SSTV lines");
+    }
+
+    /// Joining mid-transmission is the normal OTA start: the decoder opens while
+    /// a picture is already scanning, and must still acquire the next header.
+    /// Real transmissions also pause between pictures; the pause's low-level
+    /// noise is part of the input the search has to survive.
+    #[test]
+    fn sstv_acquires_after_joining_mid_transmission() {
+        let config = ReceiverConfig { mode: "sstv".into(), input_rate: 8_000.0,
+            if_bw: 3_000.0, ..ReceiverConfig::default() };
+        let mut receiver = Receiver::new(config).unwrap();
+        let first = sstv_martin2_iq(8_000, 0.4);
+        let mut iq = first.clone();
+        let mut noise = 12345_u64;
+        for _ in 0..24_000 {   // 3 s pause with noise at ~2% of picture level
+            noise = noise.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let sample = ((noise >> 33) as i32 as f32 / 2147483648.0_f32) * 0.006_f32;
+            iq.push(sample); iq.push(0.0);
+        }
+        iq.extend_from_slice(&first);
+        let skip = 24_000 * 2; // 3 s: inside the first picture's scans
+        let mut acquired = 0;
+        for (block, chunk) in iq[skip..].chunks(4096 * 2).enumerate() {
+            let clock = InputClock { first_sample_index: (block * 4096) as u64,
+                input_rate: 8_000.0, delay_input_samples: 0.0 };
+            for event in receiver.process(chunk, clock, None).unwrap().events {
+                if event["type"] == "sstv-image" {
+                    acquired = acquired.max(event["meta"]["lines"].as_u64().unwrap_or(0));
+                }
+            }
+        }
+        assert!(acquired > 0, "joining mid-picture decoded no lines from the next header");
     }
     #[test]
     fn protocol_usb_companion_retains_actual_analog_fir_delay() {

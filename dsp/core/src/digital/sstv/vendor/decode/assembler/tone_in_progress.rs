@@ -26,6 +26,8 @@ pub(super) struct CompletedTone {
 
 /// The estimates collected for the tone currently being received.
 pub(super) struct ToneInProgress {
+    frequency_mean: Option<f64>,
+    smoothing_weight: f64,
     /// The estimates that set the tone's frequency.
     tone: RunningMean,
     /// Every estimate attributed to the tone, including absorbed off-tone
@@ -46,6 +48,8 @@ pub(super) struct ToneInProgress {
 impl ToneInProgress {
     pub fn new(clock: SampleClock) -> Self {
         Self {
+            frequency_mean: None,
+            smoothing_weight: (2_000.0 / f64::from(clock.rate())).min(1.0),
             tone: RunningMean::default(),
             length: 0,
             off_tone_length: 0,
@@ -59,6 +63,13 @@ impl ToneInProgress {
     /// Add an estimate. Returns the previous tone if this estimate completes
     /// an off-tone stretch long enough to start a new one.
     pub fn push(&mut self, frequency: Frequency) -> Option<CompletedTone> {
+        // At 8 kHz, crossing interpolation makes a steady 2300 Hz tone vary by
+        // more than 50 Hz. A 0.5 ms mean keeps that jitter from repeatedly
+        // resetting the candidate, while preserving the 100 Hz VIS transitions.
+        // Only tone classification is smoothed; pixel estimates keep their timing.
+        let mean = self.frequency_mean.get_or_insert(f64::from(frequency.hz()));
+        *mean += self.smoothing_weight * (f64::from(frequency.hz()) - *mean);
+        let frequency = Frequency::from_hz(mean.round() as u32);
         self.pushed += 1;
         let tone_frequency = self.tone.frequency().unwrap_or(frequency);
 

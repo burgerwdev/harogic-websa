@@ -77,6 +77,10 @@ make native
 the service serves that bundle. `make build` builds the frontend and native service;
 `make wasm` is an explicit offline DSP artifact build, not a product frontend prerequisite.
 
+The native release profile uses optimization level 3, 16 codegen units and incremental
+compilation without LTO. Keep `backend/target/` between builds. A profile or toolchain
+change rebuilds dependencies; release binaries and test harnesses have separate panic strategies.
+
 Keep `make build` warning-free with the default compiler and Vite diagnostics enabled.
 Font URLs in CSS use `/fonts/` from `frontend/public/`; Vite applies the `/static/dist/`
 base. Translations are emitted as a separate, eagerly loaded `i18n` chunk to keep the

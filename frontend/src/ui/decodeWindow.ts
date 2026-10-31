@@ -892,15 +892,21 @@ function renderSstvThumbs(): void {
 	const host = element('sstv-thumb-list');
 	if (!host) return;
 	const set = sstvActiveSet();
+	const status = sstvStatus();
 	// Rebuild only when the set's shape changes; the live picture repaints its own thumb on a timer.
-	const shape = set.map((entry) => `${entry.id}:${entry.selected ? 1 : 0}:${Math.round(entry.meta.progress / 10)}`).join('|');
+	// The view pin and the live picture's own entry are part of the shape: both decide which
+	// thumbnail carries `viewed` (the pane shows the pinned entry, else the newest), so a click
+	// must restyle the list even when nothing else changed.
+	const viewed = status.viewId ?? set[0]?.id ?? '';
+	const shape = set.map((entry) => `${entry.id}:${entry.selected ? 1 : 0}:${Math.round(entry.meta.progress / 10)}`)
+		.join('|') + `#${viewed}`;
 	if (shape === sstvThumbsShape && host.childElementCount > 0) return;
 	sstvThumbsShape = shape;
 	host.textContent = '';
 	for (const entry of set) {
 		const thumb = surfaceDocument().createElement('div');
 		thumb.className = 'decode-sstv-thumb' + (entry.selected ? ' selected' : '') +
-			(sstvStatus().viewId === entry.id ? ' viewed' : '');
+			(viewed === entry.id ? ' viewed' : '');
 		thumb.dataset.id = entry.id;
 		const tick = surfaceDocument().createElement('span');
 		tick.className = 'sstv-tick';

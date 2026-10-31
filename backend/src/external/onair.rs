@@ -96,6 +96,36 @@ pub fn validate_frequency(mode: &str, center_hz: u64) -> Result<(), String> {
     source_virtual_frequency(mode, center_hz).map(|_| ())
 }
 
+pub fn frequency_supported(mode: &str, center_hz: u64) -> bool {
+    validate_frequency(mode, center_hz).is_ok()
+}
+
+/// Canonical center used when a decoder is selected while the receiver is tuned
+/// outside the decoder's band.
+pub fn default_frequency(mode: &str) -> Option<u64> {
+    if mode == "ais" {
+        // A configured bench center is the intended receive frequency for AIS.
+        if let Ok(value) = std::env::var(AIS_BENCH_ENV) {
+            if let Ok(Some(hz)) = parse_ais_bench_frequency(Some(&value)) { return Some(hz); }
+        }
+        return Some(AIS_CENTER_HZ);
+    }
+    Some(match mode {
+        "adsb" => 1_090_000_000,
+        "meteor" => 137_100_000,
+        "aprs" => 144_800_000,
+        "ft4" => 14_080_000,
+        "wspr" => 14_095_600,
+        _ => return None,
+    })
+}
+
+/// True for the OnAir modes with a fixed RF band contract. Other external
+/// providers (GNSS, RTTY, ISM) accept any tuned frequency.
+pub fn band_limited(mode: &str) -> bool {
+    default_frequency(mode).is_some()
+}
+
 fn validated_virtual_frequency(mode: &str, center_hz: u64, bench: Option<u64>) -> Result<u64, String> {
     // Only the explicitly configured, exact bench center can relabel AIS IQ.
     if mode == "ais" && bench == Some(center_hz) && (400_000_000..=450_000_000).contains(&center_hz) {
@@ -648,6 +678,19 @@ fn ws_error(error: tungstenite::Error) -> String { format!("OnAir Web: {error}")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_frequencies_are_supported_centers() {
+        assert_eq!(default_frequency("adsb"), Some(1_090_000_000));
+        assert_eq!(default_frequency("ais"), Some(162_000_000));
+        assert_eq!(default_frequency("am"), None);
+        for mode in ["ais", "aprs", "ft4", "wspr", "meteor", "adsb"] {
+            let hz = default_frequency(mode).unwrap();
+            assert!(frequency_supported(mode, hz), "{mode}");
+        }
+        assert!(!frequency_supported("adsb", 435_000_000));
+        assert!(!frequency_supported("meteor", 435_000_000));
+    }
 
     #[test]
     fn adsb_rate_and_frequency_contract_is_independent_of_discovery() {

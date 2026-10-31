@@ -78,6 +78,38 @@ describe('provider result history', () => {
     expect(host.querySelector('tbody')).toBeNull();
     expect(host.textContent).not.toContain('FLIGHT2');
   });
+  it('keeps the same node and expanded original fields when a live snapshot replaces its entry', () => {
+    const host = document.createElement('section');
+    addDecoderResult({ provider: 'onair', mode: 'adsb', kind: 'table', data: {
+      type: 'aircraft', aircraft: [{ icao: 'ABC123', callsign: 'FLIGHT1' }],
+    } }, '1:1', 1);
+    renderDecoderResults(host, 1, 'adsb', false);
+    const article = host.querySelector('article.decoder-result')!;
+    const details = article.querySelector('details')!;
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+    const before = decoderLog(1, 'adsb').entries[0].id;
+    addDecoderResult({ provider: 'onair', mode: 'adsb', kind: 'table', data: {
+      type: 'aircraft', aircraft: [{ icao: 'DEF456', callsign: 'FLIGHT2' }],
+    } }, '1:1', 1);
+    renderDecoderResults(host, 1, 'adsb', false);
+    expect(host.querySelector('article.decoder-result')).toBe(article);
+    expect(article.querySelector('details')).toBe(details);
+    expect(details.open).toBe(true);
+    expect(JSON.parse(details.querySelector('pre')!.textContent!)).toMatchObject({ type: 'aircraft' });
+    expect(decoderLog(1, 'adsb').entries[0].id).toBe(before);
+    expect(host.textContent).toContain('FLIGHT2');
+  });
+  it('does not open original fields that the viewer left collapsed', () => {
+    const host = document.createElement('section');
+    for (const call of ['FLIGHT1', 'FLIGHT2']) {
+      addDecoderResult({ provider: 'onair', mode: 'adsb', kind: 'table', data: {
+        type: 'aircraft', aircraft: [{ icao: 'ABC123', callsign: call }],
+      } }, '1:1', 1);
+      renderDecoderResults(host, 1, 'adsb', false);
+    }
+    expect(host.querySelector('details')!.open).toBe(false);
+  });
   it('replaces GPS tracking and PVT independently while retaining actual navigation messages', () => {
     const host = document.createElement('section');
     for (const prn of [7, 12]) {
@@ -171,7 +203,8 @@ describe('provider result history', () => {
     const host = document.createElement('section');
     renderDecoderResults(host, 1, 'rtty', false);
     expect(decoderLog(1, 'rtty').entries).toHaveLength(DECODER_LOG_ENTRIES);
-    expect(host.querySelector('article > pre')?.textContent).toBe(`CQ ${DECODER_LOG_ENTRIES}\nDE TEST`);
+    expect([...host.querySelectorAll('article pre')].map(pre => pre.textContent).find(text => text === `CQ ${DECODER_LOG_ENTRIES}\nDE TEST`))
+      .toBe(`CQ ${DECODER_LOG_ENTRIES}\nDE TEST`);
   });
   it('renders real fields and paginates arrays without hiding text in JSON', () => {
     addDecoderResult({ provider: 'onair', mode: 'aprs', kind: 'table', data: {

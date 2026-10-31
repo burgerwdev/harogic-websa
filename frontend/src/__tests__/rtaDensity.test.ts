@@ -1,6 +1,6 @@
 /** Native density history, visible frequency raster, and persistence controls. */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { advanceDensity, densityLevelPlacement, densityLut, paintDensity, DENSITY_HIT_RATE, MAX_DENSITY, rasterDensity, rasterSparseDensity } from '../dsp/rtaDensity';
+import { advanceDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, DENSITY_HIT_RATE, MAX_DENSITY, rasterDensity, rasterSparseDensity } from '../dsp/rtaDensity';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { resetRtaDensityCfg, restoreRtaDensityCfg, setRtaBins, setRtaDensContrast, setRtaDensWidth, setRtaDensSource, setRtaHalflife } from '../ui/panels/rta';
@@ -445,6 +445,39 @@ describe('the persistence setting', () => {
 
 describe('density display footprint and visibility', () => {
 	const alphas = (pixels: Uint8ClampedArray) => Array.from(pixels).filter((_, i) => i % 4 === 3);
+	it('paints an occupied band identically to the full image across clipping, gaps, and detail projections', () => {
+		const freq = new Float64Array([0, 1, 2, 3, 4]);
+		const grid = advanceDensity(null, new Float32Array([-40, -48, NaN, -70, -60]), BINS, 1, 0, 2)!;
+		const cases = [
+			{ ratio: 1, centre: -45.25, width: 1, light: false },
+			{ ratio: 1.25, centre: 0.5, width: 5, light: true },
+			{ ratio: 2, centre: 70.75, width: 9, light: false },
+		];
+		for (const soft of [false, true]) for (const { ratio, centre, width, light } of cases) {
+			const cols = 24, rows = Math.ceil(100 * ratio), pitch = 2.3 * ratio;
+			const bins = soft ? rows : BINS;
+			const raster = new Float32Array(cols * bins);
+			const bounds = { firstBin: 0, endBin: 0 };
+			if (soft) rasterSparseDensity(grid, freq, 0, 4, cols, raster, { bins, origin: centre - 0.5, scale: pitch }, bounds);
+			else rasterDensity(grid, freq, 0, 4, cols, raster, bounds);
+			expect(raster.every((value, index) => value === 0
+				|| (index >= bounds.firstBin * cols && index < bounds.endBin * cols))).toBe(true);
+			const footprint = width * ratio, lut = densityLut(light);
+			const palette = soft ? densityPalette(0.6, lut) : undefined;
+			const firstCentre = soft ? 0.5 : centre, rowPitch = soft ? 1 : pitch;
+			const top = Math.max(0, Math.min(rows, Math.floor(firstCentre + bounds.firstBin * rowPitch - footprint / 2)));
+			const bottom = bounds.firstBin < bounds.endBin
+				? Math.max(top, Math.min(rows, Math.ceil(firstCentre + (bounds.endBin - 1) * rowPitch + footprint / 2))) : top;
+			const full = new Uint8ClampedArray(cols * rows * 4);
+			paintDensity(raster, cols, bins, full, rows, firstCentre, rowPitch, footprint, 0.6, lut, soft, palette);
+			const cropped = new Uint8ClampedArray(cols * (bottom - top) * 4);
+			paintDensity(raster, cols, bins, cropped, rows, firstCentre, rowPitch, footprint, 0.6, lut, soft, palette, bounds, top);
+			const restored = new Uint8ClampedArray(full.length);
+			restored.set(cropped, top * cols * 4);
+			expect(restored.every((value, index) => value === full[index])).toBe(true);
+		}
+	});
+
 	it('keeps widths in CSS pixels across amplitude pitches and pixel ratios', () => {
 		for (const ratio of [1, 2]) for (const pitch of [2, 3, 7]) for (const width of [1, 3, 5, 9]) {
 			const raster = new Float32Array([0, MAX_DENSITY, 0]);

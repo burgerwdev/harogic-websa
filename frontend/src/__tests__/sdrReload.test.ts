@@ -4,7 +4,7 @@ import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../audio/sdrAudio', () => ({
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
-	setSdrReceiverAudioError: vi.fn(),
+	setSdrReceiverAudioError: vi.fn(), sdrAudioNeedsGesture: () => false,
 }));
 
 class DisplaySocket {
@@ -305,6 +305,33 @@ describe('SDR entry and reload', () => {
 		expect(getDisplayRef()).toBe(-45);
 		expect(socket.sent.filter(command => command.cmd === 'AUTO_SCALE')).toHaveLength(1);
 	});
+
+	it.each([true, false].flatMap(audioOn => [true, false].map(connected => ({ audioOn, connected }))))(
+		'attaches audio to an existing SDR session without an entry request (audio=$audioOn, connected=$connected)',
+		async ({ audioOn, connected }) => {
+			localStorage.setItem('web-sa-sdr-audio', audioOn ? '1' : '0');
+			const { controls } = await load();
+			// Observe load()'s fresh module graph, including its restored mute preference.
+			const audio = await import('../audio/sdrAudio');
+			receive(status('sdr', { connected }));
+			// A rejected/abandoned mode request leaves this browser following the live receiver.
+			controls.releaseGraphModePending();
+			vi.mocked(audio.setSdrAudioEnabled).mockClear();
+			if (!connected) {
+				vi.advanceTimersByTime(1000);
+				expect(audio.setSdrAudioEnabled).not.toHaveBeenCalledWith(true);
+			}
+			receive(status('sdr'));
+			vi.advanceTimersByTime(800);
+			expect(audio.setSdrAudioEnabled).toHaveBeenLastCalledWith(audioOn);
+			expect(localStorage.getItem('web-sa-sdr-audio')).toBe(audioOn ? '1' : '0');
+			vi.mocked(audio.setSdrAudioEnabled).mockClear();
+			const commands = socket.sent.length;
+			receive(status('sdr'));
+			vi.advanceTimersByTime(1000);
+			expect(audio.setSdrAudioEnabled).not.toHaveBeenCalled();
+			expect(socket.sent).toHaveLength(commands);
+		});
 
 	it.each(['sdr', 'std'].flatMap(mode => [true, false].flatMap(connected =>
 		[true, false].flatMap(audioOn => [true, false].map(ownRef => ({ mode, connected, audioOn, ownRef }))))))(

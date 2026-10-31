@@ -77,6 +77,10 @@ impl DevState {
                         center_maximum.min(next[0].freq+listen_half),taps,plan)?;
                 }
             }
+            // A pan can drag the primary out of a band-limited decoder's band. Demote
+            // it to the listenable companion here: capture fitting has no other mode
+            // validation, and this path also runs while a receiver failure is latched.
+            super::channel_controls::reconcile_external_band(&mut next[0], true, false);
             let frequencies:Vec<_>=next.iter().filter(|c|c.enabled).map(|c|c.freq).collect();
             let listen=frequencies.first().copied().unwrap_or(center);
             let actual_decimate=if hardware {capture_decimate(center,listen,&frequencies,display as i32,taps)} else {1};
@@ -160,6 +164,41 @@ mod tests {
             preamp:0,ifgain:0,gain_strategy:0,sweep_time_mode:0,sweep_time:0.0,
         });
         state
+    }
+
+    #[test]
+    fn pan_out_of_decoder_band_demotes_primary_to_companion() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.hardware_shim=Some("geometry-only".into());
+        state.sdr_center=1.090e9;
+        state.sdr_listen=1.090e9;
+        state.sdr_demod="adsb".into();
+        state.sdr_if_bw=1_800_000.0;
+        state.sdr_decimate=16;
+        let next=state.parse_service_capture(&json!({"center":435e6,"decimate":16})).unwrap();
+        assert_eq!(next.center,435e6);
+        assert_eq!(next.configs[0].mode,"am","pan must not strand a band-limited decoder");
+        assert!((next.configs[0].freq-435e6).abs()<=next.bandwidth,"demoted listen stays inside the capture: {}",next.configs[0].freq);
+        // A pan that keeps the listen frequency inside the band keeps the decoder.
+        let stay=state.parse_service_capture(&json!({"center":1.091e9,"decimate":16})).unwrap();
+        assert_eq!(stay.configs[0].mode,"adsb");
+        assert!((1_087e6..=1_093e6).contains(&stay.configs[0].freq),"passband fitting must keep the decoder in band: {}",stay.configs[0].freq);
+    }
+
+    #[test]
+    fn capture_refit_also_heals_legacy_out_of_band_decoder_state() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.hardware_shim=Some("geometry-only".into());
+        state.sdr_center=435e6;
+        state.sdr_listen=435_390_625.0;
+        state.sdr_demod="adsb".into();
+        state.sdr_if_bw=1_800_000.0;
+        state.sdr_decimate=16;
+        // SET_MODE sdr re-entry parses without a center; the invalid combination
+        // must not survive into decoder preparation.
+        let next=state.parse_service_capture(&json!({})).unwrap();
+        assert_eq!(next.configs[0].mode,"am");
+        assert_eq!(next.configs[0].freq,435_390_625.0);
     }
 
     #[test]

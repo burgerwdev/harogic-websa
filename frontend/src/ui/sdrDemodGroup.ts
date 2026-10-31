@@ -17,13 +17,16 @@ interface Picker {
 	drawerSearch: HTMLInputElement;
 	categories: HTMLSelectElement;
 	results: HTMLElement;
-	status: HTMLElement;
 	selected: string;
 }
 const pickers = new WeakMap<HTMLElement, Picker>();
+const commonModeBadges: Record<string, true> = {
+	ais: true, adsb: true, aprs: true, wspr: true, ft4: true, radiofax: true, rtty: true,
+};
 
 export function demodLabel(id: string): string {
 	if (id === 'drmplus') return 'DRM+';
+	if (id === 'adsb') return 'ADS-B';
 	if (id === 'radiofax') return 'FAX';
 	return id.toUpperCase();
 }
@@ -104,7 +107,7 @@ function closePicker(picker: Picker, restoreFocus = true): void {
 export function syncSdrDemodGroup(container: HTMLElement, selected: string): void {
 	const picker = pickers.get(container);
 	if (!picker) return;
-	const ids = sdrModeIds().filter((id) => modeDescriptor(id)?.common || id === selected);
+	const ids = sdrModeIds().filter((id) => modeDescriptor(id)?.common || commonModeBadges[id] === true || id === selected);
 	if (picker.selected !== selected || picker.common.childElementCount !== ids.length) {
 		const focused = picker.common.contains(container.ownerDocument.activeElement)
 			? (container.ownerDocument.activeElement as HTMLElement).dataset.sdrDemod : undefined;
@@ -121,7 +124,6 @@ export function syncSdrDemodGroup(container: HTMLElement, selected: string): voi
 		button.classList.toggle('active', id === selected);
 		button.setAttribute('aria-pressed', String(id === selected));
 	}
-	picker.status.textContent = t('sdr_modes_selected', { mode: modeDescriptor(selected)?.label ?? demodLabel(selected) });
 }
 
 function buildPicker(container: HTMLElement, hooks: DemodGroupHooks): void {
@@ -137,9 +139,6 @@ function buildPicker(container: HTMLElement, hooks: DemodGroupHooks): void {
 	const doc = container.ownerDocument;
 	const common = doc.createElement('div');
 	common.className = 'btn-group sdr-mode-common';
-	const status = doc.createElement('div');
-	status.className = 'sdr-mode-selected';
-	status.setAttribute('role', 'status');
 	const tools = doc.createElement('div');
 	tools.className = 'sdr-mode-tools';
 	const search = doc.createElement('input');
@@ -187,7 +186,7 @@ function buildPicker(container: HTMLElement, hooks: DemodGroupHooks): void {
 	}
 	const results = doc.createElement('div');
 	results.className = 'sdr-mode-results';
-	const picker: Picker = { hooks, common, status, search, quick, more, dialog, drawerSearch, categories, results, selected: '' };
+	const picker: Picker = { hooks, common, search, quick, more, dialog, drawerSearch, categories, results, selected: '' };
 	pickers.set(container, picker);
 	const choose: DemodGroupHooks = { ...hooks, onSelect: (id) => {
 		hooks.onSelect(id);
@@ -250,7 +249,7 @@ function buildPicker(container: HTMLElement, hooks: DemodGroupHooks): void {
 	header.append(title, close);
 	dialog.append(header, drawerSearch, categories, results);
 	tools.append(search, more);
-	container.append(common, status, tools, quick, dialog);
+	container.append(common, tools, quick, dialog);
 	syncSdrDemodGroup(container, hooks.selected?.() ?? '');
 	search.value = query;
 	updateQuick();

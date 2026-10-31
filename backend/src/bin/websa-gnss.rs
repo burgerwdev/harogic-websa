@@ -589,7 +589,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_center, CENTER};
+    use super::*;
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 

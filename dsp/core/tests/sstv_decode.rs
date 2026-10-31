@@ -122,6 +122,135 @@ fn gradient(width: usize, height: usize) -> Vec<RgbPixel> {
         .collect()
 }
 
+fn white_usb_prefix(mode: Mode, phase: f64, seconds: usize, amplitude: f32) -> Vec<f32> {
+    const RATE: u32 = 8_000;
+    let (width, height) = mode.resolution();
+    let pixels = std::iter::repeat_n(RgbPixel::new(255, 255, 255), (width * height) as usize);
+    let encoder = Encoder::new(mode, pixels).unwrap();
+    let mut iq = Vec::new();
+    let mut carry = 0;
+    let mut angle: f64 = phase;
+    // A Pluto transmission is analytic USB, with arbitrary carrier phase.
+    // A white first row must terminate the VIS stop tone before line two.
+    for tone in encoder {
+        let ticks = tone.duration.ns() * u64::from(RATE) + carry;
+        let count = ticks / 1_000_000_000;
+        carry = ticks % 1_000_000_000;
+        let step = std::f64::consts::TAU * f64::from(tone.frequency.hz()) / f64::from(RATE);
+        for _ in 0..count {
+            iq.extend([angle.cos() as f32 * amplitude, angle.sin() as f32 * amplitude]);
+            angle = (angle + step) % std::f64::consts::TAU;
+        }
+        if iq.len() >= RATE as usize * seconds * 2 { break; }
+    }
+    iq
+}
+
+fn shift_usb(iq: &mut [f32], offset_hz: f64) {
+    for (index, sample) in iq.chunks_exact_mut(2).enumerate() {
+        let phase = std::f64::consts::TAU * offset_hz * index as f64 / 8_000.0;
+        let (sin, cos) = phase.sin_cos();
+        let (re, im) = (f64::from(sample[0]), f64::from(sample[1]));
+        sample[0] = (re * cos - im * sin) as f32;
+        sample[1] = (re * sin + im * cos) as f32;
+    }
+}
+
+#[test]
+fn acquires_vis_with_frequency_offset_and_white_first_rows() {
+    let mut failures = Vec::new();
+    for (name, mode) in SSTV_MODES {
+        for offset in [-350.0, -65.0, 65.0, 276.0, 350.0] {
+            let mut iq = white_usb_prefix(mode, 0.7, 4, 0.0002);
+            shift_usb(&mut iq, offset);
+            let mut plugin = SstvPlugin::new(8_000.0);
+            for chunk in iq.chunks(280 * 2) { plugin.process_iq(chunk); }
+            if !plugin.status().is_some_and(|s| s.mode_name == name && s.lines > 0) {
+                failures.push(format!("{name}, offset={offset}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "failed to acquire: {}", failures.join(", "));
+}
+
+#[test]
+fn frequency_offset_correction_preserves_pixel_colours() {
+    let mode = SSTV_MODES[4].1;
+    let colour = RgbPixel::new(80, 140, 200);
+    for offset in [-350.0, 0.0, 65.0, 350.0] {
+        let (width, height) = mode.resolution();
+        let encoder = Encoder::new(mode, std::iter::repeat_n(colour, (width * height) as usize)).unwrap();
+        let mut iq: Vec<f32> = Synthesizer::new(encoder, 8_000).take(8_000 * 6)
+            .flat_map(|sample| [f32::from(sample) / 32767.0 * 0.0002, 0.0]).collect();
+        shift_usb(&mut iq, offset);
+        let mut plugin = SstvPlugin::new(8_000.0);
+        for chunk in iq.chunks(280 * 2) { plugin.process_iq(chunk); }
+        let status = plugin.status().unwrap_or_else(|| panic!("no picture at offset {offset}"));
+        assert!(status.lines > 0);
+        let image = plugin.image().unwrap();
+        // Measure scan interiors; FIR transitions at the short colour porches
+        // mix neighbouring channels even with zero tuning error.
+        let rgb: Vec<u8> = image.rgb[..(status.lines * width * 3) as usize]
+            .chunks_exact(width as usize * 3)
+            .flat_map(|row| row[16 * 3..(width as usize - 16) * 3].iter().copied()).collect();
+        let expected: Vec<u8> = [80, 140, 200].into_iter().cycle().take(rgb.len()).collect();
+        let error = mean_absolute_error(&rgb, &expected);
+        let mean: Vec<f64> = (0..3).map(|channel|
+            rgb.iter().skip(channel).step_by(3).map(|value| f64::from(*value)).sum::<f64>()
+                / (rgb.len() / 3) as f64).collect();
+        // At 8 kHz, crossing interpolation adds phase-dependent pixel scatter.
+        // Calibration must preserve each channel's mean as well as bound that scatter.
+        assert!(error < 16.0 && mean.iter().zip([80.0, 140.0, 200.0])
+            .all(|(actual, expected)| (actual - expected).abs() < 8.0),
+            "offset={offset}, pixel error={error}, mean RGB={mean:?}");
+    }
+}
+
+#[test]
+fn acquires_white_first_rows_from_analytic_usb_at_any_phase() {
+    let mut failures = Vec::new();
+    for (name, mode) in SSTV_MODES {
+        for phase in [0.0, 1.1] {
+            const RATE: u32 = 8_000;
+            let iq = white_usb_prefix(mode, phase, 4, 0.0002);
+            let mut plugin = SstvPlugin::new(f64::from(RATE));
+            for chunk in iq.chunks(280 * 2) { plugin.process_iq(chunk); }
+            if !plugin.status().is_some_and(|s| s.mode_name == name && s.lines > 0) {
+                failures.push(format!("{name}, phase={phase}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "failed to acquire: {}", failures.join(", "));
+}
+
+#[test]
+fn reacquires_after_an_interrupted_picture_and_agc_levelled_noise() {
+    for block in [280, 16_384, 160_000] {
+        let mut plugin = SstvPlugin::new(8_000.0);
+        let mut iq = white_usb_prefix(SSTV_MODES[3].1, 0.7, 8, 0.2);
+        shift_usb(&mut iq, 65.0);
+        for chunk in iq.chunks(block * 2) { plugin.process_iq(chunk); }
+        let first = plugin.status().expect("first picture").clone();
+        assert!(!first.complete);
+        let mut seed = 1_u32;
+        iq.clear();
+        for _ in 0..8_000 * 3 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            iq.extend([seed as i32 as f32 / i32::MAX as f32 * 0.001, 0.0]);
+        }
+        let mut next_signal = white_usb_prefix(SSTV_MODES[5].1, 1.1, 4, 0.2);
+        shift_usb(&mut next_signal, -200.0);
+        iq.extend(next_signal);
+        for chunk in iq.chunks(block * 2) { plugin.process_iq(chunk); }
+        let next = plugin.status().expect("second picture");
+        assert_eq!(next.mode_name, "Robot 36");
+        assert_eq!(next.serial, first.serial + 1);
+        assert!(next.lines > 0);
+    }
+}
+
 /// Encode `mode`'s picture, decode it, and report the picture against what was sent.
 ///
 /// The decode here is the vendored `Decoder` on the synthesised audio, not the plugin around it. The

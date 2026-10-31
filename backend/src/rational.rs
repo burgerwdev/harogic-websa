@@ -264,6 +264,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fine_channel_rates_resample_at_real_time() {
+        // Rates the live channelizer reports, including the fractional fine rates
+        // the SSTV/radiofax plans produce. Output volume must track the exact
+        // ratio: inflating it stretches every tone and breaks header timing.
+        for rate in [8_138.020833333333, 8_138.02, 15_258.7890625] {
+            let mut r = Rational::from_rates(rate, 8_000, 3_000.0).expect("build");
+            let mut out = vec![0.0f32; 8192];
+            let mut input = 0usize;
+            let mut output = 0usize;
+            let mut t = 0.0_f64;
+            for _ in 0..4_000 {
+                let mut iq = Vec::with_capacity(560);
+                for _ in 0..280 {
+                    let v = (t * 2.0 * PI * 1500.0).sin() as f32;
+                    iq.push(v); iq.push(0.0);
+                    t += 1.0 / rate;
+                }
+                input += 280;
+                output += r.process(&iq, &mut out);
+            }
+            let expected = input as f64 * 8_000.0 / rate;
+            let ratio = output as f64 / expected;
+            assert!((0.999..=1.001).contains(&ratio),
+                "rate {rate}: output ratio {ratio:.4} inflates decoder time");
+        }
+    }
+
+    #[test]
     fn keeps_wfm_passband_and_rejects_new_nyquist_alias() {
         let fs = 31_250_000.0 / 96.0;
         fn level(fs: f64, hz: f64) -> f64 {

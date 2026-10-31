@@ -73,6 +73,10 @@ make native
 服务提供的是构建后的资源。`make build` 构建前端和原生服务；`make wasm` 用于显式构建
 离线 DSP 产物，不是产品前端构建的前置步骤。
 
+原生 release profile 使用优化级别 3、16 个 codegen unit 和增量编译，关闭 LTO。
+保留 `backend/target/` 可复用编译缓存。profile 或工具链变更会重建依赖；
+release 二进制和测试 harness 使用不同的 panic 策略。
+
 保持 `make build` 无 warning，并保留编译器和 Vite 的默认诊断。
 CSS 字体路径使用 `frontend/public/` 对应的 `/fonts/`，由 Vite 加上 `/static/dist/`
 基础路径。翻译资源生成独立且立即加载的 `i18n` 分块，使主包低于 Vite 默认大小阈值，

@@ -37,13 +37,13 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import queue
 import shlex
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 

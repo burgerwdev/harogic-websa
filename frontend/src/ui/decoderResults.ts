@@ -117,23 +117,48 @@ function table(host: HTMLElement, rows: unknown[], label: string, utc: boolean):
   wrapper.appendChild(grid);
   host.appendChild(wrapper);
 }
-function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLElement {
-  const article = doc.createElement('article');
-  article.className = `decoder-result decoder-result-${entry.kind}`;
-  const header = doc.createElement('div');
-  header.className = 'decoder-result-header';
-  header.textContent = `${entry.provider} · ${clock(entry.at, utc)} ${utc ? 'UTC' : 'LT'}`;
-  header.title = t('decoder_received_tip');
-  article.appendChild(header);
+function fillResultBody(body: HTMLElement, entry: DecoderLogEntry, utc: boolean): void {
+  const doc = body.ownerDocument;
+  body.replaceChildren();
   const data = entry.data;
   if (entry.mode === 'gps' && record(data) && data.bench === true) {
     const origin = doc.createElement('strong');
     origin.className = 'decoder-origin';
     origin.textContent = t('decoder_gps_bench');
-    article.appendChild(origin);
+    body.appendChild(origin);
   }
+  if (entry.kind === 'text' || typeof data === 'string') {
+    const text = doc.createElement('pre');
+    text.textContent = record(data) && typeof data.text === 'string' ? data.text : readable(data);
+    body.appendChild(text);
+  } else if (Array.isArray(data)) table(body, data, entry.mode, utc);
+  else if (record(data)) {
+    fields(body, data, entry.kind === 'status');
+    if (entry.kind !== 'status') {
+      for (const [key, value] of Object.entries(data)) {
+        if (Array.isArray(value)) table(body, value, key === 'rows' && typeof data.table === 'string' ? data.table : key.replace(/_/g, ' '), utc);
+      }
+    } else if (entry.mode === 'gps' && (data.state === 'stopped' || (record(data.fix) && data.fix.valid === false))) {
+      const position = doc.createElement('p');
+      position.textContent = t('decoder_position_invalid');
+      body.appendChild(position);
+    }
+  } else {
+    const text = doc.createElement('p');
+    text.textContent = readable(data);
+    body.appendChild(text);
+  }
+}
+
+/** Repaint a live entry in place; a replaced node would flash and lose the viewer's expansion. */
+type ResultUpdater = (entry: DecoderLogEntry, utc: boolean) => void;
+const resultUpdaters = new WeakMap<HTMLElement, ResultUpdater>();
+
+function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLElement {
+  const article = doc.createElement('article');
+  article.className = `decoder-result decoder-result-${entry.kind}`;
   if (entry.kind === 'image') {
-    const picture = data as DecoderImage;
+    const picture = entry.data as DecoderImage;
     const extent = picture.strips.reduce((end, strip) => Math.max(end, strip.y + strip.rows), 1);
     const title = doc.createElement('strong');
     title.textContent = `${picture.label || entry.mode} · ${picture.w} × ${extent} · ${t('decoder_image_rows', { rows: extent, total: picture.h })}${picture.final ? ` · ${t('decoder_image_complete')}` : ''}`;
@@ -158,37 +183,33 @@ function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLEl
     article.appendChild(image);
     return article;
   }
-  if (entry.kind === 'text' || typeof data === 'string') {
-    const text = doc.createElement('pre');
-    text.textContent = record(data) && typeof data.text === 'string' ? data.text : readable(data);
-    article.appendChild(text);
-  } else if (Array.isArray(data)) table(article, data, entry.mode, utc);
-  else if (record(data)) {
-    fields(article, data, entry.kind === 'status');
-    if (entry.kind !== 'status') {
-      for (const [key, value] of Object.entries(data)) {
-        if (Array.isArray(value)) table(article, value, key === 'rows' && typeof data.table === 'string' ? data.table : key.replace(/_/g, ' '), utc);
-      }
-    } else if (entry.mode === 'gps' && (data.state === 'stopped' || (record(data.fix) && data.fix.valid === false))) {
-      const position = doc.createElement('p');
-      position.textContent = t('decoder_position_invalid');
-      article.appendChild(position);
-    }
-  } else {
-    const text = doc.createElement('p');
-    text.textContent = readable(data);
-    article.appendChild(text);
-  }
+  const header = doc.createElement('div');
+  header.className = 'decoder-result-header';
+  header.title = t('decoder_received_tip');
+  article.appendChild(header);
+  const body = doc.createElement('div');
+  article.appendChild(body);
   const details = doc.createElement('details');
   const summary = doc.createElement('summary');
   summary.textContent = t('decoder_details');
   const raw = doc.createElement('pre');
+  const current = { entry };
   // Materialize raw details only when requested; the bounded log owns the original payload.
-  details.addEventListener('toggle', () => { raw.textContent = details.open ? JSON.stringify(data, null, 2) : ''; });
+  details.addEventListener('toggle', () => { raw.textContent = details.open ? JSON.stringify(current.entry.data, null, 2) : ''; });
   details.append(summary, raw);
   article.appendChild(details);
+  const update: ResultUpdater = (next, nextUtc) => {
+    current.entry = next;
+    article.className = `decoder-result decoder-result-${next.kind}`;
+    header.textContent = `${next.provider} · ${clock(next.at, nextUtc)} ${nextUtc ? 'UTC' : 'LT'}`;
+    fillResultBody(body, next, nextUtc);
+    if (details.open) raw.textContent = JSON.stringify(next.data, null, 2);
+  };
+  update(entry, utc);
+  resultUpdaters.set(article, update);
   return article;
 }
+
 export function renderDecoderResults(host: HTMLElement, channel: number, mode: string, utc: boolean): void {
   const log = decoderLog(channel, mode);
   const entries = [...log.entries].sort((a, b) => Number(b.kind === 'image') - Number(a.kind === 'image'));
@@ -207,9 +228,14 @@ export function renderDecoderResults(host: HTMLElement, channel: number, mode: s
   let previous: Element = notice;
   for (const entry of entries) {
     let item = cache.nodes.get(entry.id);
-    if (!item || item.entry !== entry) {
+    if (item && item.entry !== entry) {
+      const update = resultUpdaters.get(item.node);
+      if (update) { update(entry, utc); item.entry = entry; }
+      else item = undefined;   // image strips rebuild; the picture owns its node
+    }
+    if (!item) {
       const node = resultNode(host.ownerDocument, entry, utc);
-      item?.node.replaceWith(node);
+      cache.nodes.get(entry.id)?.node.replaceWith(node);
       item = { entry, node };
       cache.nodes.set(entry.id, item);
     }

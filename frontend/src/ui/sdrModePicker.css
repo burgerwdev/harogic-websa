@@ -1,7 +1,6 @@
 #sdr-demod-group { flex: 1; min-width: 0; }
 .sdr-mode-picker { display: flex; flex-direction: column; gap: 5px; }
 .sdr-mode-common { flex-wrap: wrap; }
-.sdr-mode-selected { color: var(--label); font-size: 10px; overflow-wrap: anywhere; }
 .sdr-mode-tools { display: flex; gap: 5px; }
 .sdr-mode-tools input { flex: 1; min-width: 0; width: 0; }
 .sdr-mode-picker input, .sdr-mode-drawer select {

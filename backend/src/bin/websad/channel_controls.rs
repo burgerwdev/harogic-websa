@@ -41,6 +41,46 @@ fn analog_filter_min_hz(mode: &str) -> Option<f64> {
     }
 }
 
+/// Listenable fallback for a band-limited external decoder: its audio companion
+/// when the catalog defines one, otherwise AM. Mirrors catalog.rs companions.
+pub(super) fn audio_companion_or_am(mode: &str) -> String {
+    match mode {
+        "aprs" => "nfm".into(),
+        "ft4" | "wspr" => "usb".into(),
+        _ => "am".into(),
+    }
+}
+
+/// A band-limited external decoder cannot follow every frequency. Reconcile the
+/// request instead of committing a mode/frequency pair the decoder rejects:
+/// - selecting the decoder retunes to its canonical center;
+/// - tuning or panning out of the band demotes the channel to the listenable
+///   companion mode;
+/// - an explicit mode and frequency that conflict still fail validation.
+/// Returns true when the configuration changed.
+pub(super) fn reconcile_external_band(config: &mut receiver_workers::ChannelConfig,
+    freq_requested: bool, mode_requested: bool) -> bool {
+    use websa_channelizer::external::onair;
+    if !onair::band_limited(&config.mode) { return false; }
+    let center = config.freq.max(0.0).round() as u64;
+    if onair::frequency_supported(&config.mode, center) { return false; }
+    let retune = mode_requested && !freq_requested
+        && onair::default_frequency(&config.mode).is_some_and(|hz| hz != center);
+    if retune {
+        config.freq = onair::default_frequency(&config.mode).unwrap() as f64;
+        return true;
+    }
+    if !mode_requested {
+        let companion = audio_companion_or_am(&config.mode);
+        if let Some(descriptor) = websa_channelizer::catalog::mode(&companion) {
+            config.mode = companion;
+            config.if_bw = descriptor.default_bandwidth_hz;
+            return true;
+        }
+    }
+    false
+}
+
 impl DevState {
     pub(super) fn channel_configs(&self) -> Vec<ChannelConfig> {
         let mut configs: Vec<_> = (1..=3).map(|slot| self.sdr_channels.iter()
@@ -166,6 +206,9 @@ impl DevState {
             config.audio_rate = value.as_u64().and_then(|rate| u32::try_from(rate).ok())
                 .ok_or("audio_rate must be an integer")?;
         }
+        let freq_requested = alias(data, &["freq", "listen"])?.is_some();
+        let mode_requested = alias(data, &["mode", "demod"])?.is_some();
+        reconcile_external_band(&mut config, freq_requested, mode_requested);
         if let Some(value) = data.get("sstv_mode") {
             config.sstv_mode = if value.is_null() { None } else {
                 Some(value.as_u64().and_then(|mode| usize::try_from(mode).ok())
@@ -218,8 +261,25 @@ impl DevState {
             return Ok(None);
         }
         if self.pipeline.is_none() && self.ddc.is_none() {
-            // There is no live source to retain. The fallback capture status is
-            // not negotiated hardware geometry and must not drive admission.
+            // There is no live source to retain. A coarse-channel tune that sits
+            // inside the stored window keeps the live-path passband guard: it must
+            // reject a short-tap coarse-gap frequency instead of relocating the
+            // not-yet-negotiated capture. Direct-rate decoders and out-of-window
+            // tunes still produce the fitted candidate capture for admission.
+            let fs = self.capture_bandwidth() / 0.8;
+            let center = self.capture_center();
+            let bandwidth = self.capture_bandwidth();
+            if let Ok(source) = service_ddc::source_plan(fs, config) {
+                let edge = if source.is_direct() { source.plan().stopband_hz } else { source.plan().occupied_bandwidth_hz / 2.0 };
+                let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
+                let inside = !source.is_direct() && (-m / 2..m / 2).contains(&signed_bin(config.freq, center))
+                    && (config.freq - center).abs() + edge <= bandwidth / 2.0;
+                if inside {
+                    service_ddc::validate_source_frequency(center, bandwidth, fs,
+                        self.sdr_pfb_taps_per_phase, config.freq, &source)?;
+                    return Ok(None);
+                }
+            }
             let mut configs = self.channel_configs();
             configs[(config.channel - 1) as usize] = config.clone();
             let fit=self.fit_service_capture(self.sdr_center,self.sdr_decimate,
@@ -350,6 +410,37 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_band_reconciliation_retunes_selections_and_demotes_tuning() {
+        let mut config = ChannelConfig { mode: "adsb".into(), freq: 435e6,
+            if_bw: 1_800_000.0, ..ChannelConfig::default() };
+        // Selecting the decoder (mode only) retunes to its canonical center.
+        assert!(reconcile_external_band(&mut config, false, true));
+        assert_eq!((config.mode.as_str(), config.freq), ("adsb", 1.090e9));
+        assert!(!reconcile_external_band(&mut config, false, true), "in-band selection is untouched");
+        // Re-selecting from a legacy out-of-band state heals it the same way.
+        config.freq = 435e6;
+        assert!(reconcile_external_band(&mut config, false, true));
+        assert_eq!(config.freq, 1.090e9);
+        // Tuning out of the band (freq only) demotes to the listenable companion.
+        for (mode, companion) in
+            [("adsb", "am"), ("meteor", "am"), ("ais", "am"), ("aprs", "nfm"), ("ft4", "usb"), ("wspr", "usb")] {
+            let mut config = ChannelConfig { mode: mode.into(), freq: 500e6,
+                if_bw: 20_000.0, ..ChannelConfig::default() };
+            assert!(reconcile_external_band(&mut config, true, false), "{mode}");
+            assert_eq!(config.mode, companion, "{mode}");
+            assert_eq!(config.if_bw,
+                websa_channelizer::catalog::mode(companion).unwrap().default_bandwidth_hz, "{mode}");
+        }
+        // An explicit mode and frequency that conflict stay for validation to reject.
+        let mut config = ChannelConfig { mode: "adsb".into(), freq: 435e6, ..ChannelConfig::default() };
+        assert!(!reconcile_external_band(&mut config, true, true));
+        assert_eq!((config.mode.as_str(), config.freq), ("adsb", 435e6));
+        // Native modes never reconcile.
+        let mut config = ChannelConfig::default();
+        assert!(!reconcile_external_band(&mut config, true, false));
+    }
 
     #[test]
     fn radiofax_parse_is_pure_and_invalid_cross_fields_reject_before_commit() {

@@ -116,7 +116,7 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
       previous = log.entries.findIndex(entry => entry.kind === result.kind && entry.provider === result.provider && entry.mode === result.mode);
     }
   }
-  if (previous >= 0) { log.bytes -= log.entries[previous].bytes; log.entries.splice(previous, 1); }
+  if (previous >= 0) { log.bytes -= log.entries[previous].bytes; id = log.entries[previous].id; log.entries.splice(previous, 1); }
   if (bytes <= DECODER_LOG_BYTES) {
     log.entries.unshift({ ...result, id, at: Date.now(), source, bytes });
     log.bytes += bytes;

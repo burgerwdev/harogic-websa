@@ -277,6 +277,7 @@ function amSyncSessionAvailable(): boolean {
 }
 
 let sdrAudioHandoffTimer: number | null = null;
+let sdrAudioSessionReady = false;
 /** Centre captured when the user asked to enter SDR. A disconnected confirm must not consume it. */
 let pendingSdrEntryHz: number | null = null;
 /** True only after the user (or a saved-mode restore) asks to enter SDR, not after a spontaneous STATUS. */
@@ -324,6 +325,7 @@ function deferSdrAudioPreference() {
     sdrAudioHandoffTimer = null;
     return;
   }
+  sdrAudioSessionReady = true;
   sdrAudioHandoffTimer = window.setTimeout(() => {
     sdrAudioHandoffTimer = null;
     if (currentGraphMode() === 'sdr' && S.deviceConnected) applySdrAudioPreference();
@@ -1035,10 +1037,11 @@ function sdrSet(id: string, value: string) {
 // Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
+  const active = s?.connected === true && s?.mode === 'sdr';
+  if (!active) sdrAudioSessionReady = false;
   // Server keeps the device exclusively and forces connected=false. That report is not a lost
   // receiver session, and it must not confirm or reset the remembered SDR setup.
   if (s?.mode === 'server') return;
-  const active = s?.connected === true && s?.mode === 'sdr';
   // The first SDR STATUS after leaving Server is disconnected while the capture opens.
   // It is not a lost session, and it must not consume the entry still waiting to be sent.
   if (s?.connected !== true) {
@@ -1062,6 +1065,9 @@ export function syncSdrPanel(s: any) {
     return;
   }
   setSdrIqEnabled(true);
+  // A reload/reconnect can join an already-running SDR without a local entry
+  // request. Attach playback once, retaining the user's stored mute preference.
+  if (!sdrAudioSessionReady && !sdrEntryPending) deferSdrAudioPreference();
   if (!sdr) {
     confirmAmSyncGeneration(null);
     return;
@@ -1116,16 +1122,19 @@ export function syncSdrPanel(s: any) {
   const displaySpan = a.start != null && a.stop != null
     ? Math.max(Number(a.stop) - Number(a.start), requestedSpan) : requestedSpan;
   confirmSdrAxisWindow(Number(sdr.center), displaySpan, Number(s.config_version), s.response_to, s.request_id);
-  // Capture updates shift the zoom box with the frame. Recenter only when this
-  // pan acknowledgement actually changed the confirmed listen frequency.
+  // Capture updates shift the zoom box with the frame. Recenter when the acknowledged
+  // centre or listen frequency actually changed: both name the frequency the viewer is
+  // looking at, and the zoom box must land on it, clamped by the capture's edges.
   if (s.response_to === 'SET_SDR') {
     const listen = sdrListenHz.confirmedValue() ?? 0;
-    const previous = listenBeforeAck ?? listen;
+    const previousListen = listenBeforeAck ?? listen;
+    const center = sdrCenterHz.confirmedValue() ?? 0;
     const capture = getCapture();
-    if (listen > 0 && previous !== listen && capture && isZoomed()) {
+    const moved = listen > 0 && previousListen !== listen || (center > 0 && previousCenter !== center);
+    if (moved && (listen > 0 || center > 0) && capture && isZoomed()) {
       const expected = Number.isFinite(a.start) && Number.isFinite(a.stop) && a.stop > a.start
         ? { lo: a.start, hi: a.stop } : capture;
-      recenterOnCapture(listen, expected, minSpanHz(S.freqArray));
+      recenterOnCapture(listen > 0 ? listen : center, expected, minSpanHz(S.freqArray));
     }
   }
   const actualFilter = Number(receiver.if_bw) || 6000;

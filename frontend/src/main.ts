@@ -53,6 +53,9 @@ function init() {
   bindCanvas();
   initSpectrumZoomUi();
   initPopoverDrag();
+  // Autoplay can hold playback silent after a reload; repaint when that state
+  // changes so the status hint appears and clears without another trigger.
+  document.addEventListener('websa:sdr-audio-gesture', () => requestRender());
 
 
   // Theme/language toggle buttons (dev-bar, next to preset, no label)

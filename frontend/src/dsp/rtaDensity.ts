@@ -115,6 +115,12 @@ function bump(grid: DensityGrid, column: number, bin: number, weight: number): v
 	grid.values[k] = Math.min(MAX_DENSITY, grid.values[k] + weight);
 }
 
+/** Conservative occupied amplitude rows, shared by rasterisation and painting. */
+export interface DensityRasterBounds {
+	firstBin: number;
+	endBin: number;
+}
+
 /**
  * Max-composite linearly reconstructed native frequency samples into a reusable raster.
  * Wide native bins taper to their neighbours instead of expanding into rectangular cells.
@@ -122,9 +128,10 @@ function bump(grid: DensityGrid, column: number, bin: number, weight: number): v
  */
 export function rasterDensity(
 	grid: DensityGrid, freq: Float64Array, lo: number, hi: number,
-	width: number, out: Float32Array,
+	width: number, out: Float32Array, bounds?: DensityRasterBounds,
 ): void {
 	out.fill(0);
+	if (bounds) { bounds.firstBin = grid.bins; bounds.endBin = 0; }
 	if (!(hi > lo) || freq.length !== grid.heads.length) return;
 	const [first, end] = visibleBinRange(freq, lo, hi);
 	const scale = width / (hi - lo);
@@ -140,6 +147,11 @@ export function rasterDensity(
 		const resolved = (i === 0 || (hz - freq[i - 1]) * scale >= 1)
 			&& (i === freq.length - 1 || (freq[i + 1] - hz) * scale >= 1);
 		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
+			if (bounds) {
+				const bin = cell % grid.bins;
+				bounds.firstBin = Math.min(bounds.firstBin, bin);
+				bounds.endBin = Math.max(bounds.endBin, bin + 1);
+			}
 			const base = (cell % grid.bins) * width;
 			const value = grid.values[cell];
 			for (let x = x0; x < x1; x++) {
@@ -191,9 +203,10 @@ function clippedRampMean(start: number, end: number, inverseSpan: number): numbe
 export function rasterSparseDensity(
 	grid: DensityGrid, freq: Float64Array, lo: number, hi: number,
 	width: number, out: Float32Array,
-	projection?: DensityProjection,
+	projection?: DensityProjection, bounds?: DensityRasterBounds,
 ): void {
 	out.fill(0);
+	if (bounds) { bounds.firstBin = projection?.bins ?? grid.bins; bounds.endBin = 0; }
 	if (!(hi > lo) || !(width > 0) || freq.length !== grid.heads.length) return;
 	const bins = grid.bins;
 	const outputBins = projection?.bins ?? bins;
@@ -276,6 +289,10 @@ export function rasterSparseDensity(
 				const inverseHigh = highSpan < 1e-9 ? 0 : 1 / highSpan;
 				const firstRow = Math.max(0, Math.floor(lowMin + 0.5));
 				const endRow = Math.min(outputBins, Math.ceil(highMax + 0.5));
+				if (bounds && firstRow < endRow) {
+					bounds.firstBin = Math.min(bounds.firstBin, firstRow);
+					bounds.endBin = Math.max(bounds.endBin, endRow);
+				}
 				for (let bin = firstRow; bin < endRow; bin++) {
 					const edge = bin - 0.5;
 					const coverage = highMin >= edge + 1 && lowMax <= edge ? 1
@@ -312,6 +329,10 @@ export function rasterSparseDensity(
 		}
 		const firstRow = Math.max(0, Math.floor(origin + (firstBin - 0.5) * rowScale + 0.5));
 		const endRow = Math.min(outputBins, Math.ceil(origin + (endBin - 0.5) * rowScale + 0.5));
+		if (bounds && firstRow < endRow) {
+			bounds.firstBin = Math.min(bounds.firstBin, firstRow);
+			bounds.endBin = Math.max(bounds.endBin, endRow);
+		}
 		for (let row = firstRow; row < endRow; row++) {
 			const low = (row - 0.5 - origin) / rowScale, high = (row + 0.5 - origin) / rowScale;
 			let value = 0;
@@ -374,38 +395,41 @@ export function densityPalette(contrast: number, lut: Uint32Array): DensityPalet
 	return { colours, alpha, maxIndex };
 }
 
-let sparsePaintCoverage = new Float64Array(0);
+let paintCoverage = new Float64Array(0);
 
 /**
  * Paint native amplitude centres into a reusable screen-resolution RGBA image.
  * Width is a centred display footprint in backing pixels, never an amplitude spread.
  * Max opacity composites overlaps without adding occupancy; fractional edge coverage
  * keeps the centre and CSS width stable across pixel ratios and amplitude gestures.
+ * Optional bounds skip unoccupied raster rows; rowOffset locates a cropped RGBA buffer
+ * in the full backing image without changing footprint geometry or coverage rounding.
  */
 export function paintDensity(
 	raster: Float32Array, cols: number, bins: number, pixels: Uint8ClampedArray,
 	rows: number, firstCentre: number, rowPitch: number, footprint: number,
 	contrast: number, lut: Uint32Array, softFootprint = false, palette?: DensityPalette,
+	bounds?: DensityRasterBounds, rowOffset = 0,
 ): void {
 	pixels.fill(0);
 	const half = footprint / 2;
 	const feather = Math.min(1, half);
-	const preparedCoverage = softFootprint && !!palette;
-	if (preparedCoverage && sparsePaintCoverage.length < rows) sparsePaintCoverage = new Float64Array(rows);
+	if (paintCoverage.length < rows) paintCoverage = new Float64Array(rows);
+	const endRow = Math.min(rows, rowOffset + pixels.length / (cols * 4));
 	if (palette && (!palette.rasterBits || palette.rasterBits.buffer !== raster.buffer
 		|| palette.rasterBits.byteOffset !== raster.byteOffset || palette.rasterBits.length !== raster.length)) {
 		palette.rasterBits = new Uint32Array(raster.buffer, raster.byteOffset, raster.length);
 	}
-	for (let bin = 0; bin < bins; bin++) {
+	for (let bin = bounds?.firstBin ?? 0; bin < (bounds?.endBin ?? bins); bin++) {
 		const centre = firstCentre + bin * rowPitch;
 		const top = centre - half, bottom = centre + half;
-		const y0 = Math.max(0, Math.floor(top)), y1 = Math.min(rows, Math.ceil(bottom));
+		const y0 = Math.max(rowOffset, Math.floor(top)), y1 = Math.min(endRow, Math.ceil(bottom));
 		if (y0 >= y1) continue;
-		if (preparedCoverage) {
-			// Coverage depends on the footprint and output row, never the column's mass.
-			for (let y = y0; y < y1; y++) {
-				const start = Math.max(y, top) - top, end = Math.min(y + 1, bottom) - top;
-				let coverage = end - start;
+		// Coverage depends only on the footprint and row, including for hard footprints.
+		for (let y = y0; y < y1; y++) {
+			const start = Math.max(y, top) - top, end = Math.min(y + 1, bottom) - top;
+			let coverage = end - start;
+			if (softFootprint) {
 				if (start < feather) {
 					const a = feather - start, b = Math.max(0, feather - end);
 					coverage -= (a * a - b * b) / (2 * feather);
@@ -414,8 +438,8 @@ export function paintDensity(
 					const a = end - footprint + feather, b = Math.max(0, start - footprint + feather);
 					coverage -= (a * a - b * b) / (2 * feather);
 				}
-				sparsePaintCoverage[y] = coverage;
 			}
+			paintCoverage[y] = coverage;
 		}
 		for (let x = 0; x < cols; x++) {
 			const value = raster[bin * cols + x];
@@ -432,24 +456,7 @@ export function paintDensity(
 				alpha = 255 * (1 - Math.exp(-5 * Math.pow(n, 0.4)));
 			}
 			for (let y = y0; y < y1; y++) {
-				let coverage: number;
-				if (preparedCoverage) coverage = sparsePaintCoverage[y];
-				else {
-					const start = Math.max(y, top) - top, end = Math.min(y + 1, bottom) - top;
-					coverage = end - start;
-					if (softFootprint) {
-						// Feather only the outer backing pixel inside the original footprint.
-						if (start < feather) {
-							const a = feather - start, b = Math.max(0, feather - end);
-							coverage -= (a * a - b * b) / (2 * feather);
-						}
-						if (end > footprint - feather) {
-							const a = end - footprint + feather, b = Math.max(0, start - footprint + feather);
-							coverage -= (a * a - b * b) / (2 * feather);
-						}
-					}
-				}
-				const a = Math.round(alpha * coverage), o = (y * cols + x) * 4;
+				const a = Math.round(alpha * paintCoverage[y]), o = ((y - rowOffset) * cols + x) * 4;
 				if (a <= pixels[o + 3]) continue;
 				pixels[o] = colour & 0xff;
 				pixels[o + 1] = (colour >> 8) & 0xff;

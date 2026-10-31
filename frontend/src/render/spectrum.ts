@@ -24,7 +24,7 @@ import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
-import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, type DensityGrid, type DensityPalette } from '../dsp/rtaDensity';
+import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, type DensityGrid, type DensityPalette, type DensityRasterBounds } from '../dsp/rtaDensity';
 import { DensityRelease } from '../dsp/densityRelease';
 import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
@@ -895,6 +895,9 @@ let rtaDensLayer: HTMLCanvasElement | null = null;
 let rtaDensCtx: CanvasRenderingContext2D | null = null;
 let rtaDensImage: ImageData | null = null;
 let rtaDensRaster = new Float32Array(0);
+const rtaDensBounds: DensityRasterBounds = { firstBin: 0, endBin: 0 };
+const rtaDensReleaseBounds: DensityRasterBounds = { firstBin: 0, endBin: 0 };
+let lastDensPaintTop = 0, lastDensPaintEnd = 0;
 let lastDensGrid: DensityGrid | null = null;
 let lastDensFreq: Float64Array | null = null;
 let lastDensRevision = -1;
@@ -914,6 +917,7 @@ let lastDensPlotWidth = NaN, lastDensPlotHeight = NaN, lastDensPixelRatio = NaN;
 
 function clearRtaDensityRelease(): void {
   rtaDensRelease.clear();
+  rtaDensReleaseBounds.firstBin = rtaDensReleaseBounds.endBin = 0;
   if (rtaDensPalette) rtaDensPalette.rasterBits = undefined;
   if (rtaDensFiniteMask.length) rtaDensFiniteMask = new Uint8Array(0);
   lastDensFirst = lastDensEnd = -1;
@@ -960,7 +964,7 @@ function drawRtaDensityLayer(
   const width = rtaDensWidth.get() * rows / p.h;
   // SDR native histories already replace their grid on a changed frequency axis;
   // packets may carry equal axes in freshly allocated arrays.
-  const geometryChanged = resized || lastDensGrid !== grid || (!softFootprint && lastDensFreq !== freq)
+  const geometryChanged = resized || lastDensGrid !== grid || (!grid.freq && lastDensFreq !== freq)
     || lastDensLo !== lo || lastDensHi !== hi || lastDensSource !== grid.source
     || lastDensPlotWidth !== p.w || lastDensPlotHeight !== p.h || lastDensPixelRatio !== pixelRatio
     || lastDensBins !== grid.bins || lastDensRefTop !== grid.refTop || lastDensDbPerBin !== grid.dBPerBin
@@ -971,8 +975,8 @@ function drawRtaDensityLayer(
     const rasterBins = softFootprint ? rows : grid.bins;
     if (rtaDensRaster.length !== cols * rasterBins) rtaDensRaster = new Float32Array(cols * rasterBins);
     if (softFootprint) rasterSparseDensity(grid, freq, lo, hi, cols, rtaDensRaster,
-      { bins: rows, origin: centre - 0.5, scale: pitch });
-    else rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
+      { bins: rows, origin: centre - 0.5, scale: pitch }, rtaDensBounds);
+    else rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster, rtaDensBounds);
     if (softFootprint) {
       let reset = geometryChanged || !rtaDensRelease.values.length
         || lastDensFirst !== first || lastDensEnd !== end;
@@ -988,18 +992,36 @@ function drawRtaDensityLayer(
         rtaDensFiniteMask[i] = finite;
       }
       rtaDensRelease.apply(rtaDensRaster, grid.lastMs, rtaHalflife.get(), reset);
+      // The release floor retains old rows even when the current projection moves away.
+      rtaDensReleaseBounds.firstBin = reset ? rtaDensBounds.firstBin
+        : Math.min(rtaDensReleaseBounds.firstBin, rtaDensBounds.firstBin);
+      rtaDensReleaseBounds.endBin = reset ? rtaDensBounds.endBin
+        : Math.max(rtaDensReleaseBounds.endBin, rtaDensBounds.endBin);
       lastDensFirst = first; lastDensEnd = end;
     } else clearRtaDensityRelease();
   }
   if (rasterChanged || themeChanged || lastDensContrast !== contrast
       || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
-    if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
-      rtaDensImage = lc.createImageData(cols, rows);
+    const bounds = softFootprint ? rtaDensReleaseBounds : rtaDensBounds;
+    const paintCentre = softFootprint ? 0.5 : centre, paintPitch = softFootprint ? 1 : pitch;
+    const top = Math.max(0, Math.min(rows, Math.floor(paintCentre + bounds.firstBin * paintPitch - width / 2)));
+    const bottom = bounds.firstBin < bounds.endBin
+      ? Math.max(top, Math.min(rows, Math.ceil(paintCentre + (bounds.endBin - 1) * paintPitch + width / 2))) : top;
+    const height = bottom - top;
+    // Keep physical-pixel coverage, but never paint or upload the empty amplitude area.
+    // Grow in bands so fluctuating signal bounds reuse the same backing allocation.
+    if (height > 0) {
+      if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height < height || rtaDensImage.height > rows) {
+        rtaDensImage = lc.createImageData(cols, Math.min(rows, Math.ceil(height / 64) * 64));
+      }
+      paintDensity(softFootprint ? rtaDensRelease.values : rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
+        paintCentre, paintPitch, width, contrast, rtaDensLut!, softFootprint, rtaDensPalette, bounds, top);
+      lc.putImageData(rtaDensImage, 0, top, 0, 0, cols, height);
     }
-    paintDensity(softFootprint ? rtaDensRelease.values : rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
-      softFootprint ? 0.5 : centre, softFootprint ? 1 : pitch, width, contrast, rtaDensLut!, softFootprint,
-      softFootprint ? rtaDensPalette : undefined);
-    lc.putImageData(rtaDensImage, 0, 0);
+    // Erase history which left the occupied band, including a completely empty frame.
+    if (!resized && lastDensPaintTop < top) lc.clearRect(0, lastDensPaintTop, cols, Math.min(top, lastDensPaintEnd) - lastDensPaintTop);
+    if (!resized && lastDensPaintEnd > bottom) lc.clearRect(0, Math.max(bottom, lastDensPaintTop), cols, lastDensPaintEnd - Math.max(bottom, lastDensPaintTop));
+    lastDensPaintTop = top; lastDensPaintEnd = bottom;
     lastDensGrid = grid; lastDensRevision = grid.revision;
     lastDensFreq = freq;
     lastDensLo = lo; lastDensHi = hi; lastDensContrast = contrast;
@@ -1009,8 +1031,13 @@ function drawRtaDensityLayer(
     lastDensRefTop = grid.refTop; lastDensDbPerBin = grid.dBPerBin;
     lastDensPlotWidth = p.w; lastDensPlotHeight = p.h; lastDensPixelRatio = pixelRatio;
   }
-  ctx.save();
-  ctx.imageSmoothingEnabled = softFootprint;
-  ctx.drawImage(rtaDensLayer, p.x, p.y, p.w, p.h);
-  ctx.restore();
+  if (lastDensPaintEnd > lastDensPaintTop) {
+    // Include transparent neighbours for the existing smoothed detail interpolation.
+    const top = Math.max(0, lastDensPaintTop - 1), bottom = Math.min(rows, lastDensPaintEnd + 1);
+    ctx.save();
+    ctx.imageSmoothingEnabled = softFootprint;
+    ctx.drawImage(rtaDensLayer, 0, top, cols, bottom - top,
+      p.x, p.y + top / rows * p.h, p.w, (bottom - top) / rows * p.h);
+    ctx.restore();
+  }
 }

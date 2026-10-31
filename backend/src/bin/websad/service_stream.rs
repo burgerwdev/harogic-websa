@@ -393,14 +393,18 @@ impl DevState {
     }
 
     pub(super) fn latch_receiver_failure(&mut self,error:String) {
-        if self.receiver_failure.is_some() {return;}
-        self.receiver_failure=Some(error);
-        self.receiver_failure_pending=true;
+        if self.receiver_failure.is_none() {
+            self.receiver_failure=Some(error);
+            self.receiver_failure_pending=true;
+            self.pending_receiver=receiver_workers::ReceiverFrames::default();
+            self.consumed_receiver_iq.clear();
+            self.decode_snapshots=DecodeSnapshots::default();
+            self.retiring_registry=Arc::from([]);
+        }
+        // Also retire workers created by a recovery attempt after the first
+        // failure: reap_failed_receivers cannot complete while a live instance
+        // was never told to stop.
         if let Some(workers)=self.receiver_workers.as_mut() {workers.stop_failed();}
-        self.pending_receiver=receiver_workers::ReceiverFrames::default();
-        self.consumed_receiver_iq.clear();
-        self.decode_snapshots=DecodeSnapshots::default();
-        self.retiring_registry=Arc::from([]);
     }
 
     pub(super) fn reap_failed_receivers(&mut self)->bool {
@@ -413,7 +417,12 @@ impl DevState {
 
     pub(super) fn restart_failed_receivers(&mut self)->Result<(),String> {
         if self.receiver_failure.is_none() {return Ok(());}
-        self.ddc_command(|ddc|ddc.restart_service_receivers())?;
+        if let Err(error)=self.ddc_command(|ddc|ddc.restart_service_receivers()) {
+            // Replacement workers created for this recovery attempt cannot run
+            // under the still-latched failure; retire them so the retry reaps.
+            if let Some(workers)=self.receiver_workers.as_mut() {workers.stop_failed();}
+            return Err(error);
+        }
         if let Some(source)=self.fixture_sources.as_mut() {source.restart(None)?;}
         self.receiver_failure=None;
         self.receiver_failure_pending=false;
@@ -513,6 +522,27 @@ pub(super) async fn decode_ws_handler(ws:WebSocketUpgrade,State(app):State<Arc<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relatched_failure_retires_recovery_replacement_workers() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        state.latch_receiver_failure("first failure".into());
+        assert_eq!(state.receiver_failure.as_deref(),Some("first failure"));
+        // A recovery attempt can create replacement workers after reap dropped the
+        // failed instance while the failure itself stayed latched. A new failure
+        // on that instance must retire it, or reap never completes again.
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        state.latch_receiver_failure("second failure".into());
+        assert_eq!(state.receiver_failure.as_deref(),Some("first failure"));
+        state.receiver_failure_pending=false;
+        let deadline=std::time::Instant::now()+Duration::from_secs(5);
+        while !state.reap_failed_receivers() {
+            assert!(std::time::Instant::now()<deadline,"replacement workers were never retired");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(state.receiver_workers.is_none());
+    }
 
     fn output(id:u32,seq:u32)->receiver_workers::ReceiverFrames {
         let samples=if seq==0 {Vec::new()} else {vec![id as f32+seq as f32/8.0]};

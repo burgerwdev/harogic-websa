@@ -152,10 +152,10 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_REFCKOUT` | `on`（bool） | 参考时钟输出，重配置当前模式 Profile |
 | `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr/server）| 切换测量模式（会话）。`server` 为独占模式，不启动 SoapySDRServer |
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
-| `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档 |
+| `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档。平移捕获窗口会带动主路监听频率；当频率离开带限 OnAir 解码器的频段时，该通道自动降级为解码器的音频伴随模式，不会提交非法组合 |
 | `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部三路频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
 | `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（正有限值，Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（CW 为 100..1600 Hz；其他模式为 (0,20000] Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 13 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/radiofax/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 请求修改接收滤波器，通过准入后重配信道化器 |
-| `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?`、`radiofax_acquisition?`、`radiofax_ioc?`、`radiofax_lpm?`、`radiofax_modulation?`、`radiofax_polarity?`、`radiofax_clock_recovery?`、`radiofax_phase_pixels?`、`radiofax_clock_ppm?`、`radiofax_new_page?`、`radiofax_reset_correction?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。传真捕获为 auto/manual，IOC 为 auto/288/576，LPM 为 auto/60/90/120/180/240，调制为 fm/am，极性为 normal/inverted，时钟恢复为 auto/off。相位范围 ±4096 像素，时钟校正 ±5000 ppm。`radiofax_new_page` 将当前页以部分完成收尾；`radiofax_reset_correction` 将两项校正置零。协议参数变化重建解码器；相位和 ppm 不重建 RF。 |
+| `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?`、`radiofax_acquisition?`、`radiofax_ioc?`、`radiofax_lpm?`、`radiofax_modulation?`、`radiofax_polarity?`、`radiofax_clock_recovery?`、`radiofax_phase_pixels?`、`radiofax_clock_ppm?`、`radiofax_new_page?`、`radiofax_reset_correction?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。传真捕获为 auto/manual，IOC 为 auto/288/576，LPM 为 auto/60/90/120/180/240，调制为 fm/am，极性为 normal/inverted，时钟恢复为 auto/off。相位范围 ±4096 像素，时钟校正 ±5000 ppm。`radiofax_new_page` 将当前页以部分完成收尾；`radiofax_reset_correction` 将两项校正置零。协议参数变化重建解码器；相位和 ppm 不重建 RF。带限 OnAir 解码器（AIS、ADS-B、Meteor LRPT、APRS、FT4、WSPR）会对保留频率做边界协调：不带 `freq` 选择解码器时自动调谐到其标称中心（ADS-B 1090 MHz、AIS 162 MHz、Meteor 137.1 MHz）；仅改 `freq` 且离开频段时，通道降级为解码器的音频伴随模式（AM/NFM/USB）并采用该模式默认带宽。显式 `mode`+`freq` 冲突仍被拒绝。 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
 | `SET_TRIGGER` | `source`（bus/freerun/level/external/timer）, `edge`（rising/falling/double）, `level`（dBm，以 `caps` 界限为准）, `safetime`/`delay`/`pretime`（0~10 s）, `acqtime`（0.0005~60 s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
@@ -432,6 +432,8 @@ SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实
 Persist 在 SDR 默认 0.2 秒，在 RTA 默认 0.5 秒；已保存的用户选择优先，Preset 恢复当前模式的默认值。
 
 SDR 使用无宽辉光的细迹线。密度保留原生频率的幅度占用历史、默认 128 档 Grain、设备像素绘制和按数据版本刷新。稀疏视图将相邻积累分布连接成连续幅度带；配对变化或低权重格消失时，固定屏幕坐标的线性占用包络按所选半衰期限制淡出速度，使用取大值合成，不重复累积。视窗几何、缺口或来源变化会立即重置包络。该显示插值不改变原生历史或测量，不回放迹线帧，也不限刷新率；密集全景与非 SDR 绘制保持原路径。SDR 瀑布保留 16 位幅度，放大时先重建相邻有效电平再着色，缩小时保留原生峰值；缺失点保持为空，缩放不增加测量分辨率。缩放侧栏 Top/Bottom 只改变显示上下限，不写入 Ref Level、衰减或前放；恢复或退出缩放会清除这组上下限。
+
+密度栅格化同时记录有占用的幅度范围；着色、像素上传与最终画布合成都限定到该范围，并保留笔触与插值边界，移出的旧区域明确清除。稀疏 SDR 视图的范围保留仍在衰减的历史包络，直到重置。仍按完整设备像素精度绘制，颜色、宽度、缺口及原生历史不变，空白图区高度不再产生整幅上传与合成开销。
 
 CSV 导出当前模式所选处理后迹线及匹配的原生频率轴；OFF、缺失或长度不匹配时提示无数据，不能回退到旧 SWP 迹线。Limits 与频道测量仅使用所选的处理后绝对功率迹线；归一化相对迹线显示 N/A，不生成绝对测量 CSV 行。RTA/SDR 禁用这些测量控件。dBc 不叠加外部电平偏移。SWP 瀑布从已接受的原始 POWR 帧取行，最高 10 Hz，重绘本身不会生成新行。
 

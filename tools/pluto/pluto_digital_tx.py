@@ -14,11 +14,11 @@ import argparse
 import json
 import math
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import numpy as np
 

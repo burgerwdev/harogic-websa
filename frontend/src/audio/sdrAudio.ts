@@ -6,6 +6,19 @@ let modulePromise: Promise<void> | null = null;
 const WORKLET_URL = new URL('./sdrAudioWorklet.js', import.meta.url).href;
 const chains = new Map<number, AudioChain>();
 
+/** True while autoplay policy holds the context suspended with playback wanted. */
+export function sdrAudioNeedsGesture(): boolean {
+  return ctx?.state === 'suspended'
+    && Array.from(chains.values()).some((playback) => playback.wantsPlayback());
+}
+let gesturePending: boolean | null = null;
+function notifyGestureState(): void {
+  const pending = sdrAudioNeedsGesture();
+  if (pending === gesturePending) return;
+  gesturePending = pending;
+  document.dispatchEvent(new CustomEvent('websa:sdr-audio-gesture', { detail: { pending } }));
+}
+
 function context(): AudioContext {
   if (!ctx) {
     const requestedRate = new URLSearchParams(location.search).get('audioRate');
@@ -14,8 +27,15 @@ function context(): AudioContext {
     const resume = () => {
       for (const playback of chains.values()) playback.resume();
     };
-    document.addEventListener('click', resume);
-    document.addEventListener('keydown', resume);
+    // Capture gestures before tuning controls can stop propagation. Autoplay may
+    // leave resume() pending until the first interaction after a reload.
+    document.addEventListener('pointerdown', resume, true);
+    document.addEventListener('click', resume, true);
+    document.addEventListener('keydown', resume, true);
+    ctx.addEventListener('statechange', () => {
+      for (const playback of chains.values()) playback.syncContext();
+      notifyGestureState();
+    });
   }
   return ctx;
 }
@@ -61,6 +81,10 @@ class AudioChain {
 
   constructor(readonly channel: number) {}
 
+  /** Enabled playback with no terminal or receiver error: the state autoplay blocks. */
+  wantsPlayback(): boolean {
+    return this.enabled && !this.receiverFailed && !this.error;
+  }
   status(): Record<string, string | number | boolean> {
     return { channel: this.channel, enabled: this.enabled, muted: this.muted, error: this.error,
       frames: this.frames, playedFrames: this.playedFrames, playing: this.playing,
@@ -85,6 +109,7 @@ class AudioChain {
       ` playback_rate=${this.playbackRate} buffer_mode=${this.bufferMode} prime_frames=${this.primeFrames} max_fill_frames=${this.maxFillFrames}` +
       ` ctx=${ctx?.state || 'none'} worklet=${typeof AudioWorkletNode !== 'undefined' && this.node instanceof AudioWorkletNode} worker=${!!this.worker}` +
       ` error=${this.error}`;
+    notifyGestureState();
   }
   private clearRing(): void {
     this.read = this.write = this.available = this.buffered = 0;
@@ -119,10 +144,38 @@ class AudioChain {
   }
   resume(): void {
     if (!this.enabled || this.receiverFailed || this.error || !ctx) return;
+    this.syncContext();
+    if (ctx.state === 'running') return;
     const generation = this.generation;
-    void ctx.resume().catch((error) => {
+    void ctx.resume().then(() => {
+      if (generation === this.generation) this.syncContext();
+    }).catch((error) => {
+      // An autoplay refusal is recoverable on a later gesture; it must not
+      // dispose the chain or require the user to change their mute preference.
+      if (error instanceof DOMException && error.name === 'NotAllowedError') return;
       if (generation === this.generation && this.enabled) this.fail(error instanceof Error ? error.message : String(error));
     });
+  }
+  syncContext(): void {
+    if (!this.enabled || this.receiverFailed || this.error || !ctx) return;
+    if (ctx.state !== 'running') {
+      // Never subscribe to live PCM while the consumer clock is stopped: its
+      // bounded queue would overflow before autoplay can be unlocked.
+      this.worker?.postMessage({ type: 'enabled', value: false });
+      this.clearRing();
+      this.debug();
+      return;
+    }
+    if (!this.initialization) {
+      const generation = this.generation;
+      this.initialization = this.initialize().catch((error) => {
+        if (generation !== this.generation) return;
+        this.initialization = null;
+        this.fail(error instanceof Error ? error.message : String(error));
+      });
+    }
+    this.worker?.postMessage({ type: 'enabled', value: true });
+    this.debug();
   }
   private legacy(context: AudioContext): void {
     this.ring = new Float32Array(Math.ceil(context.sampleRate * 3) * 2);
@@ -267,7 +320,7 @@ class AudioChain {
     worker.onmessage = (event: MessageEvent) => { if (this.worker === worker) this.message(event.data || {}); };
     worker.onerror = (event: ErrorEvent) => { if (this.worker === worker) this.fail(event.message || 'Audio worker failed'); };
     worker.postMessage({ type: 'init', url: audioUrl(this.channel), targetRate: playbackRate, mode: this.mode, flowControl: Boolean(port), port }, port ? [port] : []);
-    worker.postMessage({ type: 'enabled', value: this.enabled });
+    worker.postMessage({ type: 'enabled', value: this.enabled && audio.state === 'running' });
     worker.postMessage({ type: 'mute', value: this.muted });
   }
   setMode(mode: string): void {
@@ -288,17 +341,8 @@ class AudioChain {
     if (!on) { this.dispose(); this.debug(); return; }
     if (on) {
       try { context(); } catch (error) { this.fail(error instanceof Error ? error.message : String(error)); return; }
-      if (!this.initialization) {
-        const generation = this.generation;
-        this.initialization = this.initialize().catch((error) => {
-          if (generation !== this.generation) return;
-          this.initialization = null;
-          this.fail(error instanceof Error ? error.message : String(error));
-        });
-      }
       this.resume();
     }
-    this.worker?.postMessage({ type: 'enabled', value: on });
     this.worker?.postMessage({ type: 'mute', value: false });
     this.debug();
   }
