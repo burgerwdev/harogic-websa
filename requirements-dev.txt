@@ -13,3 +13,4 @@ ruff>=0.6,<1
 pyserial>=3.5,<4
 fonttools>=4.50,<5
 playwright>=1.40,<2
+websockets>=17,<18
