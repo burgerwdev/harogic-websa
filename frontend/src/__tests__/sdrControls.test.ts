@@ -99,7 +99,241 @@ describe('SDR zoom follows confirmed tuning', () => {
 		return { ...loaded, viewport };
 	}
 
-	it.each(['center', 'listen'])('refocuses 125 MHz on Enter in the unchanged %s input after moving the overview', async field => {
+	it('centers the zoom selection on To Center even when capture and listen frequencies already match', async () => {
+		const { controls, state, send, viewport } = await setupZoom();
+		document.body.insertAdjacentHTML('beforeend', '<button data-action="sdr-to-center">To Center</button>');
+		controls.bindActions();
+		(document.querySelector('[data-action="sdr-to-center"]') as HTMLButtonElement).click();
+		expect(viewport.getView()).toEqual({ lo: CENTER - 200_000, hi: CENTER + 200_000 });
+		expect(state.sdrListenHz.get()).toBe(CENTER);
+		expect(send).toHaveBeenCalledWith({ cmd: 'SET_SDR', center: CENTER, decimate: 16 });
+		const moved = { lo: CENTER + 800_000, hi: CENTER + 1_200_000 };
+		viewport.setView(moved, 1);
+		controls.syncSdrPanel(report(CENTER, CENTER, 2, 'SET_SDR'));
+		expect(viewport.getView()).toEqual(moved);
+		controls.sdrToCenter();
+		expect(viewport.getView()).toEqual({ lo: CENTER - 200_000, hi: CENTER + 200_000 });
+	});
+
+	it('lets To Center replace an unsettled axis preview', async () => {
+		const { controls, viewport } = await setupZoom();
+		const store = await import('../core/store');
+		const axis = await import('../ui/axisDrag');
+		const capture = captureAt(CENTER);
+		store.setRtaData({ freq: new Float64Array([capture.lo, capture.hi]), startHz: capture.lo, stopHz: capture.hi });
+		document.body.insertAdjacentHTML('beforeend', '<select id="select-sdr-decimate"><option value="16">16</option></select>');
+		axis.axisDragStart('x', 400, 424, { x: 10, y: 14, w: 800, h: 400 });
+		axis.axisDragMove(480, 424);
+		axis.axisDragEnd();
+		expect(axis.previewFreqWindow()).not.toBeNull();
+		controls.sdrToCenter();
+		expect(axis.previewFreqWindow()).toBeNull();
+		expect(viewport.getView()).toEqual({ lo: CENTER - 200_000, hi: CENTER + 200_000 });
+	});
+
+	it('slides the zoom selection to the receiver when To Center is pressed', async () => {
+		const { controls, viewport } = await setupZoom();
+		vi.mocked(window.matchMedia).mockReturnValue({ matches: false } as MediaQueryList);
+		vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+		vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback =>
+			window.setTimeout(() => callback(performance.now()), 16));
+		vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => window.clearTimeout(id));
+		controls.sdrToCenter();
+		expect(viewport.getView()).toEqual(SELECTION);
+		vi.advanceTimersByTime(80);
+		expect(viewport.getView()!.lo).toBeGreaterThan(SELECTION.lo);
+		expect(viewport.getView()!.lo).toBeLessThan(CENTER - 200_000);
+		vi.advanceTimersByTime(viewport.VIEW_SLIDE_MS);
+		expect(viewport.getView()).toEqual({ lo: CENTER - 200_000, hi: CENTER + 200_000 });
+	});
+
+	it.each(['before', 'after'] as const)('centers To Center after a changed capture is acknowledged %s its frame', async order => {
+		const { controls, state, viewport } = await setupZoom();
+		const listen = CENTER + 400_000;
+		controls.syncSdrPanel(report(CENTER, listen, 2));
+		viewport.setView(SELECTION, 1);
+		controls.sdrToCenter();
+		expect(viewport.getView()).toEqual(SELECTION);
+		if (order === 'after') viewport.setCapture(captureAt(listen));
+		controls.syncSdrPanel(report(listen, listen, 3, 'SET_SDR'));
+		if (order === 'before') {
+			expect(viewport.getView()).toEqual(SELECTION);
+			viewport.setCapture(captureAt(listen));
+		}
+		expect(viewport.getView()).toEqual({ lo: listen - 200_000, hi: listen + 200_000 });
+		expect(state.sdrListenHz.get()).toBe(listen);
+	});
+
+	it.each(['before', 'after'].flatMap(order => [false, true].map(identity => ({ order, identity }))))(
+		'centers on the first To Center click when the $order-frame ACK retains old actual bounds (identity=$identity)', async ({ order, identity }) => {
+		const { controls, state, send, viewport } = await setupZoom();
+		const listen = CENTER + 400_000;
+		controls.syncSdrPanel(report(CENTER, listen, 2));
+		viewport.setView(SELECTION, 1);
+		vi.mocked(send).mockClear();
+		controls.sdrToCenter();
+		const snapshot = report(listen, listen, 3, 'SET_SDR');
+		const old = captureAt(CENTER);
+		const stale = { ...snapshot, sdr: { ...snapshot.sdr,
+			actual: { start: old.lo, stop: old.hi, ...(identity ? { center: CENTER, decimate: 16 } : {}) } } };
+		if (order === 'after') viewport.setCapture(captureAt(listen));
+		controls.syncSdrPanel(stale);
+		if (order === 'before') {
+			expect(viewport.getView()).toEqual(SELECTION);
+			viewport.setCapture(captureAt(listen));
+		}
+		controls.syncSdrPanel({ ...stale, response_to: 'SET_SDR_CHANNEL' });
+		controls.syncSdrPanel({ ...stale, response_to: 'STATUS' });
+		viewport.setCapture(captureAt(listen));
+		expect(viewport.getView()).toEqual({ lo: listen - 200_000, hi: listen + 200_000 });
+		expect(state.sdrListenHz.get()).toBe(listen);
+		expect(send).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([9_810_000, 14_200_000, 125_000_000])('keeps the selected window when entering a listen frequency near %s Hz', async center => {
+		const { controls, state, send, viewport } = await setupZoom();
+		controls.syncSdrPanel(report(center, center, 2));
+		viewport.setCapture(captureAt(center));
+		const selection = { lo: center - 300_000, hi: center + 300_000 };
+		viewport.setView(selection, 1);
+		document.body.insertAdjacentHTML('beforeend', `<input id="input-sdr-listen" value="${(center - 200_000) / 1e6}">`);
+		controls.bindActions();
+		vi.mocked(send).mockClear();
+		document.getElementById('input-sdr-listen')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel(report(center, center - 200_000, 3, 'SET_SDR_CHANNEL', request.request_id));
+		expect(state.sdrListenHz.get()).toBe(center - 200_000);
+		expect(state.sdrCenterHz.get()).toBe(center);
+		expect(viewport.getView()).toEqual(selection);
+		controls.syncSdrPanel(report(center, center - 200_000, 3));
+		expect(viewport.getView()).toEqual(selection);
+	});
+
+	it.each(['before', 'after', 'status-first'] as const)('returns a zoomed axis pan to its original window with %s ACK delivery', async order => {
+		const { controls, state, send, viewport } = await setupZoom();
+		const store = await import('../core/store');
+		const axis = await import('../ui/axisDrag');
+		const center = 9_810_000;
+		const selection = { lo: center - 250_000, hi: center + 150_000 };
+		const rect = { x: 10, y: 14, w: 800, h: 400 };
+		const draw = (c: number) => {
+			const capture = captureAt(c);
+			viewport.setCapture(capture);
+			store.setRtaData({ freq: new Float64Array([capture.lo, capture.hi]), startHz: capture.lo, stopHz: capture.hi });
+		};
+		controls.syncSdrPanel(report(center, center, 2));
+		draw(center);
+		viewport.setView(selection, 1);
+		document.body.insertAdjacentHTML('beforeend', '<select id="select-sdr-decimate"><option value="16">16</option></select>');
+		vi.mocked(send).mockClear();
+		for (const [index, delta] of [-80, 80].entries()) {
+			const nextCenter = index === 0 ? center + 40_000 : center;
+			axis.axisDragStart('x', 400, 424, rect);
+			axis.axisDragMove(400 + delta, 424);
+			const preview = axis.previewFreqWindow();
+			axis.axisDragEnd();
+			const request = vi.mocked(send).mock.calls.at(-1)![0] as { center: number; request_id: string };
+			expect(request.center).toBe(nextCenter);
+			if (order === 'after') draw(nextCenter);
+			if (order === 'status-first') controls.syncSdrPanel(report(nextCenter, center, 3 + index));
+			controls.syncSdrPanel(report(nextCenter, center, 3 + index, 'SET_SDR', request.request_id));
+			if (order !== 'after') draw(nextCenter);
+			expect(axis.previewFreqWindow()).toBeNull();
+			expect(viewport.getView()).toEqual(preview);
+			expect(state.sdrListenHz.get()).toBe(center);
+		}
+		expect(viewport.getView()).toEqual(selection);
+	});
+
+	it.each([-1, 1])('slides only enough to reveal a partly hidden passband on side %s', async direction => {
+		const { controls, send, viewport } = await setupZoom();
+		viewport.setView({ lo: CENTER - 200_000, hi: CENTER + 200_000 }, 1);
+		const listen = CENTER + direction * 199_000;
+		document.body.insertAdjacentHTML('beforeend', `<input id="input-sdr-listen" value="${listen / 1e6}">`);
+		controls.applySdrTune();
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel(report(CENTER, listen, 2, 'SET_SDR_CHANNEL', request.request_id));
+		expect(viewport.getView()).toEqual({ lo: CENTER - 200_000 + direction * 5_000,
+			hi: CENTER + 200_000 + direction * 5_000 });
+	});
+
+	it('keeps a fast zoomed pan reversal through both delayed capture confirmations', async () => {
+		const { controls, state, send, viewport } = await setupZoom();
+		const store = await import('../core/store');
+		const axis = await import('../ui/axisDrag');
+		const draw = (center: number) => {
+			const capture = captureAt(center);
+			viewport.setCapture(capture);
+			store.setRtaData({ freq: new Float64Array([capture.lo, capture.hi]), startHz: capture.lo, stopHz: capture.hi });
+		};
+		draw(CENTER);
+		document.body.insertAdjacentHTML('beforeend', '<select id="select-sdr-decimate"><option value="16">16</option></select>');
+		for (const delta of [-80, 80]) {
+			axis.axisDragStart('x', 400, 424, { x: 10, y: 14, w: 800, h: 400 });
+			axis.axisDragMove(400 + delta, 424);
+			axis.axisDragEnd();
+		}
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(axis.previewFreqWindow()).toEqual(SELECTION);
+		const first = vi.mocked(send).mock.calls[0][0] as { center: number; request_id: string };
+		controls.syncSdrPanel(report(first.center, CENTER, 2, 'SET_SDR', first.request_id));
+		draw(first.center);
+		expect(axis.previewFreqWindow()).toEqual(SELECTION);
+		const last = vi.mocked(send).mock.calls[1][0] as { center: number; request_id: string };
+		expect(last.center).toBe(CENTER);
+		controls.syncSdrPanel(report(CENTER, CENTER, 3, 'SET_SDR', last.request_id));
+		draw(CENTER);
+		expect(axis.previewFreqWindow()).toBeNull();
+		expect(viewport.getView()).toEqual(SELECTION);
+		expect(state.sdrListenHz.get()).toBe(CENTER);
+	});
+
+	it('lets a new axis drag cancel receiver focus waiting for a capture frame', async () => {
+		const { controls, viewport } = await setupZoom();
+		const store = await import('../core/store');
+		const axis = await import('../ui/axisDrag');
+		const capture = captureAt(CENTER);
+		store.setRtaData({ freq: new Float64Array([capture.lo, capture.hi]), startHz: capture.lo, stopHz: capture.hi });
+		const nextCenter = CENTER + 5e6;
+		controls.syncSdrPanel(report(nextCenter, nextCenter, 2, 'SET_SDR_CHANNEL'));
+		axis.axisDragStart('x', 400, 424, { x: 10, y: 14, w: 800, h: 400 });
+		viewport.setCapture(captureAt(nextCenter));
+		expect(viewport.getView()).toEqual({ lo: SELECTION.lo + 5e6, hi: SELECTION.hi + 5e6 });
+	});
+
+	it('lets a new tune cancel receiver focus waiting for an older capture frame', async () => {
+		const { controls, send, viewport } = await setupZoom();
+		const first = CENTER + 5e6, latest = CENTER + 10e6;
+		controls.syncSdrPanel(report(first, first, 2, 'SET_SDR_CHANNEL'));
+		controls.listenAtFreq(latest);
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		viewport.setCapture(captureAt(first));
+		expect(viewport.getView()).toEqual({ lo: SELECTION.lo + 5e6, hi: SELECTION.hi + 5e6 });
+		controls.syncSdrPanel(report(latest, latest, 3, 'SET_SDR_CHANNEL', request.request_id));
+		viewport.setCapture(captureAt(latest));
+		expect(viewport.getView()).toEqual({ lo: latest - 200_000, hi: latest + 200_000 });
+	});
+
+	it('keeps a zoomed pan in place when the backend fits its listen frequency at a capture edge', async () => {
+		const { controls, state, send, viewport } = await setupZoom();
+		const store = await import('../core/store');
+		const axis = await import('../ui/axisDrag');
+		const capture = captureAt(CENTER);
+		store.setRtaData({ freq: new Float64Array([capture.lo, capture.hi]), startHz: capture.lo, stopHz: capture.hi });
+		document.body.insertAdjacentHTML('beforeend', '<select id="select-sdr-decimate"><option value="16">16</option></select>');
+		axis.axisDragStart('x', 400, 424, { x: 10, y: 14, w: 800, h: 400 });
+		axis.axisDragMove(400 - 8_000, 424); // Pan beyond the old receiver's capture coverage.
+		const preview = axis.previewFreqWindow();
+		axis.axisDragEnd();
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { center: number; request_id: string };
+		const listen = request.center - SPAN / 2 + 6_000;
+		controls.syncSdrPanel(report(request.center, listen, 2, 'SET_SDR', request.request_id));
+		viewport.setCapture(captureAt(request.center));
+		expect(viewport.getView()).toEqual(preview);
+		expect(state.sdrListenHz.get()).toBe(listen);
+	});
+
+	it.each(['center', 'listen'])('focuses 125 MHz with the %s input rule after moving the overview', async field => {
 		const { controls, send, viewport } = await setupZoom();
 		const center = 125e6;
 		controls.syncSdrPanel(report(center, center, 2));
@@ -114,7 +348,9 @@ describe('SDR zoom follows confirmed tuning', () => {
 		const input = document.getElementById(`input-sdr-${field}`) as HTMLInputElement;
 		input.focus();
 		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-		expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+		expect(viewport.getView()).toEqual(field === 'center'
+			? { lo: center - 200_000, hi: center + 200_000 }
+			: { lo: center - 394_000, hi: center + 6_000 });
 		expect(renderRequestCount()).toBeGreaterThan(renders);
 		if (field === 'listen') expect(send).not.toHaveBeenCalled();
 		// A delayed echo must not repeat the focus after a subsequent overview drag.
@@ -125,7 +361,9 @@ describe('SDR zoom follows confirmed tuning', () => {
 		// Further Enter presses remain explicit focus actions, including before an ACK.
 		for (let i = 0; i < 2; i++) {
 			input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-			expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+			expect(viewport.getView()).toEqual(field === 'center'
+				? { lo: center - 200_000, hi: center + 200_000 }
+				: { lo: center - 6_000, hi: center + 394_000 });
 			viewport.setView(moved, 1);
 		}
 	});
@@ -153,7 +391,7 @@ describe('SDR zoom follows confirmed tuning', () => {
 		controls.applySdrTune();
 		expect(viewport.getView()).toEqual(SELECTION);
 		viewport.setCapture(captureAt(center));
-		expect(viewport.getView()).toEqual({ lo: center - 200_000, hi: center + 200_000 });
+		expect(viewport.getView()).toEqual({ lo: center - 394_000, hi: center + 6_000 });
 	});
 
 	it.each(['center', 'listen'])('ignores an empty or invalid %s submission', async field => {
@@ -181,10 +419,28 @@ describe('SDR zoom follows confirmed tuning', () => {
 		controls.syncSdrPanel(report(CENTER, listen, 2, 'SET_SDR_CHANNEL', first.request_id));
 		const last = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
 		controls.syncSdrPanel(report(CENTER, CENTER, 3, 'SET_SDR_CHANNEL', last.request_id));
-		expect(viewport.getView()).toEqual({ lo: CENTER - 200_000, hi: CENTER + 200_000 });
+		expect(viewport.getView()).toEqual({ lo: CENTER - 394_000, hi: CENTER + 6_000 });
 	});
 
-	it.each(['SET_SDR_CHANNEL', 'STATUS'])('follows a listen change confirmed by %s without resizing', async responseTo => {
+	it('does not scroll to a superseded listen target during a fast input reversal', async () => {
+		const { controls, send, viewport } = await setupZoom();
+		const selection = { lo: CENTER - 200_000, hi: CENTER + 200_000 };
+		viewport.setView(selection, 1);
+		document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen">');
+		const input = document.getElementById('input-sdr-listen') as HTMLInputElement;
+		input.value = String((CENTER + 400_000) / 1e6);
+		controls.applySdrTune();
+		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		input.value = String(CENTER / 1e6);
+		controls.applySdrTune();
+		controls.syncSdrPanel(report(CENTER, CENTER + 400_000, 2, 'SET_SDR_CHANNEL', first.request_id));
+		expect(viewport.getView()).toEqual(selection);
+		const last = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel(report(CENTER, CENTER, 3, 'SET_SDR_CHANNEL', last.request_id));
+		expect(viewport.getView()).toEqual(selection);
+	});
+
+	it.each(['SET_SDR_CHANNEL', 'STATUS'])('reveals an off-screen passband confirmed by %s with the smallest pan', async responseTo => {
 		const { controls, send, viewport } = await setupZoom();
 		const listen = CENTER + 400_000;
 		controls.listenAtFreq(listen);
@@ -194,7 +450,7 @@ describe('SDR zoom follows confirmed tuning', () => {
 		// Unconfirmed input must not strand the view at a rejected frequency.
 		expect(viewport.getView()).toEqual(SELECTION);
 		controls.syncSdrPanel(report(CENTER, listen, 2, responseTo, request.request_id));
-		expect(viewport.getView()).toEqual({ lo: listen - 200_000, hi: listen + 200_000 });
+		expect(viewport.getView()).toEqual({ lo: listen - 394_000, hi: listen + 6_000 });
 		expect(renderRequestCount()).toBeGreaterThan(renders);
 		expect(send).toHaveBeenCalledTimes(1);
 	});

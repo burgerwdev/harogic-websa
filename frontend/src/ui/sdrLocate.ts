@@ -19,6 +19,7 @@ import {
 	sdrListenHz, sdrLocateMode, sdrPitchHz,
 } from './sdrState';
 import { getCapture, getView, isZoomed } from './spectrumViewport';
+import { previewFreqWindow } from './axisDrag';
 import { postRefNotice } from './refAutoScale';
 
 const AM_SNAP_CAP_HZ = 10_000;
@@ -31,7 +32,7 @@ function signalMaxBinHz(mode: string): number {
 }
 
 function locateView(): { lo: number; hi: number } | null {
-	const view = isZoomed() ? getView() : getCapture();
+	const view = previewFreqWindow() ?? (isZoomed() ? getView() : getCapture());
 	return view && view.hi > view.lo ? view : null;
 }
 

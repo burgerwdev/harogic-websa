@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { t } from '../core/i18n';
 import { requestRender } from '../render/redraw';
 import { renderSdrState, sdrListenHz } from './sdrState';
+import { cancelReceiverFocus } from './spectrumViewport';
 
 let serial = 0;
 let inFlight: { id: string; hz: number; timer: number; followViewport: boolean } | null = null;
@@ -25,6 +26,7 @@ export function cancelSdrTuneRequest(): void {
 }
 
 function submit(hz: number, followViewport: boolean): void {
+  cancelReceiverFocus();
   const id = `sdr-tune-${++serial}`;
   sdrListenHz.set(hz);
   sdrListenHz.touch(hz);
@@ -46,6 +48,7 @@ export function requestSdrTune(hz: number, options: { followViewport?: boolean }
   clearTimeoutError();
   const followViewport = options.followViewport !== false;
   if (inFlight) {
+    cancelReceiverFocus();
     queued = { hz, followViewport };
     sdrListenHz.set(hz);
     sdrListenHz.touch(hz);
@@ -55,8 +58,11 @@ export function requestSdrTune(hz: number, options: { followViewport?: boolean }
 }
 
 /** Read before confirming a report: plot tuning keeps its frequency axis under the pointer. */
-export function sdrTuneFollowsViewport(hz: number): boolean {
-  return !inFlight || inFlight.followViewport || Math.abs(inFlight.hz - hz) >= 0.5;
+export function sdrTuneFollowsViewport(hz: number, requestId?: unknown): boolean {
+  // Older confirmations must not scroll toward a target already superseded by input.
+  if (queued) return Math.abs(queued.hz - hz) < 0.5 && queued.followViewport;
+  return !inFlight || inFlight.followViewport
+    || (requestId !== inFlight.id && Math.abs(inFlight.hz - hz) >= 0.5);
 }
 
 /** Drop unsent repeat input on blur, while allowing the current request to settle. */

@@ -50,7 +50,7 @@ import { centerHz, spanHz } from './freqState';
 import { clampDisplayRef, clearDisplayBounds, getDisplayRange, getDisplayTop, hardwareRefForDisplay, hasDisplayBounds, pendingDisplayRef, setDisplayRefShiftHandler } from './displayRef';
 import { displayOffset, displayUnit } from './displayState';
 import { estimatedCaptureSpanHz } from './sdrState';
-import { getView, isZoomed } from './spectrumViewport';
+import { cancelReceiverFocus, getView, isZoomed } from './spectrumViewport';
 import { cancelSdrTuneRequest } from './sdrTuneRequest';
 import { beginFrequencyCommit } from './panels/frequency';
 import { beginRtaAxisTransition } from './panels/rta';
@@ -231,6 +231,12 @@ function refresh(): void {
 export function previewCaptureWindow(): FreqWindow | null {
 	refresh();
 	return session?.axis === 'x' ? session.targetFreq : null;
+}
+
+/** Read before consuming an ACK: an axis pan owns its view even when its frame arrived first. */
+export function sdrAxisOwnsViewport(requestId: unknown): boolean {
+	return currentGraphMode() === 'sdr' && (session?.axis === 'x' || sdrInFlight !== null
+		|| (typeof requestId === 'string' && requestId.startsWith('sdr-axis-')));
 }
 
 /** The frequency window to draw and label right now (null when nothing is being previewed). */
@@ -431,6 +437,7 @@ function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: bool
 	}
 	const freq = committedFreqWindow();
 	if (axis === 'x' && !freq) return false;
+	if (axis === 'x') cancelReceiverFocus();
 	const level = committedLevelWindow();
 	const chained = chainBase(axis);
 	const base: GestureBase = chained

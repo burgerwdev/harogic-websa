@@ -22,6 +22,7 @@ import { syncSpectrumZoomUi } from './spectrumZoomUi';
 import { requestRender } from '../render/redraw';
 import { filterPreviewHz, filterRange, filterSpec, setFilterPreview } from './sdrFilter';
 import { formatFreqHz } from '../core/fmt';
+import { previewFreqWindow } from './axisDrag';
 
 /** Which band edge a gesture is on. Symmetric modes mirror both onto the same drag. */
 export type FilterEdge = 'low' | 'high';
@@ -76,7 +77,7 @@ export function filterGeometry(ifBwOverride?: number, modeOverride?: string): Fi
   const ifBw = ifBwOverride ?? filterPreviewHz();
   const [bandLo, bandHi] = demodBandHz(mode, ifBw, sdrPitchHz.get());
   if (!(bandHi > bandLo)) return null;
-  const view = isZoomed() ? getView() : getCapture();
+  const view = previewFreqWindow() ?? (isZoomed() ? getView() : getCapture());
   if (!view || !(view.hi > view.lo)) return null;
   const p = plotRect();
   const xAt = (f: number) => p.x + (f - view.lo) / (view.hi - view.lo) * p.w;
@@ -183,7 +184,7 @@ export function startFilterDrag(edge: FilterEdge, pointerId: number, startX: num
   cancelFilterDrag();
   const g = filterGeometry();
   if (!g || !g.candidates.includes(edge)) return false;
-  const view = isZoomed() ? getView() : getCapture();
+  const view = previewFreqWindow() ?? (isZoomed() ? getView() : getCapture());
   if (!view || !(g.plot.w > 0)) return false;
   drag = {
     pointerId,

@@ -371,7 +371,7 @@ describe('canvas pointer ownership', () => {
 		const last = vi.mocked(send).mock.calls.at(-1)![0] as { freq: number; request_id: string };
 		expect(last.freq).toBe(10_100_000);
 		report(last.freq, last.request_id, 3);
-		expect(viewport.getView()).toEqual({ lo: 10_020_000, hi: 10_180_000 });
+		expect(viewport.getView()).toEqual({ lo: 9_960_000, hi: 10_120_000 });
 	});
 
 	it('keeps a zoomed frequency axis after dragging the listening badge', async () => {
@@ -677,7 +677,7 @@ describe('canvas pointer ownership', () => {
 		expect(viewport.getView()).toEqual({ lo: 9_700_000, hi: 9_900_000 });
 	});
 
-	it.each(['before', 'after'] as const)('picks the magnifier up when a band-change ACK arrives %s the frame', async order => {
+	it.each(['before', 'after'] as const)('preserves the magnifier position when a band-change ACK arrives %s the frame', async order => {
 		const { controls, state, viewport, send } = await load(true);
 		document.body.insertAdjacentHTML('beforeend',
 			'<select id="select-sdr-decimate"><option value="128" selected>390.625k</option></select>');
@@ -688,10 +688,8 @@ describe('canvas pointer ownership', () => {
 		pointer('pointerup', 250, 465);
 		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR' }));
 		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
-		// The flag left the frame: the backend replanted listen at the new band's edge
-		// (nearest valid point — 10.0 MHz here, vs the 9.95 MHz fixture listen). The
-		// box is dropped centred on the new flag; the flag sits on the capture's lo
-		// edge, so clamping keeps it at the view's left edge.
+		// The backend fits listen at the new band's edge. The box keeps its relative
+		// capture position so the reply does not override the user's axis gesture.
 		if (order === 'after') viewport.setCapture({ lo: 10_000_000, hi: 10_400_000 });
 		const status = {
 			cmd: 'STATUS', mode: 'sdr', connected: true, config_version: 5,
@@ -709,7 +707,7 @@ describe('canvas pointer ownership', () => {
 			viewport.setCapture({ lo: 10_000_000, hi: 10_400_000 });
 		}
 		expect(viewport.isZoomed()).toBe(true);
-		expect(viewport.getView()).toEqual({ lo: 10_000_000, hi: 10_020_000 });
+		expect(viewport.getView()).toEqual({ lo: 10_140_000, hi: 10_160_000 });
 		// An ordinary tune between pans must become the baseline for the next ACK.
 		state.sdrListenHz.confirm(10_100_000);
 		// The next pan preserves that listen frequency, so only the capture shifts the box.
@@ -721,7 +719,7 @@ describe('canvas pointer ownership', () => {
 				channels: [{ channel: 1, enabled: true, freq: 10_100_000, mode: 'am', if_bw: 40_000 }] } };
 		controls.syncSdrPanel(sameListen);
 		// The box shifted with the −200 kHz frame pan and stayed fully inside.
-		expect(viewport.getView()).toEqual({ lo: 9_800_000, hi: 9_820_000 });
+		expect(viewport.getView()).toEqual({ lo: 9_940_000, hi: 9_960_000 });
 	});
 
 	it.each(['demod', 'sdr', 'rta', 'preset', 'band'])('discards tuning drafts before %s takeover focus and change events', async action => {
