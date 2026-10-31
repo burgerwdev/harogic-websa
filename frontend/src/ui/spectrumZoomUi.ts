@@ -28,12 +28,14 @@ import { syncControlRailZoom } from './controlRail';
 import { cancelLevelPreview, previewCaptureWindow, previewFreqWindow } from './axisDrag';
 import {
 	DETAIL_HINT_SAMPLES,
+	cancelReceiverFocus,
 	isZoomed,
 	getCapture,
 	getView,
 	minSpanHz,
 	samplesInView,
 	setView,
+	slideViewTo,
 	clampView,
 	panToCenter,
 	viewportVersion,
@@ -297,6 +299,7 @@ function initOverviewInteractions(): void {
 		const capture = getCapture();
 		const view = getView();
 		if (!isSpectrumZoomOn() || !capture || !view) return;
+		cancelReceiverFocus();
 		const min = minSpanHz(S.freqArray);
 		const edge = overviewEdgeHit(canvas, e.clientX, view, capture);
 		if (edge) {
@@ -306,7 +309,7 @@ function initOverviewInteractions(): void {
 			if (f === null) return;
 			if (f < view.lo || f > view.hi) {
 				// A click outside the highlight recentres on that frequency, width kept.
-				setView(panToCenter(view, f, capture, min), min);
+				slideViewTo(panToCenter(view, f, capture, min), min);
 				syncSpectrumZoomUi();
 				requestRender();
 				return;

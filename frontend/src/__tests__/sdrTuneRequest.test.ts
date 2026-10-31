@@ -7,7 +7,7 @@ import { send } from '../core/wsSend';
 import { sdrListenHz } from '../ui/sdrState';
 import {
 	cancelSdrTuneRequest, confirmSdrTuneReport, rejectSdrTuneRequest,
-	requestSdrTune, resetSdrTuneSession, stopSdrTuneRepeat,
+	requestSdrTune, resetSdrTuneSession, sdrTuneFollowsViewport, stopSdrTuneRepeat,
 } from '../ui/sdrTuneRequest';
 
 type Sent = { freq: number; request_id: string };
@@ -32,6 +32,20 @@ afterEach(() => {
 });
 
 describe('SDR listen-frequency tuning requests', () => {
+	it('preserves plot coordinates when the device quantizes a tune confirmation', () => {
+		requestSdrTune(7.100e6, { followViewport: false });
+		expect(sdrTuneFollowsViewport(7.100e6 + 1, sent()[0].request_id)).toBe(false);
+		expect(sdrTuneFollowsViewport(7.100e6)).toBe(false);
+	});
+
+	it('follows only the latest target when tuning inputs are queued', () => {
+		requestSdrTune(7.100e6);
+		requestSdrTune(7.200e6);
+		expect(sdrTuneFollowsViewport(7.100e6, sent()[0].request_id)).toBe(false);
+		own(sent()[0]);
+		expect(sdrTuneFollowsViewport(7.200e6, sent()[1].request_id)).toBe(true);
+	});
+
 	it('sends once for repeats while a request is pending, then exactly the last target', () => {
 		requestSdrTune(7.100e6);
 		requestSdrTune(7.105e6);

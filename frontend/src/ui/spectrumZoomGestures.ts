@@ -18,6 +18,7 @@
  * Overview box: see ui/spectrumZoomUi.ts (DOM/pointer), which uses freqAtFraction below.
  */
 import { MARGIN, W } from '../core/store';
+import { previewFreqWindow } from './axisDrag';
 import {
 	MARQUEE_MIN_PX,
 	type FreqWindow,
@@ -50,7 +51,7 @@ export function cancelMarqueePreview(): boolean {
  * so pixels and data can never disagree.
  */
 export function spectrumFreqAtX(x: number): number | null {
-	const view = getView();
+	const view = previewFreqWindow() ?? getView();
 	if (!view) return null;
 	// The plot rectangle from the store primitives directly (the same arithmetic as
 	// render/plot.plotRect) — importing plot.ts here would drag the renderer graph into

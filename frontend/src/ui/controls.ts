@@ -4,7 +4,7 @@ import { send } from '../core/wsSend';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
+import { demodBandHz, sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
 import { sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxClockRecovery, sdrRadiofaxIoc,
   sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPhasePixels, sdrRadiofaxPolarity } from './sdrState';
 import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTuningUi';
@@ -37,7 +37,7 @@ import { measPnmApply, repaintPnm } from '../meas/phaseNoise';
 import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { resetTrigger, syncTriggerMode } from './triggerState';
-import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, confirmSdrAxisWindow, rejectAxisRef, resetAxisPreview, type Axis } from './axisDrag';
+import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, confirmSdrAxisWindow, rejectAxisRef, resetAxisPreview, sdrAxisOwnsViewport, type Axis } from './axisDrag';
 import { isSpectrumZoomOn, syncSpectrumZoomUi } from './spectrumZoomUi';
 import {
 	cancelMarqueePreview,
@@ -48,7 +48,7 @@ import {
 	spectrumWheelZoom,
 	updateMarqueePreview,
 } from './spectrumZoomGestures';
-import { getCapture, isValidWindow, isZoomed, minSpanHz, recenterOnCapture, SAME_WINDOW_HZ, zoomEnabled, type FreqWindow } from './spectrumViewport';
+import { cancelReceiverFocus, getCapture, isValidWindow, isZoomed, minSpanHz, recenterOnCapture, revealOnCapture, sameWindow, SAME_WINDOW_HZ, zoomEnabled, type FreqWindow } from './spectrumViewport';
 import { resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
@@ -657,15 +657,19 @@ function replaySdrEntry(): void {
 // when a manual overview drag cancels the automatic focus awaiting that frame.
 let acknowledgedSdrCapture: FreqWindow | null = null;
 
-/** Re-entering an already confirmed frequency is also an explicit display focus. */
-function refocusConfirmedSdrFrequency(hz: number, confirmed: number | null): void {
+/** A repeated submission obeys the same focus rule as an acknowledged change. */
+function refocusConfirmedSdrFrequency(hz: number, confirmed: number | null, listen = false): void {
   if (currentGraphMode() !== 'sdr' || !S.deviceConnected || !acknowledgedSdrCapture
       || !getCapture() || !isZoomed() || confirmed === null || !Number.isFinite(confirmed)
       || !Number.isFinite(hz) || hz <= 0 || Math.abs(hz - confirmed) >= SAME_WINDOW_HZ
       || Math.abs(sdrCenterHz.get() - (sdrCenterHz.confirmedValue() ?? 0)) >= SAME_WINDOW_HZ
       || sdrDecimate.get() !== sdrDecimate.confirmedValue()
       || Math.abs(sdrListenHz.get() - (sdrListenHz.confirmedValue() ?? 0)) >= SAME_WINDOW_HZ) return;
-  recenterOnCapture(confirmed, acknowledgedSdrCapture, minSpanHz(S.freqArray));
+  if (listen) {
+    const [lo, hi] = demodBandHz(sdrDemod.get(), sdrIfbw.get());
+    revealOnCapture(confirmed, { lo: confirmed + lo, hi: confirmed + hi },
+      acknowledgedSdrCapture, minSpanHz(S.freqArray));
+  } else recenterOnCapture(confirmed, acknowledgedSdrCapture, minSpanHz(S.freqArray));
   syncSpectrumZoomUi();
   requestRender();
 }
@@ -725,7 +729,7 @@ export function applySdrBw() {
 export function applySdrTune() {
   const listenMhz = sdrNumber('input-sdr-listen', NaN);
   const f = listenMhz * 1e6;
-  refocusConfirmedSdrFrequency(f, sdrListenHz.confirmedValue());
+  refocusConfirmedSdrFrequency(f, sdrListenHz.confirmedValue(), true);
   requestSdrTune(f);
 }
 
@@ -743,14 +747,16 @@ export function applySdrStep() {
 
 /**
  * To Center: make the listen frequency the wideband centre. The demodulator is already on
- * the signal, so only the capture window moves around it. SET_SDR retunes the demod to the
- * new centre, so the follow-up SET_SDR_TUNE puts the listen frequency back where it was.
+ * the signal, so only the capture window moves around it. Explicitly focus the local
+ * view too, including when the device frequencies are already equal.
  */
 export function sdrToCenter() {
   const listen = sdrListenHz.get();
   if (!(listen > 0)) return;
   cancelSdrTuneRequest();
+  resetAxisPreview();
   sdrCenterHz.set(listen);
+  refocusConfirmedSdrFrequency(listen, sdrCenterHz.confirmedValue());
   renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR', center: listen, decimate: Math.round(sdrDecimate.get()) });
@@ -1118,7 +1124,8 @@ export function syncSdrPanel(s: any) {
     || (previousDecimate !== null && Number(sdr.decimate) > 0 && Number(sdr.decimate) !== previousDecimate);
   const listenBeforeAck = sdrListenHz.confirmedValue();
   const reportedListen = Number(primary ? primary.freq : sdr.listen);
-  const followListen = sdrTuneFollowsViewport(reportedListen);
+  const followListen = sdrTuneFollowsViewport(reportedListen, s.request_id);
+  const axisOwnsViewport = sdrAxisOwnsViewport(s.request_id);
   if (!confirmSdrTuneReport(reportedListen, s.response_to, s.request_id,
     s.config_version, { acceptSnapshot, contextChanged })) {
     // A stale snapshot still completes its exact request; only the confirmed state
@@ -1150,7 +1157,7 @@ export function syncSdrPanel(s: any) {
   const displaySpan = a.start != null && a.stop != null
     ? Math.max(Number(a.stop) - Number(a.start), requestedSpan) : requestedSpan;
   confirmSdrAxisWindow(Number(sdr.center), displaySpan, Number(s.config_version), s.response_to, s.request_id);
-  // Follow accepted tuning from channel ACKs and periodic STATUS as well as SET_SDR.
+  // Reveal accepted tuning from channel ACKs and periodic STATUS as well as SET_SDR.
   // Desired (possibly queued or rejected) frequencies must not move the zoom window.
   // Defer a capture relocation until its frame arrives so old data keeps its own axis.
   const listen = sdrListenHz.confirmedValue() ?? 0;
@@ -1160,16 +1167,36 @@ export function syncSdrPanel(s: any) {
   const centerMoved = Number.isFinite(center) && center > 0 && previousCenter !== null
     && Math.abs(center - previousCenter) > SAME_WINDOW_HZ;
   const capture = getCapture();
-  const expected = Number.isFinite(a.start) && Number.isFinite(a.stop) && a.stop > a.start
-    ? { lo: a.start, hi: a.stop }
-    : centerMoved || !capture ? { lo: Math.max(S.FREQ_MIN, center - requestedSpan / 2),
-      hi: Math.min(S.FREQ_MAX, center + requestedSpan / 2) } : acknowledgedSdrCapture ?? capture;
+  const estimated = { lo: Math.max(S.FREQ_MIN, center - requestedSpan / 2),
+    hi: Math.min(S.FREQ_MAX, center + requestedSpan / 2) };
+  const measured = { lo: a.start, hi: a.stop };
+  // SDR actual geometry is published by spectrum presentation, independently of
+  // command acknowledgement. A new center can therefore arrive with the OLD bounds.
+  // Bind focus to the acknowledged configuration instead of starting it on old data
+  // and then losing it when the first new capture translates the animated view.
+  const measuredCenter = Number.isFinite(a.center) ? a.center : a.iq_center;
+  const currentGeometry = isValidWindow(measured)
+    && (!Number.isFinite(a.decimate) || a.decimate === sdrDecimate.confirmedValue())
+    && (Number.isFinite(measuredCenter)
+      ? Math.abs(measuredCenter - center) <= SAME_WINDOW_HZ
+      : sameWindow(measured, estimated)
+        || Math.abs((measured.lo + measured.hi) / 2 - center) <= SAME_WINDOW_HZ);
+  const expected = currentGeometry ? measured
+    : centerMoved || !capture ? estimated : acknowledgedSdrCapture ?? capture;
   acknowledgedSdrCapture = isValidWindow(expected) ? expected : null;
-  if (((listenMoved && followListen) || centerMoved) && capture && isZoomed() && acknowledgedSdrCapture) {
-    recenterOnCapture(Number.isFinite(listen) && listen > 0 ? listen : center,
-      acknowledgedSdrCapture, minSpanHz(S.freqArray));
-  }
   const actualFilter = Number(receiver.if_bw) || 6000;
+  if (!axisOwnsViewport && followListen && (listenMoved || centerMoved)
+      && capture && isZoomed() && acknowledgedSdrCapture) {
+    if (centerMoved) {
+      resetAxisPreview();
+      recenterOnCapture(Number.isFinite(listen) && listen > 0 ? listen : center,
+        acknowledgedSdrCapture, minSpanHz(S.freqArray));
+    } else {
+      const [lo, hi] = demodBandHz(actualMode, actualFilter, Number(receiver.pitch) || sdrPitchHz.get());
+      revealOnCapture(listen, { lo: listen + lo, hi: listen + hi },
+        acknowledgedSdrCapture, minSpanHz(S.freqArray));
+    }
+  }
   if (Number.isFinite(version)) receiverConfigVersion = version;
   if (actualMode !== sdrDemod.confirmedValue()) {
     clearPassbandView();
@@ -1912,6 +1939,7 @@ export function bindCanvas() {
     const sdr = mode === 'sdr';
     const zoom = isSpectrumZoomOn();
     const accept = (owner: CanvasGesture['owner']): CanvasGesture => {
+      cancelReceiverFocus();
       const gesture: CanvasGesture = {
         owner, sdr, mode, demod: sdrDemod.get(), zoom, zoomEpoch: zoomEnabled.epoch,
         x0: x, clientX0: e.clientX, clientY0: e.clientY,

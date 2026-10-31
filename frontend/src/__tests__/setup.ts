@@ -8,6 +8,12 @@ import { beforeEach, vi } from 'vitest';
 // drawing tests supply their own contexts. Reinstall after suites restore their spies.
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+  // Most tests assert settled UI state. Motion tests explicitly enable animation.
+  vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
+    matches: media === '(prefers-reduced-motion: reduce)', media,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+  })));
 });
 
 /** Path calls in order. Call `resetCtxCalls()` before a render pass. */

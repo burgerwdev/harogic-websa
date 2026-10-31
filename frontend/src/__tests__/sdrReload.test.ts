@@ -66,6 +66,22 @@ function receive(payload: Record<string, unknown>) {
 	socket.onmessage!({ data: JSON.stringify(payload) } as MessageEvent);
 }
 
+function spectrumFrame(center: number, version: number): void {
+	const points = 64, span = 3.125e6;
+	const data = new ArrayBuffer(24 + points * 12 + 2 + 8);
+	const header = new DataView(data);
+	new Uint8Array(data, 0, 4).set([82, 84, 65, 70]);
+	header.setUint32(4, version, true);
+	header.setUint32(8, points, true);
+	header.setUint16(12, 1, true);
+	header.setFloat64(16, center - span / 2, true);
+	const freq = new Float64Array(data, 24, points);
+	for (let i = 0; i < points; i++) freq[i] = center - span / 2 + i * span / (points - 1);
+	new Float32Array(data, 24 + points * 8, points).fill(-90);
+	header.setFloat64(data.byteLength - 8, center + span / 2, true);
+	socket.onmessage!({ data } as MessageEvent);
+}
+
 function receiverStatus(freq: number, mode: string, version: number, response: Record<string, unknown> = {}) {
 	const snapshot = status('sdr');
 	return { ...snapshot, config_version: version, ...response,
@@ -73,6 +89,62 @@ function receiverStatus(freq: number, mode: string, version: number, response: R
 			...(response.sdr as Record<string, unknown> | undefined) } };
 }
 describe('SDR entry and reload', () => {
+	it.each(['before', 'after'] as const)('finishes the first To Center slide with stale actual metadata and an ACK %s the spectrum frame', async order => {
+		const { controls } = await load();
+		const viewport = await import('../ui/spectrumViewport');
+		const state = await import('../ui/sdrState');
+		const plot = await import('../render/plot');
+		const center = 1e9, listen = center + 400_000;
+		receive(receiverStatus(listen, 'am', 1));
+		spectrumFrame(center, 1);
+		viewport.zoomEnabled.set(true);
+		const selection = { lo: center - 1_200_000, hi: center - 800_000 };
+		viewport.setView(selection, 1);
+		vi.mocked(window.matchMedia).mockReturnValue({ matches: false } as MediaQueryList);
+		const visible = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+		vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+			window.setTimeout(() => callback(performance.now()), 16));
+		vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
+		try {
+			socket.sent.length = 0;
+			controls.sdrToCenter();
+			const captureRequest = socket.sent.find(command => command.cmd === 'SET_SDR')!;
+			const channelRequest = socket.sent.find(command => command.cmd === 'SET_SDR_CHANNEL')!;
+			const report = (responseTo: string, requestId?: unknown) => {
+				const old = status('sdr');
+				return { ...old, config_version: responseTo === 'SET_SDR' ? 2 : 3,
+					response_to: responseTo, request_id: requestId,
+					sdr: { ...old.sdr, center: listen, listen,
+						actual: { ...old.sdr.actual, center, decimate: 16 } } };
+			};
+			if (order === 'after') spectrumFrame(listen, 2);
+			receive(report('SET_SDR', captureRequest.request_id));
+			if (order === 'before') {
+				vi.advanceTimersByTime(64);
+				expect(viewport.getView()).toEqual(selection);
+				spectrumFrame(listen, 2);
+			}
+			vi.advanceTimersByTime(64);
+			const intermediate = { ...viewport.getView()! };
+			expect(intermediate.lo).toBeGreaterThan(selection.lo + 400_000);
+			expect(intermediate.lo).toBeLessThan(listen - 200_000);
+			receive(report('SET_SDR_CHANNEL', channelRequest.request_id));
+			for (let i = 0; i < 12; i++) {
+				vi.advanceTimersByTime(20);
+				spectrumFrame(listen, 2);
+				receive(report('STATUS'));
+			}
+			expect(viewport.getView()).toEqual({ lo: listen - 200_000, hi: listen + 200_000 });
+			expect(plot.getX(31.5, 64)).toBeCloseTo(plot.plotRect().x + plot.plotRect().w / 2, 6);
+			expect(state.sdrListenHz.get()).toBe(listen);
+			expect(state.sdrCenterHz.get()).toBe(listen);
+			expect(socket.sent.filter(command => command.cmd === 'SET_SDR')).toHaveLength(1);
+		} finally {
+			viewport.resetViewport();
+			visible.mockRestore();
+		}
+	});
+
 	it('hands an RTA listen frequency to both SDR capture and receiver', async () => {
 		const { controls } = await load();
 		// Static imports would retain the module graph discarded by load()'s resetModules fixture.
