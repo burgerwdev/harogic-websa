@@ -538,7 +538,10 @@ export function updateStatus(s: any) {
   if (Number.isFinite(version)) statusVersion = Math.max(statusVersion, version);
   const restoreMode = initialModeSync && s.mode !== 'server'
     ? localStorage.getItem('web-sa-mode') : null;
-  const shouldRestoreMode = initialModeSync && s.mode !== 'server';
+  // A native receiver service owns its live capture/set. Opening another browser
+  // must not stop it or replay this browser's remembered operating mode.
+  const shouldRestoreMode = initialModeSync && s.mode !== 'server'
+    && s.sdr?.receiver_api !== 'multichannel-draft-v1';
   initialModeSync = false;
   if (s.connected === false || s.mode !== deviceMode.get()) cancelSpectrumWork();
   document.body.dataset.deviceMode = String(s.mode);

@@ -15,6 +15,8 @@ SDK SWP/RTA traces → display publisher → browser spectrum/density/waterfall
 
 SWP, RTA, SDR, harmonic and phase-noise modes keep their own configuration while sharing one physical device session. Effective device values and capabilities are returned in STATUS. Command validation and candidate-plan admission complete before replacing active state; a rejected request preserves the prior plan and stream.
 
+Logical receiver UIDs map privately to legacy slots through `multichannel.rs`; the public set is dynamic with an initial three-definition limit. Independent baseband requirements use `RatePlan::baseband`, and an empty processor set bypasses receiver workers. The per-UID IQ transport shares encoded bytes with bounded per-consumer queues. One browser adapter/session owns all workbench windows; their lifecycle never enables or stops receivers. See [the P3 contract](MULTICHANNEL_DRAFT.md).
+
 ## Device session and acquisition
 
 One persistent SDK owner thread serves SWP/RTA/IQS/PNM. All SDK calls are serialized. Healthy changes among acquisition modes stop acquisition and release mode state while retaining the physical handle. `Device_Open` receives the permanent session's stable `void**` handle slot: vendor PNM workers retain that address until physical close. A stale/disconnected handle must not be passed to `Device_Close`.

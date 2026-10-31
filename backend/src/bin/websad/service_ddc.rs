@@ -14,7 +14,16 @@ pub(super) fn channel_plan(rate:f64, config:&ChannelConfig)->Result<RatePlan,Str
         "cw" => config.if_bw+config.pitch*2.0,
         _ => config.if_bw,
     };
-    RatePlan::new(rate,&config.mode,occupied).map_err(str::to_owned)
+    if let Some(baseband) = &config.baseband {
+        let minimum = if config.processing_enabled {
+            if occupied > baseband.passband_hz {
+                return Err("processor passband exceeds configured baseband".into());
+            }
+            RatePlan::new(rate, &config.mode, occupied).map_err(str::to_owned)?.output_rate
+                .max(baseband.minimum_rate_hz)
+        } else { baseband.minimum_rate_hz };
+        RatePlan::baseband(rate, baseband.passband_hz, baseband.transition_hz, minimum).map_err(str::to_owned)
+    } else { RatePlan::new(rate,&config.mode,occupied).map_err(str::to_owned) }
 }
 
 #[derive(Clone, Debug)]
@@ -29,7 +38,7 @@ impl SourcePlan {
 
 /// Decoder input floors above a coarse channel require original capture samples.
 pub(super) fn is_direct(config: &ChannelConfig) -> bool {
-    websa_channelizer::catalog::external_rates(&config.mode)
+    config.processing_enabled && websa_channelizer::catalog::external_rates(&config.mode)
         .is_some_and(|(_, minimum)| minimum as f64 > COARSE_RATE)
 }
 
@@ -258,6 +267,7 @@ impl Ddc {
         let slot = config.channel as usize-1;
         let old = &configs[slot];
         if !force && old.enabled == config.enabled && old.freq == config.freq && old.mode == config.mode
+            && old.baseband == config.baseband && old.processing_enabled == config.processing_enabled
             && old.if_bw == config.if_bw && old.pitch == config.pitch && old.sstv_mode == config.sstv_mode
             && old.radiofax_acquisition == config.radiofax_acquisition && old.radiofax_ioc == config.radiofax_ioc
             && old.radiofax_lpm == config.radiofax_lpm && old.radiofax_modulation == config.radiofax_modulation

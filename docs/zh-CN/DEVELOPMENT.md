@@ -124,6 +124,8 @@ cargo run --offline --release -j 1 --manifest-path backend/Cargo.toml --features
 
 产出 `report.json` 和实验 `.wbiq` 文件，保留 CF32 位模式与实际速率。依赖 Zstd 已在本机缓存时可使用 `--offline`。
 
+生产 SDR → **信道工作台** 打开原生接收工作台。构建前端/原生后，可运行 `./run.sh --fake --port 18139 --instance p3-dev` 启动独立合成服务，以 `./stop.sh --instance p3-dev` 仅清理该实例。`python tools/e2e/native_multichannel.py` 自行启动/清理独立服务，验证实际 IQ 协议和窗口生命周期；需要 Playwright 与 websockets。硬件 RF 实收须单独验证。
+
 ## 2. 依赖方向与归属
 
 | 区域 | 职责 |

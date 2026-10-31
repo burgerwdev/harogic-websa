@@ -25,6 +25,7 @@ struct FixtureSlot {
 
 #[derive(Clone)]
 enum FixtureSource {
+    Iq,
     Replay { iq: Arc<[f32]>, period_samples: usize },
     Cw { key: Arc<[f32]> },
     Analog,
@@ -110,6 +111,13 @@ impl FixtureSource {
         let mode = config.mode.as_str();
         out.clear();
         match self {
+            Self::Iq => {
+                let tone=config.baseband.as_ref().map_or(200.0,|b|b.passband_hz/8.0);
+                for index in first..first+count as u64 {
+                    let phase=TAU*tone*index as f64/rate;
+                    out.extend_from_slice(&[(0.25*phase.cos()) as f32,(0.25*phase.sin()) as f32]);
+                }
+            }
             Self::Replay { iq, period_samples } => {
                 for index in first..first + count as u64 {
                     let offset = (index % *period_samples as u64) as usize * 2;
@@ -175,7 +183,9 @@ impl FixtureSource {
 
 impl FixtureSlot {
     fn new(config: ChannelConfig) -> Result<Self, String> {
-        let (source, rate) = FixtureSource::for_mode(&config.mode)?;
+        let (source, rate) = if !config.processing_enabled {
+            (FixtureSource::Iq,service_ddc::channel_plan(COARSE_RATE,&config)?.output_rate)
+        } else {FixtureSource::for_mode(&config.mode)?};
         let epoch = allocate_dsp_epoch().map_err(str::to_owned)?;
         let count = (rate * 0.085) as usize;
         Ok(Self {
@@ -229,6 +239,7 @@ impl FixtureSources {
             if !config.freq.is_finite() { return Err("fixture frequency must be finite".into()); }
             if config.enabled && self.slots.get(&config.channel).is_none_or(|slot|
                 slot.config.freq != config.freq || slot.config.mode != config.mode
+                    || slot.config.baseband != config.baseband || slot.config.processing_enabled != config.processing_enabled
                     || slot.config.if_bw != config.if_bw || slot.config.pitch != config.pitch
                     || slot.config.audio_rate != config.audio_rate || slot.config.stereo != config.stereo
                     || slot.config.sstv_mode != config.sstv_mode

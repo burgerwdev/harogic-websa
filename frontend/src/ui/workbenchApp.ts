@@ -11,9 +11,21 @@ const button = (action: string, text: string, extra = ''): string => `<button ty
 const labels = () => ({ listen: l('Listen', '听音'), digital: l('Digital', '数字'), iq: l('IQ only', '仅 IQ') });
 const taskLabel = (state: string): string => ({ preparing: l('Preparing', '准备'), waiting: l('Waiting', '等待'), recording: l('Recording', '记录中'),
   finalizing: l('Finalizing', '收尾'), completed: l('Completed', '完成'), failed: l('Failed', '失败') })[state] ?? state;
-interface Pane { window: FloatingWindow; kind: 'overview' | 'detail' | 'results'; binding: ViewBinding; tab: string; renderedUid?: string }
+interface Pane { window: FloatingWindow; kind: 'overview' | 'detail' | 'results'; binding: ViewBinding; tab: string; renderedUid?: string; dirty?: boolean }
 
 export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { dispose(): void; recall(reset?: boolean): void } {
+  const fixture = session.snapshot.transport === 'fixture';
+  const available = (command: string): boolean => fixture || !!session.snapshot.capabilities.commands?.includes(command);
+  const applyCapabilities = (body: HTMLElement): void => {
+    if (fixture) return;
+    body.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
+      const action = button.dataset.action!;
+      if ((action.startsWith('rec-') && !available('record_start')) || ['listen', 'solo', 'scene', 'preset-save', 'preset-load'].includes(action)) {
+        button.disabled = true; button.title = l('Not available in this phase', '本阶段尚未开放');
+      }
+    });
+    body.querySelectorAll<HTMLElement>('.mc-monitor,footer.mc-toolbar').forEach(element => { element.hidden = true; });
+  };
   const panes = new Map<string, Pane>();
   const saveViews = (): void => { try { localStorage.setItem('websa-workbench-views-v1', JSON.stringify([...panes.values()].map(p => ({ kind: p.kind, binding: p.binding, tab: p.tab })))); } catch { /* session only */ } };
   let search = '', scene: SceneCommand | null = null;
@@ -41,6 +53,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
       <label>${l('Frequency / Hz', '频率 / Hz')}<input name="frequency" type="number" step="100" value="${c.baseband.frequency_hz}" required></label>
       <label>${l('Full IQ passband / Hz', '完整 IQ 通带 / Hz')}<input name="bandwidth" type="number" min="1" value="${c.baseband.passband_hz}" required></label>
       <label>${l('Transition / Hz', '过渡带 / Hz')}<input name="transition" type="number" min="1" value="${c.baseband.transition_hz}" required></label>
+      <label>${l('Minimum IQ rate / S/s', '最低 IQ 率 / S/s')}<input name="minimum-rate" type="number" min="1" value="${c.baseband.minimum_rate_hz}" required></label>
       <label>${l('Purpose', '用途')}<select name="purpose">${Object.entries(labels()).map(([v, label]) => `<option value="${v}" ${c.purpose === v ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <p>${l('Draft → preflight → confirmed. Cancel or change target to discard.', '草稿 → 预检 → 确认；取消或切换目标撤销草稿。')}</p>
       <button type="submit">${l('Preview changes', '预览变更')}</button> ${button('cancel', l('Cancel draft', '撤销草稿'))}</form>
@@ -48,8 +61,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
     if (pane.tab === 'processing') content = `<p>${esc(c.processors.map(p => `${p.kind} · ${p.mode.toUpperCase()} · min ${p.minimum_rate_hz} S/s`).join(' / ') || l('No demodulator or decoder', '不创建解调器或解码器'))}</p>
       <p>${l('Baseband and processor settings have separate lifetimes.', '基带与处理分支分别管理。')}</p>`;
     if (pane.tab === 'output') content = `<p>CF32 LE · ${r.clock?.actual_rate_hz} S/s</p>${button('output', l('Toggle IQ subscription', '切换 IQ 订阅'))}
-      <p>${esc(session.snapshot.outputs.filter(o => o.receiver_uid === r.receiver_uid).map(o => `${o.subscription_id} · ${o.state} ${o.fault?.message ?? ''}`).join(' / ') || l('No consumers', '无消费者'))}</p>`;
-    if (pane.tab === 'recording') content = `<p>${l('Fixture tasks only: no files are saved.', '仅模拟任务：不会保存文件。')}</p>
+      <p>${esc(session.snapshot.outputs.filter(o => o.receiver_uid === r.receiver_uid).map(o => `${o.state} · ${o.samples ?? '0'} samples · ${o.bytes ?? '0'} bytes ${o.fault?.message ?? ''}`).join(' / ') || l('No consumers', '无消费者'))}</p>`;
+    if (pane.tab === 'recording') content = !fixture ? `<p>${l('Persistent recording is not available yet.', '持久记录尚未开放。')}</p>` : `<p>${l('Fixture tasks only: no files are saved.', '仅模拟任务：不会保存文件。')}</p>
       ${button('rec-iq', l('Start / stop IQ', '开始 / 停止 IQ'))}
       ${c.purpose === 'listen' ? button('rec-audio', l('Start / stop analysis audio', '开始 / 停止分析音频')) : ''}
       ${c.purpose === 'digital' ? button('rec-results', l('Start / stop results', '开始 / 停止结果')) : ''}
@@ -74,15 +87,18 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
     const uid = session.resolve(pane.binding), r = receiver(uid), body = pane.window.body;
     const focused = body.ownerDocument.activeElement as HTMLElement | null;
     // Incoming status must not replace a focused draft or a captured range pointer.
-    if (pane.renderedUid === uid && focused && body.contains(focused) && focused.matches('input,select')) {
+    if (pane.renderedUid === uid && ((pane.dirty && pane.tab === 'receive') || (focused && body.contains(focused) && focused.matches('input,select')))) {
       const list = body.querySelector('.mc-list');
       if (list) list.innerHTML = session.snapshot.receivers.filter(r => `${r.confirmed.name} ${r.confirmed.baseband.frequency_hz} ${r.confirmed.purpose} ${r.confirmed.tags.join(' ')}`.toLowerCase().includes(search.toLowerCase())).map(rowHTML).join('');
+      applyCapabilities(body);
       return;
     }
-    pane.renderedUid = uid;
+    pane.renderedUid = uid; pane.dirty = false;
     if (pane.kind === 'overview') {
       const rows = session.snapshot.receivers.filter(r => `${r.confirmed.name} ${r.confirmed.baseband.frequency_hz} ${r.confirmed.purpose} ${r.confirmed.tags.join(' ')}`.toLowerCase().includes(search.toLowerCase()));
-      body.innerHTML = `<p class="mc-notice">${l('FIXTURE · no real reception, audio or recording', 'FIXTURE · 不进行真实接收、播放或记录')} · ${session.snapshot.receivers.length}/${session.snapshot.capabilities.max_channels} · ${l('capacity target', '容量目标')} 128</p>
+      body.innerHTML = `<p class="mc-notice">${fixture ? l('FIXTURE · no real reception, audio or recording', 'FIXTURE · 不进行真实接收、播放或记录')
+        : session.snapshot.capture.source_kind === 'fixture' ? l('Native service · synthetic RF source', '原生服务 · 合成 RF 输入') : l('Native receiver service', '原生接收服务')} · ${session.snapshot.receivers.length}/${session.snapshot.capabilities.max_channels}</p>
+        ${session.fault ? `<p class="mc-error" role="alert">${esc(session.fault.code)}: ${esc(session.fault.message)}</p>` : ''}
         <div class="mc-toolbar"><input data-search placeholder="${l('Search name / Hz / purpose / tags', '搜索名称 / Hz / 用途 / 标签')}" value="${esc(search)}">
         ${button('create', l('Add', '新增'))} ${button('preset-save', l('Save preset', '保存预设'))} ${button('preset-load', l('Load preset', '载入预设'), preset ? '' : 'disabled')}
         ${button('duplicate', l('Duplicate', '复制'))} ${button('retire', l('Retire', '删除定义'))} ${button('scene', l('Scene preview', '场景预览'))}</div>
@@ -97,14 +113,15 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
     else {
       body.innerHTML = `<label>${l('Binding', '绑定')} <select data-binding><option value="follow">${l('Follow selection', '跟随选择')}</option>
         ${session.snapshot.receivers.map(row => `<option value="${row.receiver_uid}">C${row.display_number} · ${esc(row.confirmed.name)}</option>`).join('')}</select></label>
-        <p>${esc(r ? `C${r.display_number} · ${r.confirmed.name} · ${r.state}` : '—')} · ${l('Fixture results', '模拟结果')}</p><div data-results></div>`;
+        <p>${esc(r ? `C${r.display_number} · ${r.confirmed.name} · ${r.state}` : '—')} · ${fixture ? l('Fixture results', '模拟结果') : l('Results view will be connected in P4', '结果视图将在 P4 接入')}</p><div data-results></div>`;
       body.querySelector<HTMLSelectElement>('[data-binding]')!.value = pane.binding.type === 'follow' ? 'follow' : pane.binding.receiver_uid;
       const target = body.querySelector<HTMLElement>('[data-results]')!;
-      renderDecoderEntries(target, r?.confirmed.purpose === 'digital' ? [{ id: 1, at: 1_793_404_800_000, source: r.receiver_uid,
+      renderDecoderEntries(target, fixture && r?.confirmed.purpose === 'digital' ? [{ id: 1, at: 1_793_404_800_000, source: r.receiver_uid,
         provider: 'fixture', mode: 'ft8', kind: 'table', bytes: 128,
         data: { decodes: [{ snr_db: -12, audio_hz: 1099, msg: 'FIXTURE CQ TEST AA00' }] } }] : [], uid, false);
     }
     pane.window.root.dataset.receiverUid = uid;
+    applyCapabilities(body);
   }
   function showScene(pane: Pane): void {
     if (!scene) return;
@@ -118,7 +135,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
     const id = `${kind}-${binding.type === 'follow' ? 'follow' : binding.receiver_uid}`;
     const old = panes.get(id); if (old) { old.window.show(); return; }
     const index = panes.size;
-    const title = (): string => kind === 'overview' ? l('Channel workbench · FIXTURE', '信道工作台 · FIXTURE')
+    const title = (): string => kind === 'overview' ? fixture ? l('Channel workbench · FIXTURE', '信道工作台 · FIXTURE') : l('Channel workbench', '信道工作台')
       : `${kind === 'results' ? 'Decode' : l('Channel details', '信道详情')} · ${(panes.get(id)?.binding ?? binding).type === 'follow' ? l('Follow', '跟随') : session.resolve(panes.get(id)?.binding ?? binding)}`;
     const surface = createFloatingWindow(id, title, kind === 'overview' ? { x: 52, y: 138, w: 900, h: 580 }
       : { x: 170 + index * 35, y: 180 + index * 25, w: 500, h: 470 });
@@ -138,13 +155,17 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
       else if (action === 'solo') session.monitor(uid, { solo: !session.route(uid).solo });
       else if (action.startsWith('rec-')) record(uid, action.slice(4) as TrackKind);
       else if (action === 'output') send({ type: 'output', request_id: session.requestId(), receiver_uid: uid,
-        enabled: !session.snapshot.outputs.some(o => o.receiver_uid === uid && o.state === 'active') });
+        enabled: !session.snapshot.outputs.some(o => o.receiver_uid === uid && ['active', 'starting'].includes(o.state)) });
       else if (action === 'create' || action === 'duplicate') {
-        if (r) send({ type: 'create', request_id: session.requestId(), config: { ...clone(r.confirmed), name: `${r.confirmed.name} copy` } });
+        if (r && (fixture || action === 'duplicate')) send({ type: 'create', request_id: session.requestId(), config: { ...clone(r.confirmed), name: `${r.confirmed.name} copy` } });
+        else if (!fixture) send({ type: 'create', request_id: session.requestId(), config: {
+          name: l('IQ receiver', 'IQ 信道'), color: '#4cc99b', tags: [], enabled: true, purpose: 'iq', processors: [],
+          baseband: { frequency_hz: session.snapshot.capture.center_hz, passband_hz: 3000, transition_hz: 1000, minimum_rate_hz: 6000 },
+        } });
       } else if (action === 'retire') send({ type: 'retire', request_id: session.requestId(), receiver_uid: uid });
       else if (action === 'preset-save' && r) { preset = clone(r.confirmed); session.notify(); }
       else if (action === 'preset-load' && preset) preview(pane, uid, clone(preset));
-      else if (action === 'cancel') { pane.renderedUid = undefined; renderPane(pane); }
+      else if (action === 'cancel') { pane.renderedUid = undefined; pane.dirty = false; renderPane(pane); }
       else if (action === 'retry' && r) void session.configure(uid, clone(session.edits.get(uid)?.attempted ?? r.confirmed));
       else if (action === 'scene') {
         scene = { type: 'scene', request_id: session.requestId(), expected_revision: session.snapshot.revision,
@@ -160,13 +181,14 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
       const data = new FormData(form), purpose = String(data.get('purpose')) as ReceiverConfig['purpose'];
       const config = clone(r.confirmed); config.name = String(data.get('name')); config.purpose = purpose;
       config.baseband = { ...config.baseband, frequency_hz: Number(data.get('frequency')),
-        passband_hz: Number(data.get('bandwidth')), transition_hz: Number(data.get('transition')) };
+        passband_hz: Number(data.get('bandwidth')), transition_hz: Number(data.get('transition')), minimum_rate_hz: Number(data.get('minimum-rate')) };
       if (purpose !== r.confirmed.purpose) config.processors = purpose === 'iq' ? [] : [{ id: `processor-${uid}`,
         kind: purpose === 'listen' ? 'demodulator' : 'decoder', mode: purpose === 'listen' ? 'nfm' : 'ft8', minimum_rate_hz: purpose === 'listen' ? 0 : 6_000 }];
       preview(pane, uid, config);
     });
     surface.body.addEventListener('input', event => {
       const input = event.target as HTMLInputElement, uid = session.resolve(pane.binding);
+      if (input.closest('[data-config]')) pane.dirty = true;
       if (input.matches('[data-search]')) { search = input.value; input.blur(); renderPane(pane); const next = surface.body.querySelector<HTMLInputElement>('[data-search]')!; next.focus(); next.setSelectionRange(search.length, search.length); }
       if (input.matches('[data-gain]')) session.monitor(uid, { gain: Number(input.value) });
       if (input.matches('[data-pan]')) session.monitor(uid, { pan: Number(input.value) });
@@ -178,6 +200,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
     });
     surface.body.addEventListener('change', event => {
       const input = event.target as HTMLSelectElement;
+      if (input.closest('[data-config]')) pane.dirty = true;
       if (input.matches('[data-monitor-mode]')) { session.monitorMode = input.value as 'manual' | 'follow'; input.blur(); session.notify(); }
       if (input.matches('[data-binding]')) { pane.binding = input.value === 'follow' ? { type: 'follow' } : { type: 'fixed', receiver_uid: input.value }; input.blur(); saveViews(); pane.window.sync(); renderPane(pane); }
     });
@@ -187,10 +210,11 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement): { 
     const r = receiver(uid); if (!r) return;
     const command = { type: 'configure' as const, request_id: session.requestId(), receiver_uid: uid, expected_revision: r.revision, config };
     const impact = session.adapter.preflight(command), target = pane.window.body.querySelector('[data-preview]'); if (!target) return;
+    pane.dirty = true;
     target.innerHTML = `<div class="mc-preview"><p>${r.confirmed.baseband.frequency_hz} → ${config.baseband.frequency_hz} Hz · ${r.confirmed.purpose} → ${config.purpose}<br>
       ${l('Affected recording tracks', '受影响记录轨道')}: ${esc(impact.affected_tracks.join(', ') || '—')}<br>${esc(impact.faults.map(f => f.message).join('; '))}</p></div>`;
     const apply = target.ownerDocument.createElement('button'); apply.textContent = l('Apply to this receiver', '应用到此信道'); apply.disabled = !impact.accepted;
-    apply.addEventListener('click', () => { void session.configure(uid, config); }); target.appendChild(apply);
+    apply.addEventListener('click', () => { pane.dirty = false; pane.renderedUid = undefined; void session.configure(uid, config); }); target.appendChild(apply);
   }
   const render = (): void => {
     for (const [action, text] of Object.entries({ workbench: l('Channel workbench', '信道工作台'), recall: l('Recall all windows', '召回全部窗口'), reset: l('Reset layout', '重置布局'), 'quick-listen': l('＋ Listen to frequency', '＋ 监听频点') })) {

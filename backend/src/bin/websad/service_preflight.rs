@@ -165,12 +165,12 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
         let prepare_configs = if state.receiver_failure.is_some() && !recovery && !starting {
             Vec::new()
         } else if restart {
-            configs.iter().filter(|config| config.enabled
+            configs.iter().filter(|config| config.enabled && config.processing_enabled
                 && websa_channelizer::catalog::is_external(&config.mode)).cloned().collect()
         } else {
             match state.receiver_workers.as_ref() {
                 Some(workers) => workers.preparation_needed(&configs, false),
-                None => configs.iter().filter(|config| config.enabled
+                None => configs.iter().filter(|config| config.enabled && config.processing_enabled
                     && websa_channelizer::catalog::is_external(&config.mode)).cloned().collect(),
             }
         };

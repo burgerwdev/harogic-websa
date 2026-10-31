@@ -411,6 +411,7 @@ impl StatusSnapshot {
         s["has_premium_ref_clock"] = json!(self.has_premium_ref_clock);
         s["channel_registry"] = registry.clone();
         s["sdr"]["channels"] = self.channels.clone();
+        s["sdr"]["receiver_api"] = json!("multichannel-draft-v1");
         s["sdr"]["filter_limits"] = self.sdr_filter_limits.clone();
         s["sdr"]["receiver_error"] = json!(self.receiver_failure);
         for name in ["am_sync", "am_sync_generation"] {

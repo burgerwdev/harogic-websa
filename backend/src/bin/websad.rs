@@ -34,6 +34,8 @@ mod service_cost;
 mod service_power;
 #[path = "websad/subscriber_stream.rs"]
 mod subscriber_stream;
+#[path = "websad/multichannel.rs"]
+mod multichannel;
 #[path = "websad/service_preflight.rs"]
 mod service_preflight;
 #[path = "websad/server_mode.rs"]
@@ -98,6 +100,7 @@ struct Outbound {
 #[derive(Debug)]
 enum OutboundPayload {
     Single(Message),
+    Iq {message:Message, queued_at:std::time::Instant, _reservation:DecodeReservation},
     DecodeBatch {
         frames: Arc<[(Message, Option<u64>)]>,
         // Admission is fixed under state; a later retune cannot remove a predecessor.
@@ -114,6 +117,7 @@ impl OutboundPayload {
     fn frame(&self, index: usize) -> Option<(Message, Option<u64>)> {
         match self {
             Self::Single(message) => (index == 0).then(|| (message.clone(), None)),
+            Self::Iq {message,..} => (index == 0).then(|| (message.clone(), None)),
             Self::DecodeBatch { frames, .. } => frames.get(index).cloned(),
         }
     }
@@ -122,7 +126,7 @@ impl OutboundPayload {
 impl Outbound {
     fn epoch_current(&self, epoch:u64) -> bool {
         self.epoch==epoch || match &self.message {
-            OutboundPayload::DecodeBatch {..} => true,
+            OutboundPayload::DecodeBatch {..} | OutboundPayload::Iq {..} => true,
             OutboundPayload::Single(Message::Binary(bytes)) => bytes.starts_with(b"AUD2") || bytes.starts_with(b"SDE2"),
             _ => false,
         }
@@ -130,6 +134,7 @@ impl Outbound {
     fn frames(&self) -> impl Iterator<Item = Message> + '_ {
         let count = match &self.message {
             OutboundPayload::Single(_) => 1,
+            OutboundPayload::Iq {..} => 1,
             OutboundPayload::DecodeBatch { frames, .. } => frames.len(),
         };
         (0..count).filter_map(|index| {
@@ -152,6 +157,11 @@ const DECODE_PENDING_BYTE_LIMIT: u64 = 3 * (20 * 1024 * 1024u64).div_ceil(3) * 4
 #[derive(Debug)]
 struct DecodeReservation { pending: Arc<AtomicU64>, bytes: u64 }
 impl DecodeReservation {
+    fn iq(pending:&Arc<AtomicU64>,bytes:u64)->Option<Self> {
+        pending.try_update(Ordering::AcqRel,Ordering::Acquire,|used|
+            used.checked_add(bytes).filter(|&total|total<=4*1024*1024)).ok()?;
+        Some(Self {pending:pending.clone(),bytes})
+    }
     fn acquire(pending: &Arc<AtomicU64>, bytes: u64) -> Option<Self> {
         pending.try_update(Ordering::AcqRel, Ordering::Acquire, |used|
             used.checked_add(bytes).filter(|&total| total <= DECODE_PENDING_BYTE_LIMIT)).ok()?;
@@ -179,6 +189,7 @@ struct Client {
     audio: bool,
     decode: bool,
     channel: Option<u32>,
+    receiver_uid: Option<String>,
     identities: Arc<[AtomicU64;3]>,
     /// Latest-wins slots for display frames (Python ClientStream FRAME_POLICY: POWR/RTAF
     /// newest wins, FREQ is retained). A slow display client drops stale traces instead of
@@ -295,6 +306,7 @@ struct DevState {
     sdr_ref_set: bool,
     sdr_aux: Value,
     sdr_channels: Vec<receiver_workers::ChannelConfig>,
+    receivers: multichannel::Directory,
     receiver_workers: Option<receiver_workers::ReceiverWorkers>,
     receiver_failure: Option<String>,
     receiver_failure_pending: bool,
@@ -509,6 +521,7 @@ impl DevState {
             sdr_ref_set: false,
             sdr_aux: json!({}),
             sdr_channels: (1..=3).map(receiver_workers::ChannelConfig::for_slot).collect(),
+            receivers: multichannel::Directory::default(),
             receiver_workers: None,
             receiver_failure: None,
             receiver_failure_pending: false,
@@ -1801,7 +1814,7 @@ impl DevState {
         let mut primary = Vec::new();
         let mut aux = Vec::new();
         for frame in pending {
-            if frame.starts_with(b"IQAX") {
+            if multichannel::auxiliary(&frame) {
                 aux.push(frame);
             } else {
                 primary.push(frame);
@@ -2096,7 +2109,7 @@ impl DevState {
         let configs = self.channel_configs();
         match self.receiver_workers.as_ref() {
             Some(workers) => workers.missing_preparations(&configs),
-            None => configs.into_iter().filter(|config| config.enabled
+            None => configs.into_iter().filter(|config| config.enabled && config.processing_enabled
                 && websa_channelizer::catalog::is_external(&config.mode)).collect(),
         }
     }
@@ -3107,6 +3120,7 @@ fn prepare_receiver_recovery(state: &mut DevState, cmd: &str, data: &Value) -> R
 }
 
 fn dispatch_ready(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool, CommandError> {
+    state.remember_receiver_streams();
     let previous = matches!(cmd, "SET_FREQ" | "SET_RTA" | "SET_RBW" | "SET_VBW"
         | "SET_SWEEP" | "SET_POINTS" | "SET_SPUR" | "SET_WINDOW" | "SET_DETECTOR"
         | "SET_FRAMEDET" | "SET_TRACEGRID" | "SET_REF" | "SET_AMP" | "SET_REFCK"
@@ -4026,14 +4040,15 @@ async fn publisher(app: Arc<App>) {
                     Duration::from_millis(1)
                 }
                 "sdr" => {
-                    let (pan,_,_,_)=state.step_sdr(0,0,display_clients,0);
+                    let (pan,retiring_iq,retiring_aux,_)=state.step_sdr(0,0,display_clients,0);
+                    iq_frame.extend(retiring_iq); aux_frame.extend(retiring_aux);
                     display.extend(pan.into_iter().map(Bytes::from));
                     if iq_clients+aux_clients+audio_clients+decode_clients>0 {
                         let configs=state.channel_configs();
                         let source=state.fixture_sources.get_or_insert_with(service_fixture::FixtureSources::new);
                         match source.configure(&configs).and_then(|()|source.step()) {
                             Ok(frames)=>for frame in frames {
-                                if frame.starts_with(b"IQAX") {aux_frame.push(frame);}
+                                if multichannel::auxiliary(&frame) {aux_frame.push(frame);}
                                 else if frame.starts_with(b"IQBF") {iq_frame.push(frame);}
                             },
                             Err(error)=>state.ddc_error=Some(error),
@@ -4070,7 +4085,7 @@ async fn publisher(app: Arc<App>) {
                         compute.state.lock().unwrap().apply_hardware_presentation(&mut output);
                         display.extend(output.pan.into_iter().map(Bytes::from));
                         for frame in output.frames {
-                            if frame.starts_with(b"IQAX") { aux_frame.push(frame); }
+                            if multichannel::auxiliary(&frame) { aux_frame.push(frame); }
                             else { iq_frame.push(frame); }
                         }
                     }
@@ -4159,18 +4174,26 @@ async fn publisher(app: Arc<App>) {
         if send_status {
             status_due = tokio::time::Instant::now();
         }
+        let (iq_frame,aux_frame)={
+            let mut state=app.state.lock().unwrap();
+            (multichannel::tag_iq(&mut state,iq_frame),multichannel::tag_iq(&mut state,aux_frame))
+        };
         {
             let clients = app.clients.lock();
             for client in clients.iter() {
                 if client.iq {
-                    for frame in &iq_frame {
-                        send_or_count(client, Message::Binary(frame.clone().into()), epoch);
+                    for (frame,uid) in &iq_frame {
+                        if client.receiver_uid.as_ref().is_some_and(|wanted|Some(wanted)!=uid.as_ref())
+                            || (client.receiver_uid.is_none() && frame.starts_with(b"IQEN")) {continue;}
+                        send_or_count(client, Message::Binary(frame.clone()), epoch);
                     }
                     continue;
                 }
                 if client.aux {
-                    for frame in &aux_frame {
-                        send_or_count(client, Message::Binary(frame.clone().into()), epoch);
+                    for (frame,uid) in &aux_frame {
+                        if client.receiver_uid.as_ref().is_some_and(|wanted|Some(wanted)!=uid.as_ref())
+                            || (client.receiver_uid.is_none() && frame.starts_with(b"IQEN")) {continue;}
+                        send_or_count(client, Message::Binary(frame.clone()), epoch);
                     }
                     continue;
                 }
@@ -4224,7 +4247,14 @@ async fn publisher(app: Arc<App>) {
 /// generation that produced it.
 fn send_or_count(client: &Client, message: Message, epoch: u64) {
     let identity=service_stream::message_identity(&message);
-    enqueue(client, Outbound { epoch, message:message.into(),identity,status_revision: None, display_version: None });
+    let payload=if client.receiver_uid.is_some() {
+        let bytes=match &message {Message::Binary(bytes)=>bytes.len() as u64,_=>0};
+        let Some(reservation)=DecodeReservation::iq(&client.decode_pending_bytes,bytes) else {
+            client.overflow.store(true,Ordering::Release);client.wake.notify_one();return;
+        };
+        OutboundPayload::Iq {message,queued_at:std::time::Instant::now(),_reservation:reservation}
+    } else {message.into()};
+    enqueue(client, Outbound { epoch, message:payload,identity,status_revision: None, display_version: None });
 }
 
 fn enqueue(client: &Client, packet: Outbound) {
@@ -4465,10 +4495,10 @@ async fn ws_handler(
     if aux && (iq || audio) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    ws.on_upgrade(move |socket| client_loop(app, socket, iq, aux, audio, false, None, false))
+    ws.on_upgrade(move |socket| client_loop(app, socket, iq, aux, audio, false, None, false,None))
 }
 
-async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audio: bool, decode:bool, channel:Option<u32>, decode_ack:bool) {
+async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audio: bool, decode:bool, channel:Option<u32>, decode_ack:bool, receiver_uid:Option<String>) {
     let (tx, mut rx) = mpsc::channel::<Outbound>(64);
     let id = app.next_client.fetch_add(1, Ordering::Relaxed);
     let overflow = Arc::new(AtomicBool::new(false));
@@ -4481,8 +4511,10 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
     let latest_slot: Arc<PLMutex<(Option<Outbound>, Option<Outbound>)>> =
         Arc::new(PLMutex::new((None, None)));
     let mut subscriber=subscriber_stream::SubscriberStream::default();
+    let mut iq_subscriber=multichannel::IqSubscriber::default();
+    let mut iq_health=tokio::time::interval(Duration::from_millis(500));
     let initial_decode={
-        let state=app.state.lock().unwrap();
+        let mut state=app.state.lock().unwrap();
         if (audio || decode) && state.receiver_failure.is_some() {
             receiver_failed.store(true,Ordering::Release);
         }
@@ -4502,10 +4534,13 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
         audio,
         decode,
         channel,
+        receiver_uid:receiver_uid.clone(),
         identities: app.identities.clone(),
         latest: Arc::clone(&latest_slot),
     });
-        if decode {state.decode_snapshots.initial(channel,&state.stream_registry(),&mut subscriber)}
+        if receiver_uid.as_deref().is_some_and(|uid|state.receiver_slot(uid).is_none_or(|slot|
+            !state.channel_configs()[(slot-1) as usize].enabled)) {Err("receiver stopped during subscription".into())}
+        else if decode {state.decode_snapshots.initial(channel,&state.stream_registry(),&mut subscriber)}
             else {Ok(Vec::new())}
     };
     let (mut sink, mut stream) = socket.split();
@@ -4564,6 +4599,16 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
             // again, so command input is never delayed behind display traffic.
             let ack_deadline = decode_credit.deadline();
             tokio::select! {
+                _ = iq_health.tick(), if receiver_uid.is_some() => {
+                    let failed={let state=app.state.lock().unwrap();
+                        !state.link_up || state.swp.mode!="sdr" || state.ddc_error.is_some()};
+                    if failed {
+                        let boundary=json!({"type":"stream_boundary","receiver_uid":receiver_uid,
+                            "previous":null,"next":null,"clock":null,"reason":"capture_unavailable","drained":false});
+                        let _=send_frame(&mut sink,Message::Text(boundary.to_string().into())).await;
+                        break true;
+                    }
+                }
                 _ = tokio::time::sleep_until(ack_deadline.unwrap_or_else(||tokio::time::Instant::now()+DECODE_ACK_TIMEOUT)), if ack_deadline.is_some() => {
                     ack_timeout=true;
                     overflow.store(true,Ordering::Release);
@@ -4578,7 +4623,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                     let Some(Ok(message)) = incoming else { break false };
                     let text = match message {
                         Message::Text(text) => text,
-                        Message::Close(_) => break false,
+                        Message::Close(_) => { let _=sink.flush().await; break false; },
                         _ => continue,
                     };
                     let Ok(data) = serde_json::from_str::<Value>(&text) else {
@@ -4693,10 +4738,16 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                     if let Some(revision) = packet.status_revision {
                         seen_status_revision = revision;
                     }
+                    if matches!(&packet.message,OutboundPayload::Iq {queued_at,..} if queued_at.elapsed()>Duration::from_secs(2)) {
+                        overflow.store(true,Ordering::Release);break 'client true;
+                    }
                     for message in packet.frames() {
                         if receiver_failed.load(Ordering::Acquire) || overflow.load(Ordering::Acquire) {break 'client true;}
                         if !packet.epoch_current(epoch.load(Ordering::Acquire)) {continue;}
-                        let frames=match subscriber.frames(message) {
+                        let framed=if let Some(uid)=receiver_uid.as_deref() {
+                            iq_subscriber.frames(&mut app.state.lock().unwrap(),uid,message)
+                        } else {subscriber.frames(message)};
+                        let frames=match framed {
                             Ok(frames)=>frames,
                             Err(error)=>{eprintln!("SDR subscriber stream: {error}");subscriber_failed=true;break 'client true;},
                         };
@@ -4706,6 +4757,10 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                                 Ok(false)=>break 'client false,
                                 Err(_)=>{ack_timeout=true;overflow.store(true,Ordering::Release);break 'client true;}
                             }
+                        }
+                        if iq_subscriber.ended {
+                            let _=send_frame(&mut sink,Message::Close(None)).await;
+                            break 'client false;
                         }
                     }
                 }
@@ -4876,9 +4931,12 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/schema", get(api_schema))
         .route("/api/config", post(api_config))
         .route("/ws", get(ws_handler))
+        .route("/ws/iq", get(multichannel::iq_ws))
         .route("/ws/audio", get(service_stream::audio_ws_handler))
         .route("/ws/decode", get(service_stream::decode_ws_handler))
         .route("/api/sdr/plugins", get(channel_controls::plugins))
+        .route("/api/sdr/receivers", get(multichannel::snapshot).post(multichannel::command))
+        .route("/api/sdr/receivers/preflight", post(multichannel::preflight))
         .route("/", get(index))
         .route("/static/dist/{*path}", get(static_files))
         .with_state(app.clone());
@@ -5008,7 +5066,7 @@ mod tests {
                     decode_pending_bytes:Arc::new(AtomicU64::new(0)),
                     overflow:Arc::new(AtomicBool::new(false)),receiver_failed:Arc::new(AtomicBool::new(false)),
                     wake:Arc::new(Notify::new()),epoch:app.epoch.clone(),status_revision:app.state.revision(),
-                    display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),
+                    display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),receiver_uid:None,
                     identities:app.identities.clone(),latest:Arc::new(PLMutex::new((None,None))),
                 });
                 receivers.push((audio,rx));
@@ -5924,7 +5982,7 @@ mod tests {
             aux: false,
             audio: false,
             decode:false,
-            channel:None,
+            channel:None,receiver_uid:None,
             identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
             latest: Arc::new(parking_lot::Mutex::new((None, None))),
         };
@@ -5951,7 +6009,8 @@ mod tests {
         });
         let router = Router::new()
             .route("/ws", get(ws_handler))
-            .route("/ws/audio", get(service_stream::audio_ws_handler))
+            .route("/ws/iq", get(multichannel::iq_ws))
+        .route("/ws/audio", get(service_stream::audio_ws_handler))
             .route("/ws/decode", get(service_stream::decode_ws_handler))
             .with_state(app.clone());
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))

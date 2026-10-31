@@ -1,6 +1,6 @@
-# Multichannel P2 state and interface draft
+# Multichannel P2/P3 state and interface draft
 
-Status: draft-v1, a development prototype and offline experiments, not a published service API.
+Status: draft-v1, P2 fixture/experiments plus the native P3 receiver/IQ slice; an evolving service contract.
 Baseline: `3978ed2439f0bf9385414122e3e720b0a63f2b99`.
 
 ## Executable definitions and ownership
@@ -40,7 +40,7 @@ Preflight returns acceptance, faults, candidate capture center, affected receive
 Drafts belong to the editing view; preview precedes explicit apply. Cancel or target changes discard a draft.
 Each receiver has one in-flight request and the latest queued candidate. Selection cannot retarget a request.
 Rejection preserves confirmed configuration and stream identity. Older snapshot revisions cannot overwrite newer state.
-Transport timeouts, server request-ID deduplication and restart generations remain P3 work.
+The native P3 adapter adds transport timeouts, request-ID deduplication and service restart generations.
 
 `scene` carries the full receiver set, shared center and expected service revision. Preflight rejection changes
 nothing; accepted fixture changes commit together. Loading configuration does not restart recording tasks.
@@ -72,14 +72,57 @@ Fault scopes are request, consumer, recording, receiver and capture. Slow consum
 disk errors do not stop healthy receivers. Capture faults affect dependent streams. Gaps end old segments;
 recovery requires a new stream boundary. Delayed callbacks cannot revive completed or failed tasks.
 
-## Compatibility and the P3 entry
+## Native P3 receiver API and IQ subscriptions
 
-Existing `/ws?iq=1`, `/ws?iqaux=1`, IQBF/IQAX, AUD2 and SDE2 remain unchanged. P3 will map stable UIDs
-to legacy slots explicitly; list position is not a slot. No unified subscription endpoint is implemented yet.
-Start P3 at `channel_controls.rs`, `service_ddc.rs` and `receiver_workers.rs`, aggregate processor/consumer
-demands through `RatePlan::baseband`, publish confirmed snapshots and stream-start metadata, then replace
-the fixture adapter. SharedIqBlock currently carries immutable CF32 LE bytes in an Arc; production may use
-Arc-backed f32 samples and encode only at network/archive boundaries. Experimental copies are not an optimization.
+The production SDR **Channels** button opens one shared `NativeReceiverAdapter` and session for all workbench windows.
+The independent Vite fixture entry remains available. Native UI does not enable fixture recording, scenes, monitoring
+mixes or generated Decode results. P4/P5 connect those capabilities separately.
+
+| Interface | Behavior |
+|---|---|
+| `GET /api/sdr/receivers` | Confirmed snapshot, boot `service_id`, capabilities, dynamic receiver list and actual clocks when samples exist |
+| `POST /api/sdr/receivers/preflight` | Validate a complete create/configure/retire candidate without committing it |
+| `POST /api/sdr/receivers` | Commit create/configure/retire; reply `{request_id,snapshot,fault}` |
+| `/ws/iq?receiver_uid=...` | One receiver's ordered IQBF/IQAX v2 with JSON start and boundary metadata |
+
+Native operation initially admits three logical definitions. Boot-unique UIDs map explicitly to private legacy slots;
+retiring/reusing a slot creates a new UID. A stopped definition retains its UID. `processors=[]` selects genuine IQ-only
+operation through `RatePlan::baseband`; no dummy demodulator or receiver worker is started. Processing modes may be
+retained through the compatibility layer; their complete workbench playback/results integration belongs to P4.
+
+Commands have bounded idempotency receipts (128 recent request IDs); reusing an ID with different content is rejected.
+`configure.expected_revision` is the receiver revision as a decimal string. The adapter namespaces request IDs and sends
+`service_id`; a previous boot cannot submit a command to a restarted service. Admission is checked again before commit.
+Rejected resource/RF/filter plans preserve confirmed state and identities. Metadata-only edits also advance revision.
+A physical capture failure produces a capture fault and a non-drained boundary; rollback of arbitrary SDK failures is not promised.
+
+A subscription starts only for an enabled UID. `stream_start` precedes its first binary frame and carries `receiver_uid`,
+`source_id`, `stream`, `format=cf32_le`, `baseband`, string `first_sequence` and `clock`. The clock includes exact input/output
+positions, fractional position, real input/output rates, filter delay in seconds and UTC reliability. Native integer DDC positions
+have fraction 0/1; no rounded nominal rate is substituted. Late subscribers receive their actual first source position.
+`stream_boundary` includes previous/next identity, clock, reason and `drained`; stop drains old tails before `next=null` and close.
+Retune sends the old tail before boundary/new start. A source failure ends with `drained=false`; transport overflow closes with 1013.
+Unexpected transport loss is a failed consumer. Unaffected lanes keep their identities and sample sequences.
+
+IQ is encoded once and shared as immutable `Bytes` between transport consumers. Each native subscription has a 4 MiB pending
+byte limit, 64 FIFO entries and a 2-second age/send limit; overload terminates that subscriber. The existing processing path still
+parses encoded IQ for mixed demodulation; migrating it to typed shared sample blocks remains future work. This is no 128-lane capacity claim.
+Snapshot `outputs=[]` is complemented by the adapter's local subscription states, actual received sample/byte counts and stream acknowledgements.
+Closing, Dock, Pop out and selecting views send no receiver enable/stop commands; page disposal closes only its subscriptions.
+Entering SDR no longer implicitly disables auxiliary slots, and reconnects do not replay an old receiver set. STATUS advertises `sdr.receiver_api=multichannel-draft-v1`; the browser then follows the actual service mode on first load instead of replaying its saved mode or AM detector setting.
+
+With `--fake`, `capture.source_kind=fixture`: the service emits synthetic baseband at each actual output rate, with its own
+honest baseband input clock and zero filter delay. It does not exercise RF PFB filtering. Native Rust tests separately feed
+CS16 samples through PFB/fine DDC, compare an untouched lane sample-for-sample across another lane's cross-bin retune,
+and verify old tails, rates and source positions. Hardware reception and sustained capacity still require a dedicated bench.
+
+Run the isolated protocol/browser gate after frontend and native builds:
+
+```sh
+python tools/e2e/native_multichannel.py --artifacts /tmp/websa-p3-native
+```
+
+It owns an independent synthetic service and requires Playwright plus websockets. Existing service processes remain untouched.
 
 ## P2 archive constraints
 

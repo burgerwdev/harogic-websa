@@ -1,6 +1,6 @@
-# 多信道 P2 状态与接口契约草案
+# 多信道 P2/P3 状态与接口契约草案
 
-状态：draft-v1，开发原型与离线实验；不是已发布服务 API。产品 HEAD 基线为
+状态：draft-v1，包含 P2 原型/实验及原生 P3 接收/IQ 切片，服务契约仍在演进。最初产品基线为
 `3978ed2439f0bf9385414122e3e720b0a63f2b99`。设计依据是仓库外三份多信道方案。
 
 ## 可执行定义与所有权
@@ -37,7 +37,7 @@ Fixture 不启动声音、不写记录文件，刷新后任务重置；后端持
 草稿只属于编辑视图，显式预览后应用；切换目标/取消撤销未提交草稿。
 每路一个在途请求和最新待处理候选；目标 UID 在提交时固定，切换选择不重定向请求。
 拒绝后保留 confirmed 和实际流身份，显示错误与重试；迟到的旧修订快照不覆盖较新状态。
-P3 必须补齐传输超时、幂等 request_id 去重和服务重启代次，fixture 尚不模拟这些完整服务语义。
+原生 P3 已加入传输超时、幂等 request_id 去重和服务重启代次；fixture 保持独立模拟。
 
 `scene` 携带整个信道集合、共享中心和服务 `expected_revision`。完整预检后一次更新；预检失败不修改任何配置。
 场景仅载入配置，不自动重放正在记录任务或创建新的记录。基带变更分片；共享采集变化更新 epoch。
@@ -68,16 +68,54 @@ P3 必须补齐传输超时、幂等 request_id 去重和服务重启代次，fi
 错误范围分别为 request、consumer、recording、receiver、capture。慢订阅只失败自身；磁盘失败不停止健康接收；
 采集故障影响所有依赖源。断流结束旧记录段，恢复必须有新流边界；完成或失败的记录不能由迟到计时器恢复为记录中。
 
-## 旧接口兼容与 P3 入口
+## 原生 P3 信道接口与 IQ 订阅
 
-现有 `/ws?iq=1` 和 `/ws?iqaux=1`、IQBF/IQAX、AUD2、SDE2 均保持现状，
-现有主辅槽只是 P3 兼容映射，不能将 `receiver_uid` 直接转换为数组序号。
-统一按 UID 订阅的服务端点尚未实现，不在此猜定 URL。
+生产 SDR 的 **信道工作台** 按钮为所有工作台窗口共享一个 `NativeReceiverAdapter` 和会话。
+独立 Vite fixture 入口继续保留。原生界面按真实能力禁用模拟记录、场景、监听混音和生成的 Decode 结果；
+真实播放与结果集成属于 P4，持久记录属于 P5。
 
-P3 从 `channel_controls.rs`、`service_ddc.rs` 和 `receiver_workers.rs` 的三槽编排接入稳定 ID → 槽映射，
-采用 `RatePlan::baseband` 汇总处理器/消费者要求。服务显式发布确认快照与首流元数据，再替换 fixture adapter。
-`SharedIqBlock` 为 `Arc<[u8]>` CF32 LE 加不可变元数据；未来生产端可评估 `Arc<[f32]>` 避免内部字节编码，
-只在网络/记录边界编码。当前实验复制数据不构成生产性能优化。
+| 接口 | 行为 |
+|---|---|
+| `GET /api/sdr/receivers` | 服务确认快照、启动代次 `service_id`、能力、动态信道集合及已有样本的实际时钟 |
+| `POST /api/sdr/receivers/preflight` | 预检完整 create/configure/retire 候选，不提交 |
+| `POST /api/sdr/receivers` | 提交 create/configure/retire；返回 `{request_id,snapshot,fault}` |
+| `/ws/iq?receiver_uid=...` | 单信道有序 IQBF/IQAX v2，带 JSON 起始与边界元数据 |
+
+当前原生服务最多容纳三个逻辑定义。启动期唯一 UID 显式映射到内部兼容槽；退役后复用槽产生新 UID，
+仅停用定义则保留 UID。`processors=[]` 通过 `RatePlan::baseband` 实现真正仅 IQ，
+不启动替身解调器或额外接收 worker。兼容层可保留已有处理模式，其完整工作台播放/结果集成留到 P4。
+
+最近 128 个请求有有界幂等回执；同一 ID 的不同内容被拒绝。`configure.expected_revision` 是十进制字符串的信道修订。
+适配器为请求 ID 加客户端命名空间并提交 `service_id`；旧启动代次不能向重启后的服务提交命令。
+准入完成后、提交前再次检查修订。资源、RF 或滤波计划拒绝保留旧状态和身份；只改名称等元数据也推进修订。
+物理采集失败按 capture 故障和非排空边界报告，不承诺任意 SDK 故障无缝回滚。
+
+只有启用的 UID 能建立订阅。首个二进制帧前发送 `stream_start`，携带 `receiver_uid`、`source_id`、`stream`、
+`format=cf32_le`、`baseband`、字符串 `first_sequence` 和 `clock`。时钟保留实际输入/输出位置、分数位置、
+真实输入/输出率、以秒计的滤波延迟和 UTC 可靠性。原生整数 DDC 的分数为 0/1，不用名义整数率替代实际率；
+迟加入的订阅取得实际首帧源位置。`stream_boundary` 包含前后身份、clock、reason 与 `drained`。
+停止时旧尾部先于 `next=null` 和关闭；重调时旧尾部先于边界与新起始。
+源故障发送 `drained=false`；慢订阅用 1013 关闭；无结束边界的意外断连标记消费者失败。
+未受影响路保持身份和样本序列连续。
+
+IQ 只编码一次，以不可变 `Bytes` 在网络消费者间共享。每个原生订阅限制 4 MiB 待消费字节、64 个 FIFO 项及
+2 秒队列年龄/发送期限；超载只终止自身。混合解调的现有处理链仍解析已编码 IQ；迁移到有类型共享样本块属于后续工作，
+本轮不构成 128 路容量验收。快照的 `outputs=[]` 由适配器补充本地真实订阅状态、已收样本/字节计数与起始确认。
+关闭、Dock、Pop out、切换选择均不发送接收启停命令；关闭页面只关闭自身订阅。
+进入 SDR 不再隐式停用辅助槽，重连不会重放浏览器旧接收集合。STATUS 发布 `sdr.receiver_api=multichannel-draft-v1`；浏览器首次加载即跟随服务实际模式，不重放保存的图形模式或 AM 检波设置。
+
+`--fake` 发布 `capture.source_kind=fixture`：按各路真实输出率生成合成基带，时钟明确是该基带源，滤波延迟为零；
+这条 fake 路径不经过 RF PFB。原生 Rust 测试另行将 CS16 样本送过 PFB/fine DDC，
+在另一条路跨粗箱重调时逐样本比对未受影响路，并检查尾部、速率和源位置。
+硬件实收及长期容量仍需独立测试窗口。
+
+前端与原生构建后运行独立协议/浏览器门禁：
+
+```sh
+python tools/e2e/native_multichannel.py --artifacts /tmp/websa-p3-native
+```
+
+依赖 Playwright 和 websockets；脚本拥有并清理独立合成服务，不操作其他已有服务。
 
 ## P2 压缩实验约束
 

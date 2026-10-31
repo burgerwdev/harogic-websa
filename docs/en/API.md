@@ -12,6 +12,13 @@ Native backend (`backend/`) external interfaces: **HTTP REST** + **WebSocket** (
 
 ## 1. HTTP Endpoints
 
+### Native multichannel receivers
+
+`GET/POST /api/sdr/receivers`, `POST /api/sdr/receivers/preflight` and
+`/ws/iq?receiver_uid=...` implement the P3 receiver/IQ slice. See
+[MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md#native-p3-receiver-api-and-iq-subscriptions) for commands, clocks, boundaries and limits.
+Legacy IQBF/IQAX, AUD2, SDE2 and `/api/config` remain compatible.
+
 ### `GET /api/sdr/plugins`
 
 Returns `{plugins, sstv_modes}`. `plugins` retains the `analog`, `digital`, `audio` and `ddc`

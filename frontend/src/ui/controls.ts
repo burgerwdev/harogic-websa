@@ -602,9 +602,7 @@ function finishSdrEntry(): void {
     initialSstvMode = null;
     refreshDecodeWindow();
   }
-  // Auxiliary receivers have no browser controls; never restore hidden saved receivers.
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 2, enabled: false });
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 3, enabled: false });
+  // The service owns the active receiver set; entering SDR must preserve auxiliary lanes.
   replaySdrEntry();
 }
 
@@ -1138,6 +1136,7 @@ export function syncSdrPanel(s: any) {
     && generation >= 0 && generation <= 0xffffffff ? generation : null);
   // The saved detector preference is replayed only once, when a connected SDR STATUS
   // first arrives; a disconnected mode report is not an entry into a receiver session.
+  if (sdr.receiver_api === 'multichannel-draft-v1') initialSdrAmSync = null;
   if (initialSdrAmSync !== null) {
     const enabled = initialSdrAmSync;
     initialSdrAmSync = null;
@@ -1527,6 +1526,8 @@ export function bindActions() {
     'sdr-tune-down': () => sdrTuneBy(-currentSdrStepHz()),
     'sdr-tune-up': () => sdrTuneBy(currentSdrStepHz()),
     'sdr-to-center': () => sdrToCenter(),
+    'sdr-workbench': () => { void import('./nativeWorkbench').then(module => module.openNativeWorkbench())
+      .catch(error => postRefNotice(String(error), 4000)); },
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': () => toggleSdrAgc(),
     'toggle-sdr-nr': () => toggleSdrNr(),

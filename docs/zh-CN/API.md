@@ -11,6 +11,13 @@
 
 ## 1. HTTP 接口
 
+### 原生多信道接收
+
+`GET/POST /api/sdr/receivers`、`POST /api/sdr/receivers/preflight` 及
+`/ws/iq?receiver_uid=...` 实现 P3 接收/IQ 切片。命令、时钟、边界和限制见
+[MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md#原生-p3-信道接口与-iq-订阅)。
+原有 IQBF/IQAX、AUD2、SDE2 和 `/api/config` 继续兼容。
+
 ### `GET /api/sdr/plugins`
 
 返回 `{plugins, sstv_modes}`。`plugins` 保留 `analog`、`digital`、`audio`、`ddc`

@@ -477,6 +477,14 @@ def wait_ui_ready(page, mode: str | None = None) -> None:
 def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
             mode: str = 'swp', mode_clicks: list[str] | None = None,
             shot_path: Path | None = None, ui_scale: float | None = None) -> dict:
+    # Each case starts from sweep explicitly. A fresh browser follows the live
+    # service and must not be relied on to reconfigure it from saved preferences.
+    import urllib.request
+    request = urllib.request.Request(
+        f'{url}/api/config', data=json.dumps({'cmd': 'SET_MODE', 'mode': 'std'}).encode(),
+        headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        response.read()
     with closing(browser.new_context(
             viewport={'width': w, 'height': h}, device_scale_factor=dpr)) as ctx:
         if ui_scale is not None:

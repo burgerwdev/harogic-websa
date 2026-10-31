@@ -89,6 +89,18 @@ function receiverStatus(freq: number, mode: string, version: number, response: R
 			...(response.sdr as Record<string, unknown> | undefined) } };
 }
 describe('SDR entry and reload', () => {
+  it.each(['std', 'rta', 'sdr'])('adopts a native running receiver set without replaying stored %s mode or detector', async saved => {
+    localStorage.setItem('web-sa-mode', saved);
+    localStorage.setItem('web-sa-sdr-am-sync', '1');
+    const { controls } = await load();
+    const live = status('sdr');
+    receive({ ...live, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1', channels: [
+      { channel: 1, enabled: false }, { channel: 2, enabled: true }, { channel: 3, enabled: true },
+    ] } });
+    vi.advanceTimersByTime(1000);
+    expect(controls.currentGraphMode()).toBe('sdr');
+    expect(socket.sent.filter(command => ['SET_MODE', 'SET_SDR', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+  });
 	it.each(['before', 'after'] as const)('finishes the first To Center slide with stale actual metadata and an ACK %s the spectrum frame', async order => {
 		const { controls } = await load();
 		const viewport = await import('../ui/spectrumViewport');

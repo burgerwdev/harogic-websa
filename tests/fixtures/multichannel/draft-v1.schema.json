@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:websa:multichannel:draft-v1",
   "title": "Multichannel draft-v1 portable contract",
-  "description": "P2 draft; not a published native service API. Runtime semantics in MULTICHANNEL_DRAFT.md.",
+  "description": "P2 fixture contract plus the P3 native receiver API; see MULTICHANNEL_DRAFT.md for supported operations and compatibility.",
   "oneOf": [
     {
       "$ref": "#/$defs/command"
@@ -257,6 +257,9 @@
         },
         "config": {
           "$ref": "#/$defs/config"
+        },
+        "service_id": {
+          "type": "string"
         }
       },
       "required": [
@@ -420,6 +423,7 @@
         },
         "state": {
           "enum": [
+            "starting",
             "active",
             "ended",
             "failed"
@@ -434,6 +438,12 @@
               "type": "null"
             }
           ]
+        },
+        "samples": {
+          "$ref": "#/$defs/u64"
+        },
+        "bytes": {
+          "$ref": "#/$defs/u64"
         }
       },
       "required": [
@@ -635,6 +645,18 @@
               "items": {
                 "type": "string"
               }
+            },
+            "commands": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "recording": {
+              "type": "boolean"
+            },
+            "monitor_mixing": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -670,6 +692,12 @@
                 "running",
                 "failed"
               ]
+            },
+            "source_kind": {
+              "enum": [
+                "fixture",
+                "hardware"
+              ]
             }
           },
           "required": [
@@ -699,6 +727,9 @@
           "items": {
             "$ref": "#/$defs/recording"
           }
+        },
+        "service_id": {
+          "type": "string"
         }
       },
       "required": [
@@ -724,6 +755,9 @@
         },
         "config": {
           "$ref": "#/$defs/config"
+        },
+        "service_id": {
+          "type": "string"
         }
       },
       "required": [
@@ -743,6 +777,9 @@
           "type": "string"
         },
         "receiver_uid": {
+          "type": "string"
+        },
+        "service_id": {
           "type": "string"
         }
       },
@@ -1004,6 +1041,9 @@
                   "type": "null"
                 }
               ]
+            },
+            "drained": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1012,6 +1052,46 @@
             "previous",
             "next",
             "reason",
+            "clock"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "stream_start"
+            },
+            "receiver_uid": {
+              "type": "string"
+            },
+            "source_id": {
+              "type": "string"
+            },
+            "stream": {
+              "$ref": "#/$defs/stream"
+            },
+            "format": {
+              "const": "cf32_le"
+            },
+            "baseband": {
+              "$ref": "#/$defs/baseband"
+            },
+            "first_sequence": {
+              "$ref": "#/$defs/u64"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            }
+          },
+          "required": [
+            "type",
+            "receiver_uid",
+            "source_id",
+            "stream",
+            "format",
+            "baseband",
+            "first_sequence",
             "clock"
           ],
           "additionalProperties": false

@@ -19,7 +19,7 @@ export class WorkbenchSession {
   subscribe(fn: () => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   notify(): void { this.listeners.forEach(fn => fn()); }
   private accept(snapshot: ServiceSnapshot): void {
-    if (BigInt(snapshot.revision) < BigInt(this.snapshot.revision)) return;
+    if (snapshot.service_id === this.snapshot.service_id && BigInt(snapshot.revision) < BigInt(this.snapshot.revision)) return;
     this.snapshot = snapshot;
     if (!snapshot.receivers.some(r => r.receiver_uid === this.selected)) this.selected = snapshot.receivers[0]?.receiver_uid ?? '';
     this.notify();

@@ -19,6 +19,9 @@ const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 pub(super) struct ChannelConfig {
     pub channel: u32,
     pub enabled: bool,
+    /// Independent baseband; None retains the legacy mode-derived plan.
+    pub baseband: Option<BasebandConfig>,
+    pub processing_enabled: bool,
     pub freq: f64,
     pub mode: String,
     pub am_sync: bool,
@@ -46,10 +49,19 @@ pub(super) struct ChannelConfig {
     pub radiofax_clock_ppm: f32,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BasebandConfig {
+    pub passband_hz: f64,
+    pub transition_hz: f64,
+    pub minimum_rate_hz: f64,
+}
+
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
-            channel: 1, enabled: true, freq: 0.0, mode: "am".into(), if_bw: 6000.0,
+            channel: 1, enabled: true, baseband: None, processing_enabled: true,
+            freq: 0.0, mode: "am".into(), if_bw: 6000.0,
             am_sync: false,
             am_sync_generation: 0,
             squelch: -110.0, volume: 0.8, agc: true, pitch: 700.0, deemph_us: -1.0,
@@ -69,6 +81,11 @@ impl ChannelConfig {
     }
 
     pub(super) fn validate(&self) -> Result<(), String> {
+        if let Some(baseband) = &self.baseband {
+            websa_channelizer::rate_plan::RatePlan::baseband(62_500_000.0,
+                baseband.passband_hz, baseband.transition_hz, baseband.minimum_rate_hz)
+                .map_err(str::to_owned)?;
+        }
         if !(1..=3).contains(&self.channel)
             || !self.freq.is_finite() || !self.if_bw.is_finite() || self.if_bw <= 0.0
             || !self.squelch.is_finite() || !self.volume.is_finite() || !(0.0..=2.0).contains(&self.volume)
@@ -92,8 +109,8 @@ impl ChannelConfig {
         {
             return Err(format!("invalid receiver configuration for channel {}", self.channel));
         }
-        websa_channelizer::catalog::validate(&self.mode, self.if_bw)?;
-        if matches!(self.mode.as_str(), "ais" | "aprs" | "ft4" | "wspr" | "meteor" | "adsb") {
+        if self.processing_enabled {websa_channelizer::catalog::validate(&self.mode, self.if_bw)?;}
+        if self.processing_enabled && matches!(self.mode.as_str(), "ais" | "aprs" | "ft4" | "wspr" | "meteor" | "adsb") {
             websa_channelizer::external::onair::validate_frequency(&self.mode, self.freq.round() as u64)?;
         }
         Ok(())
@@ -101,6 +118,7 @@ impl ChannelConfig {
 
     fn resets_receiver(&self, next: &Self) -> bool {
         self.enabled != next.enabled || self.freq != next.freq || self.mode != next.mode
+            || self.baseband != next.baseband || self.processing_enabled != next.processing_enabled
             || self.if_bw != next.if_bw || self.pitch != next.pitch || self.sstv_mode != next.sstv_mode
             || self.radiofax_acquisition != next.radiofax_acquisition || self.radiofax_ioc != next.radiofax_ioc
             || self.radiofax_lpm != next.radiofax_lpm || self.radiofax_modulation != next.radiofax_modulation
@@ -161,7 +179,7 @@ impl PreparedDecoders {
             let slot = config.channel as usize - 1;
             if seen[slot] { return Err(format!("duplicate receiver channel {}", config.channel)); }
             seen[slot] = true;
-            if config.enabled {
+            if config.enabled && config.processing_enabled {
                 let decoder = prepare(config)?;
                 result.selected[slot] = true;
                 result.channels[slot] = Some(PreparedChannel { config: config.clone(), decoder });
@@ -473,7 +491,7 @@ impl ReceiverWorkers {
     pub fn preparation_needed(&self, configs: &[ChannelConfig], restart: bool) -> Vec<ChannelConfig> {
         configs.iter().filter(|config| {
             let Some(slot) = config.channel.checked_sub(1).map(|slot| slot as usize).filter(|&slot| slot < 3) else { return false; };
-            config.enabled && websa_channelizer::catalog::is_external(&config.mode)
+            config.enabled && config.processing_enabled && websa_channelizer::catalog::is_external(&config.mode)
                 && !self.prepared.matches(slot, config)
                 && (restart || self.configs[slot].resets_receiver(config) || self.active[slot].is_none())
         }).cloned().collect()
@@ -549,7 +567,7 @@ impl ReceiverWorkers {
         }
         // Preparation failures must leave every active configuration and generation intact.
         for (slot, config) in desired.iter().enumerate() {
-            if config.enabled && websa_channelizer::catalog::is_external(&config.mode)
+            if config.enabled && config.processing_enabled && websa_channelizer::catalog::is_external(&config.mode)
                 && (self.configs[slot].resets_receiver(config) || self.active[slot].is_none())
                 && !self.prepared.matches(slot, config) {
                 return Err(format!("external decoder for channel {} was not prepared before admission", config.channel));
@@ -562,7 +580,7 @@ impl ReceiverWorkers {
                     self.retire_backlog()?;
                     self.active[slot] = None;
                 }
-                if self.configs[slot].enabled && !config.enabled {
+                if self.configs[slot].enabled && self.configs[slot].processing_enabled && (!config.enabled || !config.processing_enabled) {
                     let generation=self.shared.generations[slot].load(Ordering::Acquire);
                     let (reply,done)=mpsc::sync_channel(1);
                     let pending=Pending::new(&self.shared);
@@ -647,7 +665,7 @@ impl ReceiverWorkers {
             || !(delay * row.input_rate / rate).is_finite()
         { return Err("receiver IQ registry clock mismatch".into()); }
         let slot = row.channel as usize - 1;
-        if !self.configs[slot].enabled { return Err(format!("IQ submitted for disabled receiver {}", row.channel)); }
+        if !self.configs[slot].enabled || !self.configs[slot].processing_enabled { return Err(format!("IQ submitted for disabled receiver {}", row.channel)); }
         let generation = self.shared.generations[slot].load(Ordering::Acquire);
         let mut iq = Vec::with_capacity(samples * 2);
         let mut power = 0.0_f64;

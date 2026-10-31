@@ -474,6 +474,9 @@ impl DevState {
         if self.receiver_failure.is_some() {return Ok(receiver_workers::ReceiverFrames::default());}
         let configs=self.channel_configs();
         let power=self.fresh_channel_power();
+        if !configs.iter().any(|config| config.enabled && config.processing_enabled) {
+            return Ok(receiver_workers::ReceiverFrames::default());
+        }
         if self.receiver_workers.is_none() {self.receiver_workers=Some(receiver_workers::ReceiverWorkers::new()?);}
         let workers=self.receiver_workers.as_mut().ok_or("receiver workers unavailable")?;
         workers.configure(&configs)?;
@@ -487,7 +490,8 @@ impl DevState {
             let consumed=(id,epoch,sequence);
             if finish && self.consumed_receiver_iq.contains(&consumed) {continue;}
             if !finish && self.consumed_receiver_iq.remove(&consumed) {continue;}
-            if !registry.iter().any(|r|r.channel_id==id && r.epoch==epoch) {continue;}
+            if !registry.iter().any(|r|r.channel_id==id && r.epoch==epoch
+                && configs.iter().any(|config|config.channel==r.channel && config.processing_enabled)) {continue;}
             workers.submit(frame,registry)?;
             if finish {
                 let drained=workers.finish()?;
@@ -510,7 +514,7 @@ async fn stream_ws(ws:WebSocketUpgrade,app:Arc<App>,params:HashMap<String,String
         Some(value)=>match value.parse::<u32>() {Ok(slot @ 1..=3)=>Some(slot),_=>return StatusCode::BAD_REQUEST.into_response()},
     };
     let decode_ack=decode && params.get("ack").is_some_and(|value|value=="1");
-    ws.on_upgrade(move|socket|client_loop(app,socket,false,false,!decode,decode,channel,decode_ack))
+    ws.on_upgrade(move|socket|client_loop(app,socket,false,false,!decode,decode,channel,decode_ack,None))
 }
 pub(super) async fn audio_ws_handler(ws:WebSocketUpgrade,State(app):State<Arc<App>>,Query(params):Query<HashMap<String,String>>,headers:HeaderMap)->Response {
     stream_ws(ws,app,params,headers,false).await
@@ -592,7 +596,7 @@ mod tests {
                 decode_pending_bytes:Arc::new(AtomicU64::new(0)),
                 overflow:Arc::new(AtomicBool::new(false)),receiver_failed:Arc::new(AtomicBool::new(false)),
                 wake:Arc::new(Notify::new()),epoch:app.epoch.clone(),status_revision:app.state.revision(),
-                display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),
+                display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),receiver_uid:None,
                 identities:app.identities.clone(),latest:Arc::new(PLMutex::new((None,None))),
             });
             receivers.push(rx);
@@ -697,7 +701,7 @@ mod tests {
                     receiver_failed:Arc::new(AtomicBool::new(false)),
                     epoch:app.epoch.clone(),status_revision:app.state.revision(),
                     display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel,
-                    identities:app.identities.clone(),latest:Arc::new(PLMutex::new((None,None))),
+                    identities:app.identities.clone(),receiver_uid:None,latest:Arc::new(PLMutex::new((None,None))),
                 });
                 receivers.push((audio,rx,subscriber_stream::SubscriberStream::default()));
             }

@@ -155,7 +155,8 @@ impl DevState {
         if self.pipeline.is_none() && listeners > 0 && !blocked {
             // Compile receiver models before arming capture; startup must not
             // stall the consumer while the hardware IQ queue is filling.
-            if self.receiver_workers.is_none() && self.receiver_failure.is_none() {
+            if self.receiver_workers.is_none() && self.receiver_failure.is_none()
+                && self.channel_configs().iter().any(|config|config.enabled&&config.processing_enabled) {
                 match receiver_workers::ReceiverWorkers::new() {
                     Ok(workers)=>self.receiver_workers=Some(workers),
                     Err(error)=>self.latch_receiver_failure(error),

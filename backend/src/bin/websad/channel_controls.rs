@@ -170,7 +170,19 @@ impl DevState {
                 .ok_or("channel must be an integer in 1..=3")? as u32,
         };
         let mut config = self.channel_configs()[(channel - 1) as usize].clone();
+        // An explicit legacy mode selection returns to its mode-derived plan.
+        // Frequency-only edits preserve an independently configured IQ plan.
+        if (data.get("mode").is_some() || data.get("demod").is_some())
+            && data.get("baseband").is_none() && data.get("processing_enabled").is_none() {
+            config.baseband=None;config.processing_enabled=true;
+        }
         config.enabled = boolean(data, "enabled", config.enabled)?;
+        config.processing_enabled = boolean(data, "processing_enabled", config.processing_enabled)?;
+        if let Some(value) = data.get("baseband") {
+            config.baseband = if value.is_null() { None } else {
+                Some(serde_json::from_value(value.clone()).map_err(|error| format!("baseband: {error}"))?)
+            };
+        }
         config.freq = number(data, &["freq", "listen"], config.freq)?;
         config.mode = text(data, &["mode", "demod"], &config.mode)?;
         if config.mode != self.channel_configs()[(channel - 1) as usize].mode
@@ -191,7 +203,7 @@ impl DevState {
         config.agc = boolean(data, "agc", config.agc)?;
         config.pitch = number(data, &["pitch"], config.pitch)?;
         config.deemph_us = number(data, &["deemph_us", "deemph"], config.deemph_us)?;
-        if let Some(minimum) = analog_filter_min_hz(&config.mode) {
+        if let Some(minimum) = analog_filter_min_hz(&config.mode).filter(|_|config.processing_enabled) {
             if config.if_bw < minimum {
                 return Err(format!("filter bandwidth must be at least {minimum:.0} Hz for {}", config.mode));
             }
@@ -208,7 +220,7 @@ impl DevState {
         }
         let freq_requested = alias(data, &["freq", "listen"])?.is_some();
         let mode_requested = alias(data, &["mode", "demod"])?.is_some();
-        reconcile_external_band(&mut config, freq_requested, mode_requested);
+        if config.processing_enabled {reconcile_external_band(&mut config, freq_requested, mode_requested);}
         if let Some(value) = data.get("sstv_mode") {
             config.sstv_mode = if value.is_null() { None } else {
                 Some(value.as_u64().and_then(|mode| usize::try_from(mode).ok())
@@ -318,7 +330,10 @@ impl DevState {
             if data["radiofax_new_page"] == true { self.request_radiofax_page(channel)?; }
             return Ok(());
         }
+        self.remember_receiver_streams();
+        let retiring_iq = self.stream_registry().iter().find(|entry|entry.channel==channel).cloned();
         let geometry_changed=old.enabled!=config.enabled || old.freq!=config.freq || old.mode!=config.mode
+            || old.baseband!=config.baseband || old.processing_enabled!=config.processing_enabled
             || old.if_bw!=config.if_bw || old.pitch!=config.pitch || old.audio_rate!=config.audio_rate
             || old.stereo!=config.stereo || old.sstv_mode!=config.sstv_mode
             || old.radiofax_acquisition!=config.radiofax_acquisition || old.radiofax_ioc!=config.radiofax_ioc
@@ -396,6 +411,17 @@ impl DevState {
         self.sdr_aux = json!({"2":configs[1], "3":configs[2]});
         self.sdr_channels = configs;
         if let Some(fixtures) = staged_fixtures { self.fixture_sources = Some(fixtures); }
+        // Native and legacy stops share the same ordered drain boundary. Keep it
+        // behind pending tails; only the UID-based transport exposes this marker.
+        if old.enabled && !config.enabled {
+            if let Some(entry)=retiring_iq {
+                let mut end=b"IQEN".to_vec();
+                end.extend_from_slice(&channel.to_le_bytes());
+                end.extend_from_slice(&entry.channel_id.to_le_bytes());
+                end.extend_from_slice(&entry.epoch.to_le_bytes());
+                self.pending_iq.push(end);
+            }
+        }
         if self.receiver_failure.is_none() {
             if let Some(workers) = self.receiver_workers.as_mut() {
                 if let Err(error)=workers.configure(&self.sdr_channels) {self.latch_receiver_failure(error);}

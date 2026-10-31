@@ -133,6 +133,8 @@ cargo run --offline --release -j 1 --manifest-path backend/Cargo.toml --features
 Produces `report.json` and experimental `.wbiq` files, retaining CF32 bits and actual rates.
 `--offline` requires cached Zstd dependencies.
 
+Production SDR → **Channels** opens the native receiver workbench. Build frontend/native, then use `./run.sh --fake --port 18139 --instance p3-dev` for an isolated synthetic service. Stop only that instance with `./stop.sh --instance p3-dev`. `python tools/e2e/native_multichannel.py` starts and cleans up its own independent service and checks actual IQ transport plus window lifecycle; it requires Playwright and websockets. Hardware RF validation remains separate.
+
 ## 2. Dependency direction and ownership
 
 | Area | Responsibility |

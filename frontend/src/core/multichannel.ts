@@ -1,4 +1,4 @@
-/** P2 draft. Transport-independent; no slot numbers, DOM, playback or simulated success here. */
+/** P2/P3 contract. Transport-independent; logical identities never encode slot positions. */
 export type ReceiverUid = string;
 export type U64 = string;
 export type Purpose = 'listen' | 'digital' | 'iq';
@@ -32,7 +32,8 @@ export interface ReceiverState {
 export interface OutputSubscription {
   subscription_id: string; receiver_uid: ReceiverUid; kind: TrackKind;
   format: 'cf32_le' | 'pcm_f32' | 'jsonl'; actual_rate_hz: number | null;
-  state: 'active' | 'ended' | 'failed'; fault: Fault | null;
+  state: 'starting' | 'active' | 'ended' | 'failed'; fault: Fault | null;
+  samples?: U64; bytes?: U64;
 }
 export interface RecordingTrack {
   track_id: string; kind: TrackKind; format: 'cf32_le' | 'pcm_f32' | 'jsonl';
@@ -48,9 +49,10 @@ export interface RecordingTask {
 }
 export interface ServiceSnapshot {
   contract: 'multichannel-draft-v1'; transport: 'fixture' | 'native'; revision: U64;
-  capabilities: { max_channels: number; capacity_target: number; modes: string[] };
+  service_id?: string;
+  capabilities: { max_channels: number; capacity_target: number; modes: string[]; commands?: string[]; recording?: boolean; monitor_mixing?: boolean };
   capture: { source_id: string; center_hz: number; usable_bandwidth_hz: number;
-    input_rate_hz: number; epoch: U64; state: 'running' | 'failed' };
+    input_rate_hz: number; epoch: U64; state: 'running' | 'failed'; source_kind?: 'fixture' | 'hardware' };
   receivers: ReceiverState[]; outputs: OutputSubscription[]; recordings: RecordingTask[];
 }
 export interface ConfigureCommand {
@@ -75,8 +77,10 @@ export type ServiceCommand = ConfigureCommand | SceneCommand
   | { type: 'retire'; request_id: string; receiver_uid: ReceiverUid };
 export interface CommandReply { request_id: string; snapshot: ServiceSnapshot; fault: Fault | null }
 export type ServiceEvent = { type: 'snapshot'; snapshot: ServiceSnapshot }
+  | { type: 'stream_start'; receiver_uid: ReceiverUid; source_id: string; stream: StreamIdentity;
+      format: 'cf32_le'; baseband: BasebandConfig; first_sequence: U64; clock: SourceClock }
   | { type: 'stream_boundary'; receiver_uid: ReceiverUid; previous: StreamIdentity | null;
-      next: StreamIdentity | null; reason: string; clock: SourceClock | null }
+      next: StreamIdentity | null; reason: string; clock: SourceClock | null; drained?: boolean }
   | { type: 'fault'; fault: Fault };
 export interface ReceiverAdapter {
   snapshot(): ServiceSnapshot;
