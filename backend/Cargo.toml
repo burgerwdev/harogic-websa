@@ -19,6 +19,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync",
 websa-dsp = { path = "../dsp/core" }
 df = { package = "deep_filter", path = "../dsp/deepfilter", default-features = false, features = ["tract"] }
 ndarray = "0.15"
+tract-onnx = "=0.21.4"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-23"] }
 zstd = "0.13.3"
 crc32fast = "1"
 tar = "0.4.46"

@@ -1,6 +1,6 @@
 {
   "name": "web-sa",
-  "version": "1.11.4",
+  "version": "1.12.2",
   "private": true,
   "type": "module",
   "scripts": {

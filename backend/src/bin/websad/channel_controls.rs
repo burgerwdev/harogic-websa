@@ -256,7 +256,9 @@ impl DevState {
         }
         if !(-1.0..=1000.0).contains(&config.deemph_us) { return Err("deemph_us must be in -1..=1000".into()); }
         if !(0.0..=1.0).contains(&config.nr_strength) { return Err("nr_strength must be in 0..=1".into()); }
-        if !matches!(config.nr_algorithm.as_str(), "wiener" | "dfn") { return Err("nr_algorithm must be wiener or dfn".into()); }
+        if websa_channelizer::nr::NrAlgorithm::parse(&config.nr_algorithm).is_none() {
+            return Err("nr_algorithm must be wiener, dfn, gtcrn, ul-unas or fastenhancer".into());
+        }
         if !(0.0..=100.0).contains(&config.nr_atten_db) { return Err("nr_atten_db must be in 0..=100".into()); }
         if !(8_000..=192_000).contains(&config.audio_rate) { return Err("audio_rate must be in 8000..=192000".into()); }
         config.validate()?;

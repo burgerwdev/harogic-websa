@@ -393,7 +393,10 @@ def main() -> int:
         page.wait_for_timeout(1200)
 
         print('5) a measurement owns the display (waterfall disabled)')
-        page.click('[data-action="toggle-waterfall"]')
+        # SDR entry may already have enabled the waterfall. Establish On before
+        # checking measurement ownership rather than toggling an unknown state.
+        if not page.locator('#btn-waterfall').evaluate("e => e.classList.contains('active')"):
+            page.click('[data-action="toggle-waterfall"]')
         page.wait_for_timeout(1200)
         check('waterfall can be enabled', page.evaluate(
             "document.getElementById('btn-waterfall').classList.contains('active')"))

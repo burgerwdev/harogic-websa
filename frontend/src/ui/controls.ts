@@ -6,7 +6,7 @@ import { setSdrHoverFrequency } from './sdrHoverPassband';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { demodBandHz, sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
+import { parseNrAlgo, demodBandHz, sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
 import { sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxClockRecovery, sdrRadiofaxIoc,
   sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPhasePixels, sdrRadiofaxPolarity } from './sdrState';
 import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTuningUi';
@@ -947,7 +947,7 @@ function syncSdrButtons() {
   for (const id of ['btn-sdr-agc', 'input-sdr-squelch', 'btn-sdr-nr',
     'select-sdr-nr-algo', 'select-sdr-nr-strength', 'input-sdr-nr-atten']) {
     const control = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | HTMLButtonElement | null;
-    if (control) control.disabled = drm || (id === 'select-sdr-nr-strength' && sdrNrAlgo.get() === 'dfn');
+    if (control) control.disabled = drm || (id === 'select-sdr-nr-strength' && sdrNrAlgo.get() !== 'wiener');
   }
   renderSdrFilter();
   const dv = sdrDeemph.get();
@@ -1345,7 +1345,7 @@ export function syncSdrPanel(s: any) {
   }
   if (receiver.nr != null) sdrNr.confirm(!!receiver.nr);
   if (receiver.nr_strength != null) sdrNrStrength.confirm(Number(receiver.nr_strength));
-  if (receiver.nr_algorithm != null) sdrNrAlgo.confirm(receiver.nr_algorithm === 'dfn' ? 'dfn' : 'wiener');
+  if (receiver.nr_algorithm != null) sdrNrAlgo.confirm(parseNrAlgo(receiver.nr_algorithm));
   if (receiver.nr_atten_db != null) sdrNrAtten.confirm(Number(receiver.nr_atten_db));
   for (const channel of channels) {
     if (channel.channel !== currentSdrChannel() && [1, 2, 3].includes(channel.channel)) {
@@ -1644,7 +1644,7 @@ export function bindActions() {
     'toggle-sdr-nr': () => toggleSdrNr(),
     'toggle-decode-window': () => toggleDecodeWindow(),
     'set-sdr-nr-strength': (el) => setSdrNrStrength(Number((el as HTMLSelectElement).value)),
-    'set-sdr-nr-algo': (el) => setSdrNrAlgo((el as HTMLSelectElement).value === 'dfn' ? 'dfn' : 'wiener'),
+    'set-sdr-nr-algo': (el) => setSdrNrAlgo(parseNrAlgo((el as HTMLSelectElement).value)),
     'set-sdr-nr-atten': (el) => setSdrNrAtten(Number((el as HTMLInputElement).value)),
     'toggle-sdr-audio': () => toggleSdrAudio(),
     'rta-span-down': () => rtaSpanStep(1),

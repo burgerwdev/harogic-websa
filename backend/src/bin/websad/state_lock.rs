@@ -86,6 +86,10 @@ impl DevState {
 
     pub(super) fn status_snapshot(&self) -> StatusSnapshot {
         let mut sdr_actual = self.sdr_actual.clone();
+        if self.swp.mode == "sdr" {
+            sdr_actual["receiver_workers"] = self.receiver_workers.as_ref()
+                .map(|workers| workers.stats()).unwrap_or(Value::Null);
+        }
         if let Some(pipeline) = self.pipeline.as_ref().filter(|_| self.swp.mode == "sdr") {
             pipeline.snapshot.write_channel_status(&mut sdr_actual);
             let (refclk, refclk_src) = pipeline.clock();

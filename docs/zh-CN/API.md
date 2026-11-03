@@ -238,7 +238,9 @@ AM 默认使用包络检波，`am_sync:true` 切换到载波恢复同步检波�
 
 原生 WFM 默认通过 AUD2 输出左右声道交错立体声，显式 `stereo:false` 输出单声道。DRM/DRM+ 的编解码音频不使用模拟 AGC、NR、静噪和去加重，界面禁用这些控件，保留音量和播放。停用频道可在未设置有效频率时局部更新，启用时再校验调谐。SSTV 的 `sstv_mode:null` 为自动识别，支持的整数值为固定模式；浏览器确认进入 SDR 后才重放保存选择。显示抽取、`sdr.actual.iq_rate` 捕获采样率与频道 `actual_iq_rate` 分别表示不同量。
 
-命令先校验完整的候选频道配置，再修改状态。CW pitch 超出 100..1600 Hz 时返回 `bad_parameter`，不触发接收器故障。切换 NR 保留解码历史和连续的 `audio_index`；源位置跳过被丢弃的降噪器尾部。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。DFN 初始化失败或运行条件不受支持时选择 Wiener；运行时错误触发接收器故障，不回退。
+命令先校验完整的候选频道配置，再修改状态。CW pitch 超出 100..1600 Hz 时返回 `bad_parameter`，不触发接收器故障。切换 NR 保留解码历史和连续的 `audio_index`；源位置跳过被丢弃的降噪器尾部。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。神经 NR 初始化失败或运行条件不受支持时选择 Wiener；运行时推理错误触发接收器故障，不回退。
+
+`nr_algorithm` 接受 `wiener`、`dfn`（DeepFilterNet3）、`gtcrn`、`ul-unas` 和 `fastenhancer`。`nr_strength`（0–1）控制 Wiener；`nr_atten_db`（0–100 dB）控制神经 NR，0 dB 返回原音，数值越高混入的原音越少。神经模式要求监听 PCM 为 48 kHz。模型版本、许可、采样率转换及信号延迟见 [`backend/models/nr/README.txt`](../../backend/models/nr/README.txt)。
 
 `ifbw` 的含义随模式变化。AM/DSB/NFM/WFM/PM 中，它表示以拨盘频率为中心的总带宽。USB/LSB 中，它表示外侧高截止，内侧载波保护带为 `clamp(0.1 × ifbw, 100, 300)` Hz，LSB 取镜像负频率。CW 以 `max(100, pitch)` Hz 为中心，两侧各延伸 `max(50, ifbw) / 2`。浏览器数值编辑器与后端均对其他可编辑模式执行 50 Hz 下限，对 USB/LSB 执行 101 Hz 下限，避免保护带退化。浏览器还检查当前 `sdr.filter_limits`；后端另按所选模式的包络、采集和输出采样率、粗箱通带及频道容量执行准入。非法或不能准入的请求会被拒绝，不会静默截断。预设是推荐值而非上限：AM 100 kHz、SSB 50 kHz、CW 10 kHz 等高于常用预设的自定义值在通过准入时允许使用。输入支持 Hz/kHz/MHz，单位切换不改变底层 Hz 值，虚拟键盘与手动输入共用校验和提交路径。
 

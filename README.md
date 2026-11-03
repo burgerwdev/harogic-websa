@@ -34,7 +34,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
 - **Measurements** — amplitude (n-dB bandwidth), harmonic (H1–H5), phase noise
 - **Channel measurements** — channel power, occupied bandwidth (90/95/99%), ACPR
 - **SDR receiver** — IQ streaming with native Rust DSP: AM/DSB/USB/LSB/CW/NFM/WFM/PM
-  demodulators, noise reduction (Wiener, optional DeepFilterNet3), audio chain, panadapter and
+  demodulators, noise reduction (Wiener, DeepFilterNet3, GTCRN, UL_UNAS, FastEnhancer), audio chain, panadapter and
   waterfall; the browser handles control, playback and display
 - **SDR filter** — per-mode presets and exact Hz/kHz/MHz entry. Drag the spectrum passband edges
   to adjust bandwidth, or its top frequency handle to tune. View focuses the passband for fine adjustment.
@@ -231,6 +231,7 @@ regeneration, guards, document/version checks and hardware prerequisites.
 ## Open-Source Notes
 
 - Project code (backend + frontend): **MIT** licensed
+- Native listening NR includes DeepFilterNet3, GTCRN, UL_UNAS, and FastEnhancer. The latter three use official MIT-licensed ONNX weights and the native ONNX Runtime CPU library; PCM DSP and streaming are implemented in Rust. See [model versions, notices, rates, attenuation and delay](backend/models/nr/README.txt). Source builds can restore the pinned library with `bash tools/fetch-nr-runtime.sh` before `make package-runtime`.
 - `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
 - Official [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` is **GNU LGPL v2.1 or later** and is downloaded at build time, not vendored. `tools/soapy-htra-stream-format.patch` is this project's compatibility patch and is applied only to a private build copy.

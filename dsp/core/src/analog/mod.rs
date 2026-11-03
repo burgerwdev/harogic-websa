@@ -25,9 +25,10 @@
 
 use crate::ddc::fir::{design_complex_bandpass, design_lowpass, ComplexBandFilter, FirState};
 use crate::ddc::resampler::LinearResampler;
-use crate::ddc::RmsAgc;
+use agc::AnalogAgc;
 use crate::plugin::{AnalogDemodulator, DemodConfig};
 
+mod agc;
 mod am_sync;
 pub use am_sync::AmStatus;
 pub mod fm_stereo;
@@ -35,6 +36,8 @@ pub mod rds;
 
 #[cfg(test)]
 mod am_sync_tests;
+#[cfg(test)]
+mod agc_tests;
 
 /// The rate every analog mode produced before the consumer's rate became configurable (the
 /// AudioWorklet's rate is passed in as `out_rate` now; this stays the default and the tests'
@@ -202,7 +205,7 @@ pub struct AnalogDemod {
     audio_lp: FirState,
     resampler: LinearResampler,
     deemph: Option<FirState>,
-    agc: RmsAgc,
+    agc: AnalogAgc,
     /// The stereo/RDS side chain (WFM only, and only on a baseband wide enough for the
     /// subcarriers). `None` elsewhere: the side chain is strictly additive.
     stereo: Option<fm_stereo::FmStereo>,
@@ -257,7 +260,7 @@ impl AnalogDemod {
             audio_lp: FirState::new(design_lowpass(fs, audio_cut, AUDIO_TAPS)),
             resampler: LinearResampler::new(fs, out_rate),
             deemph: Self::deemph_taps(spec.deemph_us, out_rate),
-            agc: RmsAgc::reference(),
+            agc: AnalogAgc::new(out_rate, prechannelized),
             // WFM's broadcast composite carries the 19/38/57 kHz components the side chain
             // demodulates; a baseband too narrow for them builds no side chain at all.
             // The side chain reads the detector's output, so it runs ahead of the mono by the
@@ -284,7 +287,17 @@ impl AnalogDemod {
         if let (Some(stereo), Some(deemph)) = (this.stereo.as_mut(), this.deemph.as_ref()) {
             stereo.set_deemph_taps(deemph.taps().to_vec());
         }
+        this.agc.settle_for(this.agc_settling_samples());
         this
+    }
+
+    /// Full FIR support, not group delay: no zero-filled filter history may enter the native
+    /// AGC's initial RMS measurement. Include one input sample for interpolation/detection.
+    fn agc_settling_samples(&self) -> usize {
+        let band = if self.prechannelized { 0 } else { BAND_TAPS - 1 };
+        let input = band + self.audio_lp.taps().len().saturating_sub(1) + 1;
+        (input as f64 * self.out_rate / self.fs).ceil() as usize
+            + self.deemph.as_ref().map_or(0, |filter| filter.taps().len().saturating_sub(1))
     }
 
     pub fn spec(&self) -> ModeSpec {
@@ -331,6 +344,7 @@ impl AnalogDemod {
             let taps = self.deemph.as_ref().map(|d| d.taps().to_vec()).unwrap_or_default();
             stereo.set_deemph_taps(taps);
         }
+        self.agc.settle_for(self.agc_settling_samples());
     }
 
     /// The listener's AGC switch: `true` adapts, `false` uses fixed PCM scaling.
@@ -536,12 +550,13 @@ impl AnalogDemodulator for AnalogDemod {
         }
         let mut levelled = core::mem::take(&mut self.levelled);
         if self.agc_enabled {
-            self.agc.process_into(&rs, false, &mut levelled);
+            self.agc.process_into(&rs, &mut levelled);
         } else {
             // AGC off: unity gain. The block still lands in `levelled` so the stereo side
             // chain's gain trace (which reads these two buffers) keeps one consistent scale.
             levelled.clear();
             levelled.extend_from_slice(&rs);
+            self.agc.bypass(rs.len());
         }
         out.extend_from_slice(&levelled);
 
@@ -624,6 +639,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        self.agc.settle_for(self.agc_settling_samples());
         if let Some(am) = self.am.as_mut() { am.reset(); }
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
@@ -638,6 +654,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        self.agc.settle_for(self.agc_settling_samples());
         if let Some(am) = self.am.as_mut() { am.reset(); }
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
@@ -656,6 +673,7 @@ impl AnalogDemodulator for AnalogDemod {
             deemph.reset();
         }
         self.agc.reset();
+        self.agc.settle_for(self.agc_settling_samples());
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;

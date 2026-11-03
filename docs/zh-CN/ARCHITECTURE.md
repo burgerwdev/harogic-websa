@@ -96,7 +96,7 @@ SoapyRemote 在 setup 阶段就启动读取线程。官方驱动的兼容补丁�
 | 流水线编排与准入 | `backend/src/bin/websad/sdr_pipeline.rs`, `backend/src/bin/websad/service_preflight.rs` |
 | 原生接收器编排 | `backend/src/bin/websad/receiver_workers.rs`, `backend/src/receiver.rs` |
 | 模拟与数字 DSP | `dsp/core/src/analog/`, `dsp/core/src/digital/`, `dsp/core/src/pipeline.rs` |
-| 原生降噪 | `backend/src/nr.rs`, `dsp/deepfilter/src/` |
+| 原生降噪 | `backend/src/nr.rs`, `backend/src/nr_neural.rs`, `backend/models/nr/`, `dsp/deepfilter/src/` |
 | 二进制协议与订阅边界 | `backend/src/wire.rs`, `backend/src/bin/websad/service_stream.rs`, `backend/src/bin/websad/subscriber_stream.rs` |
 | 浏览器流与解码展示 | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/decodeWorker.ts`, `frontend/src/ui/decodeWindow.ts` |
 | 播放 | `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts`, `frontend/src/audio/sdrAudioWorklet.js` |
@@ -188,7 +188,7 @@ stdin 字节须写完才退休，写入停滞显式失败。OnAir 不确认协�
 包含图像条带的解码像素内存，每图最多 512 个条带。可选同源弹窗移动同一个 DOM 子树，
 共享日志和订阅；关闭或停靠恢复悬浮面板，主题、语言与缩放跟随主窗口。
 
-DFN 运行时错误经 `Receiver` 传入接收器故障路径，不会在流中静默切换算法。初始化失败或不支持 DFN 时，明确选择 Wiener。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。切换 NR 保留解码历史和连续的 `audio_index`；源位置会前移，跳过被丢弃的降噪器尾部。
+原生监听 NR 提供 Wiener、DeepFilterNet3、GTCRN、UL_UNAS 和 FastEnhancer。DeepFilterNet3 沿用 Tract 运行时，其余神经模型使用随包附带的原生 ONNX Runtime CPU 库。模型会话按接收器线程预先准备；循环缓存、分帧和采样率转换按通道及左右声道独立保留。运行时推理错误经 `Receiver` 传入接收器故障路径，不会在流中静默切换算法。初始化失败或不支持神经 NR 时，明确选择 Wiener。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。切换 NR 保留解码历史和连续的 `audio_index`；源位置会前移，跳过被丢弃的降噪器尾部。
 
 SSTV 解码率为 8 kHz。音调分类使用 0.5 ms 的频率均值，像素估计保留原始时序。1900 Hz leader 校准最多 ±400 Hz 的频率偏移，用于 VIS、行同步和像素值；VIS 频差、时长和奇偶校验保持严格。实际可用频偏仍受接收通带限制。电平持续两秒低于当前图像峰值的 5% 时结束中断图像；检测使用 AGC 前音频，窗口不超过 10 ms。图像边界按顺序输出，重新固定模式时使用全新画布。
 

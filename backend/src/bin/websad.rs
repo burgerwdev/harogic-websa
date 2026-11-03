@@ -4898,6 +4898,17 @@ fn load_golden() -> (Value, Value) {
     schema["commands"]["SET_SDR"]["params"].as_array_mut().unwrap().push(json!({
         "name":"listen", "type":"number", "required":false, "unit":"Hz"
     }));
+    for command in ["SET_SDR_DEMOD","SET_SDR_AUX","SET_SDR_DDC"] {
+        if let Some(params)=schema["commands"][command]["params"].as_array_mut() {
+            params.extend([
+                json!({"name":"nr","type":"boolean","required":false,"default":false}),
+                json!({"name":"nr_algorithm","type":"choice","required":false,"default":"wiener",
+                    "choices":["wiener","dfn","gtcrn","ul-unas","fastenhancer"]}),
+                json!({"name":"nr_strength","type":"number","required":false,"default":0.6,"min":0.0,"max":1.0}),
+                json!({"name":"nr_atten_db","type":"number","required":false,"default":10.0,"min":0.0,"max":100.0,"unit":"dB"}),
+            ]);
+        }
+    }
     let mut channel = schema["commands"]["SET_SDR_DEMOD"].clone();
     channel["params"].as_array_mut().unwrap().push(json!({
         "name": "channel", "type": "integer", "choices": [1, 2, 3], "default": 1,
@@ -5802,6 +5813,30 @@ mod tests {
             assert_eq!(u64::from_le_bytes(next[0][40..48].try_into().unwrap()), count as u64);
             assert_eq!(u32::from_le_bytes(next[0][36..40].try_into().unwrap()), entry.epoch);
         }
+    }
+
+    #[test]
+    fn neural_nr_api_modes_keep_capture_settings_and_confirm_real_ids() {
+        let (golden,schema)=load_golden();let mut state=DevState::new(golden,schema);
+        let (_,schema)=load_golden();
+        for command in ["SET_SDR_DEMOD","SET_SDR_CHANNEL"] {
+            let params=schema["commands"][command]["params"].as_array().unwrap();
+            let algorithm=params.iter().find(|p|p["name"]=="nr_algorithm").unwrap();
+            assert_eq!(algorithm["choices"],json!(["wiener","dfn","gtcrn","ul-unas","fastenhancer"]));
+        }
+        state.swp.mode="sdr".into();
+        let original=state.channel_configs();
+        for id in ["dfn","gtcrn","ul-unas","fastenhancer"] {
+            dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"channel":1,"nr":true,"nr_algorithm":id})).unwrap();
+            let configs=state.channel_configs();
+            assert_eq!(configs[0].nr_algorithm,id);assert!(configs[0].nr);
+            let mut expected=original[0].clone();expected.nr=true;expected.nr_algorithm=id.into();
+            assert_eq!(configs[0],expected);
+            assert_eq!(state.status()["sdr"]["channels"][0]["nr_algorithm"],id);
+        }
+        let accepted=state.channel_configs();
+        assert!(dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"channel":1,"nr_algorithm":"fake"})).is_err());
+        assert_eq!(state.channel_configs(),accepted);
     }
 
     #[test]

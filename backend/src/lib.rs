@@ -8,6 +8,7 @@ pub mod rate_plan;
 pub mod receiver;
 pub mod cw;
 pub mod nr;
+mod nr_neural;
 pub mod catalog;
 pub mod external;
 mod wire;

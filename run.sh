@@ -80,8 +80,11 @@ nohup "${DETACH[@]}" "${ENV_ARGS[@]}" "$BIN" >> "$LOG" 2>&1 < /dev/null 9>&- &
 PID=$!
 if process_identity; then START="$CURRENT_START"; fi
 health_url
-for _ in {1..50}; do
-  if [[ -z "$START" ]]; then break; fi
+for _ in {1..150}; do
+  # A cold native binary and decoder capability probes can outlast 10 seconds.
+  # Re-read identity if the child was not scheduled before the first /proc read.
+  if [[ -z "$START" ]] && process_identity; then START="$CURRENT_START"; fi
+  if [[ -z "$START" ]]; then sleep 0.2; continue; fi
   if [[ "$RECORDED" == 0 ]] && owned_process; then save_state; RECORDED=1; fi
   if owned_process && owns_listener && curl --noproxy '*' -sf -m 1 "$URL" >/dev/null && owned_process; then
     save_state

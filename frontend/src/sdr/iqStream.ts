@@ -351,11 +351,7 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
     case 'warning':
       setAmInfo(null, channel);
       break;
-    case 'nr-status': {
-      const el = document.getElementById('nr-dfn-status');
-      if (el && channel === 1) { el.textContent = String(d.reason || d.state || ''); el.style.display = d.reason ? '' : 'none'; }
-      break;
-    }
+    case 'nr-status':
     case 'sstv-mode':
     case 'sstv':
       break;

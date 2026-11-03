@@ -100,8 +100,8 @@ impl ReceiverConfig {
                 return Err("receiver passband must fit below the IQ Nyquist limit".into());
             }
         }
-        if !matches!(self.nr_algorithm.as_str(), "wiener"|"dfn") {
-            return Err("NR algorithm must be wiener or dfn".into());
+        if NrAlgorithm::parse(&self.nr_algorithm).is_none() {
+            return Err("NR algorithm must be wiener, dfn, gtcrn, ul-unas or fastenhancer".into());
         }
         if self.sstv_mode.is_some_and(|index| index >= digital::sstv::SSTV_MODES.len()) {
             return Err("invalid SSTV mode index".into());
@@ -113,8 +113,7 @@ impl ReceiverConfig {
     }
     fn nr_algorithm(&self) -> NrAlgorithm {
         if !self.nr || matches!(self.mode.as_str(), "drm"|"drmplus") { NrAlgorithm::Off }
-        else if self.nr_algorithm == "dfn" { NrAlgorithm::Dfn }
-        else { NrAlgorithm::Wiener }
+        else { NrAlgorithm::parse(&self.nr_algorithm).unwrap_or(NrAlgorithm::Wiener) }
     }
     fn radiofax_view(&self) -> websa_dsp::plugin::RadiofaxConfigView {
         websa_dsp::plugin::RadiofaxConfigView {
@@ -721,7 +720,9 @@ impl Receiver {
         if status_due {
             let status = self.nr.status();
             out.events.push(json!({"type":"nr-status","requested":algorithm_name(status.requested),
-                "effective":algorithm_name(status.effective),"state":status.state,"reason":status.reason}));
+                "effective":algorithm_name(status.effective),"state":status.state,"reason":status.reason,
+                "model":self.nr.model_id(),"latencySamples":self.nr.latency_samples(),
+                "audioRate":self.config.audio_rate}));
         }
         Ok(out)
     }
@@ -834,7 +835,7 @@ fn radiofax_events(fax: &mut dyn websa_dsp::plugin::RadiofaxControl, epoch: u64,
 }
 
 fn algorithm_name(algorithm: NrAlgorithm) -> &'static str {
-    match algorithm { NrAlgorithm::Off=>"off",NrAlgorithm::Wiener=>"wiener",NrAlgorithm::Dfn=>"dfn" }
+    algorithm.name()
 }
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1037,6 +1038,50 @@ mod tests {
     }
 
     #[test]
+    fn native_ssb_agc_preserves_pcm_and_capture_clocks_through_listening_changes() {
+        let config = ReceiverConfig { mode:"usb".into(), input_rate:6781.684027777777,
+            center_hz:14_270_000, if_bw:2700.0, squelch_dbm:-160.0, ..ReceiverConfig::default() };
+        let mut receiver = Receiver::new(config.clone()).unwrap();
+        let mut bypass = Receiver::new(ReceiverConfig {agc:false,..config}).unwrap();
+        let epoch = receiver.epoch();
+        let anchor = (1_u64 << 53) + 17;
+        let mut frames = 0_u64;
+        let mut input = 0_u64;
+        for packet in 0..80 {
+            if packet == 20 || packet == 40 {
+                receiver.configure(ReceiverConfig {agc:packet == 40,..receiver.config().clone()}).unwrap();
+                assert_eq!(receiver.epoch(),epoch);
+            }
+            let count = if packet % 2 == 0 {253} else {254};
+            let iq:Vec<f32> = (input..input + count).flat_map(|index| {
+                let phase = std::f64::consts::TAU * 1000.0 * index as f64 / 6781.684027777777;
+                [(0.0002 * phase.cos()) as f32,(0.0002 * phase.sin()) as f32]
+            }).collect();
+            let clock = InputClock {first_sample_index:anchor + input * 576,
+                input_rate:3_906_250.0, delay_input_samples:0.0};
+            let output = receiver.process(&iq,clock,Some(-100.0)).unwrap();
+            let raw = bypass.process(&iq,clock,Some(-100.0)).unwrap();
+            assert_eq!(output.audio.len(),raw.audio.len());
+            for (audio,raw) in output.audio.iter().zip(&raw.audio) {
+                assert_eq!(audio.first_frame_index,frames);
+                assert_eq!(audio.samples.len(),raw.samples.len(),"AGC must not buffer PCM");
+                let key = |p:Option<SamplePosition>| p.map(|p|(p.index,p.fraction_num,p.fraction_den));
+                assert_eq!(key(audio.source_position),key(raw.source_position));
+                assert_eq!(audio.clock.delay_input_samples,192.0 * 576.0);
+                assert!(audio.codec_delay_known);
+                let position = audio.source_position.unwrap();
+                // Exact capture/PCM ratio is 15625/192; do not lose the large integer anchor.
+                assert_eq!((position.index-anchor) as u128 * 192
+                    + position.fraction_num as u128 * 192 / position.fraction_den as u128,
+                    frames as u128 * 15625);
+                frames += audio.samples.len() as u64;
+            }
+            input += count;
+        }
+        assert!(frames > 140_000);
+    }
+
+    #[test]
     fn invalid_geometry_is_rejected_before_constructing_any_mode() {
         for mode in MODES {
             for rate in [0,1,7_999,192_001,u32::MAX] {
@@ -1082,10 +1127,11 @@ mod tests {
 
     #[test]
     fn codec_modes_keep_nr_preferences_without_running_a_reducer() {
-        for mode in ["drm","drmplus"] {
+        for (mode,id) in ["drm","drmplus"].into_iter().flat_map(|mode|
+            ["dfn","gtcrn","ul-unas","fastenhancer"].map(|id|(mode,id))) {
             let mut config = mode_config(mode);
             config.nr = true;
-            config.nr_algorithm = "dfn".into();
+            config.nr_algorithm = id.into();
             let mut receiver = Receiver::new(config.clone()).unwrap();
             assert!(receiver.config().nr);
             assert_eq!(receiver.nr.status().effective,NrAlgorithm::Off);
@@ -1096,6 +1142,51 @@ mod tests {
             listen.nr = true;
             receiver.configure(listen).unwrap();
             assert_eq!(receiver.nr.status().effective,NrAlgorithm::Wiener);
+        }
+    }
+
+    #[test]
+    fn neural_receivers_keep_source_clock_delay_and_stereo_cadence() {
+        let anchor=(1_u64<<53)+19;
+        for mode in ["am","usb","wfm"] {
+            for id in ["dfn","gtcrn","ul-unas","fastenhancer"] {
+                let mut config=mode_config(mode);config.nr=true;config.nr_algorithm=id.into();
+                config.audio_rate=48000;config.nr_atten_db=20.0;
+                let input_rate=config.input_rate;
+                let mut receiver=Receiver::new(config).unwrap();
+                assert_eq!(receiver.nr.status().effective.name(),id,"{:?}",receiver.nr.status());
+                let nr_delay=receiver.nr.latency_samples().unwrap();
+                let mut frames=0;let mut produced=0;
+                for i in 0..60 {
+                    let n=if i%2==0 {1799} else {503};
+                    let iq:Vec<f32>=(0..n).flat_map(|k|{
+                        let t=(produced+k) as f64/input_rate;
+                        [(0.1*(std::f64::consts::TAU*700.0*t).cos()) as f32,0.0]
+                    }).collect();
+                    let clock=InputClock {first_sample_index:anchor+produced as u64,
+                        input_rate,delay_input_samples:8.0};
+                    let out=receiver.process(&iq,clock,Some(-100.0)).unwrap();
+                    for audio in out.audio {
+                        let channels=if mode=="wfm" {2} else {1};
+                        assert_eq!(audio.channels,channels);
+                        assert_eq!(audio.first_frame_index,frames);
+                        assert!(audio.samples.iter().all(|x|x.is_finite()));
+                        let position=audio.source_position.unwrap();
+                        let expected=SamplePosition {index:anchor,fraction_num:0,fraction_den:1}
+                            .checked_advance(frames,input_rate,48000).unwrap();
+                        assert_eq!(position.index,expected.index);
+                        assert_eq!(position.fraction_num as u128*expected.fraction_den as u128,
+                            expected.fraction_num as u128*position.fraction_den as u128);
+                        let if_delay=if mode=="usb" {192.0} else {64.0};
+                        let expected_delay=8.0+if_delay+nr_delay as f64*input_rate/48000.0;
+                        assert!((audio.clock.delay_input_samples-expected_delay).abs()<1e-8);
+                        frames+=(audio.samples.len()/channels as usize) as u64;
+                    }
+                    produced+=n;
+                }
+                assert!(frames>0);
+                assert!(receiver.analog_frames-frames<1920,"unbounded PCM carry {mode}/{id}");
+            }
         }
     }
 

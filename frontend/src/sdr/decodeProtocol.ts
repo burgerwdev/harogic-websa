@@ -31,6 +31,7 @@ export interface ReceiverEvent {
 	elapsedSeconds?: number; clockStatus?: RadiofaxClockStatus; clockSource?: RadiofaxClockSource;
 	phasePixels?: number; clockPpm?: number; clockConfidence?: number; complete?: boolean; partial?: boolean;
 	reason?: string | null; state?: string; index?: number; message?: string;
+	requested?: string; effective?: string; model?: string | null; latencySamples?: number; audioRate?: number;
 	status?: DrmReceiverStatus;
 }
 export interface DecodeEnvelope {

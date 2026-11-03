@@ -236,10 +236,14 @@ export const sdrNrStrength = createParam<number>('sdr.nrStrength', {
 });
 
 /** Native receiver noise reduction algorithm. */
-export type NrAlgo = 'wiener' | 'dfn';
+export type NrAlgo = 'wiener' | 'dfn' | 'gtcrn' | 'ul-unas' | 'fastenhancer';
+export function parseNrAlgo(raw: string): NrAlgo {
+    if (raw === 'dfn2') return 'dfn';
+    return ['dfn','gtcrn','ul-unas','fastenhancer'].includes(raw) ? raw as NrAlgo : 'wiener';
+}
 export const sdrNrAlgo = createParam<NrAlgo>('sdr.nrAlgo', {
     fallback: 'wiener', scope: 'sdr', persistKey: 'web-sa-sdr-nr-algo',
-	parse: (raw: string) => (raw === 'dfn' || raw === 'dfn2' ? 'dfn' : 'wiener'), // 'dfn2' = old persisted key
+	parse: parseNrAlgo,
 	serialize: String,
 	equals: (a: NrAlgo, b: NrAlgo) => a === b,
 });
@@ -513,12 +517,16 @@ export function renderSdrState(): void {
 		nrButton.textContent = sdrNr.get() ? 'On' : 'Off';
 	}
 	const nrAlgo = select('select-sdr-nr-algo');
-	if (nrAlgo) nrAlgo.value = sdrNrAlgo.get();
-    const dfnSelected = sdrNrAlgo.get() === 'dfn';
-	// The DeepFilterNet3 attenuation slider is only meaningful for dfn (Wiener has its own strength).
+	if (nrAlgo) {
+		nrAlgo.value = sdrNrAlgo.get();
+		nrAlgo.dataset.i18nTitle = `nr_algo_${sdrNrAlgo.get().replace('-', '_')}_tip`;
+		nrAlgo.title = t(nrAlgo.dataset.i18nTitle);
+	}
+    const neuralSelected = sdrNrAlgo.get() !== 'wiener';
+	// All neural reducers use attenuation; Wiener has its own strength.
 	const attenRow = document.getElementById('nr-atten-row');
 	const attenInput = input('input-sdr-nr-atten');
-	if (attenRow) attenRow.style.display = dfnSelected ? '' : 'none';
+	if (attenRow) attenRow.style.display = neuralSelected ? '' : 'none';
 	if (attenInput) {
 		attenInput.value = String(sdrNrAtten.get());
 		const attenLabel = document.getElementById('cur-nr-atten');
@@ -526,10 +534,8 @@ export function renderSdrState(): void {
 	}
 	const nrStrength = select('select-sdr-nr-strength');
 	if (nrStrength) {
-        // DeepFilterNet3 uses the attenuation control in place of strength.
-		const dfn = sdrNrAlgo.get() === 'dfn';
-		nrStrength.hidden = dfn;
-		nrStrength.disabled = dfn || sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus';
+		nrStrength.hidden = neuralSelected;
+		nrStrength.disabled = neuralSelected || sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus';
 		// The nearest preset: the slot holds a number (a custom answer is possible via storage).
 		const value = sdrNrStrength.get();
 		let nearest = '0.6';

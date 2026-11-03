@@ -98,7 +98,7 @@ These are current implementation paths. `tools/checks/check_doc_paths.py` checks
 | Pipeline orchestration and admission | `backend/src/bin/websad/sdr_pipeline.rs`, `backend/src/bin/websad/service_preflight.rs` |
 | Native receiver orchestration | `backend/src/bin/websad/receiver_workers.rs`, `backend/src/receiver.rs` |
 | Analog and digital DSP | `dsp/core/src/analog/`, `dsp/core/src/digital/`, `dsp/core/src/pipeline.rs` |
-| Native noise reduction | `backend/src/nr.rs`, `dsp/deepfilter/src/` |
+| Native noise reduction | `backend/src/nr.rs`, `backend/src/nr_neural.rs`, `backend/models/nr/`, `dsp/deepfilter/src/` |
 | Binary wire and subscriber boundaries | `backend/src/wire.rs`, `backend/src/bin/websad/service_stream.rs`, `backend/src/bin/websad/subscriber_stream.rs` |
 | Browser stream and decoder presentation | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/decodeWorker.ts`, `frontend/src/ui/decodeWindow.ts` |
 | Playback | `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts`, `frontend/src/audio/sdrAudioWorklet.js` |
@@ -199,7 +199,7 @@ channel, including decoded image-strip memory; each picture retains at most 512 
 The optional same-origin popup adopts that same DOM subtree, logs and subscriptions. Closing
 or docking restores the floating surface; theme, language and scale follow the opener.
 
-A runtime DFN error propagates through `Receiver` to the scoped receiver failure path; it does not silently switch algorithms mid-stream. Initialization failure or unsupported DFN operation uses an explicit Wiener selection. DRM/DRM+ retain NR preferences with effective NR Off. An NR toggle keeps decoder history and continuous `audio_index`; source provenance advances over any discarded reducer tail.
+Native listening NR offers Wiener, DeepFilterNet3, GTCRN, UL_UNAS and FastEnhancer. DeepFilterNet3 uses the existing Tract runtime; the other neural models use the bundled native ONNX Runtime CPU library. Model sessions are prepared per receiver thread; recurrent caches, framing and rate conversion remain independent per channel and stereo side. A runtime inference error propagates through `Receiver` to the scoped receiver failure path; it does not silently switch algorithms mid-stream. Initialization failure or unsupported neural NR operation uses an explicit Wiener selection. DRM/DRM+ retain NR preferences with effective NR Off. An NR toggle keeps decoder history and continuous `audio_index`; source provenance advances over any discarded reducer tail.
 
 SSTV decodes at 8 kHz. Tone classification uses a 0.5 ms frequency mean; pixel estimates retain their original timing. The 1900 Hz leader calibrates a frequency offset of at most ±400 Hz for VIS, line sync and pixel values; VIS spacing, duration and parity checks remain strict. The receive passband still bounds usable offsets. Two seconds below 5% of the current picture's peak end an interrupted picture; detection uses audio before AGC in windows of at most 10 ms. Picture boundaries remain ordered, and pinning a mode again starts a fresh canvas.
 

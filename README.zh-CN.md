@@ -25,7 +25,7 @@
 - **测量模式** — 幅度（n-dB 带宽）、谐波（H1~H5）、相噪
 - **信道测量** — 信道功率、占用带宽（90/95/99%）、邻道功率比（ACPR）
 - **SDR 接收** — IQ 流式传输与原生 Rust DSP：AM/DSB/USB/LSB/CW/NFM/WFM/PM 解调、
-  降噪（Wiener，可选 DeepFilterNet3）、音频处理、频谱与瀑布图；浏览器负责控制、播放与显示
+  降噪（Wiener、DeepFilterNet3、GTCRN、UL_UNAS、FastEnhancer）、音频处理、频谱与瀑布图；浏览器负责控制、播放与显示
 - **SDR 滤波** — 按模式提供预设与 Hz/kHz/MHz 精确输入；拖动频谱通带边缘调整带宽，拖动顶部频率滑块调谐。“查看”聚焦通带，便于精细调整。
 - **数字模式** — FT8、CW 解码、DRM/DRM+ 接收、SSTV 图像解码（18 种模式）及 HF 无线电传真接收。传真使用 12 kHz USB 通路，支持 IOC 288/576、60/90/120/240 LPM、连续多页和 PNG 导出。FT8 窗口支持通联高亮、正则过滤与列排序。解码和播放边界见[已知限制](docs/zh-CN/KNOWN_ISSUES.md)。
 - **FM 立体声与 RDS** — WFM 用 19 kHz 导频和 38 kHz 差分信号恢复左右声道，
@@ -209,6 +209,7 @@ harogic-websa/
 ## 开源说明
 
 - 项目代码（后端 + 前端）：**MIT** 协议
+- 原生监听降噪包含 DeepFilterNet3，以及 GTCRN、UL_UNAS、FastEnhancer。后三项使用官方 MIT 许可 ONNX 权重和原生 ONNX Runtime CPU 库；PCM 处理和流式接收使用 Rust。参见[模型版本、许可、采样率、衰减和延迟](backend/models/nr/README.txt)。源码构建可先运行 `bash tools/fetch-nr-runtime.sh` 恢复固定版本库，再执行 `make package-runtime`。
 - `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；随项目附带供配合自有 SDK 使用
 - `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
 - 官方 [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 为 **GNU LGPL v2.1 或更高版本**，在构建时下载，不纳入仓库。`tools/soapy-htra-stream-format.patch` 是本项目的兼容补丁，只应用于私有构建副本。

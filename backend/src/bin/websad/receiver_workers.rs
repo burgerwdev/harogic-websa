@@ -93,7 +93,7 @@ impl ChannelConfig {
             || (self.mode == "cw" && !(100.0..=1600.0).contains(&self.pitch))
             || !self.nr_strength.is_finite() || !(0.0..=1.0).contains(&self.nr_strength)
             || !self.nr_atten_db.is_finite() || !(0.0..=100.0).contains(&self.nr_atten_db)
-            || !matches!(self.nr_algorithm.as_str(), "wiener" | "dfn")
+            || websa_channelizer::nr::NrAlgorithm::parse(&self.nr_algorithm).is_none()
             || !(8_000..=192_000).contains(&self.audio_rate)
             || self.sstv_mode.is_some_and(|index| index >= websa_dsp::digital::sstv::SSTV_MODES.len())
             || !matches!(self.radiofax_acquisition.as_str(), "auto" | "manual")
@@ -403,7 +403,7 @@ impl ReceiverWorkers {
             let (ready_tx, ready_rx) = mpsc::sync_channel(0);
             let handle = thread::Builder::new().name(format!("receiver-{index}"))
                 .spawn(move || {
-                    websa_channelizer::nr::prepare_dfn();
+                    websa_channelizer::nr::prepare_models();
                     if ready_tx.send(()).is_err() { return; }
                     let failure = Arc::clone(&shared);
                     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
@@ -412,7 +412,7 @@ impl ReceiverWorkers {
                     }
                 })
                 .map_err(|error| format!("spawn receiver worker: {error}"))?;
-            ready_rx.recv().map_err(|_| "receiver DFN preparation failed".to_string())?;
+            ready_rx.recv().map_err(|_| "receiver NR model preparation failed".to_string())?;
             workers.threads.push(handle);
         }
         let shared = Arc::clone(&workers.shared);
@@ -1278,6 +1278,39 @@ mod tests {
         }
     }
     use websa_channelizer::{encode_baseband, BasebandMagic};
+
+    #[test]
+    fn new_ssb_stream_identity_restarts_agc_without_a_loud_filter_transient() {
+        let mut workers = ReceiverWorkers::new().unwrap();
+        workers.configure(&[ChannelConfig {mode:"usb".into(),freq:14_270_000.0,
+            if_bw:2700.0,agc:true,volume:1.0,squelch:-160.0,..ChannelConfig::default()}]).unwrap();
+        let mut previous = None;
+        for epoch in [7,9] {
+            let registry = [ChannelRegistryEntry {channel:1,channel_id:1,epoch,
+                frequency_hz:14_270_000.0,output_rate:6781.684027777777,input_rate:3_906_250.0,
+                group_delay_samples:0.0,state:"active"}];
+            let frame = |seq,index,samples:&[f32]| encode_baseband(BasebandMagic::Primary,
+                seq,6781.684027777777,14_270_000.0,1,epoch as u64,index,0.0,samples).unwrap();
+            workers.submit(&frame(0,0,&[]),&registry).unwrap();
+            let mut pcm = Vec::new();
+            for packet in 0..12_u32 {
+                let iq:Vec<f32> = (packet * 240..(packet+1)*240).flat_map(|index| {
+                    let phase = std::f64::consts::TAU * 1000.0 * index as f64 / 6781.684027777777;
+                    [(0.0002 * phase.cos()) as f32,(0.0002 * phase.sin()) as f32]
+                }).collect();
+                workers.submit(&frame(packet+1,packet as u64*240*576,&iq),&registry).unwrap();
+                for audio in workers.finish().unwrap().audio {
+                    // AUD2 carries exact float PCM after its fixed 96-byte clock header.
+                    pcm.extend(audio[96..].chunks_exact(4).map(|bytes|f32::from_le_bytes(bytes.try_into().unwrap())));
+                }
+            }
+            assert!(pcm.len()>9600);
+            let rms = (pcm[4800..9600].iter().map(|v|(*v as f64).powi(2)).sum::<f64>()/4800.0).sqrt();
+            assert!((0.09..0.11).contains(&rms),"fresh identity {epoch} startup RMS {rms}");
+            if let Some(expected) = previous {assert_eq!(pcm,expected,"stream replacement must start fresh");}
+            previous=Some(pcm);
+        }
+    }
 
     #[test]
     fn wfm_default_emits_interleaved_stereo_aud2_and_explicit_false_emits_mono() {

@@ -959,18 +959,13 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 #input-sdr-ifbw.invalid { border-color: #e5534b; }
 #input-sdr-ifbw.locked { color: var(--label); }
 /* The algorithm selector keeps its options' width when DeepFilterNet3 hides the strength
-   selector. In Wiener mode the strength selector takes free space. DFN status has its own line. */
+   selector. In Wiener mode the strength selector takes free space. */
 #sdr-settings .param-row.sdr-nr-row { flex-wrap: wrap; }
 /* Both selectors keep one width, the width of the longer label "DeepFilterNet3". The Wiener row is
    then an even pair. The DeepFilterNet3 row does not stretch its single selector. Both shrink
    together on a narrow panel, so the pair stays even. */
 #sdr-settings .sdr-nr-row > #select-sdr-nr-algo,
 #sdr-settings .sdr-nr-row > #select-sdr-nr-strength { flex: 0 1 100px; min-width: 0; }
-#sdr-settings .sdr-nr-row > #nr-dfn-status {
-  /* One line for this string, indented to the value column. */
-  flex: 1 0 calc(100% - 62px); min-width: 0; margin-left: 62px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 /* The tune buttons: twice the standard height, easy to hit while listening. The quick-step
    row and the tune row keep a 10px gap above and below. */
 #sdr-settings .span-step-button, #sdr-settings .span-full-button { height: 40px; }
@@ -1032,6 +1027,18 @@ select {
 
 select:hover { border-color: var(--text); }
 select:focus { border-color: var(--text); }
+/* Keep NR options in the page so Chromium can show their individual hover tips. */
+@supports (appearance: base-select) {
+  #select-sdr-nr-algo, #select-sdr-nr-algo::picker(select) { appearance: base-select; }
+  #select-sdr-nr-algo::picker-icon { display: none; }
+  #select-sdr-nr-algo::picker(select) {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--input-border); border-radius: 2px; padding: 2px;
+  }
+  #select-sdr-nr-algo option { padding: 3px 6px; cursor: default; }
+  #select-sdr-nr-algo option:hover,
+  #select-sdr-nr-algo option:focus-visible { background: var(--btn-hover); outline: none; }
+}
 .harmonic-table { width: 100%; border-collapse: collapse; margin-top: 4px; font: 11px monospace; }
 .harmonic-table td { border: 1px solid var(--inner-border); padding: 3px 8px; text-align: center; color: var(--table-cell); background: var(--panel-2); }
 .harmonic-table td.harm-dim { color: var(--table-cell-dim); background: var(--panel); }
