@@ -145,6 +145,29 @@ describe('canvas pointer ownership', () => {
     wf('pointerdown', 0.25); wf('pointerup', 0.25);
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', freq: 9_900_000 }));
   });
+  it.each([false, true])('shares the cursor readout between plots and clears queued waterfall hover with Zoom %s', async zoom => {
+    waterfallPointer();
+    const waterfall = document.getElementById('waterfall')!;
+    const { S, viewport, plot, send } = await load(zoom);
+    if (zoom) viewport.setView({ lo: 9_900_000, hi: 10_100_000 });
+    const p = plot.plotRect();
+    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: p.x + 0.24 * p.w, clientY: 240 }));
+    flushHover();
+    const index = zoom ? 37 : 24;
+    expect(S.plotCursorIdx).toBe(index);
+    canvas.dispatchEvent(new Event('pointerleave'));
+    expect(S.plotCursorIdx).toBeNull();
+    waterfall.dispatchEvent(new MouseEvent('pointermove', { clientX: 110 + 800 * 0.24, clientY: 620 }));
+    flushHover();
+    expect(S.plotCursorIdx).toBe(index);
+    expect(send).not.toHaveBeenCalled();
+    waterfall.dispatchEvent(new MouseEvent('pointermove', { clientX: 750, clientY: 620 }));
+    waterfall.dispatchEvent(new Event('pointerleave'));
+    flushHover();
+    expect(S.plotCursorIdx).toBeNull();
+    const { sdrHoverFrequency } = await import('../ui/sdrHoverPassband');
+    expect(sdrHoverFrequency()).toBeNull();
+  });
   it('zooms the shared display from a waterfall drag without tuning', async () => {
     const wf = waterfallPointer();
     const { send, viewport } = await load(true);

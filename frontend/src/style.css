@@ -80,6 +80,8 @@ input, select, button, textarea { font-size: 11px; }
   --sa-passband: rgba(0, 255, 160, 0.24);
   --sa-passband-edge: rgba(224, 242, 234, 0.8);
   --sa-passband-outline: rgba(0, 0, 0, 0.45);
+  --sa-hover-passband: rgba(232, 121, 249, 0.24);
+  --sa-hover-passband-edge: #f0abfc;
   --sa-label-bg: rgba(0, 0, 0, 0.7);
   --sa-label-border: #00aa66;
   --sa-osd-stroke: rgba(0, 0, 0, 0.9);
@@ -147,6 +149,8 @@ input, select, button, textarea { font-size: 11px; }
   --sa-passband: rgba(13, 122, 46, 0.24);
   --sa-passband-edge: rgba(35, 62, 46, 0.8);
   --sa-passband-outline: rgba(255, 255, 255, 0.6);
+  --sa-hover-passband: rgba(162, 28, 175, 0.20);
+  --sa-hover-passband-edge: #86198f;
   --sa-label-bg: rgba(255, 255, 255, 0.88);
   --sa-label-border: #b0c4b0;
   --sa-osd-stroke: rgba(255, 255, 255, 0.9);

@@ -105,9 +105,22 @@ def browser_gate(origin, artifacts):
         page.wait_for_timeout(150)
         hovered = {id: page.evaluate(stripe, id) for id in baseline}
         assert all(hovered[id] != baseline[id] for id in baseline), 'Waterfall hover must paint both plots'
+        expect(page.locator('#spectrum')).not_to_have_attribute('data-cursor', '')
         page.screenshot(path=str(artifacts / 'shared-hover.png'))
         page.mouse.move(5, 5); page.wait_for_timeout(150)
+        expect(page.locator('#spectrum')).to_have_attribute('data-cursor', '')
         assert page.evaluate(stripe, 'waterfall') == baseline['waterfall'], 'Hover must erase from paused history'
+        page.locator('#btn-theme').click()
+        page.mouse.move(5, 5); page.wait_for_timeout(150)
+        light_baseline = page.evaluate(stripe, 'waterfall')
+        page.mouse.move(box['x'] + box['width'] * 0.25, box['y'] + box['height'] * 0.5)
+        page.wait_for_timeout(150)
+        expect(page.locator('#spectrum')).not_to_have_attribute('data-cursor', '')
+        assert page.evaluate(stripe, 'waterfall') != light_baseline
+        page.screenshot(path=str(artifacts / 'shared-hover-light.png'))
+        page.mouse.move(5, 5); page.wait_for_timeout(150)
+        assert page.evaluate(stripe, 'waterfall') == light_baseline
+        page.locator('#btn-theme').click()
         spectrum = page.locator('#spectrum').bounding_box()
         page.mouse.move(box['x'] + box['width'] * 0.35, spectrum['y'] + spectrum['height'] * 0.5)
         page.wait_for_timeout(150)

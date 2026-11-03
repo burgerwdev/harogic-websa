@@ -2337,20 +2337,28 @@ export function bindCanvas() {
   const updateWaterfallHover = () => {
     if (!wfHoverPending || !waterfall) return;
     wfHoverPending = false;
-    if (canvasPointerId !== null || currentGraphMode() !== 'sdr') return;
+    if (canvasPointerId !== null) return;
     const rect = waterfall.getBoundingClientRect(), plot = plotRectPub();
     const inside = wfX >= rect.left && wfX <= rect.right && wfY >= rect.top && wfY <= rect.bottom;
-    if (!inside || !(rect.width > 0)) { setSdrHoverFrequency(null); cancelSdrLocate(); return; }
+    if (!inside || !(rect.width > 0 && rect.height > 0)) { clearWaterfallHover(); return; }
     const x = plot.x + (wfX - rect.left) / rect.width * plot.w;
-    updateSdrLocateHover(x, plot.y + plot.h / 2, plot.w / rect.width);
-    setSdrHoverFrequency(spectrumFreqAtX(x));
+    const y = plot.y + plot.h / 2;
+    publishCursor(x, y);
+    if (currentGraphMode() === 'sdr') {
+      updateSdrLocateHover(x, y, plot.w / rect.width);
+      setSdrHoverFrequency(spectrumFreqAtX(x));
+    } else { setSdrHoverFrequency(null); cancelSdrLocate(); }
   };
   const queueWaterfallHover = (event: MouseEvent) => {
     wfX = event.clientX; wfY = event.clientY;
     if (wfHoverPending) return;
     wfHoverPending = true; window.requestAnimationFrame(updateWaterfallHover);
   };
-  const clearWaterfallHover = () => { wfHoverPending = false; setSdrHoverFrequency(null); cancelSdrLocate(); };
+  const clearWaterfallHover = () => {
+    wfHoverPending = false;
+    publishCursor(-1e9, -1e9);
+    setSdrHoverFrequency(null); cancelSdrLocate();
+  };
   waterfall?.addEventListener('pointermove', queueWaterfallHover);
   waterfall?.addEventListener('mousemove', event => { if (!hasPointerEvents) queueWaterfallHover(event as MouseEvent); });
   waterfall?.addEventListener('pointerleave', clearWaterfallHover);

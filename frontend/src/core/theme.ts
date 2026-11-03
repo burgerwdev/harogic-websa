@@ -69,6 +69,8 @@ export function canvasColors() {
     passband: cssVar('--sa-passband', 'rgba(0,255,160,0.24)'),
     passbandEdge: cssVar('--sa-passband-edge', 'rgba(224,242,234,0.8)'),
     passbandOutline: cssVar('--sa-passband-outline', 'rgba(0,0,0,0.45)'),
+    hoverPassband: cssVar('--sa-hover-passband', 'rgba(232,121,249,0.24)'),
+    hoverPassbandEdge: cssVar('--sa-hover-passband-edge', '#f0abfc'),
   };
 }
 

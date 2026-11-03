@@ -38,10 +38,14 @@ export function renderSdrChannelBands(ctx: CanvasRenderingContext2D, lo: number,
   if (hover !== null) {
     const [low, high] = demodBandHz(sdrDemod.get(), filterPreviewHz(), sdrPitchHz.get());
     const x0 = xAt(hover + low), x1 = xAt(hover + high);
-    ctx.globalAlpha = 0.07; ctx.fillStyle = canvasColors().text;
+    const colors = canvasColors();
+    ctx.globalAlpha = 1; ctx.fillStyle = colors.hoverPassband;
     ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
-    ctx.globalAlpha = 0.6; ctx.strokeStyle = canvasColors().text; ctx.lineWidth = 1;
-    ctx.setLineDash([3, 4]); ctx.strokeRect(x0, p.y, Math.max(1, x1 - x0), p.h);
+    ctx.setLineDash([3, 4]);
+    ctx.strokeStyle = colors.passbandOutline; ctx.lineWidth = 3;
+    ctx.strokeRect(x0, p.y, Math.max(1, x1 - x0), p.h);
+    ctx.strokeStyle = colors.hoverPassbandEdge; ctx.lineWidth = 1;
+    ctx.strokeRect(x0, p.y, Math.max(1, x1 - x0), p.h);
   }
   ctx.restore();
 }
