@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:websa:multichannel:draft-v1",
   "title": "Multichannel draft-v1 portable contract",
-  "description": "P2 fixture contract plus the P3 native receiver API; see MULTICHANNEL_DRAFT.md for supported operations and compatibility.",
+  "description": "P2 fixture/experiments, P3/P4 native receiver/IQ/processed output and P5 backend IQ/result/published-audio recording contract; see MULTICHANNEL_DRAFT.md.",
   "oneOf": [
     {
       "$ref": "#/$defs/command"
@@ -24,6 +24,9 @@
     },
     {
       "$ref": "#/$defs/impact"
+    },
+    {
+      "$ref": "#/$defs/processed_event"
     }
   ],
   "$defs": {
@@ -98,6 +101,23 @@
         "minimum_rate_hz": {
           "type": "number",
           "minimum": 0
+        },
+        "bandwidth_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "pcm_gain": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "agc": {
+          "type": "boolean"
+        },
+        "squelch_dbm": {
+          "type": "number",
+          "minimum": -200,
+          "maximum": 0
         }
       },
       "required": [
@@ -489,6 +509,69 @@
               "type": "null"
             }
           ]
+        },
+        "segment_id": {
+          "type": "string"
+        },
+        "first_output_index": {
+          "$ref": "#/$defs/u64"
+        },
+        "fraction_num": {
+          "$ref": "#/$defs/u64"
+        },
+        "fraction_den": {
+          "$ref": "#/$defs/u64"
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u64"
+        },
+        "input_rate_hz": {
+          "type": "number"
+        },
+        "frequency_hz": {
+          "type": "number"
+        },
+        "delay_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "baseband": {
+          "$ref": "#/$defs/baseband"
+        },
+        "utc_reliable": {
+          "type": "boolean"
+        },
+        "events": {
+          "$ref": "#/$defs/u64"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "prefix_missing": {
+          "type": "boolean"
+        },
+        "last_sequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "source": {
+          "type": "object"
+        },
+        "first_audio_index": {
+          "$ref": "#/$defs/u64"
+        },
+        "next_audio_index": {
+          "$ref": "#/$defs/u64"
         }
       },
       "required": [
@@ -517,14 +600,16 @@
           "enum": [
             "cf32_le",
             "pcm_f32",
-            "jsonl"
+            "jsonl",
+            "f32_le"
           ]
         },
         "source": {
           "enum": [
             "baseband",
             "analysis_audio",
-            "decoder_results"
+            "decoder_results",
+            "published_audio"
           ]
         },
         "compression": {
@@ -554,6 +639,48 @@
         },
         "stored_bytes": {
           "$ref": "#/$defs/u64"
+        },
+        "container": {
+          "enum": [
+            "websa-iq-v2",
+            "websa-results-v1",
+            "websa-audio-v1"
+          ]
+        },
+        "blocks": {
+          "$ref": "#/$defs/u64"
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "index": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "valid_bytes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "file",
+              "index",
+              "complete"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -603,6 +730,27 @@
               "type": "null"
             }
           ]
+        },
+        "storage_version": {
+          "const": 2
+        },
+        "service_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "$ref": "#/$defs/u64"
+        },
+        "updated_at_ms": {
+          "$ref": "#/$defs/u64"
+        },
+        "accepted_bytes": {
+          "$ref": "#/$defs/u64"
+        },
+        "queued_bytes": {
+          "$ref": "#/$defs/u64"
         }
       },
       "required": [
@@ -657,6 +805,97 @@
             },
             "monitor_mixing": {
               "type": "boolean"
+            },
+            "receiver_presets": { "type": "boolean" },
+            "mode_descriptors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "analog",
+                      "digital"
+                    ]
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "outputs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "provider",
+                  "available",
+                  "outputs"
+                ]
+              }
+            },
+            "recording_kinds": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "iq",
+                  "audio",
+                  "results"
+                ]
+              }
+            },
+            "recording_unavailable_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "iq_archive_read": {
+              "type": "boolean"
+            },
+            "iq_file_demodulate": { "type": "boolean" },
+            "iq_file_demodulate_modes": { "type": "array", "uniqueItems": true, "items": { "enum": ["am", "usb", "lsb", "nfm"] } },
+            "iq_file_demodulate_max_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+            "iq_file_demodulate_offset": { "type": "boolean" },
+            "iq_archive_collection": {
+              "type": "boolean"
+            },
+            "iq_collection_max_samples": {
+              "$ref": "#/$defs/u64"
+            },
+            "iq_collection_max_segments": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "iq_archive_export": {
+              "type": "boolean"
+            },
+            "iq_export_max_samples": {
+              "$ref": "#/$defs/u64"
+            },
+            "iq_range_max_samples": {
+              "$ref": "#/$defs/u64"
+            },
+            "results_archive_export": {
+              "type": "boolean"
+            },
+            "audio_archive_export": {
+              "type": "boolean"
+            },
+            "audio_archive_read": { "type": "boolean" },
+            "audio_range_max_samples": { "$ref": "#/$defs/u64" },
+            "audio_range_max_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+            "audio_flac_export": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -677,11 +916,17 @@
               "exclusiveMinimum": 0
             },
             "usable_bandwidth_hz": {
-              "type": "number",
+              "type": [
+                "number",
+                "null"
+              ],
               "exclusiveMinimum": 0
             },
             "input_rate_hz": {
-              "type": "number",
+              "type": [
+                "number",
+                "null"
+              ],
               "exclusiveMinimum": 0
             },
             "epoch": {
@@ -690,13 +935,22 @@
             "state": {
               "enum": [
                 "running",
-                "failed"
+                "failed",
+                "idle"
               ]
             },
             "source_kind": {
               "enum": [
                 "fixture",
                 "hardware"
+              ]
+            },
+            "parameters_state": {
+              "enum": [
+                "live",
+                "last_known",
+                "unknown",
+                "simulated"
               ]
             }
           },
@@ -730,6 +984,9 @@
         },
         "service_id": {
           "type": "string"
+        },
+        "state_revision": {
+          "$ref": "#/$defs/u64"
         }
       },
       "required": [
@@ -1097,6 +1354,347 @@
           "additionalProperties": false
         }
       ]
+    },
+    "processed_event": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "channel": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "channel_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "service_id": {
+          "type": "string"
+        },
+        "baseband_stream": {
+          "$ref": "#/$defs/stream"
+        },
+        "input_index": {
+          "$ref": "#/$defs/u64"
+        },
+        "input_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "input_fraction_num": {
+          "$ref": "#/$defs/u64"
+        },
+        "input_fraction_den": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "delay_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "delay_known": {
+          "type": "boolean"
+        },
+        "causal_presentation": {
+          "type": "boolean"
+        },
+        "timing_kind": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "event": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "channel",
+        "channel_id",
+        "epoch",
+        "seq",
+        "receiver_uid",
+        "service_id",
+        "baseband_stream",
+        "input_index",
+        "input_rate",
+        "input_fraction_num",
+        "input_fraction_den",
+        "delay_seconds",
+        "delay_known",
+        "causal_presentation",
+        "mode",
+        "event"
+      ],
+      "additionalProperties": false
+    },
+    "result_record": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "received_at_ms": {
+          "$ref": "#/$defs/u64"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "baseband": {
+              "$ref": "#/$defs/baseband"
+            },
+            "config_revision": {
+              "$ref": "#/$defs/u64"
+            },
+            "frequency_hz": {
+              "type": "number"
+            },
+            "actual_rate_hz": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "input_rate_hz": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "baseband",
+            "config_revision",
+            "frequency_hz",
+            "actual_rate_hz",
+            "input_rate_hz"
+          ],
+          "additionalProperties": false
+        },
+        "envelope": {
+          "type": "object",
+          "properties": {
+            "receiver_uid": {
+              "type": "string"
+            },
+            "service_id": {
+              "type": "string"
+            },
+            "baseband_stream": {
+              "$ref": "#/$defs/stream"
+            },
+            "input_index": {
+              "$ref": "#/$defs/u64"
+            },
+            "input_fraction_num": {
+              "$ref": "#/$defs/u64"
+            },
+            "input_fraction_den": {
+              "$ref": "#/$defs/u64"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "channel_id": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "mode": {
+              "type": "string"
+            },
+            "event": {
+              "type": "object",
+              "required": [
+                "type"
+              ]
+            }
+          },
+          "required": [
+            "receiver_uid",
+            "service_id",
+            "baseband_stream",
+            "input_index",
+            "input_fraction_num",
+            "input_fraction_den",
+            "seq",
+            "epoch",
+            "channel_id",
+            "mode",
+            "event"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "received_at_ms",
+        "source",
+        "envelope"
+      ],
+      "additionalProperties": false
+    },
+    "audio_record": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "receiver_uid": {
+              "type": "string"
+            },
+            "service_id": {
+              "type": "string"
+            },
+            "baseband_stream": {
+              "$ref": "#/$defs/stream"
+            },
+            "baseband": {
+              "$ref": "#/$defs/baseband"
+            },
+            "baseband_revision": {
+              "$ref": "#/$defs/u64"
+            },
+            "config": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "receiver_uid",
+            "service_id",
+            "baseband_stream",
+            "baseband",
+            "baseband_revision",
+            "config"
+          ],
+          "additionalProperties": false
+        },
+        "audio": {
+          "type": "object",
+          "properties": {
+            "stream": {
+              "$ref": "#/$defs/stream"
+            },
+            "sequence": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "frames": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "rate_hz": {
+              "type": "number",
+              "minimum": 8000,
+              "maximum": 192000
+            },
+            "channels": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2
+            },
+            "frequency_hz": {
+              "type": "number"
+            },
+            "audio_index": {
+              "$ref": "#/$defs/u64"
+            },
+            "input_index": {
+              "$ref": "#/$defs/u64"
+            },
+            "input_fraction_num": {
+              "$ref": "#/$defs/u64"
+            },
+            "input_fraction_den": {
+              "$ref": "#/$defs/u64"
+            },
+            "input_rate_hz": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "delay_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "delay_known": {
+              "type": "boolean"
+            },
+            "causal_presentation": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "stream",
+            "sequence",
+            "frames",
+            "rate_hz",
+            "channels",
+            "frequency_hz",
+            "audio_index",
+            "input_index",
+            "input_fraction_num",
+            "input_fraction_den",
+            "input_rate_hz",
+            "delay_seconds",
+            "delay_known",
+            "causal_presentation"
+          ],
+          "additionalProperties": false
+        },
+        "original_aud2_header_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{192}$"
+        },
+        "segment_id": {
+          "type": "string"
+        },
+        "segment_sample_start": {
+          "$ref": "#/$defs/u64"
+        },
+        "selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["record_skip_frames", "frames", "range_sample_start"],
+          "properties": {
+            "record_skip_frames": { "$ref": "#/$defs/u64" },
+            "frames": { "$ref": "#/$defs/u64" },
+            "range_sample_start": { "$ref": "#/$defs/u64" }
+          }
+        }
+      },
+      "required": [
+        "version",
+        "source",
+        "audio",
+        "original_aud2_header_hex",
+        "segment_id",
+        "segment_sample_start"
+      ],
+      "additionalProperties": false
     }
   }
 }

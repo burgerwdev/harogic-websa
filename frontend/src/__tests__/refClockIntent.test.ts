@@ -7,7 +7,8 @@ import {
   syncRefClockStatus, toggleRefClkOut,
 } from '../ui/panels/refAmp';
 
-vi.mock('../audio/sdrAudio', () => ({ prepareSdrAudioTransition: vi.fn() }));
+vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false), prepareSdrAudioTransition: vi.fn() }));
 
 const sent: Array<Record<string, unknown>> = [];
 const source = () => document.getElementById('select-refclk') as HTMLSelectElement;

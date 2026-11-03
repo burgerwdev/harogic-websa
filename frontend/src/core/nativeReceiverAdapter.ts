@@ -40,6 +40,8 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
     if (this.disposed) return;
     if (this.retiredServices.has(snapshot.service_id)) return;
     if (snapshot.service_id === this.current.service_id && BigInt(snapshot.revision) < BigInt(this.current.revision)) return;
+    if (snapshot.service_id === this.current.service_id && snapshot.state_revision !== undefined && this.current.state_revision !== undefined
+      && BigInt(snapshot.state_revision) < BigInt(this.current.state_revision)) return;
     if (snapshot.service_id !== this.current.service_id) {
       this.retiredServices.add(this.current.service_id);
       this.sockets.forEach(socket => socket.close()); this.sockets.clear(); this.clock.clear();
@@ -64,16 +66,18 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
   preflight(command: ConfigureCommand | SceneCommand): Impact {
     const config = command.type === 'configure' ? command.config : null;
     const faults: Fault[] = [];
-    if (!config) faults.push(fault('request', 'UNAVAILABLE', 'Atomic scenes are not available in P3'));
+    if (!config) faults.push(fault('request', 'UNAVAILABLE', 'Atomic scenes are not available from this service'));
     else {
       const b = config.baseband, c = this.current.capture;
       if (![b.frequency_hz, b.passband_hz, b.transition_hz, b.minimum_rate_hz].every(value => Number.isFinite(value) && value > 0))
         faults.push(fault('request', 'INVALID_BASEBAND', 'Baseband requirements must be finite positive values'));
-      if (config.enabled && Math.abs(b.frequency_hz - c.center_hz) + b.passband_hz / 2 + b.transition_hz > c.usable_bandwidth_hz / 2)
+      if (config.enabled && (c.state !== 'running' || c.usable_bandwidth_hz === null || c.parameters_state === 'unknown'))
+        faults.push(fault('request', 'NO_SOURCE', 'Start or recover the shared capture first'));
+      else if (config.enabled && Math.abs(b.frequency_hz - c.center_hz) + b.passband_hz / 2 + b.transition_hz > c.usable_bandwidth_hz! / 2)
         faults.push(fault('request', 'RF_RANGE', 'Full passband and transition exceed the shared capture'));
     }
     return { accepted: !faults.length, faults, capture_change: false, affected_receivers: command.type === 'configure' ? [command.receiver_uid] : [],
-      affected_tracks: [], candidate_center_hz: this.current.capture.center_hz,
+      affected_tracks: command.type === 'configure' ? this.current.recordings.filter(task => task.receiver_uid === command.receiver_uid && ['preparing', 'recording', 'finalizing'].includes(task.state)).flatMap(task => task.tracks.map(track => track.track_id)) : [], candidate_center_hz: this.current.capture.center_hz,
       estimated_cf32_bytes_per_second: config ? config.baseband.minimum_rate_hz * 8 : 0 };
   }
   async dispatch(command: ServiceCommand): Promise<CommandReply> {
@@ -86,11 +90,13 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
     const service = this.current.service_id;
     const request = { ...command, service_id: service, request_id: `${this.client}:${command.request_id}` };
     const options: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: AbortSignal.timeout(8000) };
+    if (command.type !== 'record_start' && command.type !== 'record_stop') {
     const checked = await fetch(`${api}/preflight`, options);
     if (!checked.ok) throw new Error(`Receiver preflight: HTTP ${checked.status}`);
     const impact = await checked.json() as Impact;
     if (service !== this.current.service_id) throw new Error('Source service restarted during admission');
     if (!impact.accepted) return { request_id: command.request_id, snapshot: this.snapshot(), fault: impact.faults[0] };
+    }
     const response = await fetch(api, { ...options, signal: AbortSignal.timeout(8000) });
     if (!response.ok) throw new Error(`Receiver command: HTTP ${response.status}`);
     const reply = await response.json() as CommandReply;

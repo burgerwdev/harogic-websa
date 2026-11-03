@@ -137,3 +137,49 @@ def test_an_accepted_lo_keeps_the_trim_until_the_exit(monkeypatch):
 
     assert factory.instances[0].attrs['xo_correction'].writes == [str(TRIM_HZ),
                                                                  str(radio.XO_NOMINAL_HZ)]
+
+
+@pytest.mark.parametrize('initial', ['0', '1'])
+def test_tx_lo_power_is_enabled_and_restored_on_interruption(monkeypatch, initial):
+    factory = _fake_adi(monkeypatch, refuse_lo=False)
+    attr = _Attr(initial)
+    original_call = factory.__class__.__call__
+
+    def create(self, uri):
+        sdr = original_call(self, uri)
+        sdr._ctrl.find_channel = lambda name, output: types.SimpleNamespace(attrs={'powerdown': attr})
+        return sdr
+
+    monkeypatch.setattr(factory.__class__, '__call__', create)
+    with pytest.raises(KeyboardInterrupt), radio.Radio(_args()) as tx:
+        assert tx.sdr.tx_lo == 411000000
+        assert attr.value == '0'
+        raise KeyboardInterrupt
+    assert attr.value == initial
+    assert attr.writes == ([] if initial == '0' else ['0', '1'])
+    assert factory.instances[0].attrs['xo_correction'].value == str(radio.XO_NOMINAL_HZ)
+
+
+def test_failed_tx_lo_enable_restores_power_and_crystal(monkeypatch):
+    factory = _fake_adi(monkeypatch, refuse_lo=False)
+
+    class RefusedPower(_Attr):
+        @_Attr.value.setter
+        def value(self, value):
+            _Attr.value.fset(self, value)
+            if value == '0':
+                raise OSError('LO enable failed')
+
+    attr = RefusedPower('1')
+    original_call = factory.__class__.__call__
+
+    def create(self, uri):
+        sdr = original_call(self, uri)
+        sdr._ctrl.find_channel = lambda name, output: types.SimpleNamespace(attrs={'powerdown': attr})
+        return sdr
+
+    monkeypatch.setattr(factory.__class__, '__call__', create)
+    with pytest.raises(OSError, match='LO enable failed'), radio.Radio(_args()):
+        pass
+    assert attr.value == '1' and attr.writes == ['0', '1']
+    assert factory.instances[0].attrs['xo_correction'].value == str(radio.XO_NOMINAL_HZ)

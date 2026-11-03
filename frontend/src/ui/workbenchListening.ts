@@ -22,7 +22,8 @@ export function planListen(session: WorkbenchSession, request: ListenRequest): L
   const reject = (code: string, message: string): ListenPlan => { plan.fault = fault(code, message); return plan; };
   if (!Number.isFinite(request.frequency_hz) || request.frequency_hz <= 0) return reject('FREQUENCY', 'Enter a positive frequency');
   if (!(LISTEN_MODES as readonly string[]).includes(request.mode) || !snapshot.capabilities.modes.includes(request.mode)) return reject('MODE', 'Listening mode unavailable');
-  if (snapshot.capture.state !== 'running') return reject('NO_SOURCE', 'Recover the capture source first');
+  if (snapshot.capture.state !== 'running' || snapshot.capture.usable_bandwidth_hz === null
+    || snapshot.capture.parameters_state === 'unknown') return reject('NO_SOURCE', 'Recover the capture source first');
   const receiver = snapshot.receivers.find(r => r.receiver_uid === request.target);
   if (request.target !== 'new' && receiver?.confirmed.purpose !== 'listen') return reject('TARGET', 'Choose a listening receiver');
   if (receiver && session.edits.get(receiver.receiver_uid)?.pending) return reject('BUSY', 'Receiver configuration pending');

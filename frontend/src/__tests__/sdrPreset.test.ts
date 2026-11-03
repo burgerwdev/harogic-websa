@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
 }));
 import { allParams, resetAll } from '../core/params';
@@ -28,6 +29,8 @@ import { getY } from '../render/plot';
 import { appendRadiofaxRows, radiofaxStatus, setRadiofaxChannel } from '../sdr/radiofaxLog';
 import { setPluginManifest } from '../sdr/registry';
 import { receiverPlugin } from './pluginFixtures';
+import { waterfallOn } from '../ui/waterfallState';
+import { setWaterfall } from '../ui/panels/waterfall';
 
 const sdrPersisted = (): string[] =>
 	Object.keys(localStorage).filter((k) => k.startsWith('web-sa-sdr-'));
@@ -149,6 +152,9 @@ describe('Preset clears the persisted SDR preferences', () => {
 						am_sync: false, am_sync_generation: 0 }] } };
 		};
 		updateStatus(status(14.2e6, 64, 'cw', 900));
+    expect(waterfallOn.get()).toBe(true);
+    document.body.insertAdjacentHTML('beforeend', '<div class="spectrum-area"><div id="wf-split"></div><div id="waterfall-container"></div></div>');
+    setWaterfall(false);
 		sdrFilterByMode.set({ cw: 900, am: 4500 });
 		setTraceMode('AVERAGE');
 		setTraceAverage(0);
@@ -161,6 +167,8 @@ describe('Preset clears the persisted SDR preferences', () => {
 		presetAll();
 		const preset = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
 		updateStatus({ ...status(1e9, 16, 'am', 6000), response_to: 'SET_PRESET', request_id: preset.request_id });
+    expect(waterfallOn.get()).toBe(true);
+    expect(document.querySelector('.spectrum-area')!.classList.contains('wf-equal-split')).toBe(true);
 		expect([sdrCenterHz.get(), sdrListenHz.get(), sdrDecimate.get(), sdrDemod.get(), sdrIfbw.get()])
 			.toEqual([1e9, 1e9, 16, 'am', 6000]);
 		expect(sdrFilterByMode.get()).toEqual({ am: 6000 });

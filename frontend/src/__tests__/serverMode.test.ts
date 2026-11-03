@@ -3,6 +3,7 @@ import page from '../../index.html?raw';
 import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
   prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
   setSdrReceiverAudioError: vi.fn(),
 }));

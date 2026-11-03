@@ -1,8 +1,9 @@
 import { send } from '../core/wsSend';
+import { currentSdrChannel } from './sdrChannels';
 import * as S from '../core/store';
 import { t } from '../core/i18n';
 import { requestRender } from '../render/redraw';
-import { renderSdrState, sdrListenHz } from './sdrState';
+import { renderSdrState, sdrListenHz, sdrPrimaryEnabled } from './sdrState';
 import { cancelReceiverFocus } from './spectrumViewport';
 
 let serial = 0;
@@ -39,11 +40,11 @@ function submit(hz: number, followViewport: boolean): void {
     renderSdrState();
     requestRender();
   }, 3000) };
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: hz, request_id: id });
+  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), freq: hz, enabled: true, request_id: id });
 }
 
 /** One request in flight; repeated input replaces the single unsent target. */
-export function requestSdrTune(hz: number, options: { followViewport?: boolean } = {}): void {
+export function requestSdrTune(hz: number, options: { followViewport?: boolean; force?: boolean } = {}): void {
   if (!Number.isFinite(hz) || hz <= 0) return;
   clearTimeoutError();
   const followViewport = options.followViewport !== false;
@@ -52,7 +53,7 @@ export function requestSdrTune(hz: number, options: { followViewport?: boolean }
     queued = { hz, followViewport };
     sdrListenHz.set(hz);
     sdrListenHz.touch(hz);
-  } else if (Math.abs(hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(hz, followViewport);
+  } else if (options.force || !sdrPrimaryEnabled.get() || Math.abs(hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(hz, followViewport);
   renderSdrState();
   requestRender();
 }
@@ -75,7 +76,7 @@ export function stopSdrTuneRepeat(): void {
 }
 
 export function confirmSdrTuneReport(hz: number, responseTo: unknown, requestId: unknown,
-  configVersion: unknown, options: { acceptSnapshot?: boolean; contextChanged?: boolean } = {}): boolean {
+  configVersion: unknown, options: { acceptSnapshot?: boolean; contextChanged?: boolean; receiverEnabled?: boolean } = {}): boolean {
   const own = typeof requestId === 'string' && requestId.startsWith('sdr-tune-');
   const nextVersion = typeof configVersion === 'number' && Number.isFinite(configVersion) ? configVersion : -1;
   const matching = inFlight !== null && responseTo === 'SET_SDR_CHANNEL' && requestId === inFlight.id;
@@ -83,6 +84,7 @@ export function confirmSdrTuneReport(hz: number, responseTo: unknown, requestId:
     && (!own || requestId === inFlight?.id || nextVersion > version);
   if (responseTo === 'SET_SDR_CHANNEL' && requestId === timeoutError?.id) clearTimeoutError();
   if (accepted) {
+    if (typeof options.receiverEnabled === 'boolean') sdrPrimaryEnabled.confirm(options.receiverEnabled);
     if (options.contextChanged && !matching) cancelSdrTuneRequest();
     if (nextVersion >= 0) version = nextVersion;
     if (Number.isFinite(hz) && hz > 0) {
@@ -121,4 +123,5 @@ export function rejectSdrTuneRequest(responseTo?: string, requestId?: string | n
 export function resetSdrTuneSession(): void {
   cancelSdrTuneRequest();
   version = -1;
+  sdrPrimaryEnabled.confirm(true);
 }

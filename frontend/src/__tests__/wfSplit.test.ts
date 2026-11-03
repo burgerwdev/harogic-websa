@@ -84,6 +84,20 @@ describe('the waterfall split', () => {
 			expect(localStorage.getItem('web-sa-wf-split')).toBeNull();
 		});
 
+    it('restores equal panels for an SDR preset and lets a manual drag override them', () => {
+      waterfallOn.set(true); resetWfSplit(true);
+      const area = document.querySelector<HTMLElement>('.spectrum-area')!;
+      const container = document.getElementById('waterfall-container')!;
+      Object.defineProperty(container, 'offsetHeight', { get: () => 320 });
+      initWfSplit();
+      expect(area.classList.contains('wf-equal-split')).toBe(true);
+      expect(container.style.height).toBe('');
+      document.getElementById('wf-split')!.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }));
+      expect(area.classList.contains('wf-equal-split')).toBe(false);
+      expect(container.style.height).toBe('320px');
+      resetWfSplit(); waterfallOn.set(false);
+    });
+
 		it('hides the divider while the waterfall is off, shows it when on', () => {
 			waterfallOn.set(false);
 			syncWfSplit();

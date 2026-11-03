@@ -17,7 +17,7 @@ export interface BasebandConfig {
 export interface ReceiverConfig {
   name: string; color: string; tags: string[]; enabled: boolean; purpose: Purpose;
   baseband: BasebandConfig;
-  processors: { id: string; kind: 'demodulator' | 'decoder'; mode: string; minimum_rate_hz: number }[];
+  processors: { id: string; kind: 'demodulator' | 'decoder'; mode: string; minimum_rate_hz: number; bandwidth_hz?: number; pcm_gain?: number; agc?: boolean; squelch_dbm?: number }[];
 }
 export interface Fault {
   scope: 'request' | 'consumer' | 'recording' | 'receiver' | 'capture';
@@ -25,6 +25,8 @@ export interface Fault {
   request_id?: string; retryable: boolean;
 }
 export interface ReceiverState {
+  /** Confirmed audio settings, excluding logical identity and independent IQ planning. */
+  audio_signature?: string;
   receiver_uid: ReceiverUid; source_id: string; display_number: number; revision: U64;
   confirmed: ReceiverConfig; stream: StreamIdentity | null; clock: SourceClock | null;
   state: 'running' | 'stopped' | 'interrupted' | 'failed'; fault: Fault | null;
@@ -36,23 +38,40 @@ export interface OutputSubscription {
   samples?: U64; bytes?: U64;
 }
 export interface RecordingTrack {
-  track_id: string; kind: TrackKind; format: 'cf32_le' | 'pcm_f32' | 'jsonl';
-  source: 'baseband' | 'analysis_audio' | 'decoder_results';
+  track_id: string; kind: TrackKind; format: 'cf32_le' | 'pcm_f32' | 'f32_le' | 'jsonl';
+  source: 'baseband' | 'analysis_audio' | 'published_audio' | 'decoder_results';
   compression: 'zstd_auto_lossless' | 'none'; state: TaskState;
-  segments: { stream: StreamIdentity; first_input_index: U64; samples: U64;
-    actual_rate_hz: number | null; end_reason: string | null }[];
+  segments: { segment_id?: string; frequency_hz?: number; baseband?: { passband_hz: number }; stream: StreamIdentity; first_input_index: U64; samples: U64;
+    actual_rate_hz: number | null; end_reason: string | null; events?: U64; mode?: string; prefix_missing?: boolean; channels?: number; first_audio_index?: U64; next_audio_index?: U64; source?: Record<string, unknown> }[];
   raw_bytes: U64; stored_bytes: U64;
 }
 export interface RecordingTask {
   task_id: string; receiver_uid: ReceiverUid; state: TaskState;
   tracks: RecordingTrack[]; fault: Fault | null;
+  service_id?: string; created_at_ms?: U64; accepted_bytes?: U64; queued_bytes?: U64;
+}
+export interface ReceiverMode {
+  id: string; kind: 'analog' | 'digital'; label: string; provider: string; available: boolean;
+  unavailableReason: string | null; defaultBandwidthHz: number; minimumRateHz: number;
+  audioCompanion: string | null; outputs: string[]; sideband: string;
+}
+export function receiverHasAudio(snapshot: ServiceSnapshot, config: ReceiverConfig): boolean {
+  if (snapshot.transport === 'fixture') return config.purpose === 'listen';
+  return config.processors.some(processor => snapshot.capabilities.mode_descriptors?.some(mode =>
+    mode.id === processor.mode && mode.available && (mode.outputs.includes('audio') || mode.audioCompanion !== null)));
+}
+export function receiverHasResults(snapshot: ServiceSnapshot, config: ReceiverConfig): boolean {
+  if (snapshot.transport === 'fixture') return config.purpose === 'digital';
+  return config.processors.some(processor => snapshot.capabilities.mode_descriptors?.some(mode =>
+    mode.id === processor.mode && mode.available && mode.outputs.some(kind => kind !== 'audio')));
 }
 export interface ServiceSnapshot {
   contract: 'multichannel-draft-v1'; transport: 'fixture' | 'native'; revision: U64;
-  service_id?: string;
-  capabilities: { max_channels: number; capacity_target: number; modes: string[]; commands?: string[]; recording?: boolean; monitor_mixing?: boolean };
-  capture: { source_id: string; center_hz: number; usable_bandwidth_hz: number;
-    input_rate_hz: number; epoch: U64; state: 'running' | 'failed'; source_kind?: 'fixture' | 'hardware' };
+  service_id?: string; state_revision?: U64;
+  capabilities: { receiver_presets?: boolean; max_channels: number; capacity_target: number; modes: string[]; commands?: string[]; recording?: boolean; recording_kinds?: TrackKind[]; recording_unavailable_reason?: string | null; results_archive_export?: boolean; audio_archive_export?: boolean; audio_flac_export?: boolean; audio_archive_read?: boolean; audio_range_max_samples?: U64; audio_range_max_seconds?: number; iq_archive_read?: boolean; iq_range_max_samples?: U64; iq_file_demodulate?: boolean; iq_file_demodulate_modes?: string[]; iq_file_demodulate_max_seconds?: number; iq_file_demodulate_offset?: boolean; iq_archive_collection?: boolean; iq_collection_max_samples?: U64; iq_collection_max_segments?: number; iq_archive_export?: boolean; iq_export_max_samples?: U64; monitor_mixing?: boolean; mode_descriptors?: ReceiverMode[] };
+  capture: { source_id: string; center_hz: number; usable_bandwidth_hz: number | null;
+    input_rate_hz: number | null; epoch: U64; state: 'running' | 'failed' | 'idle';
+    parameters_state?: 'live' | 'last_known' | 'unknown' | 'simulated'; source_kind?: 'fixture' | 'hardware' };
   receivers: ReceiverState[]; outputs: OutputSubscription[]; recordings: RecordingTask[];
 }
 export interface ConfigureCommand {

@@ -5,8 +5,9 @@ export function setWS(w: WebSocket | null) { ws = w; }
 
 /** Observe commands that reached the socket, before any later STATUS can acknowledge them. */
 const commandListeners = new Set<(command: Readonly<Record<string, unknown>>) => void>();
-export function onCommandSent(listener: (command: Readonly<Record<string, unknown>>) => void): void {
+export function onCommandSent(listener: (command: Readonly<Record<string, unknown>>) => void): () => void {
   commandListeners.add(listener);
+  return () => { commandListeners.delete(listener); };
 }
 
 export function send(obj: object) {

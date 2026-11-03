@@ -7,6 +7,17 @@ const SOURCE: &str = "primary";
 const MAX_RECEIVERS: usize = 3;
 const HISTORY_LIMIT: usize = 256;
 
+/// Equal receiver audio settings can share one local speaker route even when their
+/// independent IQ plans, logical identities and recording tasks differ.
+fn audio_signature(channel: &ChannelConfig) -> String {
+    let mut value = json!(channel);
+    let fields = value.as_object_mut().unwrap();
+    for key in ["channel", "enabled", "baseband", "am_sync_generation"] {
+        fields.remove(key);
+    }
+    value.to_string()
+}
+
 struct LogicalReceiver {
     uid: String,
     revision: u64,
@@ -22,25 +33,77 @@ pub(super) struct IqIdentity {
     pub origin: u64,
     pub baseband: Value,
     pub clock: Option<Value>,
+    pub revision: u64,
 }
 
 pub(super) struct Directory {
     boot: String,
     next: u64,
+    snapshot_revision: u64,
     receivers: BTreeMap<u32, LogicalReceiver>,
     history: VecDeque<IqIdentity>,
     replies: VecDeque<(String, Value, Value)>,
+    recording_requests: BTreeMap<String,(Value,recording::StartTicket)>,
 }
 
 impl Default for Directory {
     fn default() -> Self {
         Self { boot: format!("{}-{}",std::process::id(),std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()), next:0,
-            receivers:BTreeMap::new(),history:VecDeque::new(),replies:VecDeque::new() }
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()), next:0,snapshot_revision:0,
+            receivers:BTreeMap::new(),history:VecDeque::new(),replies:VecDeque::new(),recording_requests:BTreeMap::new() }
     }
 }
 
-fn config_value(channel: &ChannelConfig, previous: Option<&Value>) -> Value {
+#[derive(Default)]
+pub(super) struct ProcessingBranches {
+    current:BTreeMap<u32,ProcessingBranch>,
+    history:VecDeque<(sdr_pipeline::ChannelRegistryEntry,sdr_pipeline::ChannelRegistryEntry)>,
+}
+struct ProcessingBranch {
+    config:ChannelConfig,
+    source:sdr_pipeline::ChannelRegistryEntry,
+    output:sdr_pipeline::ChannelRegistryEntry,
+    first_sequence:u32,
+}
+impl ProcessingBranches {
+    pub(super) fn invalidate(&mut self) {self.current.clear();}
+    pub(super) fn retire_channel(&mut self,channel:u32) {self.current.remove(&channel);}
+    pub(super) fn uses_channel(&self,channel:u32)->bool {self.history.iter().any(|(entry,_)|entry.channel==channel)}
+    pub(super) fn input(&mut self,frame:&[u8],source:&sdr_pipeline::ChannelRegistryEntry,config:&ChannelConfig)
+        ->Result<(sdr_pipeline::ChannelRegistryEntry,u32,bool),String> {
+        let sequence=u32::from_le_bytes(frame[8..12].try_into().unwrap());
+        let fresh=self.current.get(&source.channel).is_none_or(|branch|
+            branch.source.channel_id!=source.channel_id || branch.source.epoch!=source.epoch || branch.config.resets_receiver(config));
+        if fresh {
+            let epoch=allocate_dsp_epoch().map_err(str::to_owned)?;
+            let mut output=source.clone();output.channel_id=epoch;output.epoch=epoch;
+            self.history.push_back((output.clone(),source.clone()));
+            self.current.insert(source.channel,ProcessingBranch {config:config.clone(),source:source.clone(),output,first_sequence:sequence});
+            while self.history.len()>HISTORY_LIMIT {
+                let old=self.history.iter().position(|(output,_)|!self.current.values().any(|b|b.output.channel_id==output.channel_id&&b.output.epoch==output.epoch));
+                if let Some(index)=old {self.history.remove(index);} else {break;}
+            }
+        }
+        let branch=&self.current[&source.channel];
+        let translated=if branch.first_sequence==0 {sequence} else {sequence.checked_sub(branch.first_sequence)
+            .and_then(|value|value.checked_add(1)).ok_or("processing source sequence overflow")?};
+        Ok((branch.output.clone(),translated,fresh && sequence!=0))
+    }
+}
+impl DevState {
+    pub(super) fn processing_source_identity(&self,identity:Option<u64>)->Option<u64> {
+        identity.map(|key|self.processing_branches.history.iter().find(|(output,_)|
+            service_stream::identity_key(output.channel_id,output.epoch)==key).map_or(key,|(_,source)|
+                service_stream::identity_key(source.channel_id,source.epoch)))
+    }
+    pub(super) fn processing_registry(&self)->Arc<[sdr_pipeline::ChannelRegistryEntry]> {
+        self.stream_registry().iter().map(|source|self.processing_branches.current.get(&source.channel)
+            .filter(|b|b.source.channel_id==source.channel_id&&b.source.epoch==source.epoch)
+            .map_or_else(||source.clone(),|b|b.output.clone())).collect()
+    }
+}
+
+pub(super) fn config_value(channel: &ChannelConfig, previous: Option<&Value>) -> Value {
     let plan = service_ddc::channel_plan(COARSE_RATE, channel).ok();
     let mut config = previous.cloned().unwrap_or_else(||json!({
         "name":format!("C{}",channel.channel),"color":"#4cc99b","tags":[],
@@ -55,7 +118,8 @@ fn config_value(channel: &ChannelConfig, previous: Option<&Value>) -> Value {
         "minimum_rate_hz":channel.baseband.as_ref().map(|b|b.minimum_rate_hz).unwrap_or(1.0)});
     config["processors"]=if channel.processing_enabled {json!([{
         "id":"primary","kind":if config["purpose"]=="digital" {"decoder"} else {"demodulator"},
-        "mode":channel.mode,"minimum_rate_hz":plan.map(|p|p.output_rate).unwrap_or(1.0)
+        "mode":channel.mode,"minimum_rate_hz":websa_channelizer::catalog::mode(&channel.mode).map_or(0,|d|d.minimum_rate_hz),
+        "bandwidth_hz":channel.if_bw,"pcm_gain":channel.volume,"agc":channel.agc,"squelch_dbm":channel.squelch
     }])} else {json!([])};
     config
 }
@@ -82,7 +146,7 @@ impl DevState {
             if let Some(entry)=registry.iter().find(|entry|entry.channel==receiver.channel.channel) {
                 if !self.receivers.history.iter().any(|known|known.entry.channel_id==entry.channel_id && known.entry.epoch==entry.epoch) {
                     self.receivers.history.push_back(IqIdentity {uid:receiver.uid.clone(),slot:entry.channel,
-                        entry:entry.clone(),origin:0,baseband:receiver.config["baseband"].clone(),clock:None});
+                        entry:entry.clone(),origin:0,baseband:receiver.config["baseband"].clone(),clock:None,revision:receiver.revision});
                 }
             }
         }
@@ -103,26 +167,40 @@ impl DevState {
             let entry=registry.iter().find(|entry|entry.channel==receiver.channel.channel);
             json!({"receiver_uid":receiver.uid,"source_id":SOURCE,"display_number":receiver.channel.channel,
                 "revision":receiver.revision.to_string(),"confirmed":receiver.config,
+                "audio_signature":audio_signature(&receiver.channel),
                 "state":if !receiver.channel.enabled {"stopped"} else if capture_fault.is_some() {"failed"}
                     else if entry.is_some() {"running"} else {"interrupted"},
                 "stream":entry.map(|e|json!({"source_id":SOURCE,"epoch":e.epoch.to_string(),"channel_id":e.channel_id.to_string()})),
                 "clock":entry.and_then(|e|self.receivers.history.iter().find(|known|
                     known.entry.channel_id==e.channel_id&&known.entry.epoch==e.epoch)).and_then(|known|known.clock.clone()),
-                "fault":capture_fault.map(|error|fault("capture","CAPTURE_FAILED",error))})
+                "fault":capture_fault.map(|error|fault("capture","CAPTURE_FAILED",error)).or_else(||
+                    receiver.channel.processing_enabled.then_some(self.receiver_failure.as_deref()).flatten()
+                        .map(|error|fault("receiver","PROCESSING_FAILED",error)))})
         }).collect();
-        json!({"contract":"multichannel-draft-v1","transport":"native","service_id":self.receivers.boot,
+        let mut snapshot=json!({"contract":"multichannel-draft-v1","transport":"native","service_id":self.receivers.boot,
             "revision":self.config_version.to_string(),
             "capabilities":{"max_channels":MAX_RECEIVERS,"capacity_target":128,
+                "receiver_presets":self.receiver_presets.is_some(),
                 "modes":websa_channelizer::catalog::manifest().iter().filter_map(|m|m["id"].as_str()).collect::<Vec<_>>(),
-                "commands":["create","configure","retire","output"],"recording":false,"monitor_mixing":false},
-            "capture":{"source_id":SOURCE,"center_hz":self.capture_center(),
-                "usable_bandwidth_hz":self.capture_bandwidth(),"input_rate_hz":self.pipeline.as_ref().map(|p|p.snapshot.rate)
-                    .or_else(||self.ddc.as_ref().map(|d|d.0.stream.input_sample_rate())).unwrap_or(self.capture_bandwidth()/0.8),
-                "epoch":self.pipeline.as_ref().map(|p|p.snapshot.generation)
-                    .or_else(||self.ddc.as_ref().map(|d|d.0.generation)).unwrap_or(0).to_string(),
-                "source_kind":if self.hardware_shim.is_some() {"hardware"} else {"fixture"},
-                "state":if capture_fault.is_some() || self.swp.mode!="sdr" {"failed"} else {"running"}},
-            "receivers":receivers,"outputs":[],"recordings":[]})
+                "mode_descriptors":websa_channelizer::catalog::manifest().into_iter().filter(|m|matches!(m["kind"].as_str(),Some("analog"|"digital"))).collect::<Vec<_>>(),
+                "commands":if self.recordings.is_some() {vec!["create","configure","retire","output","record_start","record_stop"]} else {vec!["create","configure","retire","output"]},
+                "recording":self.recordings.is_some(),"recording_unavailable_reason":self.recording_error,"recording_kinds":if self.recordings.is_some() {vec!["iq","results","audio"]}else{vec![]},
+                "results_archive_export":self.recordings.is_some(),"audio_archive_export":self.recordings.is_some(),
+                "audio_flac_export":self.recordings.is_some(),
+                "audio_archive_read":self.recordings.is_some(),"audio_range_max_samples":"1048576","audio_range_max_seconds":60,
+                "iq_file_demodulate":self.recordings.is_some(),"iq_file_demodulate_modes":super::recording_demod::MODES,
+                "iq_file_demodulate_max_seconds":60,
+                "iq_file_demodulate_offset":self.recordings.is_some(),
+                "iq_archive_read":self.recordings.is_some(),"iq_range_max_samples":"1048576",
+                "iq_archive_collection":self.recordings.is_some(),"iq_collection_max_samples":super::recording_export::MAX_SAMPLES.to_string(),"iq_collection_max_segments":super::recording_collection::MAX_SEGMENTS,
+                "iq_archive_export":self.recordings.is_some(),"iq_export_max_samples":super::recording_export::MAX_SAMPLES.to_string(),"monitor_mixing":true},
+            "capture":self.capture_snapshot(),
+            "receivers":receivers,"outputs":[],"recordings":self.recordings.as_ref().map(|r|r.snapshots()).unwrap_or_default()});
+        if self.recordings.is_some() {
+            self.receivers.snapshot_revision+=1;
+            snapshot["state_revision"]=json!(self.receivers.snapshot_revision.to_string());
+        }
+        snapshot
     }
 
     pub(super) fn receiver_slot(&mut self,uid:&str)->Option<u32> {
@@ -134,6 +212,24 @@ impl DevState {
         self.remember_receiver_streams();
         self.receivers.history.iter().find(|known|known.entry.channel_id==id && known.entry.epoch==epoch).cloned()
     }
+}
+
+/// Bind processed output to its original logical source, including retiring tails.
+pub(super) fn processing_frame(state:&mut DevState,uid:&str,frame:Message)->Result<Option<Message>,String> {
+    if matches!(&frame,Message::Close(_)) {return Ok(Some(frame));}
+    let Some(identity)=service_stream::message_identity(&frame) else {return Err("processed stream has no identity".into());};
+    let Some(known)=state.iq_identity(state.processing_source_identity(Some(identity)).unwrap() as u32,
+        (state.processing_source_identity(Some(identity)).unwrap()>>32) as u32) else {return Ok(None);};
+    if known.uid!=uid {return Ok(None);}
+    let Message::Binary(bytes)=frame else {return Ok(None);};
+    if bytes.starts_with(b"SDE2") {
+        let mut envelope:Value=serde_json::from_slice(&bytes[8..]).map_err(|error|error.to_string())?;
+        envelope["baseband_stream"]=json!({"source_id":SOURCE,"channel_id":known.entry.channel_id.to_string(),"epoch":known.entry.epoch.to_string()});
+        envelope["receiver_uid"]=json!(uid);envelope["service_id"]=json!(state.receivers.boot);
+        return websa_channelizer::encode_decode_event(&serde_json::to_vec(&envelope).map_err(|e|e.to_string())?)
+            .map(|bytes|Some(Message::Binary(bytes.into()))).map_err(str::to_owned);
+    }
+    Ok(Some(Message::Binary(bytes)))
 }
 
 fn fault(scope:&str,code:&str,message:&str)->Value {
@@ -163,7 +259,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     }
     let mut config=if kind=="retire" {previous.ok_or("receiver absent")?.config.clone()}
         else if matches!(kind,"create"|"configure") {request["config"].clone()}
-        else {return Err("command is not available in P3".into());};
+        else {return Err("unsupported receiver command".into());};
     if kind=="retire" {config["enabled"]=json!(false);}
     if config["name"].as_str().is_none_or(|v|v.is_empty()||v.len()>128)
         || config["color"].as_str().is_none_or(|v|v.len()!=7||!v.starts_with('#')||!v[1..].bytes().all(|c|c.is_ascii_hexdigit()))
@@ -171,6 +267,10 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         return Err("invalid receiver name, color or tags".into());
     }
     let enabled=config["enabled"].as_bool().ok_or("enabled must be boolean")?;
+    if enabled && state.hardware_shim.is_some()
+        && (state.ddc_error.is_some() || state.live_capture_parameters().is_none()) {
+        return Err("Start or recover the shared capture before enabling receivers".into());
+    }
     let purpose=config["purpose"].as_str().ok_or("purpose missing")?;
     if !matches!(purpose,"iq"|"listen"|"digital") {return Err("unsupported receiver purpose".into());}
     let bb=&config["baseband"];
@@ -180,7 +280,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         minimum_rate_hz:bb["minimum_rate_hz"].as_f64().ok_or("minimum_rate_hz missing")?};
     let processors=config["processors"].as_array().ok_or("processors must be an array")?;
     if processors.len()>1 || (purpose=="iq" && !processors.is_empty()) || (purpose!="iq" && processors.is_empty()) {
-        return Err("P3 supports zero or one processor; IQ-only receivers must use an empty set".into());
+        return Err("Each receiver supports zero or one primary processor; IQ-only receivers must use an empty set".into());
     }
     let mut channel=state.channel_configs()[(slot-1) as usize].clone();
     channel.freq=frequency;channel.enabled=enabled;channel.processing_enabled=!processors.is_empty();
@@ -189,7 +289,15 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         if !matches!(processor["kind"].as_str(),Some("demodulator"|"decoder")) {return Err("unsupported processor kind".into());}
         channel.mode=processor["mode"].as_str().ok_or("processor mode missing")?.into();
         let descriptor=websa_channelizer::catalog::mode(&channel.mode).ok_or("unsupported processor mode")?;
-        channel.if_bw=descriptor.default_bandwidth_hz;
+        if !descriptor.available {return Err(descriptor.unavailable_reason.unwrap_or_else(||"processor unavailable".into()));}
+        if (purpose=="listen") != (descriptor.kind=="analog")
+            || processor["kind"]!=if purpose=="listen" {"demodulator"} else {"decoder"} {
+            return Err("processor kind and purpose must match the mode descriptor".into());
+        }
+        channel.if_bw=processor["bandwidth_hz"].as_f64().unwrap_or(descriptor.default_bandwidth_hz);
+        if let Some(gain)=processor.get("pcm_gain") {channel.volume=gain.as_f64().ok_or("invalid PCM gain")?;}
+        if let Some(agc)=processor.get("agc") {channel.agc=agc.as_bool().ok_or("invalid AGC flag")?;}
+        if let Some(squelch)=processor.get("squelch_dbm") {channel.squelch=squelch.as_f64().ok_or("invalid squelch")?;}
         let floor=processor["minimum_rate_hz"].as_f64().filter(|v|v.is_finite()&&*v>=0.0).ok_or("invalid processor minimum rate")?;
         channel.baseband.as_mut().unwrap().minimum_rate_hz=channel.baseband.as_ref().unwrap().minimum_rate_hz.max(floor);
     }
@@ -207,7 +315,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     }
     let mut data=json!({"cmd":"SET_SDR_CHANNEL","channel":slot,"enabled":enabled,"freq":frequency,
         "mode":channel.mode,"if_bw":channel.if_bw,"baseband":channel.baseband,
-        "processing_enabled":channel.processing_enabled,"request_id":request["request_id"]});
+        "processing_enabled":channel.processing_enabled,"volume":channel.volume,"agc":channel.agc,"squelch":channel.squelch,"request_id":request["request_id"]});
     // A retained compatibility mode is irrelevant to IQ-only. Sending it would
     // also look like an explicit legacy decoder-recovery request after a fault.
     if !channel.processing_enabled {data.as_object_mut().unwrap().remove("mode");}
@@ -233,6 +341,9 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
     let request:Value=match serde_json::from_str(&body) {Ok(value)=>value,Err(_)=>return StatusCode::BAD_REQUEST.into_response()};
     let Some(id)=request["request_id"].as_str().filter(|id|!id.is_empty()&&id.len()<=128).map(str::to_owned)
         else {return (StatusCode::BAD_REQUEST,Json(error_body("request_id string required","request_id_required"))).into_response();};
+    if matches!(request["type"].as_str(),Some("record_start"|"record_stop")) {
+        return recording_command(app,request,id,preview).await;
+    }
     let candidate={
         let mut state=app.state.lock().unwrap();
         if !preview {
@@ -314,9 +425,115 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
     }
 }
 
+async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->Response {
+    match tokio::task::spawn_blocking(move|| {
+        let mut state=app.state.lock().unwrap();
+        if !preview {
+            if let Some((_,old,reply))=state.receivers.replies.iter().find(|(key,_,_)|key==&id) {
+                if old==&request {return reply.clone();}
+                return json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":fault("request","IDENTITY_CONFLICT","request_id reused with different command")});
+            }
+        }
+        let mut ticket=None;
+        let mut result=if let Some((old,pending))=state.receivers.recording_requests.get(&id) {
+            if old!=&request {Err("request_id reused with different command".to_owned())}
+            else {ticket=Some(pending.clone());Ok(())}
+        } else {(||->Result<(),String> {
+            if request["service_id"].as_str().is_some_and(|s|s!=state.receivers.boot) {return Err("source service restarted; refresh before retrying".into());}
+            if state.recordings.is_none() {return Err("backend recording storage unavailable".into());}
+            if request["type"]=="record_start" {
+                let kind=if request["kinds"]==json!(["iq"]) {"iq"} else if request["kinds"]==json!(["results"]) {"results"} else if request["kinds"]==json!(["audio"]) {"audio"}
+                    else {return Err("select one backend recording kind: iq, results or audio".into());};
+                let uid=request["receiver_uid"].as_str().ok_or("receiver_uid required")?;
+                let slot=state.receiver_slot(uid).ok_or("receiver no longer exists")?;
+                let channel=state.channel_configs()[(slot-1) as usize].clone();
+                let has_results=channel.processing_enabled && websa_channelizer::catalog::mode(&channel.mode)
+                    .is_some_and(|mode|mode.outputs.iter().any(|kind|kind!="audio"));
+                if kind=="audio" && (!channel.processing_enabled || state.receiver_failure.is_some()
+                    || !websa_channelizer::catalog::mode(&channel.mode).is_some_and(|m|m.outputs.iter().any(|k|k=="audio"))) {
+                    return Err("enable a healthy processor with published audio before recording".into());
+                }
+                if kind=="results" && (!has_results || state.receiver_failure.is_some()) {
+                    return Err("enable a healthy processor before recording its published results".into());
+                }
+                if state.swp.mode!="sdr" || !state.link_up || state.ddc_error.is_some()
+                    || !state.channel_configs()[(slot-1) as usize].enabled {return Err("enable a healthy IQ receiver before recording".into());}
+                if !preview {
+                    let service=state.receivers.boot.clone();
+                    let pending=if kind=="iq" {state.recordings.as_mut().unwrap().start(uid,&service,&id)?}
+                        else {state.recordings.as_mut().unwrap().start_kind(uid,&service,&id,kind)?};
+                    state.receivers.recording_requests.insert(id.clone(),(request.clone(),pending.clone()));ticket=Some(pending);
+                }
+            } else {
+                let task=request["task_id"].as_str().ok_or("task_id required")?;
+                if !preview {state.recordings.as_mut().unwrap().stop(task)?;}
+            }
+            Ok(())
+        })()};
+        if preview {return json!({"accepted":result.is_ok(),"faults":result.err().map(|e|vec![fault("recording","RECORDING_REJECTED",&e)]).unwrap_or_default(),
+            "capture_change":false,"affected_receivers":[],"affected_tracks":[],"candidate_center_hz":state.capture_center(),"estimated_cf32_bytes_per_second":0});}
+        if let Some(ticket)=ticket {
+            drop(state);result=ticket.wait();state=app.state.lock().unwrap();
+            // Concurrent retries share the preparation ticket and the first committed receipt.
+            if let Some((_,old,reply))=state.receivers.replies.iter().find(|(key,_,_)|key==&id) {
+                if old==&request {return reply.clone();}
+            }
+            state.receivers.recording_requests.remove(&id);
+        } else if state.receivers.recording_requests.contains_key(&id) {
+            return json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":fault("request","IDENTITY_CONFLICT","request_id reused with different command")});
+        }
+        let reply=json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":result.err().map(|e|fault("recording","RECORDING_REJECTED",&e))});
+        state.receivers.replies.push_back((id,request,reply.clone()));
+        if state.receivers.replies.len()>128 {state.receivers.replies.pop_front();}
+        reply
+    }).await {Ok(value)=>Json(value).into_response(),Err(error)=>state_worker_failed(error).into_response()}
+}
+
 pub(super) fn auxiliary(frame:&[u8])->bool {
     frame.starts_with(b"IQAX") || (frame.starts_with(b"IQEN") && frame.len()==16
         && u32::from_le_bytes(frame[4..8].try_into().unwrap())>1)
+}
+
+/// Observe actual published events once, before subscriber snapshots or sequence translation.
+/// Original processing/source identities survive asynchronous tails and slot reuse.
+pub(super) fn record_result(state:&DevState,bytes:Bytes) {
+    let Some(manager)=state.recordings.as_ref().filter(|r|r.wants_results()) else {return;};
+    let message=Message::Binary(bytes.clone());
+    let Some(key)=state.processing_source_identity(service_stream::message_identity(&message)) else {return;};
+    let Some(known)=state.receivers.history.iter().find(|k|service_stream::identity_key(k.entry.channel_id,k.entry.epoch)==key) else {return;};
+    let result=(||->Result<Bytes,String> {
+        let mut envelope:Value=serde_json::from_slice(&bytes[8..]).map_err(|e|e.to_string())?;
+        envelope["receiver_uid"]=json!(known.uid);envelope["service_id"]=json!(state.receivers.boot);
+        envelope["baseband_stream"]=json!({"source_id":SOURCE,"channel_id":known.entry.channel_id.to_string(),"epoch":known.entry.epoch.to_string()});
+        let row=json!({"version":1,"received_at_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().to_string(),
+            "source":{"baseband":known.baseband,"config_revision":known.revision.to_string(),"frequency_hz":known.entry.frequency_hz,
+                "actual_rate_hz":known.entry.output_rate,"input_rate_hz":known.entry.input_rate},"envelope":envelope});
+        serde_json::to_vec(&row).map(Bytes::from).map_err(|e|e.to_string())
+    })();
+    match result {Ok(bytes)=>manager.admit_result(&known.uid,bytes),Err(error)=>manager.processing_sources(&[],Some(&error))}
+}
+
+/// Actual packet configuration travels with PCM, so queued old frames never acquire
+/// a newer shared gain/NR/mode configuration from the mutable control snapshot.
+pub(super) fn record_audio(state:&DevState,bytes:Bytes,config:&ChannelConfig) {
+    let Some(manager)=state.recordings.as_ref().filter(|r|r.wants_audio()) else {return;};
+    let Some(key)=state.processing_source_identity(service_stream::message_identity(&Message::Binary(bytes.clone()))) else {return;};
+    let Some(known)=state.receivers.history.iter().find(|k|service_stream::identity_key(k.entry.channel_id,k.entry.epoch)==key) else {return;};
+    let source=json!({"receiver_uid":known.uid,"service_id":state.receivers.boot,
+        "baseband_stream":{"source_id":SOURCE,"channel_id":known.entry.channel_id.to_string(),"epoch":known.entry.epoch.to_string()},
+        "baseband":known.baseband,"baseband_revision":known.revision.to_string(),"config":config});
+    if let Ok(source)=serde_json::to_vec(&source) {manager.admit_audio(&known.uid,recording::audio::Input {bytes,source:source.into()});}
+}
+
+pub(super) fn recording_processing_sources(state:&DevState) {
+    if let Some(manager)=&state.recordings {
+        let active=state.receivers.receivers.values().filter(|r|r.channel.enabled&&r.channel.processing_enabled
+            && websa_channelizer::catalog::mode(&r.channel.mode).is_some_and(|m|m.outputs.iter().any(|kind|kind!="audio"))).map(|r|r.uid.clone()).collect::<Vec<_>>();
+        manager.processing_sources(&active,state.receiver_failure.as_deref());
+        let audio=state.receivers.receivers.values().filter(|r|r.channel.enabled&&r.channel.processing_enabled
+            && websa_channelizer::catalog::mode(&r.channel.mode).is_some_and(|m|m.outputs.iter().any(|kind|kind=="audio"))).map(|r|r.uid.clone()).collect::<Vec<_>>();
+        manager.processing_kind_sources("audio",&audio,state.receiver_failure.as_deref());
+    }
 }
 
 /// Encode once at the transport boundary; consumers share Bytes and only inspect headers.
@@ -345,7 +562,31 @@ pub(super) fn tag_iq(state:&mut DevState,frames:Vec<Vec<u8>>)->Vec<(Bytes,Option
                 }
                 known.uid.clone()
             }));
-        (Bytes::from(frame),uid)
+        let bytes=Bytes::from(frame);
+        if let (Some(uid),Some(recordings))=(&uid,&state.recordings) {
+            if bytes.starts_with(b"IQEN") {recordings.source_end(uid);}
+            else if bytes.len()>=56 && u32::from_le_bytes(bytes[12..16].try_into().unwrap())>0 {
+                if let Some((id,epoch))=key {
+                    if let Some(known)=state.receivers.history.iter().find(|known|known.entry.channel_id==id&&known.entry.epoch==epoch) {
+                        let read=|at|u32::from_le_bytes(bytes[at..at+4].try_into().unwrap());
+                        let input=u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+                        let rate=f64::from_le_bytes(bytes[16..24].try_into().unwrap());
+                        let delay=f64::from_le_bytes(bytes[48..56].try_into().unwrap());
+                        let step=(known.entry.input_rate/rate).round() as u64;
+                        recordings.admit(uid,recording::Input {bytes:bytes.clone(),meta:websa_channelizer::iq_archive::v2::Meta {
+                            service_id:state.receivers.boot.clone(),segment_id:format!("{epoch}-{id}"),sequence:read(8).to_string(),
+                            frequency_hz:f64::from_le_bytes(bytes[24..32].try_into().unwrap()),baseband:known.baseband.clone(),
+                            clock:websa_channelizer::iq_archive::IqBlockMeta {receiver_uid:uid.clone(),source_id:SOURCE.into(),track_id:String::new(),
+                                epoch:epoch.to_string(),channel_id:id.to_string(),config_revision:known.revision.to_string(),
+                                first_input_index:input.to_string(),first_output_index:(input.saturating_sub(known.origin)/step.max(1)).to_string(),
+                                fraction_num:"0".into(),fraction_den:"1".into(),samples:read(12),sample_format:"cf32_le".into(),
+                                amplitude_scale:1.0,input_rate_hz:known.entry.input_rate,actual_rate_hz:rate,delay_seconds:Some(delay/rate)}
+                        }});
+                    }
+                }
+            }
+        }
+        (bytes,uid)
     }).collect()
 }
 
@@ -414,6 +655,23 @@ impl IqSubscriber {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_equivalence_ignores_identity_and_iq_plans_but_keeps_processing_settings() {
+        let first = ChannelConfig { freq: 100e6, ..ChannelConfig::default() };
+        let mut copy = first.clone();
+        copy.channel = 2; copy.enabled = false; copy.am_sync_generation = 8;
+        copy.baseband = Some(BasebandConfig { passband_hz: 8000.0, transition_hz: 1000.0, minimum_rate_hz: 12000.0 });
+        assert_eq!(audio_signature(&first), audio_signature(&copy));
+        for field in ["freq", "if_bw", "pitch", "volume", "squelch", "deemph_us"] {
+            let mut changed = json!(copy);
+            changed[field] = json!(changed[field].as_f64().unwrap() + 1.0);
+            let changed: ChannelConfig = serde_json::from_value(changed).unwrap();
+            assert_ne!(audio_signature(&first), audio_signature(&changed), "{field}");
+        }
+        copy.nr = true;
+        assert_ne!(audio_signature(&first), audio_signature(&copy));
+    }
 
     fn app() -> Arc<App> {
         let (golden,schema)=load_golden();
@@ -555,6 +813,64 @@ mod tests {
         assert_ne!(reused["snapshot"]["receivers"][1]["receiver_uid"],uids[1],"reusing a slot must allocate a new logical UID");
     }
 
+    #[tokio::test]
+    async fn recording_start_receipt_waits_for_durable_files_and_concurrent_retries_share_one_task() {
+        let app=app();
+        let root=std::env::temp_dir().join(format!("websa-recording-api-{}",app.state.lock().unwrap().receivers.boot));
+        {let mut state=app.state.lock().unwrap();state.link_up=true;state.recordings=Some(recording::Manager::open(root.clone()).unwrap());}
+        let created=run(&app,json!({"type":"create","request_id":"record-create","config":iq_config(100e6)})).await;
+        assert!(created["fault"].is_null(),"{created}");
+        let uid=created["snapshot"]["receivers"][0]["receiver_uid"].as_str().unwrap();
+        let command=json!({"type":"record_start","request_id":"durable-start","receiver_uid":uid,"kinds":["iq"]});
+        let (first,second)=tokio::join!(run(&app,command.clone()),run(&app,command));
+        assert!(first["fault"].is_null(),"{first}");assert_eq!(first,second);
+        let tasks=first["snapshot"]["recordings"].as_array().unwrap();assert_eq!(tasks.len(),1);
+        let id=tasks[0]["task_id"].as_str().unwrap();
+        let manifest:Value=serde_json::from_reader(std::fs::File::open(root.join(id).join("task.json")).unwrap()).unwrap();
+        assert_eq!(manifest["receiver_uid"],uid);assert_eq!(manifest["tracks"][0]["volumes"].as_array().unwrap().len(),1);
+        assert_eq!(std::fs::read(root.join(id).join("iq-000000.wbiq")).unwrap(),b"WBIQ0002");
+        assert!(root.join(id).join("iq-000000.jsonl").is_file());
+        let mut manager=app.state.lock().unwrap().recordings.take().unwrap();manager.stop(id).unwrap();manager.shutdown();drop(manager);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_pfb_publication_records_the_same_cf32_blocks_and_drains_on_stop() {
+        let app=app();let mut state=app.state.lock().unwrap();
+        let configs:Vec<_>=(1..=3).map(|slot|ChannelConfig {channel:slot,enabled:slot==1,freq:100e6,
+            processing_enabled:false,baseband:Some(BasebandConfig {passband_hz:3000.0,transition_hz:1000.0,minimum_rate_hz:6000.0}),
+            ..ChannelConfig::default()}).collect();
+        state.sdr_channels=configs.clone();
+        state.ddc=Some(SendDdc(Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap()));
+        let snapshot=state.receiver_snapshot();let uid=snapshot["receivers"][0]["receiver_uid"].as_str().unwrap().to_owned();
+        let root=std::env::temp_dir().join(format!("websa-native-record-{}",snapshot["service_id"].as_str().unwrap()));
+        let mut manager=recording::Manager::open(root.clone()).unwrap();
+        manager.start(&uid,snapshot["service_id"].as_str().unwrap(),"native-record").unwrap().wait().unwrap();state.recordings=Some(manager);
+        let first=state.receiver_snapshot();let second=state.receiver_snapshot();
+        assert_eq!(first["revision"],second["revision"]);
+        assert!(second["state_revision"].as_str().unwrap().parse::<u64>().unwrap()>first["state_revision"].as_str().unwrap().parse::<u64>().unwrap());
+        let mut expected=Vec::new();
+        for _ in 0..256 {
+            let frames=state.ddc.as_mut().unwrap().0.packet().unwrap();
+            for (frame,_) in tag_iq(&mut state,frames) {if frame.len()>56 {expected.push(frame);}}
+        }
+        let mut tail=Vec::new();
+        let ddc=&mut state.ddc.as_mut().unwrap().0;ddc.stream.flush_pending().unwrap();tail.extend(ddc.drain().unwrap());ddc.finish_framers(&mut tail).unwrap();
+        for (frame,_) in tag_iq(&mut state,tail) {if frame.len()>56 {expected.push(frame);}}
+        let mut manager=state.recordings.take().unwrap();let id=manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        manager.stop(&id).unwrap();drop(state);manager.shutdown();
+        let saved=&manager.snapshots()[0];assert_eq!(saved["state"],"completed","{saved}");
+        let mut count=0;
+        let result=websa_channelizer::iq_archive::v2::scan(&mut std::fs::File::open(root.join(id).join("iq-000000.wbiq")).unwrap(),|index,raw| {
+            let frame=&expected[count];assert_eq!(raw,&frame[56..]);
+            assert_eq!(index.meta.clock.first_input_index,u64::from_le_bytes(frame[40..48].try_into().unwrap()).to_string());
+            assert_eq!(index.meta.clock.input_rate_hz,IQ_FS);assert_eq!(index.meta.clock.actual_rate_hz,COARSE_RATE/162.0);
+            assert_eq!(index.meta.clock.receiver_uid,uid);count+=1;Ok(())
+        }).unwrap();assert!(result.complete);assert_eq!(count,expected.len());assert!(count>0);
+        assert_eq!(saved["accepted_bytes"],saved["tracks"][0]["raw_bytes"]);
+        drop(manager);std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn native_iq_plans_run_pfb_and_keep_unaffected_samples_across_cross_bin_retune() {
         let mut configs:Vec<_>=(1..=3).map(|slot|ChannelConfig {channel:slot,enabled:true,freq:100e6,
@@ -589,6 +905,78 @@ mod tests {
         let original=live.channel_registry();let mut invalid=configs[2].clone();invalid.baseband.as_mut().unwrap().transition_hz=1e-300;
         assert!(live.configure_service_channel(invalid).is_err());
         assert_eq!(live.channel_registry()[0].channel_id,original[0].channel_id);
+    }
+
+    #[test]
+    fn processed_output_keeps_uid_and_original_iq_mapping() {
+        let app=app();let mut state=app.state.lock().unwrap();
+        state.sdr_channels[0].enabled=true;
+        state.sdr_channels[0].baseband=Some(BasebandConfig {passband_hz:16000.0,transition_hz:1000.0,minimum_rate_hz:48000.0});
+        state.fixture_sources=Some(service_fixture::FixtureSources::new());
+        let configs=state.channel_configs();state.fixture_sources.as_mut().unwrap().configure(&configs).unwrap();
+        let registry=state.stream_registry();let snapshot=state.receiver_snapshot();
+        let uid=snapshot["receivers"][0]["receiver_uid"].as_str().unwrap().to_owned();
+        let iq_stream=snapshot["receivers"][0]["stream"].clone();
+        let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
+        let output=state.process_receiver_frames_with_registry(&frames,&registry,true).unwrap();
+        assert!(!output.audio.is_empty());assert!(!output.decode.is_empty());
+        for frame in output.decode {
+            assert!(processing_frame(&mut state,"retired-or-other-uid",Message::Binary(frame.clone().into())).unwrap().is_none());
+            let Some(Message::Binary(frame))=processing_frame(&mut state,&uid,Message::Binary(frame.into())).unwrap() else {panic!("UID output lost")};
+            let envelope:Value=serde_json::from_slice(&frame[8..]).unwrap();
+            assert_eq!(envelope["receiver_uid"],uid);assert_eq!(envelope["service_id"],snapshot["service_id"]);
+            assert_eq!(envelope["baseband_stream"],iq_stream);
+            assert_ne!(envelope["epoch"].as_u64().unwrap().to_string(),iq_stream["epoch"].as_str().unwrap());
+        }
+    }
+
+    #[test]
+    fn processing_changes_keep_real_iq_and_publish_distinct_processing_boundaries() {
+        let mut configs:Vec<_>=(1..=3).map(|slot|ChannelConfig {channel:slot,enabled:true,freq:100e6,
+            processing_enabled:false,baseband:Some(BasebandConfig {passband_hz:16000.0,transition_hz:1000.0,minimum_rate_hz:48000.0}),
+            ..ChannelConfig::default()}).collect();
+        let mut live=Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap();
+        let mut reference=Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap();
+        let source=live.channel_registry()[0].clone();
+        let mut workers=receiver_workers::ReceiverWorkers::new().unwrap();
+        let mut branches=ProcessingBranches::default();
+        let mut ids=Vec::new();let mut actual=Vec::new();let mut expected=Vec::new();
+        for mode in [None,Some("am"),Some("usb"),None,Some("usb")] {
+            configs[0].processing_enabled=mode.is_some();
+            if let Some(mode)=mode {configs[0].mode=mode.into();configs[0].if_bw=if mode=="usb" {2400.0} else {6000.0};}
+            let old=workers.retire_channels(&[1]).unwrap();
+            assert!(old.decode.iter().all(|frame|serde_json::from_slice::<Value>(&frame[8..]).unwrap()["event"]["type"]!="start"));
+            workers.configure(&configs).unwrap();
+            if mode.is_none() {branches.retire_channel(1);}
+            assert!(live.configure_service_channel(configs[0].clone()).unwrap().is_empty());
+            assert_eq!(live.channel_registry()[0].channel_id,source.channel_id);
+            assert_eq!(live.channel_registry()[0].epoch,source.epoch);
+            for _ in 0..512 {
+                let frames=live.packet().unwrap();expected.extend(reference.packet().unwrap());
+                for frame in &frames {
+                    if mode.is_none() || u32::from_le_bytes(frame[32..36].try_into().unwrap())!=source.channel_id {continue;}
+                    let (output,seq,start)=branches.input(frame,&source,&configs[0]).unwrap();
+                    if ids.last()!=Some(&output.epoch) {ids.push(output.epoch);}
+                    if start {let mut marker=frame[..56].to_vec();marker[8..16].fill(0);
+                        workers.submit_processing(&marker,std::slice::from_ref(&source),output.channel_id,output.epoch,0).unwrap();}
+                    workers.submit_processing(frame,std::slice::from_ref(&source),output.channel_id,output.epoch,seq).unwrap();
+                    let decoded=workers.finish().unwrap();
+                    for audio in decoded.audio {assert_eq!(u32::from_le_bytes(audio[36..40].try_into().unwrap()),output.epoch);}
+                    for event in decoded.decode {let event:Value=serde_json::from_slice(&event[8..]).unwrap();assert_eq!(event["epoch"],output.epoch);}
+                }
+                actual.extend(frames);
+            }
+        }
+        assert_eq!(ids.len(),3);assert!(ids.windows(2).all(|pair|pair[0]<pair[1]));
+        assert!(live.restart_service_receivers().unwrap().is_empty(),"decoder recovery restarted independent IQ");
+        assert_eq!(live.channel_registry()[0].channel_id,source.channel_id);
+        live.stream.flush_pending().unwrap();actual.extend(live.drain().unwrap());live.finish_framers(&mut actual).unwrap();
+        reference.stream.flush_pending().unwrap();expected.extend(reference.drain().unwrap());reference.finish_framers(&mut expected).unwrap();
+        for (entry,reference_entry) in live.channel_registry().iter().zip(reference.channel_registry().iter()) {
+            let payload=|frames:&[Vec<u8>],id:u32|frames.iter().filter(|f|u32::from_le_bytes(f[32..36].try_into().unwrap())==id)
+                .flat_map(|frame|frame[..32].iter().chain(frame[40..].iter()).copied()).collect::<Vec<_>>();
+            assert_eq!(payload(&actual,entry.channel_id),payload(&expected,reference_entry.channel_id),"processor change altered IQ bytes, clock or sequence");
+        }
     }
 
     #[test]

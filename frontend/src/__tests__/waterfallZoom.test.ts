@@ -5,7 +5,8 @@ import { wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
 import { __testSeedCapture, zoomEnabled } from '../ui/spectrumViewport';
 import { clearSdrBadgeDrag, sdrBadgeGeometry, startSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 import { sdrListenHz } from '../ui/sdrState';
-import { canvasColors, setTheme } from '../core/theme';
+import { setTheme } from '../core/theme';
+import { setSdrHoverFrequency } from '../ui/sdrHoverPassband';
 import { clearDisplayBounds, setDisplayBounds } from '../ui/displayRef';
 
 beforeEach(() => {
@@ -17,6 +18,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearSdrBadgeDrag();
+  setSdrHoverFrequency(null);
   clearDisplayBounds();
   zoomEnabled.set(false);
   S.setSdrMode(false);
@@ -28,7 +30,7 @@ afterEach(() => {
 
 describe('native waterfall history', () => {
 
-  it('erases the indicator from an empty waterfall without a new history row', () => {
+  it('keeps the current passband after a badge drag on an empty waterfall', () => {
     S.initStore();
     S.setSdrMode(true);
     const freq = Float64Array.from([10_000, 20_000]);
@@ -44,8 +46,8 @@ describe('native waterfall history', () => {
     clearSdrBadgeDrag();
     context.fillRect.mockClear();
     renderWaterfall(canvas, 100);
-    expect(context.fillRect).toHaveBeenCalledExactlyOnceWith(0, 0, 100, 40);
-    expect(context.fillStyle).toBe(canvasColors().bg);
+    expect(context.fillRect).toHaveBeenNthCalledWith(1, 0, 0, 100, 40);
+    expect(context.fillRect).toHaveBeenLastCalledWith(50, 0, 2, 40);
   });
 
   it('retains a close pair, valley, missing bin and final carrier on their native Hz', () => {

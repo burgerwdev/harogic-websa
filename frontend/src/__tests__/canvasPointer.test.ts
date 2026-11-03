@@ -3,6 +3,7 @@ import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
 }));
 vi.mock('../sdr/iqStream', () => ({ resetSdrIq: vi.fn(), setSdrIqEnabled: vi.fn(), setSstvModePin: vi.fn() }));
@@ -124,6 +125,44 @@ function flushHover() {
 }
 
 describe('canvas pointer ownership', () => {
+  function waterfallPointer() {
+    const waterfall = document.createElement('canvas'); waterfall.id = 'waterfall';
+    document.body.append(waterfall);
+    vi.spyOn(waterfall, 'getBoundingClientRect').mockReturnValue({ left: 110, top: 520, width: 800, height: 200,
+      right: 910, bottom: 720, x: 110, y: 520, toJSON: () => ({}) });
+    waterfall.setPointerCapture = vi.fn(); waterfall.hasPointerCapture = vi.fn(() => true); waterfall.releasePointerCapture = vi.fn();
+    return (type: string, fraction: number) => {
+      const event = new MouseEvent(type, { clientX: 110 + 800 * fraction, clientY: 620,
+        button: 0, bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'pointerId', { value: 77 });
+      (type === 'pointerdown' ? waterfall : window).dispatchEvent(event);
+    };
+  }
+  it.each([false, true])('tunes a waterfall click to the same displayed frequency with Zoom %s', async zoom => {
+    const wf = waterfallPointer();
+    const { send, state } = await load(zoom);
+    state.sdrLocateMode.set('free');
+    wf('pointerdown', 0.25); wf('pointerup', 0.25);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', freq: 9_900_000 }));
+  });
+  it('zooms the shared display from a waterfall drag without tuning', async () => {
+    const wf = waterfallPointer();
+    const { send, viewport } = await load(true);
+    wf('pointerdown', 0.2); wf('pointermove', 0.6); wf('pointerup', 0.6);
+    expect(send).not.toHaveBeenCalled();
+    expect(viewport.getView()).toMatchObject({ lo: 9_880_000, hi: 10_040_000 });
+  });
+  it('cancels a waterfall zoom on Escape without tuning or keeping its preview', async () => {
+    const wf = waterfallPointer();
+    const { send, viewport } = await load(true);
+    const { getMarqueePreview } = await import('../ui/spectrumZoomGestures');
+    wf('pointerdown', 0.2); wf('pointermove', 0.6);
+    expect(getMarqueePreview()).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    wf('pointerup', 0.6);
+    expect(getMarqueePreview()).toBeNull(); expect(viewport.isZoomed()).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+  });
   it.each([0.02, 0.98])('tunes near plot edge %s without moving the capture window', async fraction => {
     const { state, plot, send } = await load();
     const p = plot.plotRect();

@@ -4,7 +4,28 @@ let spectrumProbe: AnalyserNode | null = null;
 let spectrumProbeBin = 1;
 let modulePromise: Promise<void> | null = null;
 const WORKLET_URL = new URL('./sdrAudioWorklet.js', import.meta.url).href;
-const chains = new Map<number, AudioChain>();
+const chains = new Map<number | string, AudioChain>();
+let nativeOwner = false;
+const legacyWanted = new Map<number, boolean>();
+let master: GainNode | null = null;
+let limiter: DynamicsCompressorNode | null = null;
+let masterVolume = 0.7;
+let masterMuted = false;
+function ramp(param: AudioParam, value: number): void {
+  const now = ctx!.currentTime;
+  param.cancelScheduledValues(now); param.setValueAtTime(param.value, now);
+  param.linearRampToValueAtTime(value, now + 0.015);
+}
+function nativeBus(audio: AudioContext): GainNode {
+  if (!master) {
+    master = audio.createGain(); limiter = audio.createDynamicsCompressor();
+    limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20;
+    limiter.attack.value = 0.003; limiter.release.value = 0.1;
+    master.connect(limiter); limiter.connect(audio.destination);
+    master.gain.value = masterMuted ? 0 : masterVolume;
+  }
+  return master;
+}
 
 /** True while autoplay policy holds the context suspended with playback wanted. */
 export function sdrAudioNeedsGesture(): boolean {
@@ -78,8 +99,41 @@ class AudioChain {
   private read = 0;
   private write = 0;
   private channels = 1;
+  private connectionState = '';
 
-  constructor(readonly channel: number) {}
+  private gainNode: GainNode | null = null;
+  private panNode: StereoPannerNode | null = null;
+  private localGain = 0.7;
+  private localPan = 0;
+  private fadeTimer: ReturnType<typeof setTimeout> | null = null;
+  constructor(readonly channel: number | string) {}
+  private destination(audio: AudioContext): AudioNode {
+    if (typeof this.channel === 'number') return audio.destination;
+    if (!this.gainNode) {
+      this.gainNode = audio.createGain(); this.panNode = audio.createStereoPanner();
+      this.gainNode.gain.value = 0; this.panNode.pan.value = this.localPan;
+      this.gainNode.connect(this.panNode); this.panNode.connect(nativeBus(audio));
+      ramp(this.gainNode.gain, this.localGain);
+    }
+    return this.gainNode;
+  }
+  local(gain: number, pan: number): void {
+    const previousGain = this.localGain, previousPan = this.localPan;
+    this.localGain = Math.max(0, Math.min(1, gain)); this.localPan = Math.max(-1, Math.min(1, pan));
+    if (this.gainNode && this.fadeTimer === null && this.localGain !== previousGain) ramp(this.gainNode.gain, this.localGain);
+    if (this.panNode && this.localPan !== previousPan) ramp(this.panNode.pan, this.localPan);
+  }
+  monitorEnabled(on: boolean): void {
+    if (!on && this.fadeTimer !== null) return;
+    if (this.fadeTimer !== null) { clearTimeout(this.fadeTimer); this.fadeTimer = null; }
+    if (on) {
+      if (this.gainNode) ramp(this.gainNode.gain, this.localGain);
+      if (!this.enabled) this.setEnabled(true);
+    } else if (this.enabled && this.gainNode) {
+      ramp(this.gainNode.gain, 0);
+      this.fadeTimer = setTimeout(() => { this.fadeTimer = null; this.setEnabled(false); }, 20);
+    } else if (this.enabled) this.setEnabled(false);
+  }
 
   /** Enabled playback with no terminal or receiver error: the state autoplay blocks. */
   wantsPlayback(): boolean {
@@ -92,7 +146,9 @@ class AudioChain {
       bufferedFrames: this.buffered, underruns: this.underruns, rms: this.rms,
       streamKey: this.streamKey, inputIndex: this.inputIndex, audioIndex: this.audioIndex,
       totalDelayUnknown: this.delayUnknown, causalPresentation: this.causal,
-      sampleRate: ctx?.sampleRate || 0, playbackRate: this.playbackRate, bufferMode: this.bufferMode,
+      localGain: this.localGain, pan: this.localPan, owner: typeof this.channel === 'string' ? 'workbench' : 'legacy',
+      connectionState: this.connectionState,
+      masterGain: masterVolume, masterMuted, outputChannels: ctx?.destination.maxChannelCount ?? 2, sampleRate: ctx?.sampleRate || 0, playbackRate: this.playbackRate, bufferMode: this.bufferMode,
       primeFrames: this.primeFrames, maxFillFrames: this.maxFillFrames, contextState: ctx?.state || 'none' };
   }
 
@@ -125,9 +181,12 @@ class AudioChain {
     this.dispose();
     console.error(`SDR audio channel ${this.channel}: ${message}`);
     this.debug();
+    if (typeof this.channel === 'string') document.dispatchEvent(new CustomEvent('websa:monitor-status'));
   }
   private dispose(): void {
     this.generation++;
+    if (this.fadeTimer !== null) clearTimeout(this.fadeTimer);
+    this.fadeTimer = null;
     this.clearWatchdog();
     this.worker?.terminate();
     this.worker = null;
@@ -137,8 +196,10 @@ class AudioChain {
       this.node.disconnect();
     }
     this.node = null;
+    this.gainNode?.disconnect(); this.panNode?.disconnect(); this.gainNode = null; this.panNode = null;
     if (this.channel === 1) { spectrumProbe?.disconnect(); spectrumProbe = null; }
     this.initialization = null;
+    this.connectionState = '';
     this.rms = 0;
     this.clearRing();
   }
@@ -199,7 +260,7 @@ class AudioChain {
       this.buffered = this.available / this.channels;
       this.debug();
     };
-    node.connect(context.destination);
+    node.connect(this.destination(context));
     this.node = node;
   }
   private message(data: Record<string, unknown>): void {
@@ -228,6 +289,9 @@ class AudioChain {
       this.muted = false;
       this.clearWatchdog();
       this.worker?.postMessage({ type: 'mute', value: false });
+    } else if (data.type === 'connection') {
+      this.connectionState = String(data.state ?? '');
+      if (this.connectionState === 'reconnecting') { this.playing = false; this.rms = 0; }
     } else if (data.type === 'error') {
       this.fail(String(data.message));
     } else if (data.type === 'stats') {
@@ -252,6 +316,7 @@ class AudioChain {
       if (typeof data.maxFillFrames === 'number') this.maxFillFrames = data.maxFillFrames;
     }
     this.debug();
+    if (typeof this.channel === 'string' && ['connection', 'identity'].includes(String(data.type))) document.dispatchEvent(new CustomEvent('websa:monitor-status'));
   }
   setReceiverError(message: string | null): void {
     if (message === null) {
@@ -294,7 +359,7 @@ class AudioChain {
               resolve();
             }
           };
-          output.connect(audio.destination);
+          output.connect(this.destination(audio));
         });
         if (generation !== this.generation) { candidate.disconnect(); candidate.port.close(); return; }
         this.node = candidate;
@@ -319,7 +384,8 @@ class AudioChain {
     this.worker = worker;
     worker.onmessage = (event: MessageEvent) => { if (this.worker === worker) this.message(event.data || {}); };
     worker.onerror = (event: ErrorEvent) => { if (this.worker === worker) this.fail(event.message || 'Audio worker failed'); };
-    worker.postMessage({ type: 'init', url: audioUrl(this.channel), targetRate: playbackRate, mode: this.mode, flowControl: Boolean(port), port }, port ? [port] : []);
+    worker.postMessage({ type: 'init', url: typeof this.channel === 'number' ? audioUrl(this.channel)
+      : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/audio?receiver_uid=${encodeURIComponent(this.channel)}`, reconnect: typeof this.channel === 'string', targetRate: playbackRate, mode: this.mode, flowControl: Boolean(port), port }, port ? [port] : []);
     worker.postMessage({ type: 'enabled', value: this.enabled && audio.state === 'running' });
     worker.postMessage({ type: 'mute', value: this.muted });
   }
@@ -372,7 +438,37 @@ function chain(channel: number): AudioChain {
   return playback;
 }
 export function setSdrAudioMode(channel: number, mode: string): void { chain(channel).setMode(mode); }
-export function setSdrChannelAudioEnabled(channel: number, on: boolean): void { chain(channel).setEnabled(on); }
+export function setSdrChannelAudioEnabled(channel: number, on: boolean): void {
+  legacyWanted.set(channel, on); if (!nativeOwner) chain(channel).setEnabled(on);
+}
+/** The workbench owns local speakers for this page; legacy STATUS must not duplicate playback. */
+export function claimNativeAudio(): () => void {
+  if (nativeOwner) throw new Error('Native audio already has an owner');
+  nativeOwner = true; for (const [key, playback] of chains) if (typeof key === 'number') playback.setEnabled(false);
+  document.dispatchEvent(new CustomEvent('websa:monitor-owner', { detail: { native: true } }));
+  return () => {
+    for (const [key, playback] of chains) if (typeof key === 'string') { playback.setEnabled(false); chains.delete(key); }
+    nativeOwner = false; for (const [key, wanted] of legacyWanted) chain(key).setEnabled(wanted);
+    document.dispatchEvent(new CustomEvent('websa:monitor-owner', { detail: { native: false } }));
+  };
+}
+export function setNativeAudioRoute(uid: string, mode: string, on: boolean, gain: number, pan: number, restart = false): void {
+  if (!nativeOwner) throw new Error('Native monitor has no owner');
+  let playback = chains.get(uid);
+  if (!playback && !on) return;
+  if (!playback) { playback = new AudioChain(uid); chains.set(uid, playback); }
+  if (restart) { playback.setEnabled(false); playback.setReceiverError(null); }
+  playback.local(gain, pan); playback.setMode(mode); playback.monitorEnabled(on);
+}
+export function forgetNativeAudio(uid: string): void { chains.get(uid)?.setEnabled(false); chains.delete(uid); }
+export function nativeAudioOwnsSpeakers(): boolean { return nativeOwner; }
+export function nativeAudioIsMuted(): boolean { return masterMuted; }
+export function setNativeMaster(gain: number, muted: boolean): void {
+  const changed = masterVolume !== gain || masterMuted !== muted;
+  masterVolume = Math.max(0, Math.min(1, gain)); masterMuted = muted;
+  if (master && changed) ramp(master.gain, muted ? 0 : masterVolume);
+  if (changed) document.dispatchEvent(new CustomEvent('websa:monitor-master'));
+}
 export function prepareSdrChannelAudioTransition(channel: number): void { chain(channel).transition(); }
 export function getSdrChannelAudioError(channel: number): string { return chain(channel).error; }
 export function setSdrReceiverAudioError(channel: number, message: string | null): void { chain(channel).setReceiverError(message); }
@@ -420,3 +516,22 @@ export async function sampleEnvelope(ms = 1000): Promise<Record<string, number |
   const mean = levels.reduce((sum, value) => sum + value, 0) / levels.length;
   return { stepMs: 20, count: levels.length, min, mean, max, ratio: max / Math.max(min, 1e-9), levels };
 }
+
+export function resumeNativeAudio(): void { for (const playback of chains.values()) playback.resume(); }
+
+let mixProbe: [AnalyserNode, AnalyserNode] | null = null;
+/** Diagnostic samples from the actual post-limiter stereo output; creates no additional playback path. */
+export function nativeMixLevels(): { left: number; right: number } {
+  if (!ctx || !limiter) return { left: 0, right: 0 };
+  if (!mixProbe) {
+    const splitter = ctx.createChannelSplitter(2); limiter.connect(splitter);
+    mixProbe = [ctx.createAnalyser(), ctx.createAnalyser()];
+    mixProbe.forEach((probe, index) => { probe.fftSize = 2048; splitter.connect(probe, index); });
+  }
+  const levels = mixProbe.map(probe => {
+    const data = new Float32Array(probe.fftSize); probe.getFloatTimeDomainData(data);
+    return Math.sqrt(data.reduce((power, value) => power + value * value, 0) / data.length);
+  });
+  return { left: levels[0], right: levels[1] };
+}
+Object.assign(window, { websaNativeMixLevels: nativeMixLevels });

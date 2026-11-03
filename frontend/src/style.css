@@ -692,12 +692,15 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   width: 100%; box-sizing: border-box;
   border: 1px solid var(--card-border); background: var(--sa-bg);
 }
+.spectrum-area.wf-equal-split > .spectrum-box,
+.spectrum-area.wf-equal-split > .waterfall-container { flex: 1 1 50%; min-height: 120px; height: auto; box-sizing: border-box; }
 /* Canvas: fixed width = spectrum plot area (left 10px, width set by JS);
    buttons sit absolutely at the right, never squeezing the canvas */
 .waterfall-container canvas {
   position: absolute; left: 10px; top: 0; height: 100%;
   width: auto;   /* override global `canvas { width:100% }`; width set by JS */
   border: none; display: block;
+  touch-action: none;
 }
 .wf-controls {
   position: absolute; right: 4px; top: 3px; width: 26px;
@@ -928,6 +931,13 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 #sdr-locate-settings-panel label { min-width: 0; }
 #sdr-locate-settings-panel input[type="number"] { width: 100%; }
 .sdr-hint-note { color: var(--label); font-size: 11px; flex: 1 1 100%; }
+.sdr-channel-actions { padding-left: 62px; }
+.sdr-channel-buttons { display: flex; align-items: center; gap: 4px; width: 234px; max-width: 100%; min-width: 0; }
+.sdr-channel-buttons > [data-action="sdr-workbench"] { flex: 1; min-width: 0; white-space: nowrap; }
+.sdr-channel-buttons > [data-action="sdr-channel-add"] { flex: 0 0 28px; padding: 2px 0; }
+.sdr-channel-buttons > .sdr-channel-nav { flex: 0 0 24px; padding: 2px 0; }
+.sdr-channel-nav[hidden] { display: none; }
+#sdr-current-channel { font-size: 10px; color: var(--text); }
 /* Filter presets wrap within the parameter column. */
 #sdr-ifbw-group { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }
 #sdr-ifbw-group .btn { padding: 2px 5px; }

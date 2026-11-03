@@ -283,9 +283,9 @@ function applyOverviewDrag(canvas: HTMLCanvasElement, clientX: number): void {
 		const center = (view.lo + view.hi) / 2 + (f - ovDrag.lastHz);
 		setView(panToCenter(view, center, capture, min), min);
 	} else if (ovDrag.kind === 'lo') {
-		setView(clampView({ lo: f, hi: view.hi }, capture, min), min);
+		setView(clampView({ lo: Math.min(f, view.hi - min), hi: view.hi }, capture, min), min);
 	} else {
-		setView(clampView({ lo: view.lo, hi: f }, capture, min), min);
+		setView(clampView({ lo: view.lo, hi: Math.max(f, view.lo + min) }, capture, min), min);
 	}
 	ovDrag.lastHz = f;
 	syncSpectrumZoomUi();

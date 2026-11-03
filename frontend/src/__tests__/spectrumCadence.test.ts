@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TriggerMetadata } from '../ui/triggerEvents';
 
 vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
   prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
 }));
 

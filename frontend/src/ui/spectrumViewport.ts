@@ -218,6 +218,10 @@ let passbandSnapshot: { view: FreqWindow | null; zoomEnabled: boolean } | null =
 /** A relocated receiver is focused only once its acknowledged capture is drawn. */
 type ReceiverFocus = { hz: number; expected: FreqWindow; minSpan: number; band?: FreqWindow };
 let pendingRecenter: ReceiverFocus | null = null;
+let receiverFocusGeneration = 0;
+
+/** User view gestures supersede automatic focus awaiting a command acknowledgement. */
+export function receiverFocusEpoch(): number { return receiverFocusGeneration; }
 
 /** True while a second passband-view action will restore the saved display state. */
 export function passbandViewActive(): boolean {
@@ -261,6 +265,7 @@ export function recenterOnCapture(hz: number, expected: FreqWindow, minSpan: num
 
 /** A new axis gesture supersedes receiver following that is waiting for a frame. */
 export function cancelReceiverFocus(): void {
+	receiverFocusGeneration++;
 	pendingRecenter = null;
 	cancelViewSlide();
 }
@@ -347,8 +352,7 @@ export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = S
 
 /** Apply a computed view (already clamped by the helpers). Null = back to full capture. */
 export function setView(w: FreqWindow | null, minSpan?: number): boolean {
-	cancelViewSlide();
-	pendingRecenter = null;
+	cancelReceiverFocus();
 	// Every external view action makes an earlier passband snapshot stale, even when the
 	// requested window happens to equal the current one.
 	clearPassbandView();
@@ -412,8 +416,7 @@ function applyView(w: FreqWindow | null, minSpan?: number): boolean {
  * Returns the resulting focus state. No acquisition or receiver parameter is touched.
  */
 export function togglePassbandView(target: FreqWindow, minSpan: number): boolean {
-	cancelViewSlide();
-	pendingRecenter = null;
+	cancelReceiverFocus();
 	if (passbandSnapshot) {
 		const saved = passbandSnapshot;
 		passbandSnapshot = null;
@@ -436,8 +439,7 @@ export function togglePassbandView(target: FreqWindow, minSpan: number): boolean
 
 /** Reset everything (mode change, Preset, disconnect). The toggle stays as the user set it. */
 export function resetViewport(): void {
-	cancelViewSlide();
-	pendingRecenter = null;
+	cancelReceiverFocus();
 	clearLevelView();
 	clearPassbandView();
 	if (capture === null && view === null) return;

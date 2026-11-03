@@ -33,9 +33,18 @@ pub(crate) fn executable(variable: &str, fallback: &str) -> Result<PathBuf, Stri
         let path = PathBuf::from(path);
         return if valid(&path) { Ok(path) } else { Err(format!("Decoder executable unavailable; install {fallback} and configure {variable}")) };
     }
+    // Match the setup scripts' user-local prefix, including services launched from a
+    // fresh terminal where the generated decoder environment has not been sourced.
+    let prefix = std::env::var_os("WEBSA_DECODERS_PREFIX").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| {
+        std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+            .map(|data| data.join("websa/decoders"))
+    });
     std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|dir| dir.join(fallback)).find(|p| valid(p))
-        .ok_or_else(|| format!("Install {fallback} and configure {variable}, or add it to PATH"))
+        .map(|dir| dir.join(fallback))
+        .chain(prefix.map(|dir| dir.join("bin").join(fallback)))
+        .find(|p| valid(p))
+        .ok_or_else(|| format!("Install {fallback} with the decoder setup script, configure {variable}, or add it to PATH"))
 }
 
 pub(crate) struct Dependency {

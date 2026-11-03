@@ -24,7 +24,22 @@ impl DevState {
         let d=(requested as i64).clamp(1,2048);
         let display=1i64<<(63-d.leading_zeros());
         let requested_center=finite("center",self.sdr_center)?;
-        self.fit_service_capture(requested_center,display,taps,self.channel_configs(),data.get("center").is_some())
+        let mut configs=self.channel_configs();
+        let tune=data.get("listen").is_some();
+        if tune {
+            let listen=finite("listen",self.sdr_listen)?;
+            let (minimum,maximum)=self.freq_limits();
+            if !(minimum..=maximum).contains(&listen) {
+                return Err(format!("listen frequency outside device limits: {listen} Hz; valid RF range {minimum}..={maximum} Hz"));
+            }
+            configs[0].freq=listen;
+            // Explicit primary listening is a restart intent. Capture-only pans
+            // and bandwidth changes keep the stopped receiver set unchanged.
+            configs[0].enabled=true;
+        }
+        // An explicit receiver frequency is admitted with the capture as one change.
+        // Ordinary axis pans retain their existing passband-fitting behavior.
+        self.fit_service_capture(requested_center,display,taps,configs,data.get("center").is_some()&&!tune)
     }
 
     pub(super) fn preset_service_channels() -> Vec<receiver_workers::ChannelConfig> {
@@ -152,6 +167,66 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_listen_restarts_only_primary_after_all_channels_stop() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.sdr_center=100e6;
+        state.sdr_listen=100e6;
+        for channel in &mut state.sdr_channels {channel.enabled=false;}
+        let old=state.channel_configs();
+        assert!(old.iter().all(|c|!c.enabled));
+        let capture_only=state.parse_service_capture(&json!({"center":100_020_000.0,"decimate":16})).unwrap();
+        assert!(capture_only.configs.iter().all(|c|!c.enabled));
+        let resumed=state.parse_service_capture(&json!({"center":100_020_000.0,"listen":100_020_000.0,"decimate":16})).unwrap();
+        let mut expected=old.clone();
+        expected[0].enabled=true;expected[0].freq=100_020_000.0;
+        assert_eq!(resumed.configs,expected);
+        assert_eq!(state.channel_configs(),old);
+        assert!(state.parse_service_capture(&json!({"center":100e6,"listen":-1})).is_err());
+        assert_eq!(state.channel_configs(),old);
+    }
+
+    #[test]
+    fn explicit_center_and_listen_are_admitted_together_without_changing_auxiliary_settings() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.sdr_center=100e6;
+        state.sdr_listen=100_100_000.0;
+        state.sdr_demod="usb".into();
+        state.sdr_if_bw=2400.0;
+        let old=state.channel_configs();
+        for center in [100e6,125e6] {
+            let next=state.parse_service_capture(&json!({"center":center,"listen":center,"decimate":16})).unwrap();
+            assert_eq!(next.center,center);
+            assert_eq!(next.configs[0].freq,center);
+            assert_eq!(next.configs[0].mode,old[0].mode);
+            assert_eq!(next.configs[0].if_bw,old[0].if_bw);
+            assert_eq!(next.configs[1..],old[1..]);
+        }
+        assert_eq!(state.sdr_center,100e6);
+        assert_eq!(state.sdr_listen,100_100_000.0);
+    }
+
+    #[test]
+    fn rejected_center_and_listen_change_leaves_the_previous_configuration_intact() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.sdr_center=100e6;
+        state.sdr_listen=100e6;
+        let old=state.channel_configs();
+        for listen in [json!(-1),json!("125000000"),Value::Null,json!(1e12)] {
+            assert!(state.apply_service_capture(&json!({"center":125e6,"listen":listen})).is_err());
+            assert_eq!(state.sdr_center,100e6);
+            assert_eq!(state.sdr_listen,100e6);
+            assert_eq!(state.channel_configs(),old);
+            assert_eq!(state.config_version,0);
+        }
+        state.sdr_channels[1].enabled=true;
+        state.sdr_channels[1].freq=90e6;
+        let old=state.channel_configs();
+        assert!(state.apply_service_capture(&json!({"center":140e6,"listen":140e6})).is_err());
+        assert_eq!(state.sdr_center,100e6);
+        assert_eq!(state.channel_configs(),old);
+    }
 
     fn state_with_expanded_sweep_limits() -> DevState {
         let mut state=DevState::new(json!({"preset_defaults":{},"caps":{"fmin":9_000.0,"fmax":9_000_000_000.0}}),json!({}));

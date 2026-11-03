@@ -1,4 +1,6 @@
 import { drawPassband } from './passband';
+import { renderSdrChannelBands } from './sdrChannelBands';
+import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 // 瀑布图渲染: ImageData 逐像素密度着色 + 滚动历史
 import * as S from '../core/store';
 import { canvasColors, getTheme } from '../core/theme';
@@ -8,7 +10,7 @@ import { getCapture, getView, isZoomed, viewportVersion } from '../ui/spectrumVi
 import { previewFreqWindow } from '../ui/axisDrag';
 import { lowerBound, projectSpectrum, sameFrequencyGrid } from '../dsp/grid';
 import { sdrBadgeDragFrequency, sdrSpectrumWindow } from '../ui/sdrBadgeGesture';
-import { demodBandHz, sdrDemod, sdrPitchHz } from '../ui/sdrState';
+import { demodBandHz, sdrDemod, sdrListenHz, sdrPitchHz } from '../ui/sdrState';
 import { filterPreviewHz } from '../ui/sdrFilter';
 import { passbandDragFrequency } from '../ui/sdrFilterGesture';
 import { getDisplayRange, getDisplayTop, hasDisplayBounds } from '../ui/displayRef';
@@ -161,11 +163,21 @@ let wfOverlayX: number | null = null;
 
 /** Paint over the clean history image; never write the indicator into cached pixels. */
 function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  const frequency = sdrBadgeDragFrequency() ?? passbandDragFrequency();
-  const view = frequency === null ? null : sdrSpectrumWindow();
+  const frequency = S.sdrMode ? sdrBadgeDragFrequency() ?? passbandDragFrequency() ?? sdrListenHz.get() : null;
+  const view = sdrSpectrumWindow();
+  if (view) renderSdrChannelBands(ctx, view.lo, view.hi, { x: 0, y: 0, w: width, h: height });
+  const selection = getMarqueePreview();
+  if (S.sdrMode && view && selection) {
+    const x = (selection.lo - view.lo) / (view.hi - view.lo) * width;
+    const w = (selection.hi - selection.lo) / (view.hi - view.lo) * width;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, width, height); ctx.clip();
+    ctx.fillStyle = 'rgba(0,229,255,0.08)'; ctx.fillRect(x, 0, w, height);
+    ctx.strokeStyle = canvasColors().text; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
+    ctx.strokeRect(x, 0, w, height); ctx.restore();
+  }
   wfOverlayX = frequency !== null && view && frequency >= view.lo && frequency <= view.hi
     ? Math.max(0, Math.min(width - 1, Math.round((frequency - view.lo) / (view.hi - view.lo) * width))) : null;
-  if (wfOverlayX === null || frequency === null || !view) return;
+  if (frequency === null || !view) return;
   const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), filterPreviewHz(), sdrPitchHz.get());
   const scale = width / (view.hi - view.lo);
   const left = (frequency + bandLo - view.lo) * scale;
@@ -175,7 +187,7 @@ function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, heigh
   drawPassband(ctx, left, right, 0, 0, width, height, colors, true);
   ctx.globalAlpha = 1;
   ctx.fillStyle = colors.rta;
-  ctx.fillRect(wfOverlayX, 0, Math.min(2, width - wfOverlayX), height);
+  if (wfOverlayX !== null) ctx.fillRect(wfOverlayX, 0, Math.min(2, width - wfOverlayX), height);
   ctx.restore();
 }
 
@@ -240,7 +252,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   const pushed = S.waterfallPushes - wfLastPushes;
   if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) {
     // Frozen history still has to erase the previous indicator before drawing the next.
-    if (wfOverlayX !== null || sdrBadgeDragFrequency() !== null || passbandDragFrequency() !== null) {
+    if (S.sdrMode || wfOverlayX !== null) {
       ctx.putImageData(wfImg!, 0, 0);
       paintBadgeIndicator(ctx, W, H);
     }

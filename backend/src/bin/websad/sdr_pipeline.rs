@@ -423,6 +423,7 @@ pub(super) struct PipelineConfig {
 #[derive(Clone)]
 pub(super) struct Snapshot {
     pub capture_center: f64, pub usable_bandwidth: f64, pub rate: f64,
+    pub input_rate: f64, pub epoch: u64,
     pub generation: u64,
     pub taps: usize, pub device_decimate: u64, pub aux: Arc<[(u32, f64)]>, pub actual: Value,
     front_end: Option<hardware_swp::FrontEndActual>,
@@ -572,6 +573,7 @@ impl Ddc {
         let mut clocks=metrics.clocks.to_vec();
         clocks.extend(self.direct.iter().map(|(&slot,route)| (u64::from(slot),route.input,route.output)));
         Snapshot { capture_center:self.capture_center, usable_bandwidth:self.usable_bandwidth,
+            input_rate:self.stream.input_sample_rate(), epoch:self.stream.epoch(),
             generation:self.generation,
             rate:self.channel_rate(), taps:self.stream.taps_per_phase(), device_decimate:self.device_decimate,
             aux, actual:Value::Null, pool:self.stream.stats(), input_samples:self.input_pos,
@@ -1330,7 +1332,11 @@ mod tests {
 
     #[test]
     fn capture_grid_changes_expire_only_old_pan() {
-        let mut snapshot = plan().pipeline_snapshot(Arc::from([]));
+        let ddc=plan();
+        let mut snapshot = ddc.pipeline_snapshot(Arc::from([]));
+        assert_eq!(snapshot.input_rate,ddc.stream.input_sample_rate());
+        assert_eq!(snapshot.epoch,ddc.stream.epoch());
+        assert_ne!(snapshot.input_rate,snapshot.rate);
         let previous = (snapshot.capture_center, snapshot.device_decimate, snapshot.generation);
         let mut output = PipelineOutput { frames:vec![vec![1], vec![2]], pan:vec![(vec![100e6], vec![-40.0], 0, 0, 1)] };
         // A DSP-only change retains spectra on the same device frequency grid.

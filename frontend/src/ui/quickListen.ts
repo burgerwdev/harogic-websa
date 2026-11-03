@@ -1,5 +1,6 @@
 import { getLang, onLangChange } from '../core/i18n';
 import { convertUnitValue } from '../core/units';
+import { frequencyInput, formatFrequencyValue, syncFrequencyInputs, wireFrequencyInputs } from './frequencyInput';
 import { applyListen, defaultListenTarget, LISTEN_MODES, planListen, type ListenPlan } from './workbenchListening';
 import type { WorkbenchSession } from './workbenchSession';
 
@@ -19,8 +20,9 @@ function errorText(error: { code: string; message: string }): string {
 export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): { open(hz: number): void; dispose(): void } {
   const doc = host.ownerDocument;
   const dialog = doc.createElement('dialog'); dialog.className = 'mc-quick-listen'; dialog.dataset.quickListen = '';
-  dialog.innerHTML = '<form><header><strong data-title></strong><button type="button" data-dismiss aria-label="Close">×</button></header><p data-fixture class="mc-notice"></p><label><span data-frequency-label></span><span class="mc-frequency-input"><input name="frequency" type="number" min="0" step="any" required><select name="unit"><option>MHz</option><option>kHz</option><option>Hz</option></select></span></label><label><span data-mode-label></span><select name="mode"></select></label><label><span data-target-label></span><select name="target"></select></label><div data-impact aria-live="polite"></div><p data-error class="mc-error" role="alert"></p><button type="submit" data-listen-submit></button></form>';
+  dialog.innerHTML = `<form><header><strong data-title></strong><button type="button" data-dismiss aria-label="Close">×</button></header><p data-fixture class="mc-notice"></p><label><span data-frequency-label></span>${frequencyInput(session.snapshot.capture.center_hz, 'unit')}</label><label><span data-mode-label></span><select name="mode"></select></label><label><span data-target-label></span><select name="target"></select></label><div data-impact aria-live="polite"></div><p data-error class="mc-error" role="alert"></p><button type="submit" data-listen-submit></button></form>`;
   host.appendChild(dialog);
+  const unwireFrequency = wireFrequencyInputs(dialog);
   const input = dialog.querySelector<HTMLInputElement>('[name=frequency]')!;
   const unit = dialog.querySelector<HTMLSelectElement>('[name=unit]')!;
   const mode = dialog.querySelector<HTMLSelectElement>('[name=mode]')!;
@@ -28,7 +30,7 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
   const submit = dialog.querySelector<HTMLButtonElement>('[data-listen-submit]')!;
   const impact = dialog.querySelector<HTMLElement>('[data-impact]')!;
   const error = dialog.querySelector<HTMLElement>('[data-error]')!;
-  let previousUnit = 'MHz', preferredMode: string | null = null, busy = false, disposed = false, plan: ListenPlan | null = null;
+  let preferredMode: string | null = null, busy = false, disposed = false, plan: ListenPlan | null = null;
   const frequency = () => input.value.trim() ? convertUnitValue(Number(input.value), unit.value, 'Hz') : NaN;
   const update = (): void => {
     if (!dialog.open || busy) return;
@@ -59,7 +61,8 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
     const receiver = session.snapshot.receivers.find(r => r.receiver_uid === target.value);
     const same = !plan.command && !plan.fault;
     submit.textContent = same ? l('Enable listening', '开启监听') : target.value === 'new' ? l('Add and listen', '新增并监听') : l('Tune and listen', '调谐并监听');
-    submit.disabled = !!plan.fault;
+    submit.disabled = !!plan.fault; submit.title = l('Apply the frequency and enable local listening after confirmation', '确认频率设置后，开启本地监听');
+    const dismiss = dialog.querySelector<HTMLButtonElement>('[data-dismiss]')!; dismiss.title = l('Cancel adding a listening frequency', '取消添加监听频点'); dismiss.setAttribute('aria-label', dismiss.title);
     const lines = [same ? l('Already receiving this frequency. Only the local listening route changes.', '此信道已接收该频点，仅开启本地监听，不重启接收。')
       : receiver ? `${l('Tune only', '仅调谐')} C${receiver.display_number}: ${receiver.confirmed.baseband.frequency_hz / 1e6} → ${frequency() / 1e6} MHz`
         : l('Adds an independent listening channel to the local mix.', '新增独立听音信道，并加入本地混听。')];
@@ -74,9 +77,7 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
   dialog.querySelector('[data-dismiss]')!.addEventListener('click', close);
   dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
   dialog.addEventListener('input', update);
-  unit.addEventListener('change', () => {
-    if (input.value.trim()) input.value = String(convertUnitValue(Number(input.value), previousUnit, unit.value)); previousUnit = unit.value; update();
-  });
+  dialog.addEventListener('change', update);
   target.addEventListener('change', () => {
     const receiver = session.snapshot.receivers.find(r => r.receiver_uid === target.value);
     preferredMode = receiver?.confirmed.processors.find(p => p.kind === 'demodulator')?.mode ?? 'nfm'; update();
@@ -99,10 +100,10 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
   const stop = session.subscribe(update), stopLang = onLangChange(update);
   return { open: hz => {
     if (busy) return;
-    input.value = String(hz / 1e6); unit.value = previousUnit = 'MHz';
+    input.value = formatFrequencyValue(hz / 1e6, 'MHz'); unit.value = 'MHz'; syncFrequencyInputs(dialog);
     const chosen = defaultListenTarget(session, hz); target.value = chosen;
     const receiver = session.snapshot.receivers.find(r => r.receiver_uid === chosen);
     preferredMode = receiver?.confirmed.processors.find(p => p.kind === 'demodulator')?.mode ?? 'nfm';
     if (!dialog.open) dialog.showModal(); update(); input.focus(); input.select();
-  }, dispose: () => { disposed = true; stop(); stopLang(); dialog.remove(); } };
+  }, dispose: () => { disposed = true; stop(); stopLang(); unwireFrequency(); dialog.remove(); } };
 }

@@ -11,6 +11,8 @@ export interface DecoderLogEntry extends DecoderResult {
   at: number;
   source: string;
   bytes: number;
+  timing?: { input_index: string; input_rate: number; fraction_num: string; fraction_den: string;
+    delay_seconds: number; delay_known: boolean; causal_presentation: boolean; baseband_stream?: unknown };
 }
 export interface DecoderImageStrip { png: string; y: number; rows: number; pw: number; ph: number }
 export interface DecoderImage {
@@ -33,24 +35,27 @@ export function readDecoderImageStrip(data: Record<string, unknown>): DecoderIma
 }
 export const DECODER_LOG_ENTRIES = 200;
 export const DECODER_LOG_BYTES = 8 * 1024 * 1024;
-const channels = new Map<number, { entries: DecoderLogEntry[]; bytes: number; evicted: number }>();
+const channels = new Map<number | string, { entries: DecoderLogEntry[]; bytes: number; evicted: number }>();
 const listeners = new Set<() => void>();
 let serial = 0;
-function channelLog(channel: number) {
+function channelLog(channel: number | string) {
   let log = channels.get(channel);
   if (!log) { log = { entries: [], bytes: 0, evicted: 0 }; channels.set(channel, log); }
   return log;
 }
-export function decoderLog(channel: number, mode: string) {
+export function decoderLog(channel: number | string, mode?: string) {
   const log = channelLog(channel);
-  return { entries: log.entries.filter(entry => entry.mode === mode), evicted: log.evicted };
+  return { entries: log.entries.filter(entry => (mode === undefined || entry.mode === mode)), evicted: log.evicted };
 }
 function gpsSnapshot(entry: DecoderResult): string | null {
   if (entry.mode !== 'gps' || entry.kind !== 'table' || !entry.data || typeof entry.data !== 'object' || !('table' in entry.data)) return null;
   return entry.data.table === 'satellites' || entry.data.table === 'pvt' ? entry.data.table : null;
 }
+function statusType(data: unknown): string {
+  return data && typeof data === 'object' && 'type' in data && typeof data.type === 'string' ? data.type : '';
+}
 /** Remove live GPS state when its receiver stops; navigation messages remain history. */
-export function clearGpsSnapshots(channel: number, provider?: string, source?: string): void {
+export function clearGpsSnapshots(channel: number | string, provider?: string, source?: string): void {
   const log = channels.get(channel);
   if (!log) return;
   const count = log.entries.length;
@@ -62,7 +67,7 @@ export function clearGpsSnapshots(channel: number, provider?: string, source?: s
   });
   if (log.entries.length !== count) listeners.forEach(fn => fn());
 }
-export function addDecoderResult(result: DecoderResult, source: string, channel: number): void {
+export function addDecoderResult(result: DecoderResult, source: string, channel: number | string): void {
   const log = channelLog(channel);
   const data = result.data !== null && typeof result.data === 'object' && !Array.isArray(result.data) ? result.data as Record<string, unknown> : null;
   if (result.mode === 'gps') {
@@ -113,7 +118,8 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
     if (gpsSnapshot(result)) {
       previous = log.entries.findIndex(entry => entry.provider === result.provider && gpsSnapshot(entry) === data?.table);
     } else if (result.kind === 'status' || (result.provider === 'onair' && ['vessels', 'packets', 'aircraft'].includes(String(data?.type)))) {
-      previous = log.entries.findIndex(entry => entry.kind === result.kind && entry.provider === result.provider && entry.mode === result.mode);
+      previous = log.entries.findIndex(entry => entry.kind === result.kind && entry.provider === result.provider && entry.mode === result.mode
+        && (result.kind !== 'status' || statusType(entry.data) === statusType(result.data)));
     }
   }
   if (previous >= 0) { log.bytes -= log.entries[previous].bytes; id = log.entries[previous].id; log.entries.splice(previous, 1); }
@@ -121,20 +127,69 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
     log.entries.unshift({ ...result, id, at: Date.now(), source, bytes });
     log.bytes += bytes;
   } else log.evicted++;
-  while (log.entries.length > DECODER_LOG_ENTRIES || log.bytes > DECODER_LOG_BYTES) {
+  while (log.entries.length > DECODER_LOG_ENTRIES || log.bytes > (typeof channel === 'string' ? 24 * 1024 * 1024 : DECODER_LOG_BYTES)) {
     log.bytes -= log.entries.pop()!.bytes;
     log.evicted++;
   }
   listeners.forEach(fn => fn());
 }
-export function clearDecoderLog(channel: number, mode?: string): void {
+export function clearDecoderLog(channel: number | string, mode?: string): void {
   const log = channelLog(channel);
   log.entries = mode ? log.entries.filter(entry => entry.mode !== mode) : [];
   log.bytes = log.entries.reduce((bytes, entry) => bytes + entry.bytes, 0);
   log.evicted = 0;
   listeners.forEach(fn => fn());
 }
+/** Live readings belong to one processing stream; messages and pictures remain history. */
+export function clearDecoderStatuses(channel: string): void {
+  const log = channels.get(channel); if (!log) return;
+  const count = log.entries.length;
+  log.entries = log.entries.filter(entry => entry.kind !== 'status');
+  log.bytes = log.entries.reduce((bytes, entry) => bytes + entry.bytes, 0);
+  if (count !== log.entries.length) listeners.forEach(fn => fn());
+}
 export function subscribeDecoderLog(fn: () => void): () => void {
   listeners.add(fn);
   return () => { listeners.delete(fn); };
+}
+
+/** Raw native image rows retain their original pixels; incomplete/missing rows stay explicit. */
+export interface DecoderRaster {
+  raster: true; id: string; label: string; w: number; h: number; rgb: Uint8Array;
+  rows: number; final: boolean; partial: boolean; missingRows: number[];
+}
+export function addDecoderRaster(channel: string, mode: string, source: string, image: {
+  id: string; label: string; w: number; h: number; row: number; rows: number; rgb: Uint8Array;
+  final: boolean; partial: boolean; missingRows?: number[]; grow?: boolean;
+}): void {
+  const { w, h, row, rows } = image;
+  if (![w, h, row, rows].every(Number.isInteger) || w < 1 || h < 1 || row < 0 || rows < 0
+    || row + rows > h || w * h * 3 > 20 * 1024 * 1024 || image.rgb.length !== w * rows * 3) throw new Error('Invalid native image rows');
+  const log = channelLog(channel), index = log.entries.findIndex(entry => entry.kind === 'image' && entry.source === source
+    && entry.mode === mode && (entry.data as DecoderRaster).raster && (entry.data as DecoderRaster).id === image.id);
+  const previous = index >= 0 ? log.entries[index] : null;
+  const old = previous?.data as DecoderRaster | undefined;
+  if (old && (old.w !== w || (!image.grow && old.h !== h))) throw new Error('Native picture geometry changed');
+  const height = Math.max(h, old?.h ?? 0);
+  const rgb = old?.h === height ? old.rgb : new Uint8Array(w * height * 3);
+  if (old && rgb !== old.rgb) rgb.set(old.rgb);
+  rgb.set(image.rgb, row * w * 3);
+  const picture: DecoderRaster = { raster: true, id: image.id, label: image.label, w, h: height, rgb,
+    rows: Math.max(old?.rows ?? 0, row + rows), final: image.final, partial: image.partial, missingRows: image.missingRows ?? [] };
+  if (previous) { log.bytes -= previous.bytes; log.entries.splice(index, 1); }
+  const bytes = rgb.byteLength + 1024;
+  log.entries.unshift({ id: previous?.id ?? ++serial, at: previous?.at ?? Date.now(), source,
+    provider: 'native', mode, kind: 'image', data: picture, bytes }); log.bytes += bytes;
+  while (log.entries.length > DECODER_LOG_ENTRIES || log.bytes > 24 * 1024 * 1024) { log.bytes -= log.entries.pop()!.bytes; log.evicted++; }
+  listeners.forEach(fn => fn());
+}
+export function annotateDecoderResult(channel: string, timing: NonNullable<DecoderLogEntry['timing']>): void {
+  const entry = channelLog(channel).entries[0]; if (entry) entry.timing = timing;
+}
+export function forgetDecoderLog(channel: string): void { channels.delete(channel); }
+
+export function endDecoderRasters(channel: string): void {
+  const log = channels.get(channel); if (!log) return;
+  log.entries = log.entries.map(entry => entry.kind === 'image' && (entry.data as DecoderRaster).raster && !(entry.data as DecoderRaster).final && !(entry.data as DecoderRaster).partial
+    ? { ...entry, data: { ...(entry.data as DecoderRaster), partial: true } } : entry);
 }

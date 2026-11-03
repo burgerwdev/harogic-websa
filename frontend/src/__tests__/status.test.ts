@@ -518,6 +518,7 @@ describe('waterfall table replacement during STATUS', () => {
 
 describe('peak list table replacement during STATUS', () => {
 	afterEach(() => {
+		setWaterfall(false);
 		peakListVisible.set(false);
 		S.setMeasOn(false);
 		updateStatus(structuredClone(SWP_STATUS));
@@ -540,7 +541,7 @@ describe('peak list table replacement during STATUS', () => {
 		}
 		peakListVisible.set(false);
 		updateStatus(structuredClone(report));
-		expect(markerTable.style.display).toBe('');
+		expect(markerTable.style.display).toBe(mode === 'sdr' ? 'none' : '');
 	});
 });
 

@@ -34,8 +34,20 @@ mod service_cost;
 mod service_power;
 #[path = "websad/subscriber_stream.rs"]
 mod subscriber_stream;
+#[path = "websad/recording.rs"]
+mod recording;
+#[path = "websad/recording_read.rs"]
+mod recording_read;
+#[path = "websad/recording_export.rs"]
+mod recording_export;
+#[path = "websad/recording_collection.rs"]
+mod recording_collection;
+#[path = "websad/recording_demod.rs"]
+mod recording_demod;
 #[path = "websad/multichannel.rs"]
 mod multichannel;
+#[path = "websad/receiver_presets.rs"]
+mod receiver_presets;
 #[path = "websad/service_preflight.rs"]
 mod service_preflight;
 #[path = "websad/server_mode.rs"]
@@ -307,6 +319,9 @@ struct DevState {
     sdr_aux: Value,
     sdr_channels: Vec<receiver_workers::ChannelConfig>,
     receivers: multichannel::Directory,
+    recordings: Option<recording::Manager>,
+    recording_error: Option<String>,
+    receiver_presets: Option<Arc<std::sync::Mutex<receiver_presets::Store>>>,
     receiver_workers: Option<receiver_workers::ReceiverWorkers>,
     receiver_failure: Option<String>,
     receiver_failure_pending: bool,
@@ -341,6 +356,7 @@ struct DevState {
     pnm_last: Value,
     ddc: Option<SendDdc>,
     pipeline: Option<Pipeline>,
+    last_capture: Option<sdr_hardware::CaptureParameters>,
     spectrum_timing: Timing,
     state_lock_wait: Timing,
     state_lock_hold: Timing,
@@ -348,6 +364,7 @@ struct DevState {
     pending_receiver: receiver_workers::ReceiverFrames,
     retiring_registry: Arc<[sdr_pipeline::ChannelRegistryEntry]>,
     decode_snapshots: service_stream::DecodeSnapshots,
+    processing_branches: multichannel::ProcessingBranches,
     consumed_receiver_iq: std::collections::BTreeSet<(u32,u32,u32)>,
     ddc_error: Option<String>,
     ddc_error_count: u64,
@@ -522,6 +539,9 @@ impl DevState {
             sdr_aux: json!({}),
             sdr_channels: (1..=3).map(receiver_workers::ChannelConfig::for_slot).collect(),
             receivers: multichannel::Directory::default(),
+            recordings: None,
+            recording_error: None,
+            receiver_presets: None,
             receiver_workers: None,
             receiver_failure: None,
             receiver_failure_pending: false,
@@ -553,6 +573,7 @@ impl DevState {
             swp_restore: None,
             ddc: None,
             pipeline: None,
+            last_capture: None,
             spectrum_timing: Timing::default(),
             state_lock_wait: Timing::default(),
             state_lock_hold: Timing::default(),
@@ -560,6 +581,7 @@ impl DevState {
             pending_receiver: receiver_workers::ReceiverFrames::default(),
             retiring_registry: Arc::from([]),
             decode_snapshots: service_stream::DecodeSnapshots::default(),
+            processing_branches: multichannel::ProcessingBranches::default(),
             consumed_receiver_iq: std::collections::BTreeSet::new(),
             ddc_error: None,
             ddc_error_count: 0,
@@ -3995,6 +4017,7 @@ async fn publisher(app: Arc<App>) {
                 }
                 else if let Ok(batch) = result { discarded_preparation = Some(batch); }
             }
+            let recording_clients = usize::from(state.recordings.as_ref().is_some_and(|r|r.has_active()));
             let mode = state.swp.mode.clone();
             let epoch = compute.epoch.load(Ordering::Acquire);
             let mut display: Vec<Bytes> = Vec::new();
@@ -4027,7 +4050,7 @@ async fn publisher(app: Arc<App>) {
                     else { Duration::from_millis(10) }
                 }
                 "sdr" if state.hardware_shim.is_some() => {
-                    let listeners = iq_clients + aux_clients + display_clients + audio_clients + decode_clients
+                    let listeners = iq_clients + aux_clients + display_clients + audio_clients + decode_clients + recording_clients
                         + usize::from(state.auto.session.is_some());
                     let waiting = state.pipeline.is_none() && state.ddc.is_none()
                         && state.receiver_failure.is_none() && !state.missing_receiver_preparations().is_empty();
@@ -4043,7 +4066,7 @@ async fn publisher(app: Arc<App>) {
                     let (pan,retiring_iq,retiring_aux,_)=state.step_sdr(0,0,display_clients,0);
                     iq_frame.extend(retiring_iq); aux_frame.extend(retiring_aux);
                     display.extend(pan.into_iter().map(Bytes::from));
-                    if iq_clients+aux_clients+audio_clients+decode_clients>0 {
+                    if iq_clients+aux_clients+audio_clients+decode_clients+recording_clients>0 {
                         let configs=state.channel_configs();
                         let source=state.fixture_sources.get_or_insert_with(service_fixture::FixtureSources::new);
                         match source.configure(&configs).and_then(|()|source.step()) {
@@ -4101,7 +4124,7 @@ async fn publisher(app: Arc<App>) {
                     } else {
                         state.process_receiver_frames(&iq_frame).and_then(|mut a| {
                             let b=state.process_receiver_frames(&aux_frame)?;
-                            a.audio.extend(b.audio); a.decode.extend(b.decode); Ok(a)
+                            a.append(b); Ok(a)
                         })
                     };
                     match result {
@@ -4176,7 +4199,12 @@ async fn publisher(app: Arc<App>) {
         }
         let (iq_frame,aux_frame)={
             let mut state=app.state.lock().unwrap();
-            (multichannel::tag_iq(&mut state,iq_frame),multichannel::tag_iq(&mut state,aux_frame))
+            let tagged=(multichannel::tag_iq(&mut state,iq_frame),multichannel::tag_iq(&mut state,aux_frame));
+            let error=if state.swp.mode!="sdr" {Some("capture left SDR mode".to_owned())}
+                else if !state.link_up {Some("capture disconnected".to_owned())} else {state.ddc_error.clone()};
+            if let Some(recordings)=state.recordings.as_mut() {recordings.tick(error.as_deref());}
+            multichannel::recording_processing_sources(&state);
+            tagged
         };
         {
             let clients = app.clients.lock();
@@ -4539,8 +4567,15 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
         latest: Arc::clone(&latest_slot),
     });
         if receiver_uid.as_deref().is_some_and(|uid|state.receiver_slot(uid).is_none_or(|slot|
-            !state.channel_configs()[(slot-1) as usize].enabled)) {Err("receiver stopped during subscription".into())}
-        else if decode {state.decode_snapshots.initial(channel,&state.stream_registry(),&mut subscriber)}
+            !state.channel_configs()[(slot-1) as usize].enabled ||
+                ((audio||decode)&&!state.channel_configs()[(slot-1) as usize].processing_enabled))) {Err("receiver stopped during subscription".into())}
+        else if decode {
+            state.decode_snapshots.initial(channel,&state.processing_registry(),&mut subscriber).and_then(|frames| {
+                if let Some(uid)=receiver_uid.as_deref() {frames.into_iter().filter_map(|frame|
+                    multichannel::processing_frame(&mut state,uid,frame).transpose()).collect()}
+                else {Ok(frames)}
+            })
+        }
             else {Ok(Vec::new())}
     };
     let (mut sink, mut stream) = socket.split();
@@ -4600,9 +4635,17 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
             let ack_deadline = decode_credit.deadline();
             tokio::select! {
                 _ = iq_health.tick(), if receiver_uid.is_some() => {
-                    let failed={let state=app.state.lock().unwrap();
-                        !state.link_up || state.swp.mode!="sdr" || state.ddc_error.is_some()};
+                    let failed={let mut state=app.state.lock().unwrap();
+                        !state.link_up || state.swp.mode!="sdr" || state.ddc_error.is_some()
+                            || ((audio||decode)&&receiver_uid.as_deref().is_some_and(|uid|
+                                state.receiver_slot(uid).is_none_or(|slot| {
+                                    let c=state.channel_configs()[(slot-1) as usize].clone();!c.enabled||!c.processing_enabled
+                                })))};
                     if failed {
+                        if audio||decode {
+                            if !rx.is_empty() {continue;}
+                            let _=send_frame(&mut sink,Message::Close(None)).await;break false;
+                        }
                         let boundary=json!({"type":"stream_boundary","receiver_uid":receiver_uid,
                             "previous":null,"next":null,"clock":null,"reason":"capture_unavailable","drained":false});
                         let _=send_frame(&mut sink,Message::Text(boundary.to_string().into())).await;
@@ -4745,18 +4788,25 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                         if receiver_failed.load(Ordering::Acquire) || overflow.load(Ordering::Acquire) {break 'client true;}
                         if !packet.epoch_current(epoch.load(Ordering::Acquire)) {continue;}
                         let framed=if let Some(uid)=receiver_uid.as_deref() {
-                            iq_subscriber.frames(&mut app.state.lock().unwrap(),uid,message)
+                            if iq||aux {iq_subscriber.frames(&mut app.state.lock().unwrap(),uid,message)}
+                            else {
+                                match multichannel::processing_frame(&mut app.state.lock().unwrap(),uid,message) {
+                                    Ok(Some(frame))=>subscriber.frames(frame),Ok(None)=>Ok(Vec::new()),Err(error)=>Err(error),
+                                }
+                            }
                         } else {subscriber.frames(message)};
                         let frames=match framed {
                             Ok(frames)=>frames,
                             Err(error)=>{eprintln!("SDR subscriber stream: {error}");subscriber_failed=true;break 'client true;},
                         };
                         for frame in frames {
+                            let closing=matches!(&frame,Message::Close(_));
                             match send_decode_frame(&mut sink,&mut stream,frame,decode_ack,&mut decode_credit).await {
                                 Ok(true)=>{},
                                 Ok(false)=>break 'client false,
                                 Err(_)=>{ack_timeout=true;overflow.store(true,Ordering::Release);break 'client true;}
                             }
+                            if closing {break 'client false;}
                         }
                         if iq_subscriber.ended {
                             let _=send_frame(&mut sink,Message::Close(None)).await;
@@ -4845,6 +4895,9 @@ fn load_golden() -> (Value, Value) {
         "name": "pfb_taps_per_phase", "type": "integer", "choices": [4, 8, 16],
         "default": 16, "min": 4, "max": 16, "required": false, "unit": ""
     }));
+    schema["commands"]["SET_SDR"]["params"].as_array_mut().unwrap().push(json!({
+        "name":"listen", "type":"number", "required":false, "unit":"Hz"
+    }));
     let mut channel = schema["commands"]["SET_SDR_DEMOD"].clone();
     channel["params"].as_array_mut().unwrap().push(json!({
         "name": "channel", "type": "integer", "choices": [1, 2, 3], "default": 1,
@@ -4914,6 +4967,23 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         check_hardware_exclusive()?;
         state.hardware_shim = Some(shim);
     }
+    let recording_root=std::env::var_os("WEBSA_RECORDING_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let data=std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from).unwrap_or_else(||
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_else(||".".into())).join(".local/share"));
+        data.join("harogic-websa/recordings").join(port.to_string())
+    });
+    let presets_root = recording_root.clone();
+    match tokio::task::spawn_blocking(move||recording::Manager::open(recording_root)).await? {
+        Ok(manager)=>state.recordings=Some(manager),
+        Err(error)=>{eprintln!("WebSA recording storage unavailable: {error}");state.recording_error=Some(error.to_string());}
+    }
+    // The recording manager already owns this instance's exclusive directory lock.
+    if state.recordings.is_some() {
+        match tokio::task::spawn_blocking(move || receiver_presets::Store::open(presets_root)).await? {
+            Ok(store) => state.receiver_presets = Some(Arc::new(std::sync::Mutex::new(store))),
+            Err(error) => eprintln!("WebSA receiver presets unavailable: {error}"),
+        }
+    }
     state.server.lock().refresh_dependencies();
     // Prepare thread-owned models once before accepting mode changes or arming
     // hardware. Each later session creates fresh channel DSP on these workers.
@@ -4937,6 +5007,16 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/sdr/plugins", get(channel_controls::plugins))
         .route("/api/sdr/receivers", get(multichannel::snapshot).post(multichannel::command))
         .route("/api/sdr/receivers/preflight", post(multichannel::preflight))
+        .route("/api/sdr/receiver-presets", get(receiver_presets::list).post(receiver_presets::change))
+        .route("/api/sdr/recordings/{task}/index", get(recording::index))
+        .route("/api/sdr/recordings/{task}/range", get(recording_read::range))
+        .route("/api/sdr/recordings/{task}/export", get(recording_export::export))
+        .route("/api/sdr/recordings/{task}/collection", get(recording_collection::export))
+        .route("/api/sdr/recordings/{task}/demodulate", get(recording_demod::export))
+        .route("/api/sdr/recordings/{task}/results", get(recording::results::export))
+        .route("/api/sdr/recordings/{task}/audio", get(recording::audio::export))
+        .route("/api/sdr/recordings/{task}/audio/flac", get(recording::flac::export))
+        .route("/api/sdr/recordings/{task}/audio/range", get(recording::audio_read::export))
         .route("/", get(index))
         .route("/static/dist/{*path}", get(static_files))
         .with_state(app.clone());
@@ -4974,7 +5054,9 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         state.rta_hw = None;
         state.pnm_hw = None;
         state.receiver_workers = None;
+        let recordings=state.recordings.take();
         drop(state);
+        if let Some(mut recordings)=recordings {recordings.shutdown();}
         // Mode owners have joined; the permanent SDK owner can now close the
         // idle physical device and join its thread exactly once.
         let finished = hardware_swp::finish_sdk_session();
@@ -6684,7 +6766,7 @@ mod tests {
         {
             let state=app.state.lock().unwrap();
             service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
-                audio:Vec::new(),decode:vec![frame(1,0,json!({"type":"start"}))],
+                audio_configs:Vec::new(),audio:Vec::new(),decode:vec![frame(1,0,json!({"type":"start"}))],
             },false);
         }
         let start=next_binary(&mut paced).await;
@@ -6700,7 +6782,7 @@ mod tests {
             for retiring in [false,true] {
                 for seq in 0..130 {
                     service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
-                        audio:Vec::new(),decode:vec![frame(2,seq,json!({"type":"radiofax-state"})),
+                        audio_configs:Vec::new(),audio:Vec::new(),decode:vec![frame(2,seq,json!({"type":"radiofax-state"})),
                             frame(3,seq,json!({"type":"radiofax-state"}))],
                     },retiring);
                 }
@@ -6715,7 +6797,7 @@ mod tests {
         {
             let state=app.state.lock().unwrap();
             service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
-                audio:Vec::new(),decode:vec![frame(1,1,json!({"type":"radiofax-state"}))],
+                audio_configs:Vec::new(),audio:Vec::new(),decode:vec![frame(1,1,json!({"type":"radiofax-state"}))],
             },false);
         }
         let following=next_binary(&mut paced).await;

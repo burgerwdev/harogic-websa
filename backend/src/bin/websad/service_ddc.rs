@@ -26,6 +26,13 @@ pub(super) fn channel_plan(rate:f64, config:&ChannelConfig)->Result<RatePlan,Str
     } else { RatePlan::new(rate,&config.mode,occupied).map_err(str::to_owned) }
 }
 
+/// Only sample-producing geometry owns IQ identity; processor settings own a separate branch.
+pub(super) fn same_baseband(fs:f64,old:&ChannelConfig,next:&ChannelConfig)->bool {
+    old.baseband.is_some() && next.baseband.is_some() && old.enabled==next.enabled && old.freq==next.freq
+        && source_plan(fs,old).ok().zip(source_plan(fs,next).ok())
+            .is_some_and(|(a,b)|a.is_direct()==b.is_direct() && a.plan()==b.plan())
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum SourcePlan {
     Coarse(RatePlan),
@@ -255,7 +262,7 @@ impl Ddc {
     pub(super) fn restart_service_receivers(&mut self)->Result<Vec<Vec<u8>>,String> {
         let configs=self.service_configs.clone().ok_or("not a service channel plan")?;
         let mut frames=Vec::new();
-        for config in configs.into_iter().filter(|config|config.enabled) {
+        for config in configs.into_iter().filter(|config|config.enabled&&config.processing_enabled&&config.baseband.is_none()) {
             frames.extend(self.configure_service_channel_inner(config,true)?);
         }
         Ok(frames)
@@ -266,6 +273,9 @@ impl Ddc {
         if !(1..=3).contains(&config.channel) { return Err("channel must be 1, 2, or 3".into()); }
         let slot = config.channel as usize-1;
         let old = &configs[slot];
+        if !force && same_baseband(self.stream.input_sample_rate(),old,&config) {
+            configs[slot]=config;self.service_configs=Some(configs);return Ok(Vec::new());
+        }
         if !force && old.enabled == config.enabled && old.freq == config.freq && old.mode == config.mode
             && old.baseband == config.baseband && old.processing_enabled == config.processing_enabled
             && old.if_bw == config.if_bw && old.pitch == config.pitch && old.sstv_mode == config.sstv_mode

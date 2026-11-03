@@ -39,6 +39,8 @@ export const sdrSpanHz = createParam<number>('sdr.span', { fallback: 0, scope: '
 export const sdrListenHz = createParam<number>('sdr.listen', {
 	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-listen', ...hz,
 });
+/** Confirmed selected receiver state; never persisted as a listening preference. */
+export const sdrPrimaryEnabled = createParam<boolean>('sdr.primaryEnabled', { fallback: true, scope: 'sdr' });
 /** Demodulation mode id from the backend plugin registry. */
 export const sdrDemod = createParam<string>('sdr.demod', {
 	fallback: 'am', scope: 'sdr', persistKey: 'web-sa-sdr-demod', ttlMs: Infinity, // Receiver watchdog owns expiry.
@@ -184,7 +186,7 @@ export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get(
 export const sdrDeemph = createParam<number>('sdr.deemph', {
 	fallback: -1, scope: 'sdr', persistKey: 'web-sa-sdr-deemph', ...hz,
 });
-/** Audio volume (0..2). */
+/** Backend shared PCM gain (0..2), independent of workbench local speaker volume. */
 export const sdrVolume = createParam<number>('sdr.volume', {
 	fallback: 0.8, scope: 'sdr', persistKey: 'web-sa-sdr-volume',
 	// Volume uses a 0.01 equality tolerance; zero is a valid value.

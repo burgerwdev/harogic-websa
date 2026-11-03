@@ -1,3 +1,4 @@
+import { getLang } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { createSurfacePortal, type SurfacePortal } from './surfacePortal';
 import { applyFloatingGeometry, clampFloatingGeometry, type Geometry } from './floatingGeometry';
@@ -40,6 +41,13 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
     root.classList.toggle('mc-collapsed', layout.collapsed); body.hidden = layout.collapsed;
     root.hidden = layout.hidden; root.setAttribute('aria-label', title());
     head.querySelector('strong')!.textContent = title();
+    const zh = getLang() === 'zh';
+    for (const [selector, text, tip] of [
+      ['[data-collapse]', layout.collapsed ? '+' : '−', zh ? layout.collapsed ? '展开窗口内容' : '收起窗口内容；接收和录制继续' : layout.collapsed ? 'Expand window contents' : 'Collapse contents; reception and recording continue'],
+      ['[data-pop]', zh ? '弹出' : 'Pop out', zh ? '移到独立桌面窗口；接收和录制继续' : 'Move this view to a separate desktop window'],
+      ['[data-dock]', zh ? '停靠' : 'Dock', zh ? '将此视图移回页面内' : 'Return this view to the main page'],
+      ['[data-close]', '×', zh ? '隐藏此窗口；接收和录制继续' : 'Hide this view; reception and recording continue'],
+    ]) { const control = head.querySelector<HTMLButtonElement>(selector)!; control.textContent = text; control.title = tip; control.setAttribute('aria-label', tip); }
   };
   let gesture: { start: Geometry; px: number; py: number; direction: string } | null = null;
   const portal = createSurfacePortal(root, { title, beforeMove: () => { gesture = null; },

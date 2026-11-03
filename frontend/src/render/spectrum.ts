@@ -34,6 +34,7 @@ import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 import { renderFilterHandles, renderFilterPassband } from '../ui/sdrFilterGesture';
+import { renderSdrChannelBands } from './sdrChannelBands';
 import { renderSdrLocate } from '../ui/sdrLocate';
 import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 
@@ -81,7 +82,7 @@ function drawFreqRow(lo: number, hi: number, col: any, p: any) {
 function drawMarqueeOverlay() {
   const m = getMarqueePreview();
   if (!m) return;
-  const view = isZoomed() ? getView() : getCapture();
+  const view = previewFreqWindow() ?? getView();
   if (!view || !(view.hi > view.lo)) return;
   const p = plotRect();
   const x1 = p.x + (m.lo - view.lo) / (view.hi - view.lo) * p.w;
@@ -832,6 +833,7 @@ function renderRta() {
     ctx.restore();
   });
   // Preview the dial and passband together while the badge owns the pointer.
+  renderSdrChannelBands(ctx, lo, hi, p, true);
   renderFilterPassband(lo, hi, sdrBadgeDragFrequency());
   renderSdrLocate(lo, hi);
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible

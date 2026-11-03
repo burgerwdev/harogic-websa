@@ -46,8 +46,16 @@ impl Nco {
     /// The phase advances across calls, so a continuous block stream stays phase-continuous
     /// (a per-block reset would put a click at every block boundary).
     pub fn mix(&mut self, iq: &mut [f64]) {
+        if !self.is_bypassed() {
+            self.mix_exact(iq);
+        }
+    }
+
+    /// Mix without the legacy near-zero bypass, retaining sub-Hz file tuning.
+    /// Phase starts at zero after construction/reset and carries across calls.
+    pub fn mix_exact(&mut self, iq: &mut [f64]) {
         let n = iq.len() / 2;
-        if n == 0 || self.is_bypassed() {
+        if n == 0 || self.inc == 0.0 {
             return;
         }
         for k in 0..n {

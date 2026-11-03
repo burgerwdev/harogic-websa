@@ -94,6 +94,26 @@ describe('the passband view action', () => {
 		expect(filterButton.getAttribute('aria-label')).toBe(viewDescription);
 	});
 });
+
+describe('overview edge resizing', () => {
+	it.each(['lo', 'hi'] as const)('keeps the opposite edge fixed when dragging %s past it', edge => {
+		S.setFreqArray(new Float64Array([900e6, 901e6]));
+		__testSeedCapture(CAP);
+		zoomEnabled.set(true);
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		const canvas = document.getElementById('zoom-overview') as HTMLCanvasElement;
+		vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 200, width: 1000 } as DOMRect);
+		const pointer = (type: string, x: number) => {
+			canvas.dispatchEvent(new MouseEvent(type, { clientX: x, bubbles: true, cancelable: true }));
+		};
+		pointer('pointerdown', edge === 'lo' ? 600 : 800);
+		pointer('pointermove', edge === 'lo' ? 900 : 500);
+		pointer('pointerup', edge === 'lo' ? 900 : 500);
+		expect(getView()![edge === 'lo' ? 'hi' : 'lo']).toBe(edge === 'lo' ? 960e6 : 940e6);
+		expect(getView()!.hi).toBeGreaterThan(getView()!.lo);
+		S.setFreqArray(null);
+	});
+});
 describe('the toggle state machine', () => {
 	it('starts Off with the overview hidden', () => {
 		expect(zoomEnabled.get()).toBe(false);

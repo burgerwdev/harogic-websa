@@ -1,7 +1,32 @@
 # 开发指南
 
+实收准备可运行 `python tools/bench/sdr_capture_observe.py --origin http://127.0.0.1:8080 --expect-service-id <当前服务ID> --seconds 300 --artifacts <新目录>`，先 GET `/api/sdr/receivers` 核对身份。工具只发 GET，拒绝服务身份变化与已有证据目录，保存源时钟／样本推进／告警／录制／负载，不打开 WebSocket 或启动采集；须另有已授权的浏览器／录制消费者。报告仅为观察证据，连接正常或计数前进均不单独证明 RF 接收或物理听感。
+
+设备窗口前完成新版 release 构建；既有进程在明确重启前仍运行旧二进制。替换硬件进程前确认目标实例、N90 占用释放与 RF 来源，另一端口不能隔离同一设备。先恢复一个真实信号，连续观察至少五分钟，检查频谱／调谐、实际输入率、源 epoch／位置及实际听感；逐路增加至三路，完整通带和过渡带须位于同一真实采集范围，再组合 IQ／发布音频／结果录制观察五分钟。停止后独立读取文件，核对 UID／实际率／源边界和接纳／落盘字节。无真实协议源或未试听的项目准确标记未验。合成 `native_multichannel*.py` 会创建／重配自己的服务，不得指向既有硬件实例。
+
+
+结束的音频任务在 `audio_archive_read` 可用时提供**音频试听**。选择源片段和样本帧起点／长度，载入后使用原生播放／定位／音量控件，也可下载同份Float32 WAV与来源快照。立体声一帧包括两个声道；最多1,048,576帧／60秒。原共享PCM处理保持，实时监听控件独立；隐藏或编辑会释放文件播放。当前校验器先扫描完整任务，长任务载入较慢，但不会累积全部样本。门禁：`python tools/e2e/native_multichannel_audio_playback.py --artifacts /tmp/websa-audio-playback`，使用独立CRC／Zstd及SciPy WAV读取器、双卷单／双声道精确时钟夹具、实际AM／FT8网络录音、真实媒体播放／定位、420px中文／浅色Pop out／Dock、长按鼠标／键盘下载、共用名额取消／TCP停读／损坏、健康录制及SIGKILL前缀。先构建前后端。连续长文件及数字文件解码仍单独推进。
+
+文件调谐：展开“文件重新解调”，输入相对原中心的“频偏 / Hz”，选择模式／滤波后生成音频；频率读数为原中心加频偏，整个边带须由原IQ保留。`python tools/e2e/native_multichannel_tuning.py --artifacts /tmp/websa-file-tuning --sigmf-python /path/to/sigmf-venv/bin/python` 验证四种模式正负分数频偏、双卷相位连续、官方SigMF读取器核对原精确时钟、WAV音调、频带边界、取消／背压及真实420px试听／下载。微小非零频偏和分块无关性另有原生回归。旧服务隐藏频偏控件。
+
+已录 IQ → 波形回放／SigMF → 文件重新解调，可将选区按 AM、USB、LSB 或 NFM 生成音频，用原生音频控件试听，并下载同份 Float32 WAV 与精确 IQ 来源。选择最多60秒及已录通带内的滤波带宽；USB／LSB为单边带宽。48 kHz单声道结果使用从零开始的原生滤波器，关闭AGC／降噪／静噪，原文件与实时接收独立。门禁：`python tools/e2e/native_multichannel_demod.py --artifacts /tmp/websa-file-demod`；使用独立CRC／WBIQ及SciPy WAV读取器、非整数IQ率的合成已知音调、原生实际AM记录、真实鼠标／键盘媒体操作、420px Pop out／Dock及实时录制隔离。执行前构建前后端。本模拟模式切片不包含数字文件解码或连续长文件播放。
+
+已结束音频任务在 `audio_flac_export` 可用时，于“下载音频”旁提供 **FLAC · 24 位**。它将原已发布音频按真实率量化为 signed-24 PCM，Float32 WAV 继续提供原样本位模式。固定比例、饱和统计及未改动的逐帧来源保存于 tar 清单／时间线。纯 Rust `flacenc` 不新增运行时程序或动态音频库。门禁：`python tools/e2e/native_multichannel_flac.py --artifacts /tmp/websa-flac`，开发验证需安装参考 `flac` CLI（实测1.5.0）。独立解码实际AM／FT8发布音频及合成单／双声道量化边界，核对MD5／样本时钟、窄窗原生下载、取消、损坏、TCP停读与恢复前缀。来源及精确转换见 [API](API.md)。
+
+已发布音频持续录制：工作台 → 录制 →“录制音频”，停止后“下载音频”。真实 AUD2 Float32 PCM 在后端保存，浏览器退出后继续；按实际音频输出能力开放，包含数字模式伴随音频。下载包保留各配置／格式片段的 Float32 WAV 与逐帧时钟／原头／配置，浏览器音量、声像和总静音不改变文件。它是实际共享 PCM，不是未增强的协议输入。Opus 和数字文件解码仍待后续。`recording_audio.rs` 复用 `recording_journal.rs` 的有界 CRC／Zstd codec；`receiver_workers.rs` 将实际包配置随 PCM 传到发布点，避免迟到旧帧串用新设置。门禁：`python tools/e2e/native_multichannel_audio.py --artifacts /tmp/websa-audio`，独立 SciPy WAV／系统 libzstd／CRC、实际网络字节、真实浏览器与恢复／故障验证。完整限额与语义见 [API](API.md)。
+
+持续结果录制：信道工作台 → 录制，对实际具有文字／表格／图像／状态输出的处理器使用“录制结果”。同一 UID 的 IQ 与结果可各自独立录制。停止后“下载结果”流式下载包含任务信息和原发布事件 JSONL 的 tar，保存增量图像像素；从录制启动开始保存，已在接收中的图像可能只有部分。浏览器退出后仍继续。门禁：`python tools/e2e/native_multichannel_results.py --artifacts /tmp/websa-results`，验证实际 FT8／SSTV 回放、独立 CRC／Zstd 与 JSONL／tar 读取、420px 浏览器真实操作／下载及 SIGKILL 恢复。不是硬件 RF 或后端音频录制验收。
+
 本指南覆盖原生 Rust 服务、共享 DSP、浏览器控制界面和开发工具。
 组件边界见[架构](ARCHITECTURE.md)，通信协议见 [API](API.md)。
+
+单信道预设：信道工作台 → 信号设置 → **频点预设**。保存服务器已确认的频点、IQ与处理设置，选择已保存项后预览并确认载入；同名替换和删除需确认。草稿、启停、监听与录制任务不写入预设。预设跨浏览器及服务重启保留，但重启不会自动应用。门禁：`python tools/e2e/native_multichannel_presets.py --artifacts /tmp/websa-presets`，验证持久保存、冲突／过期预览拒绝、原生录制隔离及420px Pop out／Dock。存储协议见 [API](API.md)。多路原子场景仍未交付。
+
+模式记忆：各信道按模式（含仅 IQ）恢复最近确认的 IQ 通带／过渡带／最低率、解调带宽、共享 PCM 增益、AGC 和静噪。首次使用某模式采用其音频默认值。恢复只更新表单，保留频率／名称／接收启停，仍需检查并显式应用；不记忆草稿或被拒绝的变更。同一标签页刷新后仍保留，其工作台窗口与 Pop out／Dock 共用记忆；删除 UID 或更换服务代次时清除。这不是服务器持久化或跨标签页同步。预览后编辑表单会移除旧应用按钮，需重新检查。
+
+多路频点须同时落入共享采集，完整通带和过渡带也须留在范围内。工作台的越界拒绝／预览会显示当前采集范围和该信道所需范围，指引先在主 SDR 面板调整共享中心或采集带宽，再重试；重试本身不会扩大采集。例如101.7MHz中心、3.125MHz采集仅覆盖100.1375–103.2625MHz，无法接收105MHz FM；显式将共享中心设为103.35MHz、可用带宽设为6.25MHz后可覆盖这两个频点。共享采集变更影响全部信道，主面板的中心输入还会调谐C1；只调整共享窗口时使用省略`listen`的`SET_SDR`，并核对各UID频率。
+
+三路日常工作流门禁：`python tools/e2e/native_multichannel_workflow.py --artifacts /tmp/websa-daily-workflow`。组合 AM 音频录制、FT8 结果录制、健康 IQ 录制、本地监听、确认模式记忆／刷新、预设复用、启停、复制与窗口／页面关闭，再用独立 CRC／Zstd 与 WAV 读取器验证实际文件。来源为合成／回放；RF、物理音频和长期运行仍须另验。
 
 ## 1. 环境、构建与运行
 
@@ -47,8 +72,9 @@ GPS 在适配前要求至少 2.6 MSps，提供者 FIFO 输入则为精确 4 MSps
 在 63.41 秒后得到四颗卫星支持的有效 PVT，与合成目标的水平误差为 3.653 m，
 未报告接收器错误。该结果验证了所测试的 GPS 频移台架路径；被动天空接收仍未验证。
 正常与反向 RTTY
-均已由独立 OnAir 伴随程序实现：运行 `tools/setup-rtty-decoder.sh`，加载其
-`rtty-env.sh` 后重启服务。两种 45.45 baud/170 Hz 模式均已通过离线 fixture
+均已由独立 OnAir 伴随程序实现：运行 `tools/setup-rtty-decoder.sh` 后重启服务，
+默认解码器目录会被自动发现；自定义 `--prefix` 需加载其 `rtty-env.sh` 或设置
+`WEBSA_DECODERS_PREFIX`。两种 45.45 baud/170 Hz 模式均已通过离线 fixture
 和 435 MHz Pluto/SAN-90 台架解出已知文本。参见
 [RTTY 安装与回放](../../tools/README.md#independent-rtty-companion)。
 
@@ -93,7 +119,8 @@ Pluto 台架统一入口支持 `radiofax` 和 `wefax`，两者使用同一个流
 `tools/pluto_tx.py` 还分派 DTMF/APRS/AIS/FT4/WSPR 和合成 GPS。数字模式与 GPS
 使用共享 `pluto_radio.Radio` 的 `open_stream`、`prime_stream`、`push_chunk`
 和 `drain_stream` 流式 API，队列包含四个缓冲区。GPS 源通过
-`tools/setup-gps-simulator.sh` 安装。GPS CLI 只允许请求 435 MHz 载波，LO 回读
+`tools/setup-gps-simulator.sh` 安装。共享发射层会在发射前开启被关闭的 TX 本振，
+退出时先销毁发射缓冲，再恢复原本振电源状态。GPS CLI 只允许请求 435 MHz 载波，LO 回读
 与其偏差不得超过 100 Hz。波形生成前先协商实际采样率，要求回读值与请求值相差
 不超过 20 Hz 且能被十整除，随后严格按该实际速率生成。默认 TX 采样率为
 2.6 MSps，与接收提供者的精确 4 MSps 输入分开。GPS gain 默认仍为 −70 dB；
@@ -125,6 +152,35 @@ cargo run --offline --release -j 1 --manifest-path backend/Cargo.toml --features
 产出 `report.json` 和实验 `.wbiq` 文件，保留 CF32 位模式与实际速率。依赖 Zstd 已在本机缓存时可使用 `--offline`。
 
 生产 SDR → **信道工作台** 打开原生接收工作台。构建前端/原生后，可运行 `./run.sh --fake --port 18139 --instance p3-dev` 启动独立合成服务，以 `./stop.sh --instance p3-dev` 仅清理该实例。`python tools/e2e/native_multichannel.py` 自行启动/清理独立服务，验证实际 IQ 协议和窗口生命周期；需要 Playwright 与 websockets。硬件 RF 实收须单独验证。
+
+P4 监听/解码门禁：`python tools/e2e/native_multichannel_processing.py --artifacts /tmp/websa-p4-processing`。
+脚本拥有独立合成/回放服务，检查实际浏览器 PCM 的本地增益/声像、Solo/跟随、FT8 结果、SSTV 像素和窗口生命周期。
+生产工作台的“信号设置”页使用实际模式/provider 能力；“本地扬声器”控件不修改共享 PCM。原有后端音量通过“共享音频增益”显式配置。
+
+连接恢复与紧凑布局门禁：`python tools/e2e/native_multichannel_recovery.py --artifacts /tmp/websa-p4-recovery`。
+Chromium 真实切断并重连 UID 音频 socket，确认实际输出 PCM 恢复，并操作表单、窄屏弹窗、Dock、信道退役及槽复用。
+生产工作台按实际能力开放 IQ 记录，隐藏未开放的预设/场景操作，IQ 参数和共享音频设置可展开；窄窗仍可编辑。跟随模式下直接点“监听”切换为手动混听，保留编辑目标。
+主面板“信道工作台”入口只聚焦工作台，保留其他独立弹窗；召回全部窗口和 Dock 仍是明确的布局操作。
+
+主面板在监听标签旁显示当前信道；工作台旁的左右按钮切换接收信道，调谐与解调控件跟随该信道，切换本身不改频率。`＋` 将当前频点与解调设置复制到独立信道；路数已满时先选择要覆盖的信道。主频谱和瀑布以不同色通带标出其他信道，以浅色虚线显示同步鼠标预览，离开图面即清除。验证：`python tools/e2e/sdr_channel_shortcuts.py --artifacts /tmp/websa-channel-shortcuts`。
+完整语义及尚未完成的共享样本块迁移见 [MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md)。
+
+进入 SDR 自动开启瀑布图，频谱与瀑布各占一半；Preset 恢复此布局并选中 C1。瀑布点选调谐当前信道，开启放大后可拖框选择两张图共享的显示范围。工作台将接收开关、复制、删除整齐排在一行，各信道“更多操作”也提供复制、删除。频率、接收音频参数、本地音量和声像相同的信道只播放一路；主面板调到其他频点后，自动恢复两路独立混听。此本地规则不合并接收或录制任务。
+
+工作台提供“信号设置、录制、实时输出”三个页签。唯一模式选择包括“不解调 · 仅接收 IQ”；监听与 IQ 录制是独立操作。点击信道名称在原处编辑，“独立窗口”打开固定设置；“信号信息／查看结果”查看已运行处理器的读数。按钮提供用途提示。“实时输出”列出实际 WebSocket 连接，折叠的本页 IQ 检查只统计传输，不保存文件。
+
+工作台/Decode 实时交互门禁：`python tools/e2e/native_multichannel_ui.py --artifacts /tmp/websa-multichannel-ui`。
+脚本拥有独立合成/回放服务与记录目录。Chromium 跨状态更新实际按住鼠标和 Space，检查控件未脱离 DOM、草稿/搜索选区/滚动保留、实际 FT8 消息与 SSTV 像素，并在后端 IQ 记录继续时操作 420px Pop out/Dock。还验证真实 AM 波形、同 UID 同时监听／IQ 录制／筛选 CSV 与 JSONL 下载，以及弹窗内真实解码 PNG 下载；不构成 RF 硬件验收。
+
+P5 IQ 记录门禁：`python tools/e2e/native_multichannel_recording.py --artifacts /tmp/websa-p5-recording`。脚本隔离存储和服务，独立 CRC32/libzstd 读取器逐块对照实际 IQ 网络字节，验证变率/换频、停止排空、真实鼠标跨轮询点击、420px 弹窗、Dock、关闭浏览器持续记录和 SIGKILL 后恢复。仅为合成源验证，RF 和长期磁盘吞吐须另验。
+
+`WEBSA_RECORDING_DIR` 指定本实例后端存储根；默认 `$XDG_DATA_HOME/harogic-websa/recordings/<port>`（未设置时使用 `~/.local/share`）。目录有独占文件锁，多实例应使用不同目录。启动时流式恢复中断/失败任务的校验前缀与 JSONL 索引；不自动续录。普通工作台显示 IQ 开始/停止、状态和大小，压缩与时钟详情折叠。服务发布 `iq_archive_read` 后，已完成／失败的 IQ 任务提供“波形回放 / SigMF”，旧服务／退役 UID 的任务在“历史记录任务”中可访问。选择片段及样本范围，可查看 I/Q、定位、按实际率播放波形或下载标准 SigMF。每范围限 1,048,576 个样本、4096 块和 4 MiB 来源元数据。协议输入音频、Opus 及文件重解调回放尚未开放。结果窗口可以将已保留消息按筛选条件导出 CSV 或 JSONL（含全部分页），并将选中图像保存为 PNG；它们是有界浏览器会话快照，持续录制仍由后端任务承担。JSONL 区分接收时间与协议 UTC，并保留源位置字符串。未完成图像的文件名带 partial，PNG 导出 RGBA 内存限制为 20 MiB。仅文本／表格模式或已有文本结果显示筛选工具，音频窗口不显示消息筛选或清空操作。AM/WFM 复用旧音频波形绘制器；CW 显示原生速度、音调和调谐偏移；DRM 显示电台／节目及锁定信息。
+
+每路滑块控制当前编辑信道在本浏览器中的监听。先开启该路“监听”，音量显示百分比，声像显示左／中／右位置；声像需要立体声输出。编辑另一信道不会切换正在听的组合。未监听、故障或停用时禁用滑块，总静音／独听屏蔽保留明确状态。通用操作说明已移出主要界面，帮助使用悬停提示，来源细节折叠。
+
+已录 IQ 可选“整段下载”，或填写范围后“下载 SigMF”。发布 `iq_archive_export` 的服务采用浏览器原生下载，CF32 数据文件小于 POSIX tar 的 8 GiB 上限，波形预览仍限 1,048,576 个样本；旧服务保留原小范围下载能力。回归入口：`python tools/e2e/native_multichannel_stream_export.py --artifacts /tmp/websa-stream-export --sigmf-python /path/to/sigmf-venv/bin/python`（`sigmf==1.6.1`）。它验证明确重复的离线 32 MiB 素材、真实扬声器控件／PCM、取消、损坏、慢 TCP 消费者、记录隔离和独立 SigMF 解析；不代表 RF 采集或实际声卡验收。
+
+已结束的多片段 IQ 任务在 `iq_archive_collection` 可用时提供“全部片段”，一次下载标准 SigMF 集合，各片段保持独立率、调谐和源时钟。门禁：`python tools/e2e/native_multichannel_collection.py --artifacts /tmp/websa-collection --sigmf-python /path/to/sigmf-venv/bin/python`。覆盖实际原生记录与网络 IQ 比对、两种率的 32 MiB raw／Zstd fixture、解压后官方 `SigMFCollection` 直接载入、SHA-512 元数据引用、逐记录 Schema／样本校验、取消、后段损坏、健康记录、420px 下载和两段 SIGKILL 恢复。官方 1.2.6 集合 JSON Schema 仍只接受旧 tuple，而规范推荐 name／hash 对象，sigmf-python 1.6.1 也直接读取对象。门禁保留此上游 Schema 差异，不修改读取器／Schema；各 Recording 使用官方 Schema 验证，Collection 通过官方读取器直接校验。
 
 ## 2. 依赖方向与归属
 

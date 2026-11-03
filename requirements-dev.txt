@@ -14,3 +14,8 @@ pyserial>=3.5,<4
 fonttools>=4.50,<5
 playwright>=1.40,<2
 websockets>=17,<18
+
+# Independent Float32 WAV reader for the persistent-audio browser gate.
+scipy>=1.14,<2
+
+# The FLAC export browser gate also uses the reference flac CLI (development only).

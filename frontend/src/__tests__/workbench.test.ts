@@ -13,6 +13,18 @@ afterEach(() => { session.dispose(); adapter.dispose(); vi.useRealTimers(); vi.r
 const settle = async <T>(promise: Promise<T>): Promise<T> => { await vi.runAllTimersAsync(); return promise; };
 
 describe('independent receiver, monitor, recording and view lifetimes', () => {
+  it('turns a direct Listen action during follow into a manual mix without moving the editing target', () => {
+    const before = adapter.snapshot();
+    session.monitorMode = 'follow';
+    session.select('fixture-c1');
+    session.monitor('fixture-c2', { enabled: !session.listening('fixture-c2') });
+    expect(session.monitorMode).toBe('manual'); expect(session.selected).toBe('fixture-c1');
+    expect(session.audible('fixture-c1')).toBe(true); expect(session.listening('fixture-c2')).toBe(true);
+    session.monitorMode = 'follow';
+    session.monitor('fixture-c1', { enabled: !session.listening('fixture-c1') });
+    expect(session.monitorMode).toBe('manual'); expect(session.audible('fixture-c1')).toBe(false);
+    expect(adapter.snapshot()).toEqual(before);
+  });
   it('records while editing another channel; view close and local volume cannot alter task or server config', async () => {
     const id = 'fixture-c1';
     await settle(session.send({ type: 'record_start', request_id: 'record', receiver_uid: id, kinds: ['audio', 'iq'] }));

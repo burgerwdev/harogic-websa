@@ -142,6 +142,7 @@ impl DevState {
 
     pub(super) fn channel_status(&self) -> Value {
         let registry = self.stream_registry();
+        let processing = self.processing_registry();
         let power = self.fresh_channel_power();
         Value::Array(self.channel_configs().into_iter().map(|config| {
             let entry = registry.iter().find(|entry| entry.channel == config.channel);
@@ -156,7 +157,8 @@ impl DevState {
             let active = entry.filter(|entry| self.swp.mode == "sdr" && config.enabled
                 && entry.frequency_hz == config.freq);
             value["channel_dbm"] = json!(active.and_then(|_| power[(config.channel - 1) as usize]));
-            value["squelch_open"] = json!(active.and_then(|entry| self.receiver_workers.as_ref()
+            value["squelch_open"] = json!(active.and_then(|entry| processing.iter().find(|p|p.channel==entry.channel))
+                .and_then(|entry| self.receiver_workers.as_ref()
                 .and_then(|workers| workers.squelch_status(entry, std::time::Instant::now()))
                 .map(|(open, _)| open)));
             value
@@ -362,14 +364,15 @@ impl DevState {
                     Ok(output)
                 }) {
                     Ok(output)=>{
-                        self.pending_receiver.audio.extend(output.audio);
-                        self.pending_receiver.decode.extend(output.decode);
+                        self.pending_receiver.append(output);
                         self.retiring_registry=self.stream_registry();
                     }
                     Err(error)=>self.latch_receiver_failure(error),
                 }
             }
         }
+        let processing_only=geometry_changed && (self.pipeline.is_some() || self.ddc.is_some())
+            && service_ddc::same_baseband(self.capture_bandwidth()/0.8,&old,&config);
         if geometry_changed {
             let next = config.clone();
             if let Some(capture) = recapture.as_ref() {
@@ -381,6 +384,11 @@ impl DevState {
                 self.ddc_command(move |ddc| ddc.recapture_service_configs(center, display, front_end, taps, &next))?;
             } else {
                 self.ddc_command(move |ddc| ddc.configure_service_channel(next))?;
+            }
+            // The DDC boundary first consumes all old queued IQ with its old
+            // processor. Close that branch only after this drain completes.
+            if processing_only {
+                if let Err(error)=self.retire_receiver_channels(&[channel],self.stream_registry()) {self.latch_receiver_failure(error);}
             }
             self.decode_snapshots.clear_channel(channel);
         }
@@ -410,6 +418,7 @@ impl DevState {
         }
         self.sdr_aux = json!({"2":configs[1], "3":configs[2]});
         self.sdr_channels = configs;
+        if !config.enabled || !config.processing_enabled {self.processing_branches.retire_channel(channel);}
         if let Some(fixtures) = staged_fixtures { self.fixture_sources = Some(fixtures); }
         // Native and legacy stops share the same ordered drain boundary. Keep it
         // behind pending tails; only the UID-based transport exposes this marker.
@@ -426,6 +435,9 @@ impl DevState {
             if let Some(workers) = self.receiver_workers.as_mut() {
                 if let Err(error)=workers.configure(&self.sdr_channels) {self.latch_receiver_failure(error);}
             }
+        }
+        if self.receiver_failure.is_none() && !self.sdr_channels.iter().any(|c|c.enabled&&c.processing_enabled) {
+            self.receiver_workers=None;
         }
         self.config_version += 1;
         if data["radiofax_new_page"] == true { self.request_radiofax_page(channel)?; }
@@ -651,6 +663,35 @@ mod tests {
         assert!(state.channel_recapture(&inside).unwrap().is_none());
         state.sdr_channels[1].freq = 90e6;
         assert!(state.channel_recapture(&config).is_err());
+    }
+
+    #[test]
+    fn processing_only_control_consumes_pending_iq_before_the_new_branch() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.swp.mode="sdr".into();state.sdr_center=100e6;state.sdr_listen=100e6;
+        state.sdr_squelch=-160.0;state.sdr_demod="am".into();state.sdr_if_bw=6000.0;
+        state.sdr_channels[0].baseband=Some(receiver_workers::BasebandConfig {
+            passband_hz:16000.0,transition_hz:1000.0,minimum_rate_hz:48000.0});
+        state.hardware_shim=Some("numerical-control-test".into());
+        state.ddc=Some(SendDdc(Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&state.channel_configs()).unwrap()));
+        let registry=state.stream_registry();let entry=registry[0].clone();
+        let frame=|seq,index,iq:&[f32]|websa_channelizer::encode_baseband(websa_channelizer::BasebandMagic::Primary,
+            seq,entry.output_rate,entry.frequency_hz,entry.channel_id as u64,entry.epoch as u64,index,0.0,iq).unwrap();
+        let block=vec![0.25f32;512];let step=(entry.input_rate/entry.output_rate).round() as u64;
+        let output=state.process_receiver_frames_with_registry(&[frame(0,0,&[]),frame(1,0,&block)],&registry,true).unwrap();
+        assert!(!output.decode.is_empty());assert_eq!(state.channel_status()[0]["squelch_open"],true);
+        let first_processing=state.processing_registry()[0].epoch;
+        state.pending_iq.push(frame(2,256*step,&block));
+        state.apply_channel_config(&json!({"channel":1,"mode":"usb","ifbw":2400,
+            "baseband":state.sdr_channels[0].baseband,"processing_enabled":true})).unwrap();
+        assert!(state.receiver_failure.is_none(),"{:?}",state.receiver_failure);
+        assert_eq!(state.stream_registry()[0].epoch,entry.epoch);
+        assert_eq!(state.stream_registry()[0].channel_id,entry.channel_id);
+        assert_eq!(state.receiver_workers.as_ref().unwrap().stats()["submitted_samples"],512);
+        let next=state.process_receiver_frames_with_registry(&[frame(3,512*step,&block)],&registry,true).unwrap();
+        assert!(!next.decode.is_empty());assert_ne!(state.processing_registry()[0].epoch,first_processing);
+        assert_eq!(state.receiver_workers.as_ref().unwrap().stats()["submitted_samples"],768);
+        assert!(state.receiver_failure.is_none());
     }
 
     #[test]

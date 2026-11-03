@@ -186,6 +186,11 @@ impl FixtureSlot {
         let (source, rate) = if !config.processing_enabled {
             (FixtureSource::Iq,service_ddc::channel_plan(COARSE_RATE,&config)?.output_rate)
         } else {FixtureSource::for_mode(&config.mode)?};
+        if let Some(baseband)=config.baseband.as_ref().filter(|_|config.processing_enabled) {
+            if rate<baseband.minimum_rate_hz || rate<baseband.passband_hz+2.0*baseband.transition_hz {
+                return Err(format!("fixture replay rate {rate} S/s cannot satisfy the explicit baseband passband, transition and minimum rate"));
+            }
+        }
         let epoch = allocate_dsp_epoch().map_err(str::to_owned)?;
         let count = (rate * 0.085) as usize;
         Ok(Self {
@@ -317,6 +322,9 @@ mod tests {
         source.step().unwrap();
         let mut reference = source.clone();
         let registry = source.registry();
+        config.baseband=Some(receiver_workers::BasebandConfig {passband_hz:16000.0,transition_hz:1000.0,minimum_rate_hz:96000.0});
+        assert!(source.staged(&[config.clone()]).err().unwrap().contains("fixture replay rate"));
+        assert_eq!(source.registry()[0].epoch,registry[0].epoch);
         config.mode = "ft4".into();
         assert!(source.staged(&[config]).err().unwrap().contains("UTC-aligned"));
         assert_eq!(source.registry()[0].epoch, registry[0].epoch);

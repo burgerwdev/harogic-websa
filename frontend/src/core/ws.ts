@@ -15,6 +15,7 @@ import {
   rejectSdrAmSyncRequest,
   rejectSdrAgcRequest,
   rejectSdrFilterRequest,
+  rejectSdrCenterTune,
   disconnectSdrSession,
   syncScaleButtons,
   syncSwpSpanStep,
@@ -44,7 +45,7 @@ import { alignToDisplayWindow, sameFrequencyGrid } from '../dsp/grid';
 import { displayRefDiverges, getDisplayRef, rawToDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { confirmRefLevel, refLevel } from '../ui/refState';
-import { maybeRequestSdrFit, noteSdrRefState, noteTraceObservation, syncAutoScaleStatus }
+import { maybeRequestSdrFit, noteSdrRefState, noteTraceObservation, requestSdrEntryFit, syncAutoScaleStatus }
   from '../ui/refAutoScale';
 import { centerHz, spanHz, swpCenterHz } from '../ui/freqState';
 import {
@@ -204,6 +205,7 @@ onCommandSent(command => {
 // Restore the graph preference once, after learning whether Server owns the device.
 let initialModeSync = false;
 let firstConnect = true;
+let nativeSdrDisplayReady = false;
 
 function scheduleReconnect() {
   if (reconnectTimer !== null) return;
@@ -255,6 +257,7 @@ export function connectWS() {
   };
   ws.onerror = () => ws?.close();
   ws.onclose = () => {
+    nativeSdrDisplayReady = false;
     setServerConnection(false);
     pendingCommands.clear();
     cancelSpectrumWork();
@@ -291,6 +294,7 @@ export function connectWS() {
             rejectSdrRadiofaxRequest(msg.response_to, msg.request_id);
             rejectSdrFilterRequest(msg.response_to, msg.request_id, true);
             rejectSdrTuneRequest(msg.response_to, msg.request_id);
+            rejectSdrCenterTune(msg.response_to, msg.request_id);
             rejectSdrAxisWindow(msg.response_to, msg.request_id);
             if (msg.response_to === 'SET_MODE') releaseGraphModePending();
           } else rejectSdrFilterRequest(undefined, undefined, true);
@@ -314,6 +318,7 @@ export function connectWS() {
           rejectSdrRadiofaxRequest(msg.response_to, msg.request_id);
           rejectSdrFilterRequest(msg.response_to, msg.request_id);
           rejectSdrTuneRequest(msg.response_to, msg.request_id);
+          rejectSdrCenterTune(msg.response_to, msg.request_id);
         }
       } catch (error) {
         console.error('Invalid WebSocket JSON message', error);
@@ -554,6 +559,11 @@ export function updateStatus(s: any) {
   if (recoveredReceiver && previousReceiverError
       && S.statusError === localizedError({ msg: previousReceiverError })) S.setStatusError(null);
   syncGraphModeStatus(s.mode);
+  // Adopting an existing native receiver set skips the legacy SET_MODE/SET_SDR
+  // replay. Its display still needs the one-time, display-only entry fit.
+  const nativeSdr = s.mode === 'sdr' && s.sdr?.receiver_api === 'multichannel-draft-v1';
+  if (!nativeSdr || s.connected !== true) nativeSdrDisplayReady = false;
+  else if (!nativeSdrDisplayReady) { nativeSdrDisplayReady = true; requestSdrEntryFit(); }
   syncServerStatus(s);
   if (s.caps) {
     S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));

@@ -19,7 +19,8 @@ beforeEach(() => {
 /** Path calls in order. Call `resetCtxCalls()` before a render pass. */
 export const ctxCalls: { op: 'moveTo' | 'lineTo'; x: number; y: number }[] = [];
 export const ctxImages: { image: CanvasImageSource; args: number[] }[] = [];
-export function resetCtxCalls() { ctxCalls.length = 0; ctxImages.length = 0; }
+export const ctxRects: number[][] = [];
+export function resetCtxCalls() { ctxCalls.length = 0; ctxImages.length = 0; ctxRects.length = 0; }
 
 const fakeCanvas = {
   width: 860,
@@ -46,6 +47,7 @@ const fakeCtx = new Proxy({ canvas: fakeCanvas }, {
     if (prop === 'drawImage') {
       return (image: CanvasImageSource, ...args: number[]) => { ctxImages.push({ image, args }); };
     }
+    if (prop === 'strokeRect') return (...args: number[]) => { ctxRects.push(args); };
     return () => {};
   },
   set: () => true,

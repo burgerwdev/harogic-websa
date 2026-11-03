@@ -1,5 +1,6 @@
-//! P2 bounded-block CF32 experiment, not the service recording container or a realtime worker.
+//! P2 WBIQ0001 experiment. Service recordings use the separate, versioned v2 module.
 //! Sample bytes and clocks are immutable. Encoding never rescales or quantizes components.
+pub mod v2;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -51,6 +52,7 @@ impl IqBlockMeta {
                 s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) || s.parse::<u64>().is_err()
             })
             || self.fraction_den.parse::<u64>().unwrap_or(0) == 0
+            || self.fraction_num.parse::<u64>().unwrap_or(u64::MAX) >= self.fraction_den.parse::<u64>().unwrap_or(0)
             || !self.input_rate_hz.is_finite()
             || self.input_rate_hz <= 0.0
             || !self.actual_rate_hz.is_finite()

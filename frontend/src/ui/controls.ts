@@ -1,6 +1,8 @@
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
+import { confirmSdrChannels, currentSdrChannel, receivingSdrChannels, sdrChannelMarks, setCurrentSdrChannel, type SdrChannel } from './sdrChannels';
+import { setSdrHoverFrequency } from './sdrHoverPassband';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
@@ -48,13 +50,13 @@ import {
 	spectrumWheelZoom,
 	updateMarqueePreview,
 } from './spectrumZoomGestures';
-import { cancelReceiverFocus, getCapture, isValidWindow, isZoomed, minSpanHz, recenterOnCapture, revealOnCapture, sameWindow, SAME_WINDOW_HZ, zoomEnabled, type FreqWindow } from './spectrumViewport';
+import { cancelReceiverFocus, getCapture, isValidWindow, isZoomed, minSpanHz, receiverFocusEpoch, recenterOnCapture, revealOnCapture, sameWindow, SAME_WINDOW_HZ, zoomEnabled, type FreqWindow } from './spectrumViewport';
 import { resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
-import { prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
+import { nativeAudioOwnsSpeakers, nativeAudioIsMuted, prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
 import { initSdrDemodGroup, syncSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
-import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
+import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setDecodeChannel, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
 import { resetSdrIq, setSdrIqEnabled, setSstvModePin } from '../sdr/iqStream';
 import { clearRadiofax } from '../sdr/radiofaxLog';
 import { availableSdrModeIds, isModeAvailable, modeDescriptor, modeStartupTimeoutMs } from '../sdr/registry';
@@ -72,7 +74,7 @@ import { activeMarkerNextPeakLeft, activeMarkerNextPeakRight, activeMarkerNextVa
 import { adjustRefLevel, commitLevelOffset, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
   syncRefUI, syncLevelAvailability, resetRefClockIntent, toggleGapFill, toggleRefClkOut,
 } from './panels/refAmp';
-import { resetWf, setSweepSpeed, syncSweepInput, bindSweepEditor, resetSweepEditor, setWfPaused, toggleWaterfall, toggleWfPause, initWfSplit, resetWfSplit } from './panels/waterfall';
+import { resetWf, setSweepSpeed, syncSweepInput, bindSweepEditor, resetSweepEditor, setWaterfall, setWfPaused, toggleWaterfall, toggleWfPause, initWfSplit, resetWfSplit, setWfEqualSplit } from './panels/waterfall';
 import { closeGnssDetail, fillGnssDetail } from './panels/gnss';
 import { toggleAllGroups, toggleGroup } from './panels/groups';
 import { commitUnitField } from './panels/commit';
@@ -165,7 +167,7 @@ function requestSdrAmSync(enabled: boolean): void {
     sdrAmSync.reset();
     refreshDecodeWindow();
   }, 3000) };
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, am_sync: enabled, request_id: requestId });
+  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), am_sync: enabled, request_id: requestId });
   refreshDecodeWindow();
 }
 let radiofaxSerial = 0;
@@ -192,7 +194,7 @@ function sendRadiofaxConfig(patch: RadiofaxConfigPatch): void {
     refreshDecodeWindow();
     S.setStatusError(t('sdr_filter_timeout'));
   }, 3000) };
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, ...currentRadiofaxConfig(), ...patch, request_id: requestId });
+  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), ...currentRadiofaxConfig(), ...patch, request_id: requestId });
 }
 
 function requestRadiofaxConfig(patch: RadiofaxConfigPatch): void {
@@ -246,7 +248,12 @@ export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string |
 
 /** A lost control/device connection ends the receiver session and all unconfirmed detector intent. */
 export function disconnectSdrSession(): void {
+  lastSdrPanelReport = null;
+  confirmSdrChannels([]);
+  setCurrentSdrChannel(1);
+  setSdrHoverFrequency(null);
   acknowledgedSdrCapture = null;
+  centerTuneRequest = null;
   cancelSdrCanvasGesture();
   resetSdrTuneSession();
   resetCarrierEvidence();
@@ -481,6 +488,8 @@ export function syncGraphModeStatus(mode: string) {
   S.setRtaMode(isRtaLike);
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
+  setWfEqualSplit(isSdr);
+  if (isSdr) setWaterfall(true);
   applyMeasUI();
   // An axis gesture previews the window of the mode it started in; a mode change invalidates it.
   resetAxisPreview();
@@ -641,7 +650,7 @@ function replaySdrEntry(): void {
     sdrAmSync.set(initialSdrAmSync);
     initialSdrAmSync = null;
   }
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: sdrListenHz.get() });
+  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), freq: sdrListenHz.get() });
   applySdrDemod();
   // Entry setup sends SET commands, which cancel older fits. Arm the new one only after
   // that hand-off finishes; an existing SDR hardware level is preserved by the fit owner.
@@ -654,6 +663,18 @@ function replaySdrEntry(): void {
 // STATUS can acknowledge a capture before its frame arrives. Keep its bounds even
 // when a manual overview drag cancels the automatic focus awaiting that frame.
 let acknowledgedSdrCapture: FreqWindow | null = null;
+let centerTuneSerial = 0;
+let centerTuneRequest: { id: string; hz: number; decimate: number; focus: boolean; startedAt: number; focusEpoch: number } | null = null;
+
+export function rejectSdrCenterTune(responseTo?: string, requestId?: string | number): void {
+  if (!centerTuneRequest || responseTo !== 'SET_SDR' || requestId !== centerTuneRequest.id) return;
+  centerTuneRequest = null;
+  sdrCenterHz.reset();
+  sdrDecimate.reset();
+  sdrListenHz.reset();
+  renderSdrState();
+  requestRender();
+}
 
 /** A repeated submission obeys the same focus rule as an acknowledged change. */
 function refocusConfirmedSdrFrequency(hz: number, confirmed: number | null, listen = false): void {
@@ -684,37 +705,35 @@ export function applySdr() {
   const center = centerMhz * 1e6;
   if (!Number.isFinite(center) || center <= 0) return;
   cancelSdrTuneRequest();
+  resetAxisPreview();
+  cancelReceiverFocus();
+  const request = { id: `sdr-center-${++centerTuneSerial}`, hz: center, decimate,
+    focus: Math.abs(center - (sdrCenterHz.confirmedValue() ?? 0)) >= SAME_WINDOW_HZ
+      || Math.abs(center - (sdrListenHz.confirmedValue() ?? 0)) >= SAME_WINDOW_HZ
+      || decimate !== sdrDecimate.confirmedValue(), startedAt: Date.now(), focusEpoch: receiverFocusEpoch() };
+  centerTuneRequest = request;
   // Record what the user typed as the intent; the STATUS confirms it later.
   sdrCenterHz.set(center);
   sdrDecimate.set(decimate);
-  sdrListenHz.set(center);
-  if (decimate === sdrDecimate.confirmedValue()) {
+  if (!request.focus) {
     refocusConfirmedSdrFrequency(center, sdrCenterHz.confirmedValue());
   }
+  sdrListenHz.set(center);
   renderSdrState();
   prepareSdrAudioTransition();
-  send({ cmd: 'SET_SDR', center, decimate });
-  // Setting the wideband centre also tunes the demodulator there.
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: center });
-  // Apply the same band -> demod rule as the SWP/RTA handoff, otherwise entering SDR
-  // directly and typing a broadcast frequency keeps the previous demod (e.g. AM on an FM
-  // station = noise).
-  const inFm = center >= 87.5e6 && center <= 108e6;
-  const inAir = center >= 118e6 && center <= 137e6;
-  if (inFm || inAir) {
-    sdrDemod.set(inFm ? 'wfm' : 'am');
-    sdrIfbw.set(inFm ? 180000 : 25000);
-    renderSdrState();
-    applySdrDemod();
+  if (currentSdrChannel() === 1) send({ cmd: 'SET_SDR', center, listen: center, decimate, request_id: request.id });
+  else {
+    // SET_SDR's compatibility listen field always targets C1.
+    send({ cmd: 'SET_SDR', center, decimate, request_id: request.id });
+    requestSdrTune(center, { force: true });
   }
-  const l = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-  if (l) l.value = centerMhz.toFixed(6);
 }
 
 // Changing only the capture bandwidth keeps the listen frequency unchanged. The tuning step
 // follows the bandwidth on its own: renderSdrState shows the stored step for it, or the
 // span-derived default, and the slots keep no second copy that could disagree.
 export function applySdrBw() {
+  centerTuneRequest = null;
   cancelSdrTuneRequest();
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
   sdrDecimate.set(decimate);
@@ -727,8 +746,15 @@ export function applySdrBw() {
 export function applySdrTune() {
   const listenMhz = sdrNumber('input-sdr-listen', NaN);
   const f = listenMhz * 1e6;
-  refocusConfirmedSdrFrequency(f, sdrListenHz.confirmedValue(), true);
-  requestSdrTune(f);
+  if (!Number.isFinite(f) || f <= 0) return;
+  centerTuneRequest = null;
+  resetAxisPreview();
+  const confirmed = sdrListenHz.confirmedValue();
+  const refocus = confirmed !== null && Math.abs(sdrListenHz.get() - confirmed) < SAME_WINDOW_HZ;
+  // Enter is an explicit listen intent, even if the last periodic STATUS still
+  // describes the same frequency as running after a workbench Stop.
+  requestSdrTune(f, { force: true });
+  if (refocus) refocusConfirmedSdrFrequency(f, confirmed, true);
 }
 
 /**
@@ -751,6 +777,7 @@ export function applySdrStep() {
 export function sdrToCenter() {
   const listen = sdrListenHz.get();
   if (!(listen > 0)) return;
+  centerTuneRequest = null;
   cancelSdrTuneRequest();
   resetAxisPreview();
   sdrCenterHz.set(listen);
@@ -758,12 +785,11 @@ export function sdrToCenter() {
   renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR', center: listen, decimate: Math.round(sdrDecimate.get()) });
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: listen });
 }
 
 export function applySdrDemod(restoringMode = false, filterOnly = false) {
   const mode = sdrDemod.get();
-  setSdrAudioMode(1, mode);
+  setSdrAudioMode(currentSdrChannel(), mode);
   const descriptor = modeDescriptor(mode);
   if (descriptor && !descriptor.bandwidthEditable && sdrIfbw.get() !== descriptor.defaultBandwidthHz) {
     sdrIfbw.set(descriptor.defaultBandwidthHz);
@@ -779,7 +805,7 @@ export function applySdrDemod(restoringMode = false, filterOnly = false) {
   if (sdrDemod.pending() || sdrIfbw.pending() || sdrDeemph.pending()) {
     prepareSdrAudioTransition();
   }
-  const payload = filterOnly ? { cmd: 'SET_SDR_CHANNEL', channel: 1, mode, ifbw } : { cmd: 'SET_SDR_CHANNEL', channel: 1, enabled: true, mode, ifbw, volume, squelch,
+  const payload = filterOnly ? { cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw } : { cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw, volume, squelch,
     agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
     nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
     sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(), ...currentRadiofaxConfig() };
@@ -826,7 +852,7 @@ export function setSdrNrAtten(atten: number) {
 }
 
 function sendSdrNr(): void {
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, nr: sdrNr.get(), nr_strength: sdrNrStrength.get(),
+  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), nr: sdrNr.get(), nr_strength: sdrNrStrength.get(),
          nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get() });
 }
 
@@ -864,7 +890,7 @@ function toggleSdrAgc() {
     if (pendingAgc?.requestId === requestId) resetSdrAgcRequest();
   }, 3000) };
   renderSdrAgc();
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, agc: enabled, request_id: requestId });
+  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), agc: enabled, request_id: requestId });
 }
 
 // Band presets (centre, capture bandwidth, demod, IF bandwidth)
@@ -878,6 +904,7 @@ const SDR_BANDS: Record<string, { center: number; decimate: number; demod: strin
 export function applySdrBand(name: string) {
   const b = SDR_BANDS[name];
   if (!b) return;
+  centerTuneRequest = null;
   cancelSdrTuneRequest();
   cancelSdrTuningEdit();
   cancelSdrCanvasGesture();
@@ -891,13 +918,14 @@ export function applySdrBand(name: string) {
   renderSdrState();
   renderSdrTuningUi();
   send({ cmd: 'SET_SDR', center: b.center, decimate: b.decimate });
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: b.center });
+  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), freq: b.center });
   applySdrDemod();
 }
 
 export function listenAtFreq(hz: number) {
   if (!isFinite(hz) || hz <= 0) return;
   if (currentGraphMode() === 'sdr') {
+    centerTuneRequest = null;
     requestSdrTune(hz);
     return;
   }
@@ -976,7 +1004,7 @@ function finishReceiverEdit(accepted: boolean): void {
     sdrIfbw.reset();
     if (!accepted) cancelSdrCanvasGesture();
   }
-  setSdrAudioMode(1, sdrDemod.get());
+  setSdrAudioMode(currentSdrChannel(), sdrDemod.get());
   renderSdrState();
   syncSdrButtons();
   requestRender();
@@ -1031,7 +1059,7 @@ export function selectSdrIfbw(ifbw: number): void {
 function syncSdrAudioButton() {
   const b = document.getElementById('btn-sdr-audio');
   if (b) {
-    const muted = !sdrAudioOn.get();
+    const muted = nativeAudioOwnsSpeakers() ? nativeAudioIsMuted() : !sdrAudioOn.get();
     b.dataset.i18n = muted ? 'sdr_mute_on' : 'sdr_mute_off';
     b.textContent = t(b.dataset.i18n);
     b.classList.toggle('active', muted);
@@ -1042,15 +1070,16 @@ function syncSdrAudioButton() {
 function applySdrAudioPreference() {
   const on = sdrAudioOn.get();
   sdrAudioOn.set(on);
-  setSdrAudioMode(1, sdrDemod.get());
+  setSdrAudioMode(currentSdrChannel(), sdrDemod.get());
   setSdrAudioEnabled(on);
   syncSdrAudioButton();
 }
 
 export function toggleSdrAudio() {
+  if (nativeAudioOwnsSpeakers()) { document.dispatchEvent(new CustomEvent('websa:monitor-toggle-mute')); return; }
   const on = !sdrAudioOn.get();
   sdrAudioOn.set(on); // the slot persists it (single writer)
-  setSdrAudioMode(1, sdrDemod.get());
+  setSdrAudioMode(currentSdrChannel(), sdrDemod.get());
   setSdrAudioEnabled(on);
   syncSdrAudioButton();
 }
@@ -1062,12 +1091,55 @@ function sdrSet(id: string, value: string) {
 }
 
 // Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
+let lastSdrPanelReport: any = null;
+
+function syncSdrChannelButtons(): void {
+  const receiving = receivingSdrChannels();
+  const multiple = receiving.length > 1 || receiving.length === 1 && receiving[0].channel !== currentSdrChannel();
+  document.querySelectorAll<HTMLButtonElement>('.sdr-channel-nav').forEach(button => {
+    button.hidden = !multiple;
+    button.setAttribute('aria-label', t(button.dataset.action === 'sdr-channel-prev' ? 'sdr_channel_prev' : 'sdr_channel_next'));
+  });
+  const label = document.getElementById('sdr-current-channel');
+  if (label) label.textContent = `C${currentSdrChannel()}`;
+  const add = document.querySelector('[data-action="sdr-channel-add"]');
+  add?.setAttribute('aria-label', t('sdr_channel_add_tip'));
+}
+
+export function selectMainSdrChannel(channel: SdrChannel): void {
+  if (channel === currentSdrChannel() || !lastSdrPanelReport) return;
+  cancelSdrCanvasGesture(); cancelSdrTuningEdit(); cancelSdrFilterEdit();
+  clearReceiverEdit(); clearAmSyncRequest(); clearRadiofaxRequest(); resetSdrAgcRequest();
+  resetSdrTuneSession(); clearPassbandView(); sdrFilterLimits.confirm(null);
+  confirmAmSyncGeneration(null);
+  setSdrHoverFrequency(null); resetCarrierEvidence();
+  setCurrentSdrChannel(channel);
+  sdrDemod.reset(); sdrIfbw.reset(); sdrAmSync.reset();
+  setDecodeChannel(channel);
+  syncSdrPanel({ ...lastSdrPanelReport, response_to: 'STATUS', request_id: undefined });
+  document.dispatchEvent(new CustomEvent('websa:sdr-channel-selection'));
+  requestRender();
+}
+
+function cycleSdrChannel(direction: number): void {
+  const channels = receivingSdrChannels();
+  if (!channels.length) return;
+  const index = channels.findIndex(c => c.channel === currentSdrChannel());
+  const next = index < 0 ? (direction > 0 ? 0 : channels.length - 1)
+    : (index + direction + channels.length) % channels.length;
+  selectMainSdrChannel(channels[next].channel);
+  void import('./nativeWorkbench').then(module => module.focusNativeSdrChannel())
+    .catch(error => postRefNotice(String(error.message ?? error), 4000));
+}
+
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
   const active = s?.connected === true && s?.mode === 'sdr';
   if (!active) {
+    setSdrHoverFrequency(null);
     sdrAudioSessionReady = false;
     acknowledgedSdrCapture = null;
+    centerTuneRequest = null;
   }
   // Server keeps the device exclusively and forces connected=false. That report is not a lost
   // receiver session, and it must not confirm or reset the remembered SDR setup.
@@ -1104,7 +1176,14 @@ export function syncSdrPanel(s: any) {
   }
   const a = sdr.actual || {};
   const channels = Array.isArray(sdr.channels) ? sdr.channels : [];
-  const primary = channels.find((channel: { channel: number }) => channel.channel === 1);
+  confirmSdrChannels(channels);
+  lastSdrPanelReport = s;
+  if (currentSdrChannel() !== 1 && !sdrChannelMarks().some(c => c.channel === currentSdrChannel())) {
+    selectMainSdrChannel(receivingSdrChannels()[0]?.channel ?? 1);
+    return;
+  }
+  syncSdrChannelButtons();
+  const primary = channels.find((channel: { channel: number }) => channel.channel === currentSdrChannel());
   const receiver = primary || sdr;
   const ownReply = typeof s.request_id === 'string' && s.request_id.startsWith('sdr-filter-');
   const version = Number(s.config_version);
@@ -1113,6 +1192,8 @@ export function syncSdrPanel(s: any) {
   const acceptSnapshot = (!ownReply || s.request_id === receiverInFlight?.requestId || version > receiverConfigVersion)
     && !(Number.isFinite(version) && version < receiverConfigVersion);
   const reportedCenter = Number(sdr.center) || 0;
+  const focusCaptureCenter = sdrCenterHz.pending()
+    && Math.abs(sdrCenterHz.get() - reportedCenter) <= SAME_WINDOW_HZ;
   const actualMode = String((primary ? primary.mode : sdr.demod) || 'am');
   const previousCenter = sdrCenterHz.confirmedValue();
   const previousDecimate = sdrDecimate.confirmedValue();
@@ -1125,12 +1206,22 @@ export function syncSdrPanel(s: any) {
   const followListen = sdrTuneFollowsViewport(reportedListen, s.request_id);
   const axisOwnsViewport = sdrAxisOwnsViewport(s.request_id);
   if (!confirmSdrTuneReport(reportedListen, s.response_to, s.request_id,
-    s.config_version, { acceptSnapshot, contextChanged })) {
+    s.config_version, { acceptSnapshot, contextChanged, receiverEnabled: primary?.enabled })) {
     // A stale snapshot still completes its exact request; only the confirmed state
     // stays unchanged, and the latest unsent edit can now proceed.
     if (receiverAck) finishReceiverEdit(true);
     return;
   }
+  if (centerTuneRequest && Date.now() - centerTuneRequest.startedAt > 3000) centerTuneRequest = null;
+  const centerTune = centerTuneRequest && (
+    (s.response_to === 'SET_SDR' && s.request_id === centerTuneRequest.id)
+    || (Math.abs(reportedCenter - centerTuneRequest.hz) <= SAME_WINDOW_HZ
+      && Math.abs(reportedListen - centerTuneRequest.hz) <= SAME_WINDOW_HZ
+      && Number(sdr.decimate) === centerTuneRequest.decimate)) ? centerTuneRequest : null;
+  const awaitingCenterTune = centerTuneRequest !== null && centerTune === null;
+  const centerFocusCancelled = centerTune !== null && centerTune.focusEpoch !== receiverFocusEpoch();
+  if (awaitingCenterTune) sdrListenHz.set(centerTuneRequest!.hz);
+  if (centerTune) centerTuneRequest = null;
   const generation = primary?.am_sync_generation;
   confirmAmSyncGeneration(typeof generation === 'number' && Number.isInteger(generation)
     && generation >= 0 && generation <= 0xffffffff ? generation : null);
@@ -1184,11 +1275,14 @@ export function syncSdrPanel(s: any) {
     : centerMoved || !capture ? estimated : acknowledgedSdrCapture ?? capture;
   acknowledgedSdrCapture = isValidWindow(expected) ? expected : null;
   const actualFilter = Number(receiver.if_bw) || 6000;
-  if (!axisOwnsViewport && followListen && (listenMoved || centerMoved)
+  if (!awaitingCenterTune && !centerFocusCancelled && !axisOwnsViewport && followListen && (centerTune?.focus || listenMoved || centerMoved)
       && capture && isZoomed() && acknowledgedSdrCapture) {
-    if (centerMoved) {
+    if (centerTune?.focus || centerMoved) {
       resetAxisPreview();
-      recenterOnCapture(Number.isFinite(listen) && listen > 0 ? listen : center,
+      // A capture edit focuses the requested center. A receiver tune that also
+      // relocates capture still follows the receiver's absolute frequency.
+      recenterOnCapture(focusCaptureCenter || s.response_to === 'SET_SDR' ? center
+        : Number.isFinite(listen) && listen > 0 ? listen : center,
         acknowledgedSdrCapture, minSpanHz(S.freqArray));
     } else {
       const [lo, hi] = demodBandHz(actualMode, actualFilter, Number(receiver.pitch) || sdrPitchHz.get());
@@ -1206,7 +1300,7 @@ export function syncSdrPanel(s: any) {
   sdrDemod.confirm(actualMode);
   sdrIfbw.confirm(actualFilter);
   if (receiver.pitch != null) sdrPitchHz.confirm(Number(receiver.pitch));
-  const limits = sdr.filter_limits;
+  const limits = currentSdrChannel() === 1 ? sdr.filter_limits : null;
   sdrFilterLimits.confirm(limits && limits.mode === actualMode && Number.isFinite(limits.min_hz)
     && (limits.max_hz === null || Number.isFinite(limits.max_hz)) ? limits : null);
   rememberConfirmedFilter(actualMode, actualFilter);
@@ -1221,7 +1315,7 @@ export function syncSdrPanel(s: any) {
       sdrIfbw.touch(target.ifbw);
     }
   }
-  setSdrAudioMode(1, sdrDemod.get());
+  setSdrAudioMode(currentSdrChannel(), sdrDemod.get());
   renderSdrTuningUi();
   if ('sstv_mode' in receiver) sdrSstvMode.confirm(receiver.sstv_mode == null ? -1 : Number(receiver.sstv_mode));
   if (receiver.radiofax_acquisition === 'auto' || receiver.radiofax_acquisition === 'manual') sdrRadiofaxAcquisition.confirm(receiver.radiofax_acquisition);
@@ -1254,7 +1348,7 @@ export function syncSdrPanel(s: any) {
   if (receiver.nr_algorithm != null) sdrNrAlgo.confirm(receiver.nr_algorithm === 'dfn' ? 'dfn' : 'wiener');
   if (receiver.nr_atten_db != null) sdrNrAtten.confirm(Number(receiver.nr_atten_db));
   for (const channel of channels) {
-    if (channel.channel === 2 || channel.channel === 3) {
+    if (channel.channel !== currentSdrChannel() && [1, 2, 3].includes(channel.channel)) {
       setDecodeChannelMode(channel.channel, channel.enabled ? channel.mode : '');
     }
   }
@@ -1274,7 +1368,7 @@ export function syncSdrPanel(s: any) {
   syncSdrButtons();
   syncSdrAudioButton();
   syncRefUI();
-  setDecodeChannelMode(1, primary && !primary.enabled ? '' : sdrDemod.get());
+  setDecodeChannelMode(currentSdrChannel(), primary && !primary.enabled ? '' : sdrDemod.get());
   // A tune can settle while spectrum frames are paused; paint the confirmed view now.
   if (listenMoved || centerMoved) requestRender();
 }
@@ -1285,6 +1379,7 @@ let presetSerial = 0;
 let pendingPreset: { requestId: string; timer: number } | null = null;
 
 export function presetAll() {
+  centerTuneRequest = null;
   cancelSdrTuneRequest();
   cancelSdrTuningEdit();
   resetAxisPreview();
@@ -1318,6 +1413,10 @@ export function syncPresetStatus(responseTo?: string, requestId?: string | numbe
 }
 
 function applyPresetSuccess() {
+  setCurrentSdrChannel(1);
+  setDecodeChannel(1);
+  syncSdrChannelButtons();
+  document.dispatchEvent(new CustomEvent('websa:sdr-channel-selection'));
   resetAxisPreview();
   resetCarrierEvidence();
   resetFrequencyEditors();
@@ -1397,7 +1496,8 @@ function applyPresetSuccess() {
   resetLimits();
   S.resetWaterfall();
   setWfPaused(false);
-  resetWfSplit();                       // the dragged spectrum/waterfall split goes back to default
+  resetWfSplit(currentGraphMode() === 'sdr');
+  if (currentGraphMode() === 'sdr') setWaterfall(true);
   // Preset restores acquisition defaults: the zoom view dies with the old window (§4.3).
   resetViewport();
   cancelZoomGesture();
@@ -1422,6 +1522,7 @@ function applyPresetSuccess() {
   clearAmSyncRequest();
   resetSdrAgcRequest();
   resetSdrState();
+  centerTuneRequest = null;
   sdrAudioOn.set(audioWasOn);
   renderSdrState();
   refreshDecodeWindow();
@@ -1440,6 +1541,7 @@ function applyPresetSuccess() {
 // ── Panel collapse ──
 // ── data-action binding ──
 export function bindActions() {
+  document.addEventListener('websa:sdr-channels-changed', () => send({ cmd: 'STATUS' }));
   initServerMode(setGraphMode);
   document.addEventListener('pointerdown', (event) => {
     if (!(event.target instanceof Element)) return;
@@ -1528,6 +1630,15 @@ export function bindActions() {
     'sdr-to-center': () => sdrToCenter(),
     'sdr-workbench': () => { void import('./nativeWorkbench').then(module => module.openNativeWorkbench())
       .catch(error => postRefNotice(String(error), 4000)); },
+    'sdr-channel-add': (el) => {
+      (el as HTMLButtonElement).disabled = true;
+      void import('./nativeWorkbench').then(module => module.addCurrentSdrChannel())
+        .then(message => { if (message) postRefNotice(message, 3000); })
+        .catch(error => postRefNotice(String(error.message ?? error), 5000))
+        .finally(() => { (el as HTMLButtonElement).disabled = false; });
+    },
+    'sdr-channel-prev': () => cycleSdrChannel(-1),
+    'sdr-channel-next': () => cycleSdrChannel(1),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': () => toggleSdrAgc(),
     'toggle-sdr-nr': () => toggleSdrNr(),
@@ -1594,6 +1705,8 @@ export function bindActions() {
 
   // SDR demod panel: ranges commit on change (not on every drag pixel), and the
   // frequency inputs commit on Enter.
+  document.addEventListener('websa:monitor-owner', syncSdrAudioButton);
+  document.addEventListener('websa:monitor-master', syncSdrAudioButton);
   const volumeEl = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
   volumeEl?.addEventListener('change', () => {
     // A slider at its left end means 0, which is silence - `x || 0.8` read that 0 as "unset" and put
@@ -1601,7 +1714,8 @@ export function bindActions() {
     // at the settings just beside it, and no amount of turning the level down reached silence.
     const wanted = Number.parseFloat(volumeEl.value);
     sdrVolume.set(Number.isFinite(wanted) ? Math.max(0, Math.min(2, wanted)) : 0.8);
-    applySdrDemod();
+    if (nativeAudioOwnsSpeakers()) send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), volume: sdrVolume.get() });
+    else applySdrDemod();
   });
   const squelchEl = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
   squelchEl?.addEventListener('input', () => {
@@ -1626,12 +1740,12 @@ export function bindActions() {
     onTune: (hz) => {
       const freq = ft8DialFor(hz);
       const channel = decodeChannel();
-      if (channel === 1) listenAtFreq(freq);
+      if (channel === currentSdrChannel()) listenAtFreq(freq);
     },
     onSstvMode: (index) => {
       if (deviceMode.get() !== 'sdr') return;
       sdrSstvMode.set(index ?? -1);
-      setSstvModePin(index, 1);
+      setSstvModePin(index, currentSdrChannel());
       refreshDecodeWindow();
     },
     canAmSync: amSyncSessionAvailable,
@@ -1829,6 +1943,7 @@ function axisBandCursor(band: Axis | null): string {
 }
 
 type CanvasGesture = {
+  surface: HTMLCanvasElement;
   owner: 'axis' | 'filter' | 'marker' | 'zoom' | 'tune' | 'jump' | 'badge';
   sdr: boolean;
   mode: string;
@@ -1896,7 +2011,9 @@ function cancelSdrCanvasGesture(restore = true): void {
   clearSdrBadgeDrag();
   setPassbandTuneDragging(false);
   const canvas = (document.getElementById('spectrum') as HTMLCanvasElement | null) ?? S.canvas;
-  if (pointerId !== null && canvas?.hasPointerCapture?.(pointerId)) canvas.releasePointerCapture(pointerId);
+  const surface = gesture?.surface ?? canvas;
+  if (pointerId !== null && surface?.hasPointerCapture?.(pointerId)) surface.releasePointerCapture(pointerId);
+  if (surface) surface.style.cursor = '';
   if (canvas) canvas.style.cursor = '';
   if (canvas) canvas.removeAttribute('title');
   cancelFilterDrag();
@@ -1930,8 +2047,16 @@ export function bindCanvas() {
   const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
   if (!canvas) return;
 
+  const gesturePoint = (event: MouseEvent, gesture: CanvasGesture) => {
+    if (gesture.surface === canvas) return { x: canvasX(event, canvas), y: canvasY(event, canvas) };
+    const rect = gesture.surface.getBoundingClientRect(), plot = plotRectPub();
+    return { x: plot.x + (event.clientX - rect.left) / Math.max(1, rect.width) * plot.w,
+      y: plot.y + (event.clientY - rect.top) / Math.max(1, rect.height) * plot.h };
+  };
+
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || canvasPointerId !== null) return;
+    setSdrHoverFrequency(null);
     const active = document.activeElement;
     if (active instanceof HTMLInputElement && active.id === 'input-sdr-ifbw') active.blur();
     const pr = plotRectPub();
@@ -1942,7 +2067,7 @@ export function bindCanvas() {
     const accept = (owner: CanvasGesture['owner']): CanvasGesture => {
       cancelReceiverFocus();
       const gesture: CanvasGesture = {
-        owner, sdr, mode, demod: sdrDemod.get(), zoom, zoomEpoch: zoomEnabled.epoch,
+        surface: canvas, owner, sdr, mode, demod: sdrDemod.get(), zoom, zoomEpoch: zoomEnabled.epoch,
         x0: x, clientX0: e.clientX, clientY0: e.clientY,
         moved: false, marquee: false, shift: e.shiftKey,
       };
@@ -2014,7 +2139,7 @@ export function bindCanvas() {
   window.addEventListener('pointermove', (e) => {
     if (e.pointerId !== canvasPointerId || !canvasGestureCurrent()) return;
     const gesture = canvasGesture!;
-    const x = canvasX(e, canvas), y = canvasY(e, canvas);
+    const { x, y } = gesturePoint(e, gesture);
     const dx = e.clientX - gesture.clientX0, dy = e.clientY - gesture.clientY0;
     if (Math.hypot(dx, dy) > 4) gesture.moved = true;
     if (gesture.owner === 'badge') {
@@ -2049,7 +2174,7 @@ export function bindCanvas() {
   window.addEventListener('pointerup', (e) => {
     if (e.pointerId !== canvasPointerId || !canvasGestureCurrent()) return;
     const gesture = canvasGesture!;
-    const x = canvasX(e, canvas), y = canvasY(e, canvas);
+    const { x, y } = gesturePoint(e, gesture);
     const pr = plotRectPub();
     const inside = x >= pr.x && x <= pr.x + pr.w && y >= pr.y && y <= pr.y + pr.h;
     let tune: number | null = null;
@@ -2089,7 +2214,7 @@ export function bindCanvas() {
     if (gesture.owner === 'tune' && gesture.moved && tune === null) sdrListenHz.reset();
     cancelSdrCanvasGesture(false);
     if (filter !== null) selectSdrIfbw(filter);
-    if (tune !== null) requestSdrTune(tune, { followViewport: false });
+    if (tune !== null) { centerTuneRequest = null; requestSdrTune(tune, { followViewport: false }); }
     if (jump !== null) listenAtFreq(jump);
   });
 
@@ -2097,6 +2222,9 @@ export function bindCanvas() {
   // the bands sit in the margins where nothing else ever happened before.
   const updateCanvasHover = (x: number, y: number, ctrl: boolean, scale: number) => {
     if (canvasPointerId !== null || axisDragging() || filterDragging()) return;
+    const plot = plotRectPub();
+    setSdrHoverFrequency(currentGraphMode() === 'sdr' && x >= plot.x && x <= plot.x + plot.w
+      && y >= plot.y && y <= plot.y + plot.h ? spectrumFreqAtX(x) : null);
     const tolerance = 8 * scale;
     const marker = markerDiamondAt(x, y, canvas);
     const edge = currentGraphMode() === 'sdr' && !marker && !ctrl
@@ -2173,6 +2301,7 @@ export function bindCanvas() {
   };
   const clearCanvasHover = () => {
     hoverPending = false;
+    setSdrHoverFrequency(null);
     publishCursor(-1e9, -1e9);
     if (canvasPointerId === null) {
       setFilterHover(null);
@@ -2182,6 +2311,50 @@ export function bindCanvas() {
   };
   canvas.addEventListener('pointerleave', clearCanvasHover);
   canvas.addEventListener('mouseleave', clearCanvasHover);
+
+  const waterfall = document.getElementById('waterfall') as HTMLCanvasElement | null;
+  waterfall?.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || canvasPointerId !== null
+      || currentGraphMode() !== 'sdr' || !S.deviceConnected) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement && active.id === 'input-sdr-ifbw') active.blur();
+    const rect = waterfall.getBoundingClientRect(), plot = plotRectPub();
+    if (!(rect.width > 0 && rect.height > 0)) return;
+    const zoom = isSpectrumZoomOn();
+    const gesture: CanvasGesture = { surface: waterfall, owner: zoom ? 'zoom' : 'tune', sdr: true,
+      mode: 'sdr', demod: sdrDemod.get(), zoom, zoomEpoch: zoomEnabled.epoch,
+      x0: 0, clientX0: event.clientX, clientY0: event.clientY, moved: false, marquee: false, shift: event.shiftKey };
+    const { x, y } = gesturePoint(event, gesture);
+    if (x < plot.x || x > plot.x + plot.w || y < plot.y || y > plot.y + plot.h) return;
+    gesture.x0 = x;
+    setSdrHoverFrequency(null); setFilterHover(null); cancelReceiverFocus();
+    beginSdrLocateClick(x, y, plot.w / rect.width);
+    canvasGesture = gesture; canvasPointerId = event.pointerId; S.setDragging(true);
+    waterfall.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  });
+  let wfHoverPending = false, wfX = 0, wfY = 0;
+  const updateWaterfallHover = () => {
+    if (!wfHoverPending || !waterfall) return;
+    wfHoverPending = false;
+    if (canvasPointerId !== null || currentGraphMode() !== 'sdr') return;
+    const rect = waterfall.getBoundingClientRect(), plot = plotRectPub();
+    const inside = wfX >= rect.left && wfX <= rect.right && wfY >= rect.top && wfY <= rect.bottom;
+    if (!inside || !(rect.width > 0)) { setSdrHoverFrequency(null); cancelSdrLocate(); return; }
+    const x = plot.x + (wfX - rect.left) / rect.width * plot.w;
+    updateSdrLocateHover(x, plot.y + plot.h / 2, plot.w / rect.width);
+    setSdrHoverFrequency(spectrumFreqAtX(x));
+  };
+  const queueWaterfallHover = (event: MouseEvent) => {
+    wfX = event.clientX; wfY = event.clientY;
+    if (wfHoverPending) return;
+    wfHoverPending = true; window.requestAnimationFrame(updateWaterfallHover);
+  };
+  const clearWaterfallHover = () => { wfHoverPending = false; setSdrHoverFrequency(null); cancelSdrLocate(); };
+  waterfall?.addEventListener('pointermove', queueWaterfallHover);
+  waterfall?.addEventListener('mousemove', event => { if (!hasPointerEvents) queueWaterfallHover(event as MouseEvent); });
+  waterfall?.addEventListener('pointerleave', clearWaterfallHover);
+  waterfall?.addEventListener('mouseleave', clearWaterfallHover);
 
   // Wheel on an axis band zooms that axis (span on the frequency row, dB/div on the level
   // labels); inside the plot the wheel zooms the DISPLAY view while the toggle is On
@@ -2238,8 +2411,12 @@ export function bindCanvas() {
   canvas.addEventListener('lostpointercapture', (e) => {
     if (e.pointerId === canvasPointerId) cancelSdrCanvasGesture();
   });
+  waterfall?.addEventListener('lostpointercapture', event => {
+    if (event.pointerId === canvasPointerId) cancelSdrCanvasGesture();
+  });
   let allowKeyRepeat = true;
   const stopKeyboardTune = () => {
+    clearCanvasHover(); clearWaterfallHover();
     allowKeyRepeat = false;
     stopSdrTuneRepeat();
     cancelSdrCanvasGesture();
@@ -2284,6 +2461,7 @@ function sdrTuneBy(dHz: number) {
   if (!(center > 0) || !(span > 0)) return;
   const f = Math.max(S.FREQ_MIN, center - span / 2,
     Math.min(S.FREQ_MAX, center + span / 2, (sdrListenHz.get() || center) + dHz));
+  centerTuneRequest = null;
   requestSdrTune(f);
 }
 

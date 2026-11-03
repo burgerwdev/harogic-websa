@@ -13,6 +13,9 @@ let targetRate = 48000;
 let enabled = false;
 let muted = false;
 let failed = false;
+let reconnect = false;
+let retry: ReturnType<typeof setTimeout> | null = null;
+let retryAttempt = 0;
 let identity: Identity | null = null;
 let identityHighWater: { epoch: number; channel: number } | null = null;
 let playbackMode = 'default';
@@ -75,12 +78,26 @@ function flush(): void {
 function fail(reason: string): void {
   if (failed) return;
   failed = true;
+  cancelRetry();
   const previous = socket;
   socket = null;
   previous?.close(1000, 'Audio stream rejected');
   flush();
   output({ type: 'enabled', value: false });
   post({ type: 'error', message: reason });
+}
+function cancelRetry(): void {
+  if (retry !== null) clearTimeout(retry);
+  retry = null;
+}
+function disconnected(): void {
+  // A transport gap is a new subscription boundary, never continuous PCM.
+  flush(); identity = null; modeBoundaryPending = false;
+  output({ type: 'enabled', value: false });
+  post({ type: 'connection', state: 'reconnecting' });
+  const delay = Math.min(500 * 2 ** Math.min(retryAttempt++, 4), 5000);
+  cancelRetry();
+  retry = setTimeout(() => { retry = null; connect(); }, delay);
 }
 function acceptStatus(data: Record<string, unknown>): void {
   if (data.type === 'credit') {
@@ -182,6 +199,9 @@ function receive(buffer: ArrayBuffer): void {
     post({ type: 'identity', channelId: next.channel, epoch: next.epoch, streamKey: `${next.epoch}:${next.channel}`,
       inputIndex: inputIndex.toString(), audioIndex: index.toString(), delaySeconds: next.delay,
       totalDelayUnknown: Boolean(next.flags & 0x10000), causalPresentation: Boolean(next.flags & 0x20000) });
+    retryAttempt = 0;
+    post({ type: 'connection', state: 'connected' });
+    output({ type: 'enabled', value: enabled });
     return;
   }
   if (!identity || identity.channel !== next.channel || identity.epoch !== next.epoch
@@ -233,10 +253,15 @@ function connect(): void {
       receive(event.data);
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   };
-  current.onerror = () => { if (socket === current) fail('Backend audio connection failed'); };
+  // onclose carries the reason needed to distinguish transport loss from a
+  // receiver, protocol or slow-consumer failure. Browsers close after onerror.
+  current.onerror = () => { if (socket === current && !reconnect) fail('Backend audio connection failed'); };
   current.onclose = (event) => {
-    if (socket === current) fail(event.code === 1011 && event.reason === 'receiver failed'
-      ? 'Backend audio receiver failed' : 'Backend audio connection closed');
+    if (socket !== current) return;
+    socket = null;
+    if (reconnect && enabled && !failed && [1001, 1006, 1012].includes(event.code)) { disconnected(); return; }
+    fail(event.code === 1011 && event.reason === 'receiver failed'
+      ? 'Backend audio receiver failed' : `Backend audio connection closed (${event.code}): ${event.reason}`);
   };
 }
 self.onmessage = (event: MessageEvent) => {
@@ -244,6 +269,7 @@ self.onmessage = (event: MessageEvent) => {
   if (message.type === 'init') {
     if (url) { fail('Audio worker initialized more than once'); return; }
     url = String(message.url || '');
+    reconnect = message.reconnect === true;
     receiverMode = String(message.mode || 'default');
     playbackMode = message.mode === 'drm' || message.mode === 'drmplus' ? 'drm' : 'default';
     targetRate = Number(message.targetRate);
@@ -269,13 +295,14 @@ self.onmessage = (event: MessageEvent) => {
   } else if (message.type === 'enabled') {
     enabled = Boolean(message.value);
     if (!enabled) {
+      cancelRetry(); retryAttempt = 0;
       const previous = socket;
       socket = null;
       previous?.close();
       identity = null;
       modeBoundaryPending = false;
       flush();
-    } else if (!socket) { failed = false; connect(); }
+    } else if (!socket && retry === null) { failed = false; connect(); }
     output({ type: 'enabled', value: enabled && !failed });
   } else if (message.type === 'mute') {
     const nextMuted = Boolean(message.value);

@@ -151,6 +151,7 @@ class Radio:
         self.sdr = None
         self.rate = int(args.rate)
         self.xo_restore = None
+        self.tx_lo_restore = None
 
     def __enter__(self) -> Radio:
         import adi  # late, so --dry-run works without pyadi-iio
@@ -162,7 +163,10 @@ class Radio:
         except BaseException:
             # A refused LO used to abort with the crystal still trimmed, and the unit
             # stayed 1.98 ppm off until a reboot: the trim must come back out here.
-            self.restore_xo()
+            try:
+                self.restore_tx_lo()
+            finally:
+                self.restore_xo()
             raise
         return self
 
@@ -185,6 +189,26 @@ class Radio:
                   f'keeping {int(self.sdr.sample_rate)} Hz', file=sys.stderr)
         self.rate = int(self.sdr.sample_rate)
         self.sdr.tx_hardwaregain_chan0 = float(self.args.gain)
+        # A prior application can leave the synthesizer powered down. DMA buffer
+        # success alone does not turn the RF LO back on.
+        find_channel = getattr(self.sdr._ctrl, 'find_channel', None)
+        channel = find_channel('altvoltage1', True) if find_channel else None
+        attrs = getattr(channel, 'attrs', {})
+        if 'powerdown' in attrs:
+            attr = attrs['powerdown']
+            previous = attr.value
+            if previous.strip() != '0':
+                self.tx_lo_restore = (attr, previous)
+                attr.value = '0'
+                print(f'TX LO powerdown: {previous} -> 0')
+
+    def restore_tx_lo(self) -> None:
+        """Restore the LO power state after destroying the transmit buffer."""
+        if self.tx_lo_restore is not None:
+            attr, previous = self.tx_lo_restore
+            self.tx_lo_restore = None
+            attr.value = previous
+            print(f'TX LO powerdown restored to {previous}')
 
     def lo_refused_message(self, lo: int, exc: Exception) -> str:
         """The message for an LO the driver refuses, with the range the unit reports."""
@@ -213,7 +237,10 @@ class Radio:
                 self.sdr.tx_destroy_buffer()
             except Exception:  # pragma: no cover - driver teardown is best effort
                 pass
-            self.restore_xo()
+            try:
+                self.restore_tx_lo()
+            finally:
+                self.restore_xo()
         print('TX stopped.')
         return False
 

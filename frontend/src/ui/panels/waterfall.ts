@@ -42,13 +42,21 @@ function readWfHeight(): number {
 }
 
 let wfHeight = readWfHeight();
+let equalSplit = false;
+
+/** Mode entry uses equal panels; a manual divider drag switches back to a fixed height. */
+export function setWfEqualSplit(on: boolean): void {
+  equalSplit = on;
+  syncWfSplit();
+}
 
 /** Apply the remembered split: the container's height and the divider's visibility. Closing the
  * waterfall hides both, which is what returns the area to the spectrum. */
 export function syncWfSplit(): void {
   const container = document.getElementById('waterfall-container');
   const split = document.getElementById('wf-split');
-  if (container) container.style.height = `${wfHeight}px`;
+  document.querySelector('.spectrum-area')?.classList.toggle('wf-equal-split', equalSplit && waterfallOn.get());
+  if (container) container.style.height = equalSplit ? '' : `${wfHeight}px`;
   if (split) split.style.display = waterfallOn.get() ? '' : 'none';
 }
 
@@ -69,6 +77,9 @@ export function initWfSplit(): void {
     // Height is assigned to a border-box container; clientHeight excludes its borders and
     // would move the grab point by another two CSS pixels on every new drag.
     startH = container.offsetHeight || wfHeight;
+    equalSplit = false;
+    area?.classList.remove('wf-equal-split');
+    container.style.height = `${startH}px`;
     columnH = area?.clientHeight ?? 0;
     split.classList.add('dragging');
     try {
@@ -110,8 +121,9 @@ export function initWfSplit(): void {
 
 /** Preset: drop the dragged split (and its stored value) so the panels come up at the factory
  * split, like every other panel preference a Preset resets. */
-export function resetWfSplit(): void {
+export function resetWfSplit(half = false): void {
   wfHeight = WF_DEFAULT_H;
+  equalSplit = half;
   try {
     localStorage.removeItem(WF_SPLIT_KEY);
   } catch {

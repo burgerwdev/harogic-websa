@@ -51,4 +51,4 @@ printf '%s\n' "OnAir source: https://github.com/adswill/OnAir/tree/$revision" \
   'Keep corresponding source and license notices when redistributing the executable.' \
   > "$prefix/share/licenses/websa-rtty/NOTICE"
 printf 'export WEBSA_RTTY_PATH=%q\n' "$prefix/bin/websa-rtty" > "$prefix/rtty-env.sh"
-printf 'Installed %s\nSource %s before starting websad.\n' "$prefix/bin/websa-rtty" "$prefix/rtty-env.sh"
+printf 'Installed %s\nRestart websad to discover the decoder. For a custom --prefix, source %s before starting websad.\n' "$prefix/bin/websa-rtty" "$prefix/rtty-env.sh"

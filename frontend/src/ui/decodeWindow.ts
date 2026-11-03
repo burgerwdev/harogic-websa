@@ -2,6 +2,7 @@
 // The opener owns receiver state and subscriptions; a popup adopts the same DOM subtree.
 // Floating geometry persists in viewport pixels outside the zoomed analyzer frame.
 // The popup fills its own viewport without overwriting that saved floating geometry.
+import { currentSdrChannel } from './sdrChannels';
 import { clearFt8Spots, clock, ft8DecoderState, ft8Spots, setFt8Channel, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
 import { clearCwLog, cwLevel, cwLog, setCwChannel, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
 	type CwLine, type CwMark } from '../sdr/cwLog';
@@ -34,6 +35,7 @@ import {
 } from '../sdr/radiofaxLog';
 import { sstvModeTable, modeDescriptor, modeOutputs } from '../sdr/registry';
 import { clearDecoderLog, subscribeDecoderLog } from '../sdr/decoderLog';
+import { drawAudioScope as drawScope } from './audioScope';
 import { renderDecoderResults } from './decoderResults';
 import { createDecodePopout, type DecodePopout } from './decodePopout';
 import { applyFloatingGeometry, clampFloatingGeometry } from './floatingGeometry';
@@ -1367,14 +1369,14 @@ let confirmedAmSyncGeneration: number | null = null;
 export function confirmAmSyncGeneration(generation: number | null): void {
 	if (generation === confirmedAmSyncGeneration) return;
 	confirmedAmSyncGeneration = generation;
-	amInfo[1] = null;
-	amMeters[1] = null;
+	amInfo[currentSdrChannel()] = null;
+	amMeters[currentSdrChannel()] = null;
 	if (mode === 'am') renderAm();
 }
 
 export function setAmInfo(info: AmInfo | null, channel: DecodeChannel = selectedChannel): void {
 	amInfo[channel] = active && channelModes[channel] === 'am' && !channelErrors[channel]
-		&& (channel !== 1 || (confirmedAmSyncGeneration !== null && info?.syncGeneration === confirmedAmSyncGeneration)) ? info : null;
+		&& (channel !== currentSdrChannel() || (confirmedAmSyncGeneration !== null && info?.syncGeneration === confirmedAmSyncGeneration)) ? info : null;
 	const accepted = amInfo[channel];
 	if (!accepted) amMeters[channel] = null;
 	else {
@@ -1394,17 +1396,17 @@ export function setAmInfo(info: AmInfo | null, channel: DecodeChannel = selected
 }
 
 export function canToggleAmSync(): boolean {
-	return active && mode === 'am' && selectedChannel === 1 && !channelErrors[1]
+	return active && mode === 'am' && selectedChannel === currentSdrChannel() && !channelErrors[selectedChannel]
 		&& !sdrAmSync.pending() && (hooks.canAmSync?.() ?? true);
 }
 
 function renderAm(): void {
 	if (deferDecodePaint()) return;
 	const info = amInfo[selectedChannel];
-	const confirmed = selectedChannel === 1 ? sdrAmSync.confirmedValue() === true : info?.syncEnabled === true;
-	const pending = selectedChannel === 1 && sdrAmSync.pending();
+	const confirmed = selectedChannel === currentSdrChannel() ? sdrAmSync.confirmedValue() === true : info?.syncEnabled === true;
+	const pending = selectedChannel === currentSdrChannel() && sdrAmSync.pending();
 	const locked = active && confirmed && !pending && info?.syncEnabled === true && info.syncLocked
-		&& (selectedChannel !== 1 || info.syncGeneration === confirmedAmSyncGeneration) && !channelErrors[selectedChannel];
+		&& (selectedChannel !== currentSdrChannel() || info.syncGeneration === confirmedAmSyncGeneration) && !channelErrors[selectedChannel];
 	const badge = element('am-title-badge');
 	if (badge) {
 		badge.textContent = t(!confirmed ? 'am_sync_off' : locked ? 'am_sync_locked' : 'am_sync_searching');
@@ -1446,60 +1448,6 @@ function renderAm(): void {
 	}
 	const empty = element('am-empty');
 	if (empty) { empty.textContent = t('am_waiting'); empty.style.display = info ? 'none' : ''; }
-}
-
-/**
- * Draw the demodulated audio. The window is the last block's samples, so the trace is a moving
- * scope, not a level meter: the amplitude and the shape are what the listener hears.
- */
-function drawScope(
-	canvas: HTMLCanvasElement,
-	traces: Float32Array[],
-	scalePeak: number,
-): void {
-	const ctx = canvas.getContext('2d');
-	if (!ctx) return;
-	const w = canvas.width;
-	const h = canvas.height;
-	const styles = (canvas.ownerDocument.defaultView ?? window).getComputedStyle(canvas);
-	const line = styles.getPropertyValue('--text').trim() || '#ccc';
-	const grid = styles.getPropertyValue('--card-border').trim() || '#444';
-	ctx.clearRect(0, 0, w, h);
-	// Slow peak hold stabilizes the vertical scale across audio blocks. Sharing the scale
-	// between lanes preserves the visible L/R balance.
-	let peak = scalePeak;
-	if (peak <= 1e-6) {
-		for (const t of traces) for (const v of t) peak = Math.max(peak, Math.abs(v));
-	}
-	const laneH = h / traces.length;
-	const scale = peak > 1e-6 ? (laneH / 2 - 2) / peak : 0;
-	ctx.strokeStyle = grid;
-	ctx.lineWidth = 1;
-	ctx.beginPath();
-	for (let lane = 0; lane < traces.length; lane++) {
-		const mid = laneH * lane + laneH / 2;
-		ctx.moveTo(0, mid + 0.5);
-		ctx.lineTo(w, mid + 0.5);
-		if (lane > 0) {
-			ctx.moveTo(0, laneH * lane + 0.5);
-			ctx.lineTo(w, laneH * lane + 0.5);
-		}
-	}
-	ctx.stroke();
-	ctx.strokeStyle = line;
-	ctx.lineWidth = 1.25;
-	for (let lane = 0; lane < traces.length; lane++) {
-		const t = traces[lane];
-		const mid = laneH * lane + laneH / 2;
-		ctx.beginPath();
-		for (let i = 0; i < t.length; i++) {
-			const x = (i / (t.length - 1)) * (w - 1);
-			const y = mid - t[i] * scale;
-			if (i === 0) ctx.moveTo(x, y);
-			else ctx.lineTo(x, y);
-		}
-		ctx.stroke();
-	}
 }
 
 function renderWfm(): void {

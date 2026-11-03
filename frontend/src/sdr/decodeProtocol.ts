@@ -34,6 +34,9 @@ export interface ReceiverEvent {
 	status?: DrmReceiverStatus;
 }
 export interface DecodeEnvelope {
+	receiver_uid?: string;
+	service_id?: string;
+	baseband_stream?: { source_id: string; channel_id: string; epoch: string };
 	version: 1;
 	channel: number;
 	channel_id: number;
@@ -108,6 +111,12 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		|| typeof value.delay_seconds !== 'number' || !Number.isFinite(value.delay_seconds) || value.delay_seconds < 0
 		|| typeof value.delay_known !== 'boolean' || typeof value.causal_presentation !== 'boolean'
 		|| typeof value.mode !== 'string' || typeof value.event.type !== 'string') throw new Error('Invalid SDE2 envelope');
+	if (value.receiver_uid !== undefined || value.service_id !== undefined || value.baseband_stream !== undefined) {
+		if (typeof value.receiver_uid !== 'string' || !value.receiver_uid || value.receiver_uid.length > 128
+			|| typeof value.service_id !== 'string' || !value.service_id || value.service_id.length > 128
+			|| !record(value.baseband_stream) || typeof value.baseband_stream.source_id !== 'string') throw new Error('Invalid SDE2 logical source');
+		uint64(value.baseband_stream.channel_id); uint64(value.baseband_stream.epoch);
+	}
 	if (value.event.type === 'start' && value.event.snapshotAck !== undefined && typeof value.event.snapshotAck !== 'boolean') {
 		throw new Error('Invalid receiver snapshotAck');
 	}

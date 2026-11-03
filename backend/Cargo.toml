@@ -19,12 +19,17 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync",
 websa-dsp = { path = "../dsp/core" }
 df = { package = "deep_filter", path = "../dsp/deepfilter", default-features = false, features = ["tract"] }
 ndarray = "0.15"
-zstd = { version = "0.13.3", optional = true }
+zstd = "0.13.3"
+crc32fast = "1"
+tar = "0.4.46"
+sha2 = "0.10.8"
+flacenc = { version = "0.5.1", default-features = false }
+md-5 = "0.10.6"
 tokio-tungstenite = "0.29"
 
 [features]
 bench-instrument = []
-iq-experiments = ["dep:zstd"]
+iq-experiments = []
 
 [[bin]]
 name = "multichannel_experiment"

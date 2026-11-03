@@ -64,6 +64,8 @@ Open WebSA, select **SRV**, configure the stopped server's IP literal/port, then
 
 SoapyRemote provides automatic network discovery through mDNS/Avahi and SSDP; WebSA does not need a second publisher. `avahi-browse -rt _soapy._tcp` can show the advertised host and port. An advertisement can include addresses on multiple interfaces, including loopback; discovery does not make a server bound to `127.0.0.1` reachable from another machine. In OnAir 3.2, stop reception, open the source selector, and enable **Search the network for radios** (off by default). The client must have the SoapyRemote module installed; discovered radios then appear through its Soapy source.
 
+[SDRoxide's SoapySDR backend](https://github.com/dividebysandwich/sdroxide#soapysdr-connectivity) accepts Soapy device arguments. Use a build with its `soapy` feature and install the SoapyRemote module **on the client**. Connect with `sdroxide --device 'driver=remote,remote=127.0.0.1:55132,remote:driver=harogic'`, substituting the server's reachable host for LAN use. SDRoxide's `--connect` and Settings → Remote use its own WebSocket protocol on port 4950; that entry point cannot connect to SoapySDRServer. An AppImage advertising native drivers alone does not establish that its build includes SoapySDR. This is an upstream-supported path, without an SDRoxide/SAN-90 reception claim.
+
 USB discovery uses the SDK's `Device_List` to obtain device indices and serials without opening acquisition handles. Explicit Ethernet addresses bypass broadcast discovery; the constructor validates the selected device and serial. One streaming-capable handle serves capability queries and subsequent streams. Deactivation and `closeStream` stop acquisition but retain that handle; device destruction releases it. Changing live settings stops and joins the worker before SDK configuration, and unchanged settings do not restart acquisition.
 
 OnAir can reconstruct its entire Soapy device when changing mode or IQ bandwidth. Device reconstruction still requires an SDK open; stream recreation within an existing device reuses its handle. WebSA's server process remains running during client-side changes.
@@ -241,7 +243,7 @@ listener AGC, gain, squelch and noise reduction do not affect decoding.
 
 ```sh
 bash tools/setup-rtty-decoder.sh
-source "${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders/rtty-env.sh"
+# Restart websad after installation.
 ```
 
 The installer needs Git and a C++17 compiler, fetches pinned OnAir revision
@@ -250,7 +252,10 @@ and standalone companion. No GUI, sound routing, full OnAir build or SDR driver
 is required. `--source /path/to/OnAir` uses a clean checkout of that revision;
 `--prefix DIR` selects the independent installation directory. Sources and
 GPL notices remain separate from the MIT host; retain corresponding sources
-when redistributing the companion. `WEBSA_RTTY_PATH` selects the executable.
+when redistributing the companion. Discovery checks `WEBSA_RTTY_PATH`, then `PATH`,
+then `bin/websa-rtty` under `WEBSA_DECODERS_PREFIX` or the default
+`${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders`. For a custom `--prefix`
+that is not exported as `WEBSA_DECODERS_PREFIX`, source its `rtty-env.sh` before starting.
 Restart the service after installation because capability discovery is cached.
 
 Select **RTTY** or **RTTY (reverse)** from the mode catalog. Both use ITA2,
@@ -309,6 +314,14 @@ make viewport-baseline VIEWPORT_JSON=/tmp/websa-viewport.json
 make bench
 ```
 
+`python3 tools/e2e/native_multichannel_legacy_resume.py --artifacts <new-directory>`
+creates its own synthetic native service and checks Stop all followed by main
+SDR frequency, same-frequency, center and mode edits. It verifies one UID audio
+consumer, advancing PCM playback, local mute preservation and unchanged stopped
+auxiliary receivers without editing volume. Build the frontend and native
+release binary first. It accepts no existing origin and does not test RF or
+physical speaker output.
+
 `make e2e-fake` builds and launches an isolated native fixture service. Direct
 probes, viewport targets, and `make bench` use a running service. Viewport output
 records current geometry; it is not an input for screenshot comparison.
@@ -365,6 +378,9 @@ Real Pluto-to-SAN-90 RF at 435 MHz also received complete IOC576/120 LPM 1810×6
 and IOC288/240 LPM 905×256 test pages, with phasing clock recovery and no missing rows.
 Generator clock trim is device-specific; inspect the selected radio's options
 before relying on RF frequency accuracy.
+The shared radio layer enables the TX LO when a previous application left its
+`powerdown` attribute set, then restores that state after destroying the TX
+buffer on exit. A successful DMA push alone does not confirm RF transmission.
 
 The dispatcher also provides `dtmf`, `aprs`, `ais`, `ft4`, `wspr` and `gps`.
 Digital modes and GPS share `pluto_radio.Radio` and its persistent streaming

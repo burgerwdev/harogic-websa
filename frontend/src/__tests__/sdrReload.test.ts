@@ -3,6 +3,7 @@ import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
 	setSdrReceiverAudioError: vi.fn(), sdrAudioNeedsGesture: () => false,
 }));
@@ -89,6 +90,42 @@ function receiverStatus(freq: number, mode: string, version: number, response: R
 			...(response.sdr as Record<string, unknown> | undefined) } };
 }
 describe('SDR entry and reload', () => {
+  it('fits the display after adopting native SDR with a retained applied result but no target', async () => {
+    const { fit } = await load();
+    const { getDisplayRef } = await import('../ui/displayRef');
+    const { getY, plotRect } = await import('../render/plot');
+    const live = status('sdr');
+    const native = { ...live, config_version: 1, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1' },
+      auto_ref: { ...live.auto_ref, result: 'applied', target: null, seq: 11 } };
+    receive(native);
+    spectrumFrame(1e9, 1);
+    const request = socket.sent.find(command => command.cmd === 'AUTO_SCALE')!;
+    expect(request).toMatchObject({ display_only: true, range_db: 100 });
+    expect(socket.sent.filter(command => ['SET_MODE', 'SET_SDR', 'SET_REF', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+    receive(native); // Retained status is not an answer to this browser's new request.
+    expect(getDisplayRef()).toBe(0);
+    receive({ ...native, response_to: 'AUTO_SCALE', request_id: request.request_id,
+      auto_ref: { ...native.auto_ref, adjusting: true, result: 'adjusting', seq: 12 } });
+    receive({ ...native, auto_ref: { ...native.auto_ref, result: 'applied', target: -35, seq: 13,
+      last_peak: -77, last_noise_floor: -118 } });
+    expect(getDisplayRef()).toBe(-35);
+    for (const level of [-77, -118]) {
+      expect(getY(level)).toBeGreaterThan(plotRect().y);
+      expect(getY(level)).toBeLessThan(plotRect().y + plotRect().h);
+    }
+    const count = socket.sent.length;
+    receive(native); fit.maybeRequestSdrFit();
+    expect(getDisplayRef()).toBe(-35); expect(socket.sent).toHaveLength(count);
+  });
+  it('preserves a native SDR hardware reference on adoption without reconfiguring the receiver', async () => {
+    await load();
+    const { getDisplayRef } = await import('../ui/displayRef');
+    const live = status('sdr');
+    receive({ ...live, config_version: 1, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1', ref: -45, ref_set: true } });
+    spectrumFrame(1e9, 1);
+    expect(getDisplayRef()).toBe(-45);
+    expect(socket.sent.filter(command => command.cmd !== 'STATUS')).toEqual([]);
+  });
   it.each(['std', 'rta', 'sdr'])('adopts a native running receiver set without replaying stored %s mode or detector', async saved => {
     localStorage.setItem('web-sa-mode', saved);
     localStorage.setItem('web-sa-sdr-am-sync', '1');
@@ -121,7 +158,7 @@ describe('SDR entry and reload', () => {
 			socket.sent.length = 0;
 			controls.sdrToCenter();
 			const captureRequest = socket.sent.find(command => command.cmd === 'SET_SDR')!;
-			const channelRequest = socket.sent.find(command => command.cmd === 'SET_SDR_CHANNEL')!;
+			expect(socket.sent.some(command => command.cmd === 'SET_SDR_CHANNEL')).toBe(false);
 			const report = (responseTo: string, requestId?: unknown) => {
 				const old = status('sdr');
 				return { ...old, config_version: responseTo === 'SET_SDR' ? 2 : 3,
@@ -140,7 +177,7 @@ describe('SDR entry and reload', () => {
 			const intermediate = { ...viewport.getView()! };
 			expect(intermediate.lo).toBeGreaterThan(selection.lo + 400_000);
 			expect(intermediate.lo).toBeLessThan(listen - 200_000);
-			receive(report('SET_SDR_CHANNEL', channelRequest.request_id));
+			receive(report('SET_SDR_CHANNEL', 'unrelated-channel-ack'));
 			for (let i = 0; i < 12; i++) {
 				vi.advanceTimersByTime(20);
 				spectrumFrame(listen, 2);

@@ -4,6 +4,25 @@ import { renderDecoderResults } from '../ui/decoderResults';
 
 beforeEach(() => { clearDecoderLog(1); document.body.replaceChildren(); });
 describe('provider result history', () => {
+  it('retains a live table page and its focused next button when a new snapshot arrives', () => {
+    const host = document.createElement('section'); document.body.append(host);
+    const snapshot = (prefix: string): void => {
+      addDecoderResult({ provider: 'onair', mode: 'adsb', kind: 'table', data: {
+        type: 'aircraft', aircraft: Array.from({ length: 60 }, (_, index) => ({ icao: `ID${index}`, callsign: `${prefix}${index}` })),
+      } }, '1:1', 1);
+      renderDecoderResults(host, 1, 'adsb', false);
+    };
+    snapshot('OLD');
+    const next = host.querySelectorAll<HTMLButtonElement>('button')[1]; next.click(); next.focus();
+    expect(host.querySelector('tbody')?.textContent).toContain('OLD25');
+    const wrapper = host.querySelector('.decoder-table-scroll');
+    snapshot('NEW');
+    expect(document.activeElement).toBe(next); expect(host.querySelectorAll('button')[1]).toBe(next);
+    expect(host.querySelector('.decoder-table-scroll')).toBe(wrapper);
+    expect(host.querySelector('tbody')?.textContent).toContain('NEW25');
+    expect(host.querySelector('tbody')?.textContent).not.toContain('OLD25');
+    next.click(); expect(host.querySelector('tbody')?.textContent).toContain('NEW50');
+  });
   it('puts vessel identity before telemetry regardless of upstream JSON key order', () => {
     addDecoderResult({ provider: 'onair', mode: 'ais', kind: 'table', data: { vessels: [{
       age_s: 1, cog_deg: 45, lat: 55, lon: 21, mmsi: 123456789, msgs: 8, name: 'VESSEL', sog_kt: 12,

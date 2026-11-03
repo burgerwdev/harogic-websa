@@ -1,5 +1,28 @@
 # API 文档
 
+采集快照将 `state:running|idle|failed` 与设备连接状态分开；`parameters_state:live|last_known|unknown` 分别表示当前源参数、保留的上次参数及源尚未打开。未知时带宽／输入率为 null，`center_hz` 仅为请求中心，epoch `"0"` 为哨兵，不表示活动流；独立基带夹具标记 `parameters_state:simulated`，共享显示窗口／率为模拟值，epoch `"0"` 为哨兵，真实基带输入以各路 clock 为准；硬件已知时输入率取 PFB 输入率，epoch 为 DSP 源代次，不能混用设备配置代次或下游 DDC 率。失败／停止保留原参数，重开源分配新 DSP epoch。启用硬件信道的变更须有健康活动采集。旧服务可能缺少 `parameters_state`，失败后仍报告旧版缺省值。
+
+主面板输入中心频率后，将共享采集中心和 C1 监听频率一起设置到该点；已有放大框保持宽度并平滑滑到该点。IQ 带宽只修改采集带宽，保留逐路频率与模式；“移到中心”将采集移到 C1 当前频点。主面板其他调谐／解调／共享 PCM 参数仍作用于 C1；多路操作在工作台选中并编辑各 UID。采集变更可能中断所有信道并产生录制边界。
+
+
+`audio_archive_read:true`、`audio_range_max_samples:"1048576"` 和 `audio_range_max_seconds:60` 开放 `GET /api/sdr/recordings/{task_id}/audio/range?segment=audio-000000&start=0&count=20000`。起点／长度为单音频片段内无符号十进制**样本帧**（立体声一帧包含两个声道），使用受检 u64 运算。仅读结束任务或已收尾的失败校验前缀。每次1–1,048,576帧，且按原8000–192000 Hz整数率至多60秒，保持原单／双声道。未知参数／非法计数400，活动／收尾409，未知404，片段／范围／数据错误422，共享读取名额占用429。
+
+有界 `audio-range.tar` 含 `selection.json`、`frames.jsonl` 和 `audio.wav`（含fact的IEEE Float32 LE）。PCM保持实际发布音频原位模式，包含原共享处理；本次读取不加增益、不重采样／量化／归一化或补静音。清单保存原任务／服务／UID／故障、片段相对起点／长度、精确首音频位置、实际格式及PCM／时间线SHA-256。所选时间线条目保留完整原AUD2头及源时钟，额外 `selection` 用十进制保存 `record_skip_frames`、`frames` 和选区从零计数的 `range_sample_start`。部分帧不推算／改写源位置及分数，不编造绝对UTC；原生播放器时间从所选首音频样本开始。
+
+`recording_audio_read.rs` 成功前流式校验**整个**既有日志及片段摘要。当前音频无随机读取索引，准备耗时随完整任务长度增加。内存保留一个校验条目、至多8 MiB所选PCM加58字节WAV头、4096条／4 MiB时间线和2 MiB清单。之后不可变快照复用单读名额的准备／producer／body寿命、两项64 KiB／2秒传输背压；取消待两方退出后释放。原记录文件不变。浏览器按需加载一个独立原生媒体播放器，分配前校验16 MiB封装上限，逐传输块检查长度；编辑／隐藏／换任务／释放时取消并回收旧播放。Pop out／Dock移动同一媒体节点，下载保存同份已载入快照。实时监听与文件播放独立，旧服务隐藏入口。这是有界原始PCM回放；连续长文件、Opus及数字文件解码仍单独推进。
+
+新增 `iq_file_demodulate_offset:true` 时，文件解调接口另支持可选有限数 `offset_hz`（默认 `0`）。正值选择原录制 IQ 中心以上的频率。共享原生 NCO 在 IF FIR 前执行 `IQ * exp(-j*2*pi*offset_hz*n/actual_iq_rate_hz)`；选区首样本相位为零，跨校验块／卷连续。所有非零频偏（含小于1Hz）均实际应用，零值绕过混频并保持原解调结果。平移后的两个通带端点必须同时落在原对称录制通带与实际 IQ Nyquist 内，不作频率回绕；USB／LSB沿用原生非对称边带。`render.json.processing.tuning` 保存频偏、原中心、所选频率、原输入坐标下的频带和相位规则。`source.sigmf-meta` 及其 CF32 摘要仍描述原中心下未改动的 IQ。不改变样本时间、不补预滚或新增延迟估计。旧服务无该能力时，浏览器隐藏频偏控件并省略参数。非有限／非法频偏400，不可用频带或非法所选频率422。
+
+`iq_file_demodulate:true`、`iq_file_demodulate_modes:["am","usb","lsb","nfm"]` 和 `iq_file_demodulate_max_seconds:60` 开放 `GET /api/sdr/recordings/{task_id}/demodulate?segment=<id>&start=0&count=20000&mode=am&if_bw=1500`。仅读已结束 IQ 任务或收尾后的失败校验前缀。范围是单片段内十进制整数，最多 1,048,576 复数样本／60 秒／4096 块／4 MiB 来源；实际 IQ 率须为 1000–192000 S/s。`if_bw` 为 50–20000 Hz（USB／LSB 为原生载波保护区保留至少101 Hz），且不大于实际 IQ 率的 0.45；AM/NFM 完整对称带宽或 USB/LSB 单边带必须落在原已录对称通带内。未知参数／模式或非法计数 400，来源／滤波／数据错误 422，活动 409，未知 404，共享读取名额占用 429。
+
+响应为有界 POSIX tar `iq-demod.tar`，含 `render.json`、`source.sigmf-meta` 和 `audio.wav`。原生 `AnalogDemod::new` 以实际 IQ 率执行 IF／音频 FIR 及有状态线性重采样，输出 48000 Hz 单声道 IEEE Float32 WAV（含 fact），固定单位增益，关闭 AGC／降噪／静噪，沿用原生模式去加重。这是新生成的离线音频，不是此前发布 PCM。各请求在选区起点从零建立因果滤波器，保留起始暂态，只保存实际输出；不补预滚／尾部零样本，不拼接片段。音频样本下标／48000 为相对播放时间，解调总延迟明确未知；原 u64／分数／延迟及块内裁切偏移在来源元数据中原样保留，不编造 UTC。SHA-256 覆盖所选 CF32、来源元数据和生成 PCM。来源元数据描述原 IQ，本 tar 不附 IQ 数据成员；原文件和身份不变。
+
+处理在采集锁外，不分配实时接收槽。限一个校验源块、每轮8192样本原生 DSP、最多11,520,008 PCM字节（另有有界WAV构造）、4 MiB来源和2 MiB清单。与IQ／结果／音频共用单读名额、准备／producer／body寿命、取消及两项64 KiB／2秒传输预算。成功前完整验证并生成派生快照，输出读内存，源之后改变不会改变该快照。浏览器仅保留一个有界tar／播放器（20 MiB封装上限），替换请求取消，修改范围／隐藏／换任务释放音频，下载同份音频及来源。旧服务隐藏文件DSP。数字文件解码与连续长文件播放继续单列。
+
+`audio_flac_export:true` 开放 `GET /api/sdr/recordings/{task_id}/audio/flac`，不接受查询参数，仅读取已结束音频任务及失败任务的校验前缀。原生下载 `audio-flac-s24.tar` 包含 `task.json`、未改动的逐帧来源 `frames.jsonl`，以及每个非空源片段独立的 `.flac`。来源仍是包含共享后端处理、排除浏览器扬声器设置的实际发布 PCM。每个有限 Float32 声道值转换为 `q = clamp(round_away_from_zero(x * 8388608), -8388608, 8388607)` 的有符号 24 位整数。不加抖动、不归一化、不调增益、不重采样或填补缺样。清单声明量化规则，并以十进制字符串保存逐段 `clipped_values`（舍入后超出整数范围的交错声道值个数）、样本数和编码长度。正 1.0 饱和，负 -1.0 可准确表示。FLAC 无损针对选定的整数 PCM，不保持原 Float32 位模式；原始日志及 Float32 WAV 接口继续可用。真实率、声道、配置及片段边界保持，不暗示协议输入来源或绝对 UTC。
+
+`recording_flac.rs` 使用纯 Rust `flacenc` 0.5.1，关闭并行特性，采用固定预测器／Rice 编码、4096 样本固定块及不补齐的短尾帧。STREAMINFO 按 [RFC 9639](https://www.rfc-editor.org/rfc/rfc9639.html#name-streaminfo) 保存准确样本数及打包 signed-24 LE PCM 的 MD5。内存只保留一个校验日志条目、一个编码帧和有界摘要；清单／计划合计至多2 MiB、至多4096片段。预检编码至 sink 以计算固定 tar 长度、STREAMINFO 和量化统计，输出重新编码并在 tar 尾部前核对来源及编码帧 SHA-512；来源改变产生不完整响应。不写中间音频文件。与 WAV／结果／IQ 共用单读名额、producer/body 取消寿命及两项64 KiB／2秒传输，沿用400／404／409／422／429；结束的空任务导出元数据及空时间线。
+
 原生后端（`backend/`）通过 **HTTP REST** 和 **WebSocket** 提供接口。WebSocket 传输 JSON 命令、状态和二进制迹线帧。仓库根目录的 `./run.sh` 默认连接硬件，服务端口为 8080；Python 客户端仅为可选工具。
 
 - 服务地址：`http://127.0.0.1:8080`（WebSocket 路径为 `/ws`）
@@ -9,6 +32,37 @@
 
 ---
 
+P5 IQ 记录通过同一 receiver API 接入：`record_start`（`receiver_uid`、`kinds:["iq"]`）和 `record_stop`（`task_id`），带 `request_id` 和当前 `service_id`。无需接收器配置预检或浏览器 IQ socket。服务实际开放后才发布 `recording:true`、`recording_kinds:["iq","results","audio"]` 和对应 commands；存储不可用时不发布操作，并提供 `recording_unavailable_reason`。快照 `recordings[]` 包含原服务身份、轨道、状态、已保存字节和错误，刷新/重连只读取此实际状态。`GET /api/sdr/recordings/{task_id}/index?volume=iq-000000.jsonl&offset=0` 返回最多 128 个已持久块索引及十进制 `next_offset`，不是样本下载或 SigMF。
+
+IQ、音频及结果 worker 将已排队的包合并同步，最多等待50毫秒，每批至多32项／约1 MiB（单个更大的有界输入可独占一批）。数据、存在时的IQ旁路索引和清单同步后才发布该批计数。原4 MiB／64项／2秒准入预算包含所有排队和在途包，合批不重置最旧输入的期限。原块、源时钟、片段边界和文件格式保持；停止排空并同步最后一批。
+
+服务通过 `iq_archive_read:true` 和 `iq_range_max_samples:"1048576"` 发布已结束任务的 IQ 读取能力。`GET /api/sdr/recordings/{task_id}/range?segment=<segment_id>&start=0&count=4096&format=sigmf` 选择一个片段内从零计数的样本范围；`start`/`count` 为十进制整数，每次 1–1,048,576 个样本（8 MiB CF32）、最多 4096 块和 4 MiB 来源元数据。`format=cf32` 返回校验后的裸样本，`format=meta` 返回 SigMF 元数据，默认 `sigmf` 返回 POSIX tar `.sigmf`，包含同名 `.sigmf-data`／`.sigmf-meta` 文件。成功前重新解压并校验全部所选块，可跨卷但不拼接不同片段／采样率，响应 no-store。活动／收尾中任务返回 409，未知任务 404，非法参数 400，越界／缺失／损坏数据 422，并发读取 429。单个阻塞读取 worker 在采集状态锁外执行 I/O 和解压，读取名额保持到响应传输结束，中止响应会释放名额。失败恢复任务只开放已校验前缀，元数据保留原故障、服务及 UID。
+
+流式导出通过 `iq_archive_export:true` 和十进制 `iq_export_max_samples:"1073741823"` 发布。`GET /api/sdr/recordings/{task_id}/export?segment=<segment_id>&start=0&count=4194304` 将已结束任务的所选范围下载为标准 SigMF。CF32 数据成员小于 8 GiB（POSIX ustar 大小上限），元数据成员具有相同的单文件上限；现有 `/range` 波形／小范围读取限额保持。HTTP 成功前完整校验所选范围，随后在输出数据与注释时重新校验；只保留一个校验块和两项 64 KiB 传输队列。源文件在导出中变化会使响应失败，不会完成另一份样本文件。读取名额覆盖准备、生产者和响应寿命，关闭响应会取消工作并释放名额。传输队列积压两秒结束该导出生产者，接收与记录继续。浏览器使用原生下载，不将大文件读入 Blob。不同片段仍保持独立 Recording，可通过 `/collection` 一起下载。
+
+带持久记录能力的服务另发布 `state_revision`（服务代次内单调递增的十进制 u64），与接收配置 `revision` 分开。浏览器拒绝迟到的旧状态快照，记录进度和最终状态不因配置修订未变化而回退。
+
+`GET /api/sdr/recordings/{task_id}/collection` 将同一已结束 IQ 任务的全部非空已校验片段下载为一个 POSIX tar `.sigmf` 归档，不接受查询参数。能力 `iq_archive_collection:true` 发布十进制字符串 `iq_collection_max_samples:"1073741823"`（任务所有片段合计）和整数 `iq_collection_max_segments:4096`。各片段在归档根目录分别成为从零计数的 `segment-000000.sigmf-data`／`.sigmf-meta`，保留实际率、频率、精确时钟及原任务／服务／UID／故障。根目录 `recording.sigmf-collection` 的有序 `core:streams` 对象保存生成的文件基名与元数据文件实际字节的 SHA-512。不暗示跨片段连续、重采样或绝对时间对齐。空任务、超限、任一片段缺口／损坏在成功响应前整体拒绝为 422；活动／收尾 409、未知任务 404、查询参数 400、读取名额占用 429。集合与 `/range`、`/export` 共用单读名额、取消和两个 64 KiB 传输项；预检保留有界逐片段计划（前缀／ID 至多 2 MiB，加至多 2 MiB 集合清单），样本与注释流式输出。预检后来源改变会结束不完整响应。工作台“全部片段”使用原生下载，波形缓冲维持原限额。
+
+`record_start` 也接受 `kinds:["results"]`，要求健康、启用且描述符实际发布文字、表格、图像或状态的处理器。当前每任务一种轨道；同一 UID 可用两个任务同时录 IQ 与结果，共享三个 worker 的限额。`results_archive_export:true` 开放 `GET /api/sdr/recordings/{task_id}/results`，不接受查询参数，流式下载 POSIX tar `results.tar`，内含 `task.json` 与 `events.jsonl`。每行包含 `version:1`、主机接收时刻 `received_at_ms`（十进制毫秒字符串）、原基带 `source` 信息及完整 `envelope`，保留 SDE2 原处理序号／时钟、服务／UID 和 `baseband_stream`。源样本位置及分数保持十进制字符串，接收时刻不建立样本绝对 UTC。清单保留故障、前缀信息及“只记录启动后实际发布事件”策略。图像保留原始增量 RGB／Gray8／base64 PNG 载荷和完整性元数据，缺少前部行仍是 partial；后端不重建独立 PNG，也不补录浏览器历史。
+
+结果日志内部格式为 WBRS0001：各 JSON 记录独立 Zstd level 1 压缩，原始块回退，16 字节类型／原始大小／存储大小／CRC32 报头，每卷有计数／字节／摘要校验尾部。每记录最多 3 MiB，共用 4 MiB／64 项／2 秒队列，包含在途工作；压缩、同步、恢复和下载均在采集锁外。无消息时正常等待；移除处理器排空并结束结果轨道，处理失败只使结果录制失败，健康 IQ 继续。结果按处理流身份分段，旧异步事件仍归原段。重启只恢复已校验前缀，不续录或重绑。下载先预检全部保留记录及尾部，再边传输边校验，后续改变导致不完整响应；与 IQ 共用单读名额及两项 64 KiB／2 秒传输队列。查询参数 400、未知 404、活动／收尾 409、种类或数据错误 422、并发 429。结束的空结果任务可下载空 JSONL。协议输入音频、Opus 与文件 DSP 重放仍未开放。
+
+`record_start` 现接受 `kinds:["audio"]`，按模式描述符的实际 `audio` 输出准入，包含 FT8 伴随音频与 DRM/DRM+ codec 音频，不以 `purpose` 排除。录制来源固定为已发布 AUD2 Float32 PCM（`source:"published_audio"`、`format:"f32_le"`），包含实际后端共享增益／AGC／NR／静噪或 codec 配置；浏览器音量／声像／静音／Solo 不进入文件。它不是协议输入音频，也不承诺 Opus 编码。每任务一种轨道，同 UID 的 IQ、结果、音频三个任务共用三个 worker 与各任务 4 MiB／64项／2秒预算。无音频帧的 codec 正常 waiting，不按 IQ 五秒超时失败。准备确认先同步清单与首卷；停止排空，处理器移除正常结束，处理错误隔离健康 IQ。
+
+内部 WBAU0001 保存每帧实际配置 JSON 和原始 AUD2 头／PCM；使用共同的独立 Zstd1/raw／CRC32 日志 codec，每卷 256 MiB 或4096帧滚动、至多4096卷／片段，配置 JSON 每帧16 KiB、片段清单2 MiB。处理流／音频格式起始、源配置或 RIFF 大小边界各自新段；不拼接缺样、不填静音。原处理帧携带配置快照，排队旧帧不套用当前设置。重启恢复已校验前缀，保留原 UID／服务／故障，不自动续录。
+
+`audio_archive_export:true` 开放 `GET /api/sdr/recordings/{task_id}/audio`，无查询参数，流式下载 `audio.tar`。包内为 `task.json`、逐帧来源 `frames.jsonl` 和各非空片段的 IEEE Float32 LE WAV（含 fact 样本数）；样本位模式不变，无重采样／量化。每 WAV 小于4 GiB，长期连续源在此上限前分段。JSONL 包含原 AUD2 96字节头的十六进制、精确源位置／分数／延迟／实际率／音频位置和配置，不能据此宣称绝对 UTC 或跨段对齐。完整预检、输出 SHA-512 复核、单读名额、producer/body寿命和两项64 KiB／2秒背压与 IQ／结果下载共用；改变产生不完整响应。400／404／409／422／429沿用，空结束任务可下载空时间线。WAV依据 [Microsoft RIFF/WAVE 规范](https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/WAVE/Docs/riffmci.pdf)。
+
+
+## 单信道频点预设
+
+`capabilities.receiver_presets:true` 开放 `GET /api/sdr/receiver-presets`，返回 `{version:1, revision:"0", presets:[]}`。每项为 `{name, settings:{purpose, baseband, processors}}`；最多32项、整个文件256KiB，名称为1–128字节的非空文本。保存在本实例 `WEBSA_RECORDING_DIR/receiver-presets.json`，沿用目录独占锁；文件损坏时保留原文件并关闭能力，不重置为默认值。
+
+同一路径 POST 保存：`{type:"save", service_id, expected_revision, name, receiver_uid, receiver_revision}`；删除：`{type:"delete", service_id, expected_revision, name}`。修订均为十进制u64字符串。保存只从指定修订的已确认信道提取设置，并补齐实际生效的AGC／增益等默认值，不接收任意候选配置；同名替换。列表或信道修订冲突、旧服务代次返回409；非法输入400、未知项404、存储不可用503、写入失败500。成功在同步文件并原子替换后返回新列表；写盘不持有采集状态锁。客户端遇冲突显式刷新，不自动重试写入。
+
+载入是浏览器将保存设置合入目标信道后走既有 `configure` 预检／显式确认：保留目标名称、颜色、标签和接收启停；不恢复UID、源时钟、任务或本地监听。预览后信道修订／服务变化会拒绝确认，要求重新预览。带外频点或不可用模式仍由实际准入拒绝；预设不会移动共享采集或自动运行。
+
 ## 1. HTTP 接口
 
 ### 原生多信道接收
@@ -16,6 +70,8 @@
 `GET/POST /api/sdr/receivers`、`POST /api/sdr/receivers/preflight` 及
 `/ws/iq?receiver_uid=...` 实现 P3 接收/IQ 切片。命令、时钟、边界和限制见
 [MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md#原生-p3-信道接口与-iq-订阅)。
+P4 增加 `/ws/audio?receiver_uid=...`、`/ws/decode?receiver_uid=...&ack=1`、实际模式/provider 描述及浏览器本地混音。
+处理流拥有独立身份，按 UID 的 SDE2 通过 `baseband_stream` 保留原 IQ 归属。见 [P4 语义](MULTICHANNEL_DRAFT.md#p4-按信道监听与已有解码)。
 原有 IQBF/IQAX、AUD2、SDE2 和 `/api/config` 继续兼容。
 
 ### `GET /api/sdr/plugins`
@@ -159,7 +215,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_REFCKOUT` | `on`（bool） | 参考时钟输出，重配置当前模式 Profile |
 | `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr/server）| 切换测量模式（会话）。`server` 为独占模式，不启动 SoapySDRServer |
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
-| `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档。平移捕获窗口会带动主路监听频率；当频率离开带限 OnAir 解码器的频段时，该通道自动降级为解码器的音频伴随模式，不会提交非法组合 |
+| `SET_SDR` | `center?`, `listen?`（Hz）, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档。平移捕获窗口会带动主路监听频率；当频率离开带限 OnAir 解码器的频段时，该通道自动降级为解码器的音频伴随模式，不会提交非法组合 提供 `listen` 时原子提交采集中心与 C1 监听调谐并启用 C1，包括所有信道已停用的情况；省略时保留频率轴平移行为及信道启停状态。 |
 | `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部三路频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
 | `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（正有限值，Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（CW 为 100..1600 Hz；其他模式为 (0,20000] Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 13 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/radiofax/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 请求修改接收滤波器，通过准入后重配信道化器 |
 | `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?`、`radiofax_acquisition?`、`radiofax_ioc?`、`radiofax_lpm?`、`radiofax_modulation?`、`radiofax_polarity?`、`radiofax_clock_recovery?`、`radiofax_phase_pixels?`、`radiofax_clock_ppm?`、`radiofax_new_page?`、`radiofax_reset_correction?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。传真捕获为 auto/manual，IOC 为 auto/288/576，LPM 为 auto/60/90/120/180/240，调制为 fm/am，极性为 normal/inverted，时钟恢复为 auto/off。相位范围 ±4096 像素，时钟校正 ±5000 ppm。`radiofax_new_page` 将当前页以部分完成收尾；`radiofax_reset_correction` 将两项校正置零。协议参数变化重建解码器；相位和 ppm 不重建 RF。带限 OnAir 解码器（AIS、ADS-B、Meteor LRPT、APRS、FT4、WSPR）会对保留频率做边界协调：不带 `freq` 选择解码器时自动调谐到其标称中心（ADS-B 1090 MHz、AIS 162 MHz、Meteor 137.1 MHz）；仅改 `freq` 且离开频段时，通道降级为解码器的音频伴随模式（AM/NFM/USB）并采用该模式默认带宽。显式 `mode`+`freq` 冲突仍被拒绝。 |
@@ -278,13 +334,15 @@ RTA 发送 RTA2：基础载荷后追加 ASCII TRIG、小端 u32 JSON 字节长�
 | `/ws/audio?channel=1` | AUD2 接收 PCM |
 | `/ws/decode?channel=1` | SDE2 接收事件 |
 
-音频/解码的 `channel` 可省略以订阅全部频道，或选择槽位 1–3；非法值返回 HTTP 400。这些订阅不携带显示帧。后端负责解调，浏览器负责 PCM 播放率转换及结果显示。当前产品只提供主路控制，进入 SDR 时禁用辅路；后端订阅支持三路。
+音频/解码的 `channel` 可省略以订阅全部频道，或选择槽位 1–3；非法值返回 HTTP 400。这些订阅不携带显示帧。后端负责解调，浏览器负责 PCM 播放率转换及结果显示。主面板操作当前选中的信道，工作台管理三个独立信道定义；进入 SDR 保留辅助信道。后端兼容订阅支持三路。
 
 流身份为 `(epoch, channel_id)`。重调分配新频道 ID；重建计划、重新采集和新会话分配新 epoch。拒绝请求保留旧配置及旧流。旧输出尾帧先于新起始边界。每个音频/解码订阅者拥有从零开始的序号，不重置接收器或其他订阅者。源序号断裂或无起始标记的格式变化均显式失败。
 
 流使用每客户端最多 64 条消息的有界 FIFO。溢出时以代码 1013 关闭慢订阅，不通过丢弃样本或事件维持播放。显示迹线只保留最新帧。处理职责见 [ARCHITECTURE.md](ARCHITECTURE.md)，接收限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
 
 订阅源序列错误以代码 1011 和原因 `subscriber source stream invalid` 关闭订阅；浏览器将其视为流的终止故障。实际队列溢出使用代码 1013 和原因 `IQ/audio consumer too slow`；解码确认超时使用代码 1013 和原因 `decoded-output acknowledgement timeout`。两者均不报告为接收器工作线程故障。
+
+原生信道快照为各路提供可选的不透明字段 `audio_signature`，由已确认的频率与音频处理参数生成，排除信道身份、启停状态、IQ 资源计划及 AM 同步代数。本地音量和声像也相同时，浏览器将相同签名的音频只播放一路；接收、IQ 订阅及录制身份仍独立。未提供此字段的服务保持独立监听。
 
 共享原生接收器工作线程故障会停止全部音频和解码接收器。显示/控制流收到 `RECEIVER_ERROR`，内容为 `{error, failed:true, scope:'all_receivers'}`。STATUS 在 `sdr.receiver_error:string|null` 中保留诊断。音频和解码订阅以代码 1011 和原因 `receiver failed` 关闭。采集、PFB、fine DDC、原始 IQ、频谱和瀑布继续运行。接收器故障不设置 `last_error` 或 `ddc_error`，不显示频谱错误遮罩，也不改变硬件连接状态 `connected`。采集和设备故障由全局错误流程处理。
 
@@ -508,6 +566,8 @@ RTA 仍要求整个窗口位于设备频率范围内。
 客户端需要 SoapySDR 和 [SoapyRemote](https://github.com/pothosware/SoapyRemote) 模块。使用 `driver=remote,remote=<host>:<port>,remote:driver=harogic`；将通配绑定替换为服务端主机可到达的地址，IPv6 主机用方括号包围。SoapySDRServer 导出全部已安装设备 factory，因此须保留 `harogic` 筛选。打过补丁的模块实际输出 CF32、CS16 或 CS8。setup 前，原生格式查询默认在不超过 60 MSps 时返回 CS16（`fullScale` 为 32768），高于 60 MSps 时返回 CS8（`fullScale` 为 128）。setup 后返回所选输出格式及其 `fullScale`（CF32：1、CS16：32768、CS8：128）。CS16 和 CS8 的每个复数样本分别为 4、2 字节，CF32 则为 8 字节。`native_format` 在 setup 时选择 SDK 的 CS8/CS16/CS32/AUTO，关闭流之前保持该宽度。AUTO 对整数输出采用相同宽度；对 CF32 按 setup 时的采样率选择，不超过 60 MSps 使用 CS16，否则使用 CS8。显式指定 SDK 宽度时，整数输出必须与其匹配。CF32 按 SDK 分量的 `2^7`、`2^15` 或 `2^31` 标度归一化；CS32 仅为 SDK 输入格式。SoapyRemote 可在线路上传输原生整数样本，同时向客户端返回 CF32。实现使用原始样本环形缓冲与批量复制，不宣称零拷贝。
 
 自动发现由 SoapyRemote 通过 mDNS/Avahi 和 SSDP 发布；`avahi-browse -rt _soapy._tcp` 可列出广播端点。WebSA 不额外添加重复发布器。广播可能包含回环地址；默认的 `127.0.0.1` 绑定仍只接受本机客户端。IPv4 局域网访问须先停止服务，将绑定配置为 `0.0.0.0`，重新启动后使用主机可到达的局域网地址。在 OnAir 3.2 中，先停止接收，再打开源选择器并开启默认关闭的 **Search the network for radios**。客户端安装 SoapyRemote 模块后，自动发现的电台会通过 Soapy 源出现。
+
+[SDRoxide](https://github.com/dividebysandwich/sdroxide#soapysdr-connectivity) 需使用包含 `soapy` 功能的构建，并在客户端安装 SoapyRemote 模块；连接参数为 `sdroxide --device 'driver=remote,remote=<host>:<port>,remote:driver=harogic'`。其 Remote 设置及 `--connect` 使用 SDRoxide 自身的 WebSocket 协议（通常为 4950 端口），无法直接连接 SoapySDRServer。这是上游兼容路径，此处尚未验证 SDRoxide/SAN-90 的实际接收。
 
 上游客户端路径包括 [SDR++](https://github.com/AlexandreRouma/SDRPlusPlus#sources)（`soapy_source` 为可选/已弃用模块，可能需要自行构建）、[OnAir 桌面版](https://github.com/adswill/OnAir#network-radios)（SoapyRemote）、[SDR--](https://sdrmm.com/docs/hardware)（仅限包含 Soapy 路径的构建）和 [OpenWebRX](https://github.com/jketterl/openwebrx/wiki/Supported-Hardware)（SoapyRemote）。KiwiSDR 没有通用 Soapy 输入。已在 SAN-90 上验证 OnAir 3.2.0 源启动及 15.625 MSps 下的 IQ 接收。更新驱动后，OnAir CLI 以 7.8125 MSps 接收 FM 五秒，使用 CS16 UDP 传输并向客户端输出 CF32，报告载波锁定、立体声和零丢样，并成功退出。另一轮五秒 CLI 运行验证了 62.5 MSps CS8 UDP 输入，报告零丢样并成功退出；其接收器重采样到 4 MSps，未取得 FM 载波锁定。这验证了该次运行的全速率输入路径，不代表图形界面以 62.5 MSps 处理 FFT、全速率解码质量、电视锁定或长时间连续性。其他应用路径仍为上游兼容性说明。发现方式、传输与性能限制见[驱动设置和测量记录](../../tools/README.md#soapy-server-driver-setup)。
 

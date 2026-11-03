@@ -89,7 +89,7 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
     if (all.filter(c => c.enabled).length > this.state.capabilities.max_channels) fail('Channel limit exceeded');
     for (const c of all.filter(c => c.enabled)) {
       if (Math.abs(c.baseband.frequency_hz - center) + c.baseband.passband_hz / 2 + c.baseband.transition_hz
-          > this.state.capture.usable_bandwidth_hz / 2) fail('Full passband and transition must fit shared capture');
+          > (this.state.capture.usable_bandwidth_hz ?? 0) / 2) fail('Full passband and transition must fit shared capture');
     }
     return { accepted: !faults.length, faults, capture_change: center !== this.state.capture.center_hz,
       affected_receivers: affected, candidate_center_hz: center,

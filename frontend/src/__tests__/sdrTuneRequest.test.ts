@@ -4,7 +4,7 @@ vi.mock('../core/wsSend', () => ({ send: vi.fn() }));
 
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
-import { sdrListenHz } from '../ui/sdrState';
+import { sdrListenHz, sdrPrimaryEnabled } from '../ui/sdrState';
 import {
 	cancelSdrTuneRequest, confirmSdrTuneReport, rejectSdrTuneRequest,
 	requestSdrTune, resetSdrTuneSession, sdrTuneFollowsViewport, stopSdrTuneRepeat,
@@ -32,6 +32,18 @@ afterEach(() => {
 });
 
 describe('SDR listen-frequency tuning requests', () => {
+	it('keeps the stopped state through stale reports and restarts an unchanged frequency', () => {
+		confirmSdrTuneReport(7.1e6, 'STATUS', undefined, 3, { receiverEnabled: false });
+		expect(confirmSdrTuneReport(7.1e6, 'STATUS', undefined, 2, { receiverEnabled: true })).toBe(false);
+		expect(sdrPrimaryEnabled.get()).toBe(false);
+		requestSdrTune(7.1e6);
+		expect(sent()).toHaveLength(1);
+		expect(sent()[0]).toMatchObject({ freq: 7.1e6, enabled: true });
+		confirmSdrTuneReport(7.1e6, 'SET_SDR_CHANNEL', sent()[0].request_id, 4, { receiverEnabled: true });
+		requestSdrTune(7.1e6);
+		expect(sent()).toHaveLength(1);
+	});
+
 	it('preserves plot coordinates when the device quantizes a tune confirmation', () => {
 		requestSdrTune(7.100e6, { followViewport: false });
 		expect(sdrTuneFollowsViewport(7.100e6 + 1, sent()[0].request_id)).toBe(false);

@@ -116,7 +116,7 @@ impl ChannelConfig {
         Ok(())
     }
 
-    fn resets_receiver(&self, next: &Self) -> bool {
+    pub(super) fn resets_receiver(&self, next: &Self) -> bool {
         self.enabled != next.enabled || self.freq != next.freq || self.mode != next.mode
             || self.baseband != next.baseband || self.processing_enabled != next.processing_enabled
             || self.if_bw != next.if_bw || self.pitch != next.pitch || self.sstv_mode != next.sstv_mode
@@ -204,13 +204,15 @@ impl PreparedDecoders {
 
 #[derive(Default)]
 pub(super) struct ReceiverFrames {
+    pub audio_configs: Vec<Arc<ChannelConfig>>,
     pub audio: Vec<Vec<u8>>,
     pub decode: Vec<Vec<u8>>,
 }
 
 impl ReceiverFrames {
-    fn append(&mut self, mut other: Self) {
+    pub(super) fn append(&mut self, mut other: Self) {
         self.audio.append(&mut other.audio);
+        self.audio_configs.append(&mut other.audio_configs);
         self.decode.append(&mut other.decode);
     }
 }
@@ -635,6 +637,12 @@ impl ReceiverWorkers {
     }
 
     pub fn submit(&mut self, frame: &[u8], registry: &[ChannelRegistryEntry]) -> Result<(), String> {
+        self.submit_as(frame,registry,None)
+    }
+    pub(super) fn submit_processing(&mut self,frame:&[u8],registry:&[ChannelRegistryEntry],id:u32,epoch:u32,sequence:u32)->Result<(),String> {
+        self.submit_as(frame,registry,Some((id,epoch,sequence)))
+    }
+    fn submit_as(&mut self,frame:&[u8],registry:&[ChannelRegistryEntry],processing:Option<(u32,u32,u32)>)->Result<(),String> {
         self.shared.check()?;
         if frame.len() < 56 || !matches!(&frame[..4], b"IQBF" | b"IQAX") {
             return Err("invalid receiver IQ frame header".into());
@@ -675,7 +683,10 @@ impl ReceiverWorkers {
             power += f64::from(value) * f64::from(value);
             iq.push(value);
         }
-        let prepared = if seq == 0 {
+        // Parse the immutable source payload once. Branch identity/sequence are
+        // typed metadata, so attaching a processor never copies/re-encodes IQ.
+        let (processed_id,processed_epoch,processed_seq)=processing.unwrap_or((channel_id,epoch,seq));
+        let prepared = if processed_seq == 0 {
             let decoder = self.prepared.take(slot, &self.configs[slot]).and_then(|ready| ready.decoder);
             if decoder.is_none() && websa_channelizer::catalog::is_external(&self.configs[slot].mode) {
                 return Err(format!("external decoder for channel {} was not prepared before IQ admission", row.channel));
@@ -684,7 +695,7 @@ impl ReceiverWorkers {
         } else { None };
         let packet = Packet {
             slot, generation: self.shared.generations[slot].load(Ordering::Acquire),
-            config: Arc::clone(&self.configs[slot]), channel_id, epoch, seq, rate, frequency,
+            config: Arc::clone(&self.configs[slot]), channel_id:processed_id, epoch:processed_epoch, seq:processed_seq, rate, frequency,
             power_dbm: self.power[slot],
             clock: InputClock { first_sample_index: input_index, input_rate: row.input_rate,
                 delay_input_samples: delay * row.input_rate / rate }, iq,
@@ -694,7 +705,7 @@ impl ReceiverWorkers {
         let pending = Pending::new(&self.shared);
         match self.inputs[slot % WORKERS].try_send(PendingWork { work:Work::Packet(packet), pending }) {
             Ok(()) => {
-                if seq == 0 { self.active[slot] = Some((generation, channel_id, epoch)); }
+                if processed_seq == 0 { self.active[slot] = Some((generation, processed_id, processed_epoch)); }
                 self.levels[slot] = if samples == 0 { None } else {
                     Some(InputLevel { channel_id, epoch,
                         generation: self.shared.generations[slot].load(Ordering::Acquire),
@@ -916,7 +927,7 @@ impl ChannelState {
         Ok(frame)
     }
 
-    fn audio(&mut self, block: AudioBlock, frames: &mut ReceiverFrames) -> Result<(), String> {
+    fn audio(&mut self, block: AudioBlock, frames: &mut ReceiverFrames, config: &Arc<ChannelConfig>) -> Result<(), String> {
         if block.samples.is_empty() { return Ok(()); }
         let format = (block.rate, block.channels);
         if self.audio_format.is_some_and(|old| old != format)
@@ -944,10 +955,12 @@ impl ChannelState {
         };
         if self.audio_seq == 0 {
             frames.audio.push(encode_audio(metadata, &[]).map_err(str::to_owned)?);
+            frames.audio_configs.push(config.clone());
             self.audio_seq = 1;
         }
         metadata.seq = self.audio_seq;
         frames.audio.push(encode_audio(metadata, &block.samples).map_err(str::to_owned)?);
+        frames.audio_configs.push(config.clone());
         self.audio_seq = self.audio_seq.checked_add(1).ok_or("receiver audio sequence overflow")?;
         self.audio_index = self.audio_index.checked_add((block.samples.len() / block.channels as usize) as u64)
             .ok_or("receiver audio sample clock overflow")?;
@@ -1059,7 +1072,7 @@ fn process_packet(mut packet: Packet, states: &mut [Option<ChannelState>; 3],
         frames.decode.push(state.event(packet.slot, packet.clock, serde_json::json!({"type":"start"}))?);
     } else {
         let result = state.receiver.process(&packet.iq, packet.clock, packet.power_dbm)?;
-        for audio in result.audio { state.audio(audio, &mut frames)?; }
+        for audio in result.audio { state.audio(audio, &mut frames, &packet.config)?; }
         for event in result.events { frames.decode.push(state.event(packet.slot, packet.clock, event)?); }
         if let Some(job) = result.ft8_job {
             let pending = Pending::new(shared);
@@ -1437,6 +1450,8 @@ mod tests {
         workers.submit(&marker, &registry).unwrap();
         workers.submit(&first, &registry).unwrap();
         let before = workers.finish().unwrap();
+        assert_eq!(before.audio_configs.len(),before.audio.len());
+        assert!(before.audio_configs.iter().all(|config|config.mode=="nfm" && config.volume==0.8));
         assert!(before.audio.iter().any(|frame| u32::from_le_bytes(frame[8..12].try_into().unwrap()) > 0));
         workers.submit(&frame(2, 4096, &iq), &registry).unwrap();
         workers.reset_session().unwrap();
@@ -1450,6 +1465,7 @@ mod tests {
         workers.submit(&first, &registry).unwrap();
         let after = workers.finish().unwrap();
         assert_eq!(after.audio, before.audio);
+        assert_eq!(after.audio_configs,before.audio_configs);
         assert_eq!(after.decode, before.decode);
     }
     #[test]
@@ -1549,7 +1565,7 @@ mod tests {
         workers.outputs = outputs;
         let output = |slot, byte| Output {
             slot, generation: workers.shared.generations[slot].load(Ordering::Acquire),
-            frames: ReceiverFrames { audio: vec![vec![byte]], decode: vec![vec![byte]] },
+            frames: ReceiverFrames { audio: vec![vec![byte]], decode: vec![vec![byte]], ..ReceiverFrames::default() },
             squelch: None,
         };
         sender.send(output(0, 1)).unwrap();
@@ -1562,7 +1578,7 @@ mod tests {
 
         sender.send(Output { slot: 1,
             generation: workers.shared.generations[1].load(Ordering::Acquire),
-            frames: ReceiverFrames { audio: vec![vec![3]], decode: vec![vec![3]] }, squelch: None,
+            frames: ReceiverFrames { audio: vec![vec![3]], decode: vec![vec![3]], ..ReceiverFrames::default() }, squelch: None,
         }).unwrap();
         configs[0].freq += 1.0;
         workers.configure(&configs).unwrap();

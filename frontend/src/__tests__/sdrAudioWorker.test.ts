@@ -51,8 +51,49 @@ beforeEach(async () => {
   send({ type: 'init', url: 'ws://localhost/ws/audio?channel=2', targetRate: 48000 });
   send({ type: 'enabled', value: true });
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('AUD2 audio ingress', () => {
+  it('reconnects UID transport loss at a fresh boundary and ignores old socket PCM', async () => {
+    vi.useFakeTimers();
+    // This option is enabled only by the UID playback owner; legacy remains explicit retry.
+    vi.resetModules(); posted = []; sockets = [];
+    await import('../audio/sdrAudioWorker');
+    send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true });
+    send({ type: 'enabled', value: true });
+    receive(packet({ seq: 0 })); receive(packet({ seq: 1, frames: 2 }));
+    const old = sockets[0]; old.onclose!({ code: 1006, reason: '' });
+    expect(posted.at(-1)).toEqual({ type: 'connection', state: 'reconnecting' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sockets).toHaveLength(2);
+    old.onmessage!({ data: packet({ seq: 2, frames: 2, input: 4n, index: 2n }) });
+    expect(posted.filter(m => m.type === 'samples')).toHaveLength(1);
+    sockets[1].onmessage!({ data: packet({ seq: 0, input: 1000n, index: 500n }) });
+    sockets[1].onmessage!({ data: packet({ seq: 1, input: 1000n, index: 500n, frames: 2 }) });
+    expect(posted.filter(m => m.type === 'samples')).toHaveLength(2);
+    expect(posted.filter(m => m.type === 'error')).toEqual([]);
+    expect(posted).toContainEqual({ type: 'connection', state: 'connected' });
+    sockets[1].onclose!({ code: 1006, reason: '' });
+    send({ type: 'enabled', value: false });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(2);
+  });
+  it('backs off repeated UID network failures but latches receiver and slow-consumer errors', async () => {
+    vi.useFakeTimers(); vi.resetModules(); posted = []; sockets = [];
+    await import('../audio/sdrAudioWorker');
+    send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true });
+    send({ type: 'enabled', value: true });
+    sockets[0].onerror!(); sockets[0].onclose!({ code: 1006, reason: '' });
+    await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(2);
+    sockets[1].onclose!({ code: 1006, reason: '' });
+    await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(3);
+    sockets[2].onclose!({ code: 1011, reason: 'receiver failed' });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(3);
+    expect(posted.at(-1)?.message).toBe('Backend audio receiver failed');
+    send({ type: 'enabled', value: true });
+    sockets[3].onclose!({ code: 1013, reason: 'slow consumer' });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(4);
+    expect(posted.at(-1)?.message).toContain('slow consumer');
+  });
   it('preserves stereo and source positions beyond Number integer precision', () => {
     const input = 9007199254740993n;
     receive(packet({ seq: 0, input, num: 1n, den: 3n, channels: 2 }));
