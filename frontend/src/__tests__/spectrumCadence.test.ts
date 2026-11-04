@@ -160,6 +160,57 @@ describe('spectrum arrival cadence', () => {
     expect(S.rtaData.spec[16]).toBe(-60);
   });
 
+  it('continues SDR waterfall history across retunes while replacing live traces and rejecting old frames', async () => {
+    const { S, draws } = await load('sdr');
+    const { waterfallOn } = await import('../ui/waterfallState');
+    waterfallOn.set(true);
+    S.traces[0].mode = 'MAX_HOLD';
+    rta(-20);
+    const original = S.waterfallRows[0];
+    expect(S.waterfallPushes).toBe(1);
+    vi.advanceTimersByTime(10); rta(-30); // Old-axis packet is queued for the cadence deadline.
+    vi.advanceTimersByTime(1); rta(-60, 2, 500);
+    expect(S.rtaDisplays[0]![16]).toBe(-60); // No old MAX_HOLD carrier on the new axis.
+    expect(S.waterfallRows).toHaveLength(2);
+    expect(S.waterfallRows[0]).toBe(original);
+    expect(S.waterfallPushes).toBe(2);
+    const shifted = S.waterfallRows[1];
+    vi.advanceTimersByTime(100);
+    rta(-10, 1); // A delayed packet must not roll either display layer back.
+    vi.advanceTimersByTime(100);
+    expect(S.waterfallRows).toEqual([original, shifted]);
+    expect(S.rtaData.startHz).toBe(1e9 + 500);
+    expect(draws.map(draw => draw.peak)).toEqual([-20, -60]);
+    // Returning to an earlier band retains its measurements, rather than repeatedly
+    // resampling a shifted image and gradually losing narrow carriers.
+    rta(-70, 3);
+    expect(S.waterfallRows).toHaveLength(3);
+    expect(S.waterfallRows[0]).toBe(original);
+  });
+
+  it('reprojects paused SDR history after retune without inserting a synthetic observation', async () => {
+    const { S } = await load('sdr');
+    const { waterfallOn, wfPaused } = await import('../ui/waterfallState');
+    const { sliceWaterfallRow } = await import('../render/waterfall');
+    waterfallOn.set(true);
+    rta(-40);
+    const original = S.waterfallRows[0];
+    const peak = original[16];
+    wfPaused.set(true);
+    rta(-70, 2, 500);
+    expect(S.waterfallRows).toEqual([original]);
+    expect(S.waterfallPushes).toBe(1);
+    // Old carrier at 1 GHz + 1600 Hz stays at its RF; newly exposed frequencies
+    // remain unobserved in the older rows, not stretched copies of an edge bin.
+    const projected = sliceWaterfallRow(original, 32, 1e9 + 500, 1e9 + 3700);
+    expect(projected[11]).toBe(peak);
+    expect([...projected.slice(27)]).toEqual([0, 0, 0, 0, 0]);
+    wfPaused.set(false);
+    vi.advanceTimersByTime(100); rta(-80, 2, 500);
+    expect(S.waterfallRows).toHaveLength(2);
+    expect(S.waterfallRows[0]).toBe(original);
+  });
+
   it('processes armed first and completed captures immediately, cancelling normal pending work', async () => {
     const { S, draws, redraw } = await load('rta');
     const events = await import('../ui/triggerEvents');

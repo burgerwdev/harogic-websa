@@ -866,6 +866,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .refclk-flash.warn { animation-name: refclk-flash-warn; }
 .mkr-all-btn { width: auto; min-width: 0; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
+#graph-panel .param-row[hidden] { display: none; }
 .span-action-row { flex-wrap: nowrap; }
 .span-action-row::before { content: ''; flex: 0 0 58px; }
 /* Align the span-action row with the Set column above. */

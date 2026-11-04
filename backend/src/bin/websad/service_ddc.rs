@@ -188,7 +188,7 @@ impl Ddc {
         let generation = hardware.as_ref().map_or(0, |c| c.geometry.generation);
         #[cfg(test)]
         let cost_profile=websa_channelizer::FineCostBudget::new([1.0;23],1.0,f64::MAX).ok_or("cost metadata rejected")?;
-        Ok(Self { stream:Box::new(stream),fine:Some(fine),fine_worker:None,direct,carry:Vec::new(),pan:Vec::new(),
+        Ok(Self { stream:Box::new(stream),fine:Some(fine),fine_worker:None,direct,carry:Vec::new(),pan:Vec::new(),display_fft:None,display_fft_error:None,
             capture_center:center,usable_bandwidth:bandwidth,decimate:1,listen:primary.freq,next_seq:0,
             input_pos:0,stamp_gaps:0,last_stamp:None,generation,device_decimate:if hardware.is_some() {
                 ((IQ_FS/fs).round() as u64).max(1) } else {1},hardware:hardware.take(),capture_failed:false,
@@ -235,6 +235,8 @@ impl Ddc {
             Ok(frames)
         })();
         let frames=match drained {Ok(frames)=>frames,Err(error)=>{self.capture_failed=true;return Err(error);}};
+        next.display_fft=self.display_fft.take();
+        next.display_fft_error=self.display_fft_error.take();
         next.hardware=self.hardware.take();
         *self=next;
         Ok(frames)

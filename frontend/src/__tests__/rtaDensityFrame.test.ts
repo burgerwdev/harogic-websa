@@ -25,8 +25,7 @@ let socket: DisplaySocket;
 let clock = 1000;
 
 /** Minimal valid native RTAF with an optional changed frequency grid. */
-function feed(peakDb: number, shift = 0, version = 1) {
-	const points = 32;
+function feed(peakDb: number, shift = 0, version = 1, points = 32) {
 	const data = new ArrayBuffer(24 + points * 12 + 2 + 8);
 	new Uint8Array(data, 0, 4).set([82, 84, 65, 70]);
 	const hdr = new DataView(data);
@@ -39,7 +38,7 @@ function feed(peakDb: number, shift = 0, version = 1) {
 	for (let i = 0; i < points; i++) freq[i] = 1e9 + i * 100 + shift;
 	spec.fill(-120);
 	spec[16] = peakDb;
-	hdr.setFloat64(data.byteLength - 8, 1e9 + 3200, true);
+  hdr.setFloat64(data.byteLength - 8, 1e9 + points * 100, true);
 	socket.onmessage!({ data } as MessageEvent);
 }
 
@@ -268,3 +267,17 @@ describe.each([false, true])('processed active-trace density (SDR=%s)', (sdr) =>
 		expect(S.rtaDensity2d!.source).toBe('trace');
 	});
 });
+
+it.each([[26215, 128], [52429, 192], [65536, 192]])(
+  'retains %i native FFT frequencies and %i amplitude bins without coarsening levels', (points, bins) => {
+    S.setSdrMode(true); rtaDensSource.set('live'); rtaAmpBins.set(bins);
+    feed(-40.625);
+    const resolution = S.rtaDensity2d!.dBPerBin;
+    feed(-40.625, 0, 1, points);
+    const grid = S.rtaDensity2d!;
+    expect(grid.freq!.length).toBe(points);
+    expect(grid.bins).toBe(bins);
+    expect(grid.dBPerBin).toBe(resolution);
+    expect(grid.values.byteLength + grid.next.byteLength).toBeLessThanOrEqual(96 * 1024 * 1024);
+  },
+);

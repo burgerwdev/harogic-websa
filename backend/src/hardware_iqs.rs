@@ -537,6 +537,8 @@ pub struct Packet {
     /// Monotonic capture sequence; increases once per successfully fetched packet.
     pub seq: u64,
     pub warning: i32,
+    /// Vendor calibration for this exact raw IQ packet (volts per ADC code).
+    pub scale_to_v: f32,
     pub iq: Vec<i16>,
     pub spectrum: Option<(Vec<f64>, Vec<f32>)>,
     /// Reconfigure count at fetch time. Queued packets of an old generation stay in the channel; the consumer drops them.
@@ -770,6 +772,7 @@ impl Device {
         Ok(Packet {
             seq: 0, stamp: info.stamp,
             warning,
+            scale_to_v: info.scale_to_v,
             iq,
             spectrum: with_spectrum.then_some((freq, power)),
             generation: 0,

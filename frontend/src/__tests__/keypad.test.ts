@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { buildUnitGroups, unitMap, units } from '../core/units';
-import { initKeypad } from '../ui/keypad';
+import { initKeypad, isKeypadOpen } from '../ui/keypad';
 
 it('commits Filter once in the new unit without clamping to the old unit bounds', () => {
 	document.body.innerHTML = `
@@ -18,10 +18,12 @@ it('commits Filter once in the new unit without clamping to the old unit bounds'
 	initKeypad();
 
 	input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	expect(isKeypadOpen()).toBe(true);
 	const key = (label: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('.keypad-key'))
 		.find((button) => button.textContent === label)!;
 	for (const digit of ['5', '0', '0']) key(digit).click();
 	key('Hz').click();
+	expect(isKeypadOpen()).toBe(false);
 
 	expect(input.value).toBe('500');
 	expect(units().sdr_ifbw).toBe('Hz');

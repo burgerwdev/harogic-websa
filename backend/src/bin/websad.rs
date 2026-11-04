@@ -10,6 +10,8 @@ mod hardware_rta;
 mod hardware_swp;
 #[path = "websad/sdr_pipeline.rs"]
 mod sdr_pipeline;
+#[path = "websad/display_fft.rs"]
+mod display_fft;
 #[path = "websad/sdr_hardware.rs"]
 mod sdr_hardware;
 #[path = "websad/state_lock.rs"]
@@ -1773,7 +1775,7 @@ impl DevState {
                     let real_pan = if result.is_ok() {
                         pan_raw
                             .iter()
-                            .map(|(freq, power, _warning, _generation, _seq)| {
+                            .filter(|p| p.5 == ddc.0.display_fft.as_ref().filter(|a| a.completed > 0).map_or(0, |a| a.size)).map(|(freq, power, _warning, _generation, _seq, _display)| {
                                 hardware_pan(self.freq_version as u32, pan_lo, pan_hi - pan_lo, freq, power)
                             })
                             .collect::<Result<Vec<_>, _>>()
@@ -1787,7 +1789,7 @@ impl DevState {
                                     json!(u32::from_le_bytes(frame[8..12].try_into().unwrap()));
                                 self.sdr_actual["pan_available"] = json!(true);
                             }
-                            if let Some((freq, power, warning, _generation, seq)) = pan_raw.last() {
+                            if let Some((freq, power, warning, _generation, seq, _)) = pan_raw.iter().rev().find(|p| p.5 == 0) {
                                 self.note_auto_acquisition(*warning);
                                 self.observe_channel_power(freq,power);
                                 let inside: Vec<f32> = freq
@@ -2351,7 +2353,9 @@ struct Ddc {
     fine_worker: Option<sdr_pipeline::FineWorker>,
     direct: BTreeMap<u32, sdr_pipeline::DirectChannel>,
     carry: Vec<Vec<u8>>,
-    pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64)>,
+    pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
+    display_fft: Option<display_fft::Analyzer>,
+    display_fft_error: Option<String>,
     capture_center: f64,
     usable_bandwidth: f64,
     decimate: i32,
@@ -2494,6 +2498,7 @@ impl Ddc {
             direct: BTreeMap::new(),
             carry: Vec::new(),
             pan: Vec::new(),
+            display_fft: None, display_fft_error: None,
             capture_center: center,
             usable_bandwidth: bandwidth,
             device_decimate: if hardware.is_some() {
@@ -2828,8 +2833,17 @@ impl Ddc {
                 }
             }
             self.last_stamp = Some(packet.stamp);
+            if let Some(analyzer) = &mut self.display_fft {
+                let meta = display_fft::Meta {epoch:self.stream.epoch(),generation:packet.generation,
+                    center:self.capture_center,rate:self.stream.input_sample_rate(),bandwidth:self.usable_bandwidth,
+                    scale:packet.scale_to_v};
+                match analyzer.push(meta,packet.seq,packet.stamp,&packet.iq,packet.warning) {
+                    Ok(Some((freq,power,warning,generation,seq)))=>self.pan.push((freq,power,warning,generation,seq,analyzer.size)),
+                    Ok(None)=>(), Err(error)=>{self.display_fft=None;self.display_fft_error=Some(error);}
+                }
+            }
             if let Some((freq, power)) = packet.spectrum {
-                self.pan.push((freq, power, packet.warning, packet.generation, packet.seq));
+                self.pan.push((freq, power, packet.warning, packet.generation, packet.seq,0));
             }
             (packet.iq, packet.stamp)
         } else {
@@ -3150,7 +3164,7 @@ fn dispatch_ready(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
     let result = dispatch_inner(state, cmd, data);
     if result.is_err() {
         if let Some(previous) = previous { previous.restore(state); }
-    } else if cmd.starts_with("SET_") && !(cmd == "SET_REF" && data["mode"] == "auto") {
+    } else if cmd.starts_with("SET_") && cmd != "SET_SDR_FFT" && !(cmd == "SET_REF" && data["mode"] == "auto") {
         state.invalidate_observation();
     }
     result
@@ -3477,6 +3491,17 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 t.retrigger_count = value as u32;
             }
             state.configure_trigger(candidate).map_err(device)?;
+            Ok(true)
+        }
+        "SET_SDR_FFT" => {
+            sdr_mode_required(state,cmd)?;
+            let size=data["size"].as_u64().filter(|n|[0,32768,65536].contains(n))
+                .ok_or_else(||CommandError::new("bad_parameter","FFT size must be 0, 32768 or 65536"))? as usize;
+            if state.pipeline.is_none() && state.ddc.is_none() {return Err(CommandError::new("bad_parameter","Display FFT requires a running IQ capture"));}
+            let path=state.hardware_shim.clone().ok_or_else(||CommandError::new("bad_parameter","Real display FFT requires a hardware IQ source; fixture spectrum is illustrative"))?;
+            // Validate and prepare before changing the working analyzer. Failure keeps it intact.
+            let analyzer=if size==0 {None} else {Some(display_fft::Analyzer::start(path,size).map_err(device)?)};
+            state.ddc_command(move |ddc|{ddc.display_fft=analyzer;ddc.display_fft_error=None;ddc.pan.clear();Ok(Vec::new())}).map_err(device)?;
             Ok(true)
         }
         "SET_SDR" => {
@@ -4890,6 +4915,10 @@ fn load_golden() -> (Value, Value) {
             {"name":"bind_address", "type":"token", "required":false, "min_length":2, "max_length":45},
             {"name":"port", "type":"integer", "required":false, "min":1, "max":65535}
         ]
+    });
+    schema["commands"]["SET_SDR_FFT"]=json!({
+        "needs_device":true,"denied_in_sdr":false,"swp_only":false,"session_exclusive":false,
+        "params":[{"name":"size","type":"integer","required":true,"choices":[0,32768,65536],"unit":"samples"}]
     });
     schema["commands"]["SET_SDR"]["params"].as_array_mut().unwrap().push(json!({
         "name": "pfb_taps_per_phase", "type": "integer", "choices": [4, 8, 16],

@@ -1,0 +1,63 @@
+{
+  "source": "deterministic synthetic IQ processed by installed SDK 0.55.100; no RF hardware",
+  "sample_rate_hz": 976562.5,
+  "scale_to_v": 1e-06,
+  "input_complex_samples": 1953125,
+  "seed": 20261104,
+  "tiers": [
+    {
+      "fft_samples": 16240,
+      "output_points": 12992,
+      "fft_bin_spacing_hz": 60.133158866995075,
+      "sdk_output_spacing_hz": 60.13778859376907,
+      "enbw_hz": 226.71704221828816,
+      "observation_ms": 16.62976,
+      "calibration_error_db": -0.0004275201163750353,
+      "resolved_pair_valley_db": null,
+      "mean_wall_ms": 0.40360189916100353,
+      "p95_wall_ms": 0.6473438697867095,
+      "cpu_ms_per_fft": 0.40204120999999926,
+      "output_fps": 20.0,
+      "rtaf_bytes_per_frame": 156384,
+      "full_band_network_mib_s_at_20fps": 2.9827880859375
+    },
+    {
+      "fft_samples": 32768,
+      "output_points": 26215,
+      "fft_bin_spacing_hz": 29.802322387695312,
+      "sdk_output_spacing_hz": 29.802777588367462,
+      "enbw_hz": 112.36220598220825,
+      "observation_ms": 33.554432000000006,
+      "calibration_error_db": -0.00022915585856253529,
+      "resolved_pair_valley_db": 2.335296630859375,
+      "mean_wall_ms": 0.6401422008639202,
+      "p95_wall_ms": 1.0263448173645882,
+      "cpu_ms_per_fft": 0.6374744799999998,
+      "output_fps": 20.0,
+      "rtaf_bytes_per_frame": 315060,
+      "full_band_network_mib_s_at_20fps": 6.0092926025390625
+    },
+    {
+      "fft_samples": 65536,
+      "output_points": 52429,
+      "fft_bin_spacing_hz": 14.901161193847656,
+      "sdk_output_spacing_hz": 14.901388794183731,
+      "enbw_hz": 56.181102991104126,
+      "observation_ms": 67.10886400000001,
+      "calibration_error_db": -0.00011471494059378529,
+      "resolved_pair_valley_db": 65.228271484375,
+      "mean_wall_ms": 1.3254865584895015,
+      "p95_wall_ms": 1.6767435852671042,
+      "cpu_ms_per_fft": 1.3184992600000012,
+      "output_fps": 14.5,
+      "rtaf_bytes_per_frame": 629628,
+      "full_band_network_mib_s_at_20fps": 12.009201049804688
+    }
+  ],
+  "view_floor": {
+    "capture_q30_dbm": -106.41535949707031,
+    "view_q10_dbm": -131.8408966064453,
+    "native_view_samples": 201
+  },
+  "peak_process_rss_mib": 275.32421875
+}

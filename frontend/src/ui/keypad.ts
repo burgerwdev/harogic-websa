@@ -48,6 +48,11 @@ let replaced = false;           // the first key press replaces the previous val
 let unitText = '';              // what the display line shows as the unit
 let moved = false;              // the user dragged the pad: keep that spot
 
+/** The pad owns numeric entry even when its source input has been blurred. */
+export function isKeypadOpen(): boolean {
+  return target !== null;
+}
+
 function el<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
 }

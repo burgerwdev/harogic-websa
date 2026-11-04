@@ -1,0 +1,473 @@
+{
+  "source": "SAN-90 RF input from TinySA CW, 100.05 MHz, requested -42 dBm; uncalibrated cable loss",
+  "tinysa": "info\r\ntinySA ULTRA+ ZS407\r\n2019-2024 Copyright @Erik Kaashoek\r\n2016-2020 Copyright @edy555\r\nSW licensed under GPL. See: https://github.com/erikkaashoek/tinySA\r\nVersion: tinySA4_v1.4-223-gbc116a4\r\nBuild Time: Mar 24 2026 - 12:30:39\r\nKernel: 4.0.0\r\nCompiler: GCC 11.3.1 20220712\r\nArchitecture: ARMv7E-M Core Variant: Cortex-M4F\r\nPort Info: Advanced kernel mode\r\nPlatform: STM32F303xC Analog & DSP\r\nch> ",
+  "runs": [
+    {
+      "display_decimate": 256,
+      "requested_fft": 0,
+      "seconds": 5.00195080798585,
+      "frames": 100,
+      "fps": 19.99219981139065,
+      "chromium_cpu_percent_one_core": 55.978159471893804,
+      "chromium_rss_mib_sum": 483.734375,
+      "chromium_heap_bytes": {
+        "usedSize": 5960476,
+        "totalSize": 10555392,
+        "embedderHeapUsedSize": 23772344,
+        "backingStorageSize": 10558643
+      },
+      "backend_cpu_percent_one_core": 60.17652143228586,
+      "backend_rss_mib": 199.16796875,
+      "wire_mib_s": 0.19493126952329443,
+      "frame_points": 812,
+      "peak_dbm_median": -42.299461364746094,
+      "peak_hz_median": 100050154.91568841,
+      "floor_q30_dbm_median": -109.29463195800781,
+      "message_to_waterfall_paint_p95_ms": 7.600000023841858,
+      "history": {
+        "lo": 99902343.75,
+        "hi": 100097656.25,
+        "rows": 147,
+        "bytes": 245224,
+        "source": "capture",
+        "floor": null,
+        "newestColumns": 812
+      },
+      "capture_epoch": null,
+      "capture_sample_rate_hz": 3906250.0,
+      "fft": {
+        "available": true,
+        "error": null,
+        "fft_points": 16240,
+        "size": 0,
+        "window": "FlatTop"
+      },
+      "channel_identity": {
+        "channel_id": 1,
+        "epoch": 2,
+        "actual_iq_rate": 2411.2654320987654,
+        "freq": 100050000.0,
+        "mode": "cw"
+      },
+      "health": {
+        "iqs_stamp_gaps": 0,
+        "ddc_error_count": 0,
+        "ddc_error_last": null,
+        "audio_samples_delta": 240670,
+        "decode_frames_delta": 93,
+        "receiver_queue_full": 0,
+        "receiver_pending": 0
+      }
+    },
+    {
+      "display_decimate": 256,
+      "requested_fft": 32768,
+      "seconds": 5.000819097040221,
+      "frames": 93,
+      "fps": 18.59695345809307,
+      "chromium_cpu_percent_one_core": 57.39059830615818,
+      "chromium_rss_mib_sum": 494.6953125,
+      "chromium_heap_bytes": {
+        "usedSize": 5441492,
+        "totalSize": 11411456,
+        "embedderHeapUsedSize": 8091080,
+        "backingStorageSize": 7669756
+      },
+      "backend_cpu_percent_one_core": 55.19095864982459,
+      "backend_rss_mib": 203.78515625,
+      "wire_mib_s": 0.35733358218542016,
+      "frame_points": 1639,
+      "peak_dbm_median": -42.25779342651367,
+      "peak_hz_median": 100050068.66634472,
+      "floor_q30_dbm_median": -112.57156372070312,
+      "message_to_waterfall_paint_p95_ms": 6.899999976158142,
+      "history": {
+        "lo": 99902343.75,
+        "hi": 100097656.25,
+        "rows": 270,
+        "bytes": 653260,
+        "source": "capture",
+        "floor": null,
+        "newestColumns": 1639
+      },
+      "capture_epoch": null,
+      "capture_sample_rate_hz": 3906250.0,
+      "fft": {
+        "available": true,
+        "bin_spacing_hz": 119.20928955078125,
+        "completed": 118,
+        "continuity": {
+          "geometry": 0,
+          "last_stamp_error_ticks": 0,
+          "scale": 0,
+          "sequence": 0,
+          "stamp": 0
+        },
+        "continuity_resets": 1,
+        "dropped": 0,
+        "enbw_hz": 449.448823928833,
+        "error": null,
+        "max_fps": 20.0,
+        "observation_ms": 8.388608000000001,
+        "output_points": 26215,
+        "processing": {
+          "count": 118,
+          "max_ns": 4818861,
+          "p50_ns": 2097151,
+          "p99_ns": 4194303,
+          "total_ns": 140292578
+        },
+        "requested_size": 32768,
+        "size": 32768,
+        "state": "active",
+        "window": "FlatTop"
+      },
+      "channel_identity": {
+        "channel_id": 1,
+        "epoch": 2,
+        "actual_iq_rate": 2411.2654320987654,
+        "freq": 100050000.0,
+        "mode": "cw"
+      },
+      "health": {
+        "iqs_stamp_gaps": 0,
+        "ddc_error_count": 0,
+        "ddc_error_last": null,
+        "audio_samples_delta": 240670,
+        "decode_frames_delta": 100,
+        "receiver_queue_full": 0,
+        "receiver_pending": 0
+      }
+    },
+    {
+      "display_decimate": 256,
+      "requested_fft": 65536,
+      "seconds": 5.000934103038162,
+      "frames": 93,
+      "fps": 18.596525785752853,
+      "chromium_cpu_percent_one_core": 87.78360021446777,
+      "chromium_rss_mib_sum": 501.5546875,
+      "chromium_heap_bytes": {
+        "usedSize": 6825024,
+        "totalSize": 13770752,
+        "embedderHeapUsedSize": 7469600,
+        "backingStorageSize": 11281632
+      },
+      "backend_cpu_percent_one_core": 47.991034285813825,
+      "backend_rss_mib": 208.26953125,
+      "wire_mib_s": 0.7059250949631753,
+      "frame_points": 3277,
+      "peak_dbm_median": -42.26277160644531,
+      "peak_hz_median": 100050009.06078883,
+      "floor_q30_dbm_median": -116.74593353271484,
+      "message_to_waterfall_paint_p95_ms": 7.800000011920929,
+      "history": {
+        "lo": 99902343.75,
+        "hi": 100097656.25,
+        "rows": 402,
+        "bytes": 1523206,
+        "source": "capture",
+        "floor": null,
+        "newestColumns": 3277
+      },
+      "capture_epoch": null,
+      "capture_sample_rate_hz": 3906250.0,
+      "fft": {
+        "available": true,
+        "bin_spacing_hz": 59.604644775390625,
+        "completed": 124,
+        "continuity": {
+          "geometry": 0,
+          "last_stamp_error_ticks": 0,
+          "scale": 2,
+          "sequence": 0,
+          "stamp": 0
+        },
+        "continuity_resets": 3,
+        "dropped": 0,
+        "enbw_hz": 224.7244119644165,
+        "error": null,
+        "max_fps": 20.0,
+        "observation_ms": 16.777216000000003,
+        "output_points": 52429,
+        "processing": {
+          "count": 124,
+          "max_ns": 5758463,
+          "p50_ns": 2097151,
+          "p99_ns": 8388607,
+          "total_ns": 218415117
+        },
+        "requested_size": 65536,
+        "size": 65536,
+        "state": "active",
+        "window": "FlatTop"
+      },
+      "channel_identity": {
+        "channel_id": 1,
+        "epoch": 2,
+        "actual_iq_rate": 2411.2654320987654,
+        "freq": 100050000.0,
+        "mode": "cw"
+      },
+      "health": {
+        "iqs_stamp_gaps": 0,
+        "ddc_error_count": 0,
+        "ddc_error_last": null,
+        "audio_samples_delta": 240850,
+        "decode_frames_delta": 95,
+        "receiver_queue_full": 0,
+        "receiver_pending": 0
+      }
+    },
+    {
+      "display_decimate": 1,
+      "requested_fft": 0,
+      "seconds": 5.001259904005565,
+      "frames": 100,
+      "fps": 19.994961653544316,
+      "chromium_cpu_percent_one_core": 91.57692437323301,
+      "chromium_rss_mib_sum": 524.33203125,
+      "chromium_heap_bytes": {
+        "usedSize": 6737708,
+        "totalSize": 15605760,
+        "embedderHeapUsedSize": 4266824,
+        "backingStorageSize": 27748347
+      },
+      "backend_cpu_percent_one_core": 117.57037452284062,
+      "backend_rss_mib": 211.75,
+      "wire_mib_s": 2.981579021595182,
+      "frame_points": 12990,
+      "peak_dbm_median": -42.318870544433594,
+      "peak_hz_median": 100051959.04934555,
+      "floor_q30_dbm_median": -102.41509246826172,
+      "message_to_waterfall_paint_p95_ms": 13.799999952316284,
+      "history": {
+        "lo": 75000000,
+        "hi": 125000000,
+        "rows": 512,
+        "bytes": 7484766,
+        "source": "capture",
+        "floor": null,
+        "newestColumns": 12990
+      },
+      "capture_epoch": null,
+      "capture_sample_rate_hz": 62500000.0,
+      "fft": {
+        "available": true,
+        "error": null,
+        "fft_points": 16240,
+        "size": 0,
+        "window": "FlatTop"
+      },
+      "channel_identity": {
+        "channel_id": 1,
+        "epoch": 3,
+        "actual_iq_rate": 2411.2654320987654,
+        "freq": 100050000.0,
+        "mode": "cw"
+      },
+      "health": {
+        "iqs_stamp_gaps": 0,
+        "ddc_error_count": 0,
+        "ddc_error_last": null,
+        "audio_samples_delta": 241864,
+        "decode_frames_delta": 103,
+        "receiver_queue_full": 0,
+        "receiver_pending": 0
+      }
+    },
+    {
+      "display_decimate": 1,
+      "requested_fft": 32768,
+      "seconds": 5.001224702980835,
+      "frames": 100,
+      "fps": 19.995102387700737,
+      "chromium_cpu_percent_one_core": 118.3710061351883,
+      "chromium_rss_mib_sum": 544.6953125,
+      "chromium_heap_bytes": {
+        "usedSize": 9429032,
+        "totalSize": 21897216,
+        "embedderHeapUsedSize": 4149272,
+        "backingStorageSize": 39299202
+      },
+      "backend_cpu_percent_one_core": 131.16787166331687,
+      "backend_rss_mib": 213.33984375,
+      "wire_mib_s": 6.007363391696633,
+      "frame_points": 26213,
+      "peak_dbm_median": -42.28994369506836,
+      "peak_hz_median": 100049591.82190448,
+      "floor_q30_dbm_median": -105.46742248535156,
+      "message_to_waterfall_paint_p95_ms": 17.599999964237213,
+      "history": {
+        "lo": 75000000,
+        "hi": 125000000,
+        "rows": 512,
+        "bytes": 14506876,
+        "source": "capture",
+        "floor": null,
+        "newestColumns": 26213
+      },
+      "capture_epoch": null,
+      "capture_sample_rate_hz": 62500000.0,
+      "fft": {
+        "available": true,
+        "bin_spacing_hz": 1907.3486328125,
+        "completed": 128,
+        "continuity": {
+          "geometry": 0,
+          "last_stamp_error_ticks": 0,
+          "scale": 0,
+          "sequence": 0,
+          "stamp": 0
+        },
+        "continuity_resets": 1,
+        "dropped": 0,
+        "enbw_hz": 7191.181182861328,
+        "error": null,
+        "max_fps": 20.0,
+        "observation_ms": 0.5242880000000001,
+        "output_points": 26215,
+        "processing": {
+          "count": 128,
+          "max_ns": 1690904,
+          "p50_ns": 1048575,
+          "p99_ns": 2097151,
+          "total_ns": 125672795
+        },
+        "requested_size": 32768,
+        "size": 32768,
+        "state": "active",
+        "window": "FlatTop"
+      },
+      "channel_identity": {
+        "channel_id": 1,
+        "epoch": 3,
+        "actual_iq_rate": 2411.2654320987654,
+        "freq": 100050000.0,
+        "mode": "cw"
+      },
+      "health": {
+        "iqs_stamp_gaps": 0,
+        "ddc_error_count": 0,
+        "ddc_error_last": null,
+        "audio_samples_delta": 241864,
+        "decode_frames_delta": 102,
+        "receiver_queue_full": 0,
+        "receiver_pending": 0
+      }
+    },
+    {
+      "display_decimate": 1,
+      "requested_fft": 65536,
+      "seconds": 5.0028560939827,
+      "frames": 92,
+      "fps": 18.389495574468974,
+      "chromium_cpu_percent_one_core": 149.31470863182957,
+      "chromium_rss_mib_sum": 571.875,
+      "chromium_heap_bytes": {
+        "usedSize": 19402316,
+        "totalSize": 29761536,
+        "embedderHeapUsedSize": 4286704,
+        "backingStorageSize": 58342413
+      },
+      "backend_cpu_percent_one_core": 145.51687802405885,
+      "backend_rss_mib": 221.9296875,
+      "wire_mib_s": 11.041736575763668,
+      "frame_points": 52427,
+      "peak_dbm_median": -42.29430389404297,
+      "peak_hz_median": 100049591.8218945,
+      "floor_q30_dbm_median": -108.47810363769531,
+      "message_to_waterfall_paint_p95_ms": 24.400000035762787,
+      "history": {
+        "lo": 75000000,
+        "hi": 125000000,
+        "rows": 512,
+        "bytes": 27516914,
+        "source": "capture",
+        "floor": null,
+        "newestColumns": 52427
+      },
+      "capture_epoch": null,
+      "capture_sample_rate_hz": 62500000.0,
+      "fft": {
+        "available": true,
+        "bin_spacing_hz": 953.67431640625,
+        "completed": 128,
+        "continuity": {
+          "geometry": 0,
+          "last_stamp_error_ticks": 0,
+          "scale": 0,
+          "sequence": 0,
+          "stamp": 0
+        },
+        "continuity_resets": 1,
+        "dropped": 0,
+        "enbw_hz": 3595.590591430664,
+        "error": null,
+        "max_fps": 20.0,
+        "observation_ms": 1.0485760000000002,
+        "output_points": 52429,
+        "processing": {
+          "count": 128,
+          "max_ns": 3946793,
+          "p50_ns": 2097151,
+          "p99_ns": 4194303,
+          "total_ns": 270434186
+        },
+        "requested_size": 65536,
+        "size": 65536,
+        "state": "active",
+        "window": "FlatTop"
+      },
+      "channel_identity": {
+        "channel_id": 1,
+        "epoch": 3,
+        "actual_iq_rate": 2411.2654320987654,
+        "freq": 100050000.0,
+        "mode": "cw"
+      },
+      "health": {
+        "iqs_stamp_gaps": 0,
+        "ddc_error_count": 0,
+        "ddc_error_last": null,
+        "audio_samples_delta": 241865,
+        "decode_frames_delta": 107,
+        "receiver_queue_full": 0,
+        "receiver_pending": 0
+      }
+    }
+  ],
+  "recordings": [
+    {
+      "display_decimate": 256,
+      "state": "completed",
+      "validated_blocks": 550,
+      "validated_samples": 48540,
+      "raw_bytes": "388320",
+      "segments": 1,
+      "identities": [
+        [
+          "2",
+          "1"
+        ]
+      ],
+      "contiguous_sample_clocks": true
+    },
+    {
+      "display_decimate": 1,
+      "state": "completed",
+      "validated_blocks": 646,
+      "validated_samples": 52326,
+      "raw_bytes": "418608",
+      "segments": 1,
+      "identities": [
+        [
+          "3",
+          "1"
+        ]
+      ],
+      "contiguous_sample_clocks": true
+    }
+  ],
+  "output_off_reply": "output off\r\nch> "
+}

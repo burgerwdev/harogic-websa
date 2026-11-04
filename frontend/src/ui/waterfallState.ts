@@ -14,8 +14,14 @@ const num = (a: number, b: number) => ({
 
 /** Master waterfall enable (persisted). */
 export const waterfallOn = createParam<boolean>('wf.on', { fallback: false, scope: 'wf', authoritative: true });
-/** Colour range mode: auto scales per frame, fixed maps absolute dBm. */
+/** Colour range mode: SDR auto follows a smoothed noise floor; fixed maps absolute dBm. */
 export const wfRangeMode = createParam<'auto' | 'fixed'>('wf.rangeMode', { fallback: 'auto', scope: 'wf', authoritative: true });
+/** SDR auto floor: original acquisition or the shared visible RF window. */
+export const wfFloorSource = createParam<'capture' | 'view'>('wf.floorSource', { fallback: 'capture', scope: 'wf', authoritative: true });
+export type WaterfallPalette = 'classic' | 'blue' | 'viridis' | 'amber';
+/** Palette and contrast affect retained history without changing measured levels. */
+export const wfPalette = createParam<WaterfallPalette>('wf.palette', { fallback: 'classic', scope: 'wf', authoritative: true });
+export const wfContrast = createParam<number>('wf.contrast', { fallback: 1, scope: 'wf', authoritative: true, ...num(1, 6) });
 /** Fixed-range lower level (dBm). */
 export const wfLoDbm = createParam<number>('wf.lo', { fallback: -110, scope: 'wf', authoritative: true, ...num(1, 6) });
 /** Fixed-range upper level (dBm). */

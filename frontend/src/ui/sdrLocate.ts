@@ -1,3 +1,4 @@
+import { sdrPassbandVisible } from './sdrPassbandState';
 /** Preview and click state only; the canvas owner routes gestures and submits tuning. */
 import { ctx } from '../core/store';
 import * as S from '../core/store';
@@ -263,6 +264,7 @@ export function invalidateSdrLocateEvidence(): void {
 
 /** Dashed preview is separate from the receiver's tuned/passband indicator. */
 export function renderSdrLocate(loHz: number, hiHz: number): boolean {
+  if (!sdrPassbandVisible.get()) return false;
 	let shown: LocateTarget | null = null;
 	if (frozen) {
 		if (!environmentChanged(frozen.environment)) {

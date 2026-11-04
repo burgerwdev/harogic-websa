@@ -26,7 +26,7 @@ import { refLevel } from '../ui/refState';
 import { ampAtten, ampPreamp } from '../ui/ampState';
 import { send } from '../core/wsSend';
 import type * as WsSendModule from '../core/wsSend';
-import { axisDragMove, axisDragStart, resetAxisPreview } from '../ui/axisDrag';
+import { axisDragEnd, axisDragMove, axisDragStart, previewFreqWindow, resetAxisPreview } from '../ui/axisDrag';
 import { graphMode } from '../ui/graphMode';
 
 vi.mock('../core/wsSend', async (importOriginal) => {
@@ -274,6 +274,30 @@ describe('zoom rail display controls', () => {
 		expect(getView()).toEqual({ lo: 919e6, hi: 921e6 });
 		move('horizontal', 0);
 		expect(getView()).toEqual(CAP);
+	});
+	it('updates the shared frequency preview when zoom sliders move during an unsettled retune', () => {
+		graphMode.confirm('std');
+		__testSeedCapture(CAP);
+		toggleSpectrumZoom();
+		setView({ lo: 940e6, hi: 960e6 }, 2e6);
+		axisDragStart('x', 400, 450, { x: 0, y: 0, w: 800, h: 400 });
+		axisDragMove(600, 450);
+		expect(previewFreqWindow()).toEqual({ lo: 935e6, hi: 955e6 });
+		vi.mocked(send).mockClear();
+		move('horizontal', 1000);
+		expect(getView()).toEqual({ lo: 949e6, hi: 951e6 });
+		expect(previewFreqWindow()).toEqual({ lo: 944e6, hi: 946e6 });
+		expect(document.getElementById('zoom-overview-title')!.textContent).toContain('944');
+		move('horizontal', 0);
+		expect(previewFreqWindow()).toEqual({ lo: 895e6, hi: 995e6 });
+		move('horizontal', 1000);
+		expect(send).not.toHaveBeenCalled();
+		axisDragEnd();
+		S.setFreqArray(Float64Array.from({ length: 101 }, (_, i) => 895e6 + i * 1e6));
+		setCapture({ lo: 895e6, hi: 995e6 });
+		expect(previewFreqWindow()).toBeNull();
+		expect(getView()).toEqual({ lo: 944e6, hi: 946e6 });
+		resetAxisPreview();
 	});
 	it('reflects marquee and overview resizing while overview panning keeps the zoom', () => {
 		__testSeedCapture(CAP);

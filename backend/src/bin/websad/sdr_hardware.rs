@@ -67,12 +67,19 @@ impl HardwarePresentation {
         let mut pan = Vec::with_capacity(self.output.pan.len());
         let mut peak = None;
         let mut channel_power = None;
-        for (freq, power, warning, generation, seq) in self.output.pan {
+        let fft_size = snapshot.display_fft["size"].as_u64().unwrap_or(0) as usize;
+        for (freq, power, warning, generation, seq, observation_size) in self.output.pan {
             if generation != snapshot.generation { continue; }
+            // RF levels, auto gain and receiver power keep the original analysis
+            // bandwidth even when the user requests finer display observations.
+            if observation_size != 0 {
+                if observation_size == fft_size { pan.push(hardware_pan(self.frequency_version, lo, window, &freq, &power)?); }
+                continue;
+            }
             peak = None;
             channel_power = Some(service_power::measure_channel_power(&freq, &power, &self.channel_configs));
             let started = std::time::Instant::now();
-            pan.push(hardware_pan(self.frequency_version, lo, window, &freq, &power)?);
+            if fft_size == 0 { pan.push(hardware_pan(self.frequency_version, lo, window, &freq, &power)?); }
             self.timing.observe(started.elapsed());
             let mut inside: Vec<f32> = freq.iter().zip(&power)
                 .filter(|(f, p)| **f >= lo && **f <= hi && p.is_finite())
@@ -402,7 +409,7 @@ mod tests {
         state.fixture_sources=Some(source);
         // Valid IQ transport and identity; deliberately inconsistent receiver rate.
         frames[0][16..24].copy_from_slice(&(-1.0_f64).to_le_bytes());
-        let pan=vec![(vec![100e6],vec![-40.0],0,0,1)];
+        let pan=vec![(vec![100e6],vec![-40.0],0,0,1,0)];
         let output=state.prepare_hardware_output(sdr_pipeline::PipelineOutput {frames:frames.clone(),pan:pan.clone()}).unwrap();
         assert_eq!(output.frames,frames,"receiver validation cannot consume raw IQ");
         assert_eq!(output.pan,pan,"receiver validation cannot discard queued spectra");
@@ -410,7 +417,7 @@ mod tests {
         assert!(state.ddc_error.is_none());
         for sequence in 2..10 {
             let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
-            let pan=vec![(vec![100e6],vec![-40.0],0,0,sequence)];
+            let pan=vec![(vec![100e6],vec![-40.0],0,0,sequence,0)];
             let output=state.prepare_hardware_output(sdr_pipeline::PipelineOutput {frames:frames.clone(),pan:pan.clone()}).unwrap();
             assert_eq!(output.frames,frames);
             assert_eq!(output.pan,pan);

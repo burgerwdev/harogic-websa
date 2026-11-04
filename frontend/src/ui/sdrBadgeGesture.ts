@@ -21,6 +21,7 @@ export function sdrSpectrumWindow(): FreqWindow | null {
 export interface SdrBadgeGeometry {
   left: number; top: number; width: number; height: number; label: string;
   frequency: number; view: FreqWindow;
+  toggle: { left: number; top: number; width: number; height: number };
 }
 
 interface BadgeDrag {
@@ -61,16 +62,23 @@ export function sdrBadgeGeometry(): SdrBadgeGeometry | null {
   const frequency = sdrBadgeDragFrequency() ?? sdrListenHz.get();
   if (!S.sdrMode || !view || !S.ctx || !(frequency > 0) || frequency < view.lo || frequency > view.hi) return null;
   const plot = plotRect();
-  if (!(plot.w > 0)) return null;
+  if (!(plot.w > 16)) return null;
   const label = '\u25bc ' + formatFreqHz(frequency);
   S.ctx.save();
   S.ctx.font = SDR_BADGE_FONT;
-  const width = Math.min(plot.w, S.ctx.measureText(label).width + 8);
+  const width = Math.min(plot.w - 16, S.ctx.measureText(label).width + 8);
   S.ctx.restore();
   const dialX = plot.x + (frequency - view.lo) / (view.hi - view.lo) * plot.w;
   const height = 12;
-  return { left: Math.max(plot.x, Math.min(dialX - width / 2, plot.x + plot.w - width)),
-    top: (plot.y - height) / 2, width, height, label, frequency, view };
+  const left = Math.max(plot.x, Math.min(dialX - width / 2, plot.x + plot.w - width - 16));
+  const top = (plot.y - height) / 2;
+  return { left, top, width, height, label, frequency, view,
+    toggle: { left: left + width + 4, top, width: height, height } };
+}
+
+export function sdrPassbandToggleAt(x: number, y: number): boolean {
+  const box = sdrBadgeGeometry()?.toggle;
+  return !!box && x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height;
 }
 
 export function sdrBadgeAt(x: number, y: number): SdrBadgeGeometry | null {

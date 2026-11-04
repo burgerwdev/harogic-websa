@@ -466,7 +466,7 @@ impl Consumer {
             channel.samples += count as u64;
             if let Some(receiver) = &mut self.receiver { receiver.submit(&frame)?; }
         }
-        for (frequencies, powers, _warning, _generation, _seq) in output.pan {
+        for (frequencies, powers, _warning, _generation, _seq, _display) in output.pan {
             if !frequencies.iter().all(|f| f.is_finite()) || !powers.iter().all(|p| p.is_finite()) {
                 return Err("nonfinite SDK spectrum".into());
             }

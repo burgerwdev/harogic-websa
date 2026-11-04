@@ -425,6 +425,7 @@ pub(super) struct Snapshot {
     pub capture_center: f64, pub usable_bandwidth: f64, pub rate: f64,
     pub input_rate: f64, pub epoch: u64,
     pub generation: u64,
+    pub display_fft: Value,
     pub taps: usize, pub device_decimate: u64, pub aux: Arc<[(u32, f64)]>, pub actual: Value,
     front_end: Option<hardware_swp::FrontEndActual>,
     pub registry: Arc<[ChannelRegistryEntry]>,
@@ -461,6 +462,7 @@ impl Snapshot {
     }
     /// Keep clocks and the producer input watermark from the same publication.
     pub fn write_channel_status(&self, actual: &mut Value) {
+        actual["display_fft"] = self.display_fft.clone();
         actual["input_samples"] = json!(self.input_samples);
         actual["channel_registry"] = json!(&*self.registry);
         match self.channel_clocks() {
@@ -477,7 +479,7 @@ impl Snapshot {
 }
 #[derive(Default)]
 pub(super) struct PipelineOutput {
-    pub frames: Vec<Vec<u8>>, pub pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64)>,
+    pub frames: Vec<Vec<u8>>, pub pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
 }
 impl PipelineOutput {
     fn collect(mut self, rx: &Receiver<Result<Self, String>>, failure: &mut Option<String>) -> Result<Self, String> {
@@ -524,11 +526,17 @@ pub(super) struct Pipeline {
     diagnostics: hardware_iqs::CaptureDiagnostics,
     terminal: Arc<PLMutex<Option<Value>>>,
     refreshed: Instant,
-    pending_pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64)>,
+    pending_pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
     pending_frames: Vec<Vec<u8>>,
     failure: Option<String>,
 }
 impl Ddc {
+    pub(super) fn display_fft_status(&self)->Value {
+        let mut value=self.display_fft.as_ref().map(|a|a.status(self.stream.input_sample_rate()))
+            .unwrap_or_else(||json!({"size":0,"fft_points":16240,"window":"FlatTop"}));
+        value["available"]=json!(self.hardware.is_some());
+        value["error"]=json!(self.display_fft_error);value
+    }
     pub(super) fn finish_framers(&mut self, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
         if !self.direct.contains_key(&1) && self.service_configs.as_ref().is_none_or(|configs| configs[0].enabled) {
             frames.extend(self.framer.finish().map_err(str::to_owned)?);
@@ -575,6 +583,7 @@ impl Ddc {
         Snapshot { capture_center:self.capture_center, usable_bandwidth:self.usable_bandwidth,
             input_rate:self.stream.input_sample_rate(), epoch:self.stream.epoch(),
             generation:self.generation,
+            display_fft:self.display_fft_status(),
             rate:self.channel_rate(), taps:self.stream.taps_per_phase(), device_decimate:self.device_decimate,
             aux, actual:Value::Null, pool:self.stream.stats(), input_samples:self.input_pos,
             front_end:self.hardware.as_ref().and_then(|capture| capture.diagnostics().front_end()),
@@ -1338,24 +1347,24 @@ mod tests {
         assert_eq!(snapshot.epoch,ddc.stream.epoch());
         assert_ne!(snapshot.input_rate,snapshot.rate);
         let previous = (snapshot.capture_center, snapshot.device_decimate, snapshot.generation);
-        let mut output = PipelineOutput { frames:vec![vec![1], vec![2]], pan:vec![(vec![100e6], vec![-40.0], 0, 0, 1)] };
+        let mut output = PipelineOutput { frames:vec![vec![1], vec![2]], pan:vec![(vec![100e6], vec![-40.0], 0, 0, 1, 0)] };
         // A DSP-only change retains spectra on the same device frequency grid.
         snapshot.rate /= 2.0;
         output.capture_boundary(previous, &snapshot);
-        assert_eq!(output.pan, vec![(vec![100e6], vec![-40.0], 0, 0, 1)]);
+        assert_eq!(output.pan, vec![(vec![100e6], vec![-40.0], 0, 0, 1, 0)]);
         snapshot.capture_center = 200e6;
         output.capture_boundary(previous, &snapshot);
         assert!(output.pan.is_empty());
         assert_eq!(output.frames, vec![vec![1], vec![2]]);
         snapshot.capture_center = previous.0;
         snapshot.device_decimate = previous.1 + 1;
-        output.pan.push((vec![100e6], vec![-40.0], 0, 0, 1));
+        output.pan.push((vec![100e6], vec![-40.0], 0, 0, 1, 0));
         output.capture_boundary(previous, &snapshot);
         assert!(output.pan.is_empty());
         assert_eq!(output.frames, vec![vec![1], vec![2]]);
         snapshot.device_decimate = previous.1;
         snapshot.generation += 1;
-        output.pan.push((vec![100e6], vec![-40.0], -12, previous.2, 1));
+        output.pan.push((vec![100e6], vec![-40.0], -12, previous.2, 1, 0));
         output.capture_boundary(previous, &snapshot);
         assert!(output.pan.is_empty());
     }

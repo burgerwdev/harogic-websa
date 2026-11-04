@@ -400,9 +400,9 @@ export function connectWS() {
         if (currentGraphMode() === 'sdr') {
           maybeRequestSdrFit();
         }
-        // The RTA frequency window (center/span) changed -> every accumulation (probability
-        // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
-        // must be reset, otherwise stale dots/traces linger at wrong frequencies.
+        // Live traces and probability density belong to this capture only. SDR
+        // waterfall rows retain their original RF coordinates: reproject those
+        // observations into the new view instead of erasing history on every retune.
         const axisChanged = geometryChanged;
         if (currentGraphMode() === 'sdr') {
           if (axisChanged || !plausible) resetCarrierEvidence();
@@ -412,7 +412,7 @@ export function connectWS() {
           S.setRtaDensity2d(null);
           for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
           for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
-          S.resetWaterfall();
+          if (currentGraphMode() !== 'sdr' || !previous || captureFrame === 'first') S.resetWaterfall();
         }
         // The frame's display window is the capture the zoom feature navigates in (design
         // §4.2). A same-width pan shifts the view; a changed span drops it (setCapture).
@@ -459,9 +459,10 @@ export function connectWS() {
         const range = S.totalDivs * S.dbPerDiv;
         const densSource = rtaDensSource.get();
         const densSpec = densSource === 'live' ? spec : S.rtaDisplays[S.activeTraceIdx];
-        // Budget SDR values + next to 16 MiB, retaining at least one amplitude bin.
+        // Keep every amplitude choice through 65536 native points (192 bins = 96 MiB).
+        // Bound values + links for larger transport grids without reducing supported FFT tiers.
         const bins = S.sdrMode
-          ? Math.max(1, Math.min(rtaAmpBins.get(), Math.floor(16 * 1024 * 1024 / (spec.length * 8))))
+          ? Math.max(1, Math.min(rtaAmpBins.get(), Math.floor(96 * 1024 * 1024 / (spec.length * 8))))
           : rtaAmpBins.get();
         S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, densSpec,
           bins, rtaHalflife.get(), getDisplayRef() - displayOffset.get(), range / bins,

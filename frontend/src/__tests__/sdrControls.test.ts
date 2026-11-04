@@ -1371,3 +1371,19 @@ describe('workbench speaker ownership in the legacy controls', () => {
 		vi.mocked(audio.nativeAudioOwnsSpeakers).mockReturnValue(false);
 	});
 });
+
+
+it.each(['rta', 'sdr'])('a click on confirmed %s supersedes the other pending mode without switching to SWP', async current => {
+  const { controls, send } = await load();
+  controls.syncGraphModeStatus(current);
+  document.body.innerHTML = '<button id="btn-mode-rta" data-action="toggle-rta"></button>'
+    + '<button id="btn-mode-sdr" data-action="toggle-sdr"></button>';
+  controls.bindActions();
+  vi.mocked(send).mockClear();
+  const other = current === 'rta' ? 'sdr' : 'rta';
+  document.getElementById(`btn-mode-${other}`)!.click();
+  document.getElementById(`btn-mode-${current}`)!.click();
+  const modes = vi.mocked(send).mock.calls.map(([command]) => command as { cmd: string; mode?: string })
+    .filter(command => command.cmd === 'SET_MODE').map(command => command.mode);
+  expect(modes).toEqual([other, current]);
+});

@@ -4,6 +4,8 @@ import { send } from '../core/wsSend';
 import { confirmSdrChannels, currentSdrChannel, receivingSdrChannels, sdrChannelMarks, setCurrentSdrChannel, type SdrChannel } from './sdrChannels';
 import { setSdrHoverFrequency } from './sdrHoverPassband';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
+import { isKeypadOpen } from './keypad';
+import { syncDisplayFftUi } from './wfRange';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { parseNrAlgo, demodBandHz, sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
@@ -13,10 +15,11 @@ import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTu
 import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rememberConfirmedFilter, renderSdrFilter } from './sdrFilter';
 import { sdrFilterLimits } from './sdrState';
 import { clearPassbandView } from './spectrumViewport';
-import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, moveFilterDrag, setFilterHover, updateFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
+import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, moveFilterDrag, setFilterHover, updateFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband, type FilterSurface } from './sdrFilterGesture';
 import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession, sdrTuneFollowsViewport, stopSdrTuneRepeat } from './sdrTuneRequest';
 import { beginSdrLocateClick, cancelSdrLocate, commitSdrLocateClick, updateSdrLocateHover } from './sdrLocate';
-import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
+import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, sdrPassbandToggleAt, sdrSpectrumWindow, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
+import { sdrPassbandVisible } from './sdrPassbandState';
 import { resetCarrierEvidence } from '../dsp/carrierSnap';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
@@ -1135,6 +1138,7 @@ function cycleSdrChannel(direction: number): void {
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
   const active = s?.connected === true && s?.mode === 'sdr';
+  syncDisplayFftUi(active, sdr?.actual?.display_fft, s?.mode);
   if (!active) {
     setSdrHoverFrequency(null);
     sdrAudioSessionReady = false;
@@ -1618,9 +1622,11 @@ export function bindActions() {
     'markers-all': () => toggleMarkersAll(),
     'marker-tracking': () => toggleActiveMarkerTracking(),
     'set-sweep': () => { syncSweepInput(); setSweepSpeed(); },
-    'toggle-rta': () => setGraphMode(currentGraphMode() === 'rta' ? 'swp' : 'rta'),
+    // During a handoff, clicking the still-highlighted mode supersedes the pending
+    // request. Only a settled active-mode click means "return to sweep".
+    'toggle-rta': () => setGraphMode(pendingGraphMode() === null && currentGraphMode() === 'rta' ? 'swp' : 'rta'),
     'apply-rta': () => applyRta(),
-    'toggle-sdr': () => setGraphMode(currentGraphMode() === 'sdr' ? 'swp' : 'sdr'),
+    'toggle-sdr': () => setGraphMode(pendingGraphMode() === null && currentGraphMode() === 'sdr' ? 'swp' : 'sdr'),
     'toggle-server': () => { resetGraphMode(); requestServerMode(); },
     'apply-sdr': () => applySdr(),
     'apply-sdr-bw': () => applySdrBw(),
@@ -2013,7 +2019,7 @@ function cancelSdrCanvasGesture(restore = true): void {
   const canvas = (document.getElementById('spectrum') as HTMLCanvasElement | null) ?? S.canvas;
   const surface = gesture?.surface ?? canvas;
   if (pointerId !== null && surface?.hasPointerCapture?.(pointerId)) surface.releasePointerCapture(pointerId);
-  if (surface) surface.style.cursor = '';
+  if (surface) { surface.style.cursor = ''; surface.removeAttribute('title'); }
   if (canvas) canvas.style.cursor = '';
   if (canvas) canvas.removeAttribute('title');
   cancelFilterDrag();
@@ -2050,6 +2056,10 @@ export function bindCanvas() {
   const gesturePoint = (event: MouseEvent, gesture: CanvasGesture) => {
     if (gesture.surface === canvas) return { x: canvasX(event, canvas), y: canvasY(event, canvas) };
     const rect = gesture.surface.getBoundingClientRect(), plot = plotRectPub();
+    if (gesture.owner === 'filter') return {
+      x: (event.clientX - rect.left) / Math.max(1, rect.width) * plot.w,
+      y: (event.clientY - rect.top) / getUiScale(),
+    };
     return { x: plot.x + (event.clientX - rect.left) / Math.max(1, rect.width) * plot.w,
       y: plot.y + (event.clientY - rect.top) / Math.max(1, rect.height) * plot.h };
   };
@@ -2057,13 +2067,19 @@ export function bindCanvas() {
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || canvasPointerId !== null) return;
     setSdrHoverFrequency(null);
-    const active = document.activeElement;
-    if (active instanceof HTMLInputElement && active.id === 'input-sdr-ifbw') active.blur();
+    // Gestures preventDefault, which suppresses normal focus transfer. Commit a
+    // departing editor before taking the gesture snapshot and give arrows to the plot.
+    canvas.focus({ preventScroll: true });
     const pr = plotRectPub();
     const x = canvasX(e, canvas), y = canvasY(e, canvas);
     const mode = currentGraphMode();
     const sdr = mode === 'sdr';
     const zoom = isSpectrumZoomOn();
+    if (sdr && !e.ctrlKey && !e.metaKey && sdrPassbandToggleAt(x, y)) {
+      toggleSdrPassband();
+      e.preventDefault();
+      return;
+    }
     const accept = (owner: CanvasGesture['owner']): CanvasGesture => {
       cancelReceiverFocus();
       const gesture: CanvasGesture = {
@@ -2223,6 +2239,12 @@ export function bindCanvas() {
   const updateCanvasHover = (x: number, y: number, ctrl: boolean, scale: number) => {
     if (canvasPointerId !== null || axisDragging() || filterDragging()) return;
     const plot = plotRectPub();
+    if (currentGraphMode() === 'sdr' && !ctrl && sdrPassbandToggleAt(x, y)) {
+      setSdrHoverFrequency(null); setFilterHover(null); cancelSdrLocate();
+      canvas.style.cursor = 'pointer';
+      canvas.title = t('sdr_passband_toggle_tip');
+      return;
+    }
     setSdrHoverFrequency(currentGraphMode() === 'sdr' && x >= plot.x && x <= plot.x + plot.w
       && y >= plot.y && y <= plot.y + plot.h ? spectrumFreqAtX(x) : null);
     const tolerance = 8 * scale;
@@ -2313,22 +2335,36 @@ export function bindCanvas() {
   canvas.addEventListener('mouseleave', clearCanvasHover);
 
   const waterfall = document.getElementById('waterfall') as HTMLCanvasElement | null;
+  const waterfallFilterSurface = (): FilterSurface | undefined => {
+    const view = sdrSpectrumWindow();
+    if (!waterfall || !view) return;
+    const rect = waterfall.getBoundingClientRect();
+    return { plot: { x: 0, y: 0, w: plotRectPub().w, h: rect.height / getUiScale() },
+      width: plotRectPub().w, view };
+  };
   waterfall?.addEventListener('pointerdown', event => {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || canvasPointerId !== null
       || currentGraphMode() !== 'sdr' || !S.deviceConnected) return;
-    const active = document.activeElement;
-    if (active instanceof HTMLInputElement && active.id === 'input-sdr-ifbw') active.blur();
+    waterfall.focus({ preventScroll: true });
     const rect = waterfall.getBoundingClientRect(), plot = plotRectPub();
     if (!(rect.width > 0 && rect.height > 0)) return;
     const zoom = isSpectrumZoomOn();
+    const surface = waterfallFilterSurface();
+    const localX = (event.clientX - rect.left) / rect.width * plot.w;
+    const localY = (event.clientY - rect.top) / getUiScale();
+    const edge = surface ? updateFilterHover(localX, localY, 8 * plot.w / rect.width, surface) : null;
+    const filter = edge && startFilterDrag(edge, event.pointerId, localX, surface);
     const gesture: CanvasGesture = { surface: waterfall, owner: zoom ? 'zoom' : 'tune', sdr: true,
       mode: 'sdr', demod: sdrDemod.get(), zoom, zoomEpoch: zoomEnabled.epoch,
       x0: 0, clientX0: event.clientX, clientY0: event.clientY, moved: false, marquee: false, shift: event.shiftKey };
+    if (filter) gesture.owner = 'filter';
     const { x, y } = gesturePoint(event, gesture);
-    if (x < plot.x || x > plot.x + plot.w || y < plot.y || y > plot.y + plot.h) return;
+    if (!filter && (x < plot.x || x > plot.x + plot.w || y < plot.y || y > plot.y + plot.h)) return;
     gesture.x0 = x;
     setSdrHoverFrequency(null); setFilterHover(null); cancelReceiverFocus();
-    beginSdrLocateClick(x, y, plot.w / rect.width);
+    if (filter) {
+      cancelSdrLocate(); waterfall.style.cursor = 'ew-resize'; waterfall.title = t('sdr_passband_edge_tip');
+    } else beginSdrLocateClick(x, y, plot.w / rect.width);
     canvasGesture = gesture; canvasPointerId = event.pointerId; S.setDragging(true);
     waterfall.setPointerCapture?.(event.pointerId);
     event.preventDefault();
@@ -2345,6 +2381,11 @@ export function bindCanvas() {
     const y = plot.y + plot.h / 2;
     publishCursor(x, y);
     if (currentGraphMode() === 'sdr') {
+      const surface = waterfallFilterSurface();
+      const edge = surface ? updateFilterHover(x - plot.x, (wfY - rect.top) / getUiScale(), 8 * plot.w / rect.width, surface) : null;
+      waterfall.style.cursor = edge ? 'ew-resize' : '';
+      if (edge) waterfall.title = t('sdr_passband_edge_tip'); else waterfall.removeAttribute('title');
+      if (edge) { setSdrHoverFrequency(null); cancelSdrLocate(); return; }
       updateSdrLocateHover(x, y, plot.w / rect.width);
       setSdrHoverFrequency(spectrumFreqAtX(x));
     } else { setSdrHoverFrequency(null); cancelSdrLocate(); }
@@ -2358,6 +2399,10 @@ export function bindCanvas() {
     wfHoverPending = false;
     publishCursor(-1e9, -1e9);
     setSdrHoverFrequency(null); cancelSdrLocate();
+    if (canvasPointerId === null) {
+      setFilterHover(null);
+      if (waterfall) { waterfall.style.cursor = ''; waterfall.removeAttribute('title'); }
+    }
   };
   waterfall?.addEventListener('pointermove', queueWaterfallHover);
   waterfall?.addEventListener('mousemove', event => { if (!hasPointerEvents) queueWaterfallHover(event as MouseEvent); });
@@ -2435,11 +2480,16 @@ export function bindCanvas() {
 
   // Keyboard / trackpad-only operation (no mouse required).
   document.addEventListener('keydown', (e) => {
-    if (deviceMode.get() === 'server') return;
+    if (deviceMode.get() === 'server' || isKeypadOpen()) return;
     if (currentGraphMode() !== 'sdr' || e.defaultPrevented || e.altKey || e.metaKey || e.isComposing
         || (e.ctrlKey && e.shiftKey) || canvasPointerId !== null || document.hidden) return;
     const el = document.activeElement as HTMLElement | null;
     if (el?.closest('input,select,textarea,[contenteditable]:not([contenteditable="false"]),[role="dialog"],.keypad,#zoom-overview-box')) return;
+    if (!e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'h') {
+      if (!e.repeat) toggleSdrPassband();
+      e.preventDefault();
+      return;
+    }
     const arrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight';
     if (el?.tagName === 'BUTTON' && !arrow) return;
     if ((e.ctrlKey || e.shiftKey) && !arrow) return;
@@ -2462,6 +2512,13 @@ export function bindCanvas() {
 
 // ── SDR keyboard helpers ──
 // Filter keyboard choices use the current mode's presets.
+
+function toggleSdrPassband(): void {
+  cancelSdrCanvasGesture();
+  setSdrHoverFrequency(null);
+  sdrPassbandVisible.set(!sdrPassbandVisible.get());
+  requestRender();
+}
 
 function sdrTuneBy(dHz: number) {
   const center = sdrCenterHz.get();

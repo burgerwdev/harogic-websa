@@ -216,6 +216,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr/server）| 切换测量模式（会话）。`server` 为独占模式，不启动 SoapySDRServer |
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_SDR` | `center?`, `listen?`（Hz）, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档。平移捕获窗口会带动主路监听频率；当频率离开带限 OnAir 解码器的频段时，该通道自动降级为解码器的音频伴随模式，不会提交非法组合 提供 `listen` 时原子提交采集中心与 C1 监听调谐并启用 C1，包括所有信道已停用的情况；省略时保留频率轴平移行为及信道启停状态。 |
+| `SET_SDR_FFT` | `size`：0 / 32768 / 65536 | 仅显示分析；0 保留原有 SDK 16240 样本路径。需运行中的真实 IQ 与新 shim。`sdr.actual.display_fft` 回报已生效 `size`、`requested_size`、等待/活动状态、真实输入长度、输出点数、Δf、ENBW、观察时长及错误。不重配接收器、采集或录制。 |
 | `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部三路频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
 | `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（正有限值，Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（CW 为 100..1600 Hz；其他模式为 (0,20000] Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 13 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/radiofax/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 请求修改接收滤波器，通过准入后重配信道化器 |
 | `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?`、`radiofax_acquisition?`、`radiofax_ioc?`、`radiofax_lpm?`、`radiofax_modulation?`、`radiofax_polarity?`、`radiofax_clock_recovery?`、`radiofax_phase_pixels?`、`radiofax_clock_ppm?`、`radiofax_new_page?`、`radiofax_reset_correction?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。传真捕获为 auto/manual，IOC 为 auto/288/576，LPM 为 auto/60/90/120/180/240，调制为 fm/am，极性为 normal/inverted，时钟恢复为 auto/off。相位范围 ±4096 像素，时钟校正 ±5000 ppm。`radiofax_new_page` 将当前页以部分完成收尾；`radiofax_reset_correction` 将两项校正置零。协议参数变化重建解码器；相位和 ppm 不重建 RF。带限 OnAir 解码器（AIS、ADS-B、Meteor LRPT、APRS、FT4、WSPR）会对保留频率做边界协调：不带 `freq` 选择解码器时自动调谐到其标称中心（ADS-B 1090 MHz、AIS 162 MHz、Meteor 137.1 MHz）；仅改 `freq` 且离开频段时，通道降级为解码器的音频伴随模式（AM/NFM/USB）并采用该模式默认带宽。显式 `mode`+`freq` 冲突仍被拒绝。 |
@@ -308,7 +309,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 | `FREQ` | float64 × points | 频率轴（Hz），仅在版本变化时发送 |
 | `POWR` | float32 × points | 功率迹线（dBm），与同版本 FREQ 配对 |
 
-原生 SDR 的 RTAF 保留显示窗口内全部 FFT 频点（最多 16240），原生 RTA 保留设备返回帧宽。浏览器的迹线、标记与导出保留原始 Hz 和功率，不插值制造频率细节。本地缩放不发送采集命令，也不能提高物理 RBW。余辉使用锚定显示窗口 Hz 的 2048 个粗频率列；缩放只裁剪已有余辉，不重建历史。SWP/RTA/SDR 瀑布历史保留原生频点位置，每行最多 16384 列、最多 512 行；更大输入在此上限内按峰值聚合。除用户启用 SWP GapFill 外，缺失频点保持空隙。源频率网格改变时清空累积，避免保持值移到错误频率。
+原生 SDR 的 RTAF 保留显示窗口内全部 FFT 频点（真实输入 16240/32768/65536 样本；80% SDK 截取输出最多 12992/26215/52429 点，再按 RF 显示边界裁剪），原生 RTA 保留设备返回帧宽。浏览器的迹线、标记与导出保留原始 Hz 和功率，不插值制造频率细节。本地缩放不发送采集命令，也不能提高物理 RBW。余辉使用锚定显示窗口 Hz 的 2048 个粗频率列；缩放只裁剪已有余辉，不重建历史。SDR 瀑布历史保留全部原生频点，支持最多 65536 列、512 行；幅度行及共享 RF 轴合计限 64 MiB，超限淘汰完整旧行，不压缩细频点。SWP/RTA 仍最多 16384 列，超宽输入按峰值聚合。除用户启用 SWP GapFill 外，缺失频点保持空隙。源频率网格改变时清空累积，避免保持值移到错误频率。
 
 SWP/RTA/SDR 栅格绘制按设备像素列保留首点、最低点、最高点和末点，保持原始频率及源顺序，并在每个缺失频点断开。缩放后原生频点分占像素时会显示完整细节；标记和导出始终使用完整源数组。可选 SWP 自适应平滑仍使用完整帧，与标记读数保持一致。
 
@@ -638,4 +639,4 @@ RTA2 的 TRIG 元数据包括 valid、supported、simulated、generation、frame
 
 auto_ref.result 为 idle、adjusting、applied、ok、no_data、overflow、limit、stalled、failed、cancelled 或 timeout。只有成功结束时 target 非 null。始终没有可用采集时以 no_data 结束；已有调整但未获得新干净数据确认时以 timeout 结束。手动 Ref/AMP、调频、换模和 Preset 会取消会话并清除旧 target。
 
-SWP/RTA/SDR 的手动 Ref 使用独立本地窗口（-200 至 +100 dBm 加外部 Offset）。SET_REF 和 AUTO_SCALE.current_ref 减去 Offset 后限制在现有 -160 至 +40 dBm 协议范围。匹配的原始请求回读接受窗口，不替换显示值：Offset 为零时显示 +100 对应硬件请求 +40。同一限幅目标下继续移动窗口不重配硬件，也不重启待确认超时。拒绝或超时恢复已接受的显示值。SDR 的 sdr.ref 确认未补偿请求，与有效 ref 分开。应用 Auto 目标时只加一次 Offset。修改 Offset 同步平移绝对纵轴和迹线，不发送硬件命令；相对 dB 不变。瀑布 Fixed 范围须为有限数且低值小于高值；非法编辑回退并提示。映射或有效范围变化会清空量化历史，暂停时亦然。std/rta/sdr 可使用本地 Scale/Unit/Offset/瀑布设置；独占谐波/相噪测量时禁用 Level 控件。
+SWP/RTA/SDR 的手动 Ref 使用独立本地窗口（-200 至 +100 dBm 加外部 Offset）。SET_REF 和 AUTO_SCALE.current_ref 减去 Offset 后限制在现有 -160 至 +40 dBm 协议范围。匹配的原始请求回读接受窗口，不替换显示值：Offset 为零时显示 +100 对应硬件请求 +40。同一限幅目标下继续移动窗口不重配硬件，也不重启待确认超时。拒绝或超时恢复已接受的显示值。SDR 的 sdr.ref 确认未补偿请求，与有效 ref 分开。应用 Auto 目标时只加一次 Offset。修改 Offset 同步平移绝对纵轴和迹线，不发送硬件命令；相对 dB 不变。瀑布 Fixed 范围须为有限数且低值小于高值；非法编辑回退并提示。SWP/RTA 映射或有效范围变化清空量化历史，暂停时亦然；SDR 保存原始幅度和 RF 轴，支持整幅/视窗自动噪底以及暂停后重着色，固定色阶不受来源影响。见[架构](ARCHITECTURE.md)与[验证记录](../validation/sdr-display-2026-11-04/README.md)。std/rta/sdr 可使用本地 Scale/Unit/Offset/瀑布设置；独占谐波/相噪测量时禁用 Level 控件。

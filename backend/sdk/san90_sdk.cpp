@@ -576,6 +576,51 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
     return 0;
 }
 
+// Independent display-only DSP contexts. These never access a device/session and
+// are owned by the display worker, so a long transform cannot delay IQ fetching.
+struct San90DisplayFft { void* dsp = nullptr; uint32_t size = 0, points = 0; };
+extern "C" int san90_display_fft_open_v1(void** out, uint32_t size, uint32_t* points, double* rbw) {
+    if (!out || !points || !rbw || (size != 32768 && size != 65536 && size != 16240)) return -120;
+    *out = nullptr;
+    auto* s = new San90DisplayFft;
+    int status = DSP_Open(&s->dsp);
+    DSP_FFT_TypeDef in{}, actual{};
+    if (!status) status = DSP_FFT_DeInit(&in);
+    if (!status) {
+        in.FFTSize = size; in.SamplePts = size; in.WindowType = FlatTop;
+        in.Calibration = false; in.Intercept = 0.8f;
+        in.DetectionRatio = 1; in.TraceDetector = TraceDetector_PosPeak;
+        status = DSP_FFT_Configuration(&s->dsp, &in, &actual, points, rbw);
+        if (!status && (actual.FFTSize != size || actual.SamplePts != size
+            || actual.WindowType != FlatTop || actual.DetectionRatio != 1
+            || actual.Calibration || actual.TraceDetector != TraceDetector_PosPeak
+            || std::fabs(actual.Intercept - 0.8f) > 1e-6 || *points < 2 || *points > size
+            || !std::isfinite(*rbw) || *rbw <= 0)) status = -121;
+    }
+    if (status) { if (s->dsp) DSP_Close(&s->dsp); delete s; return status; }
+    s->size = size; s->points = *points; *out = s; return 0;
+}
+extern "C" int san90_display_fft_execute_v1(void* handle, const int16_t* iq, uint32_t samples,
+    float scale, double center, double rate, double bandwidth, double* freq, float* power, uint32_t capacity) {
+    auto* s = static_cast<San90DisplayFft*>(handle);
+    if (!s || !iq || samples != s->size || capacity < s->points || !freq || !power
+        || !std::isfinite(scale) || scale <= 0 || !std::isfinite(center)
+        || !std::isfinite(rate) || rate <= 0 || !std::isfinite(bandwidth) || bandwidth <= 0) return -122;
+    IQStream_TypeDef stream{};
+    stream.AlternIQStream = const_cast<int16_t*>(iq); stream.IQS_ScaleToV = scale;
+    stream.IQS_Profile.DataFormat = Complex16bit; stream.IQS_Profile.CenterFreq_Hz = center;
+    stream.IQS_Profile.TriggerLength = samples;
+    stream.IQS_StreamInfo.PacketSamples = samples; stream.IQS_StreamInfo.StreamSamples = samples;
+    stream.IQS_StreamInfo.PacketDataSize = samples * 4; stream.IQS_StreamInfo.IQSampleRate = rate;
+    stream.IQS_StreamInfo.Bandwidth = bandwidth;
+    return DSP_FFT_IQSToSpectrum(&s->dsp, &stream, freq, power);
+}
+extern "C" int san90_display_fft_close_v1(void* handle) {
+    auto* s = static_cast<San90DisplayFft*>(handle);
+    if (!s) return 0;
+    int status = DSP_Close(&s->dsp); delete s; return status;
+}
+
 // IQ, spectrum and metadata share one SDK-thread dispatch and one packet boundary.
 extern "C" int san90_next_v3(San90Device* state, int16_t* dest, uint32_t capacity,
                                 San90PacketInfo* info, double* freq, float* power,

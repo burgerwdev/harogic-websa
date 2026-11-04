@@ -657,10 +657,14 @@ def main() -> int:
             page.click(sel)
             settled = False
             while time.monotonic() - t0 < 3.0:
-                if state(url)["mode"] == want:
+                # The next click belongs to the confirmed browser state. Seeing the
+                # HTTP mode first does not mean its WebSocket ACK has been applied.
+                if (state(url)["mode"] == want
+                        and page.locator("body").get_attribute("data-device-mode") == want
+                        and not page.locator("#btn-mode-rta.pending, #btn-mode-sdr.pending").count()):
                     settled = True
                     break
-                time.sleep(0.15)
+                page.wait_for_timeout(50)
             check(f"switch to {want} within 3 s", settled,
                   f"mode={state(url)['mode']} after {time.monotonic() - t0:.1f}s")
         check("mode buttons usable after the burst",

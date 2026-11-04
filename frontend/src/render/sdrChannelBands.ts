@@ -4,12 +4,13 @@ import { demodBandHz, sdrDemod, sdrPitchHz } from '../ui/sdrState';
 import { filterPreviewHz } from '../ui/sdrFilter';
 import { currentSdrChannel, sdrChannelMarks } from '../ui/sdrChannels';
 import { sdrHoverFrequency } from '../ui/sdrHoverPassband';
+import { sdrPassbandVisible } from '../ui/sdrPassbandState';
 
 const channelColors = ['#6ecfa4', '#e6b95c', '#bc9bf3'];
 /** Same absolute-frequency geometry on the spectrum and waterfall. */
 export function renderSdrChannelBands(ctx: CanvasRenderingContext2D, lo: number, hi: number,
   p: { x: number; y: number; w: number; h: number }, labels = false): void {
-  if (!S.sdrMode || !(hi > lo)) return;
+  if (!S.sdrMode || !sdrPassbandVisible.get() || !(hi > lo)) return;
   const xAt = (hz: number) => p.x + (hz - lo) / (hi - lo) * p.w;
   ctx.save(); ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   for (const channel of sdrChannelMarks()) {

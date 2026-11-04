@@ -34,6 +34,7 @@ import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 import { renderFilterHandles, renderFilterPassband } from '../ui/sdrFilterGesture';
+import { sdrPassbandVisible } from '../ui/sdrPassbandState';
 import { renderSdrChannelBands } from './sdrChannelBands';
 import { renderSdrLocate } from '../ui/sdrLocate';
 import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
@@ -756,6 +757,8 @@ function renderRta() {
   const window = sdrSpectrumWindow();
   if (!window) { clearRtaDensityRelease(); return; }
   const { lo, hi } = window;
+  const viewDiagnostic = JSON.stringify({ lo, hi });
+  if (ctx.canvas.dataset.frequencyView !== viewDiagnostic) ctx.canvas.dataset.frequencyView = viewDiagnostic;
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   const activeTrace = S.traces[S.activeTraceIdx];
@@ -849,8 +852,19 @@ function renderRta() {
     ctx.fillStyle = col.bg;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(badge.label, badge.left + badge.width / 2, badge.top + badge.height / 2, badge.width - 8);
+    const box = badge.toggle;
+    const toggleGeometry = JSON.stringify(box);
+    if (ctx.canvas.dataset.passbandToggle !== toggleGeometry) ctx.canvas.dataset.passbandToggle = toggleGeometry;
+    ctx.strokeStyle = col.rta; ctx.lineWidth = 1;
+    ctx.strokeRect(box.left + 0.5, box.top + 0.5, box.width - 1, box.height - 1);
+    if (sdrPassbandVisible.get()) {
+      ctx.fillStyle = col.rta;
+      ctx.fillRect(box.left + 3, box.top + 3, box.width - 6, box.height - 6);
+    }
     ctx.restore();
-  }
+  } else delete ctx.canvas.dataset.passbandToggle;
+  const passbandVisible = String(sdrPassbandVisible.get());
+  if (ctx.canvas.dataset.passbandVisible !== passbandVisible) ctx.canvas.dataset.passbandVisible = passbandVisible;
   // Markers on the active RTA trace (length-guarded)
   const actDisp = getDisplayPowers();
   if (actDisp && actDisp.length >= 2) {
@@ -892,7 +906,7 @@ function renderWaterfallIfOn() {
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
   if (!wfSized) sizeWaterfall(wf);
-  renderWaterfall(wf, 100);
+  renderWaterfall(wf, 100, pixelRatio);
 }
 
 

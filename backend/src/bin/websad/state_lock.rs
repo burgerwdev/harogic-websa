@@ -116,6 +116,10 @@ impl DevState {
                 }
             }
         }
+        if self.swp.mode=="sdr" && self.pipeline.is_none() {
+            sdr_actual["display_fft"]=self.ddc.as_ref().map(|d|d.0.display_fft_status())
+                .unwrap_or_else(||json!({"size":0,"available":false}));
+        }
         StatusSnapshot {
             revision: STATUS_REVISION.fetch_add(1, Ordering::Relaxed),
             golden: self.golden.clone(),

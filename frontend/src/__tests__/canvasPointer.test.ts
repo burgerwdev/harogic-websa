@@ -31,6 +31,7 @@ beforeEach(() => {
 	const get = document.getElementById.bind(document);
 	canvas = document.createElement('canvas');
 	canvas.id = 'spectrum';
+  canvas.tabIndex = 0;
 	canvas.width = 860;
 	canvas.height = 480;
 	canvas.style.border = '0px solid transparent';
@@ -131,8 +132,8 @@ describe('canvas pointer ownership', () => {
     vi.spyOn(waterfall, 'getBoundingClientRect').mockReturnValue({ left: 110, top: 520, width: 800, height: 200,
       right: 910, bottom: 720, x: 110, y: 520, toJSON: () => ({}) });
     waterfall.setPointerCapture = vi.fn(); waterfall.hasPointerCapture = vi.fn(() => true); waterfall.releasePointerCapture = vi.fn();
-    return (type: string, fraction: number) => {
-      const event = new MouseEvent(type, { clientX: 110 + 800 * fraction, clientY: 620,
+    return (type: string, fraction: number, localY = 100) => {
+      const event = new MouseEvent(type, { clientX: 110 + 800 * fraction, clientY: 520 + localY,
         button: 0, bubbles: true, cancelable: true });
       Object.defineProperty(event, 'pointerId', { value: 77 });
       (type === 'pointerdown' ? waterfall : window).dispatchEvent(event);
@@ -144,6 +145,50 @@ describe('canvas pointer ownership', () => {
     state.sdrLocateMode.set('free');
     wf('pointerdown', 0.25); wf('pointerup', 0.25);
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', freq: 9_900_000 }));
+  });
+
+  it.each([false, true])('adjusts bandwidth from a waterfall top arrow without tuning or zooming (Zoom %s)', async zoom => {
+    const wf = waterfallPointer();
+    const { filter, plot, viewport, state, send } = await load(zoom);
+    const width = plot.plotRect().w;
+    const surface = { plot: { x: 0, y: 0, w: width, h: 200 }, width,
+      view: { lo: 9_800_000, hi: 10_200_000 } };
+    const handle = filter.filterGeometry(undefined, undefined, surface)!.handles.find(h => h.edge === 'high')!;
+    wf('pointerdown', handle.x / width, handle.y);
+    wf('pointermove', (handle.x + width / 20) / width, handle.y);
+    const { filterPreviewHz } = await import('../ui/sdrFilter');
+    expect(filterPreviewHz()).toBeCloseTo(80_000);
+    expect(state.sdrIfbw.get()).toBe(40_000);
+    expect(send).not.toHaveBeenCalled();
+    wf('pointerup', (handle.x + width / 20) / width, handle.y);
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', ifbw: expect.closeTo(80_000) }));
+    expect(vi.mocked(send).mock.calls[0][0]).not.toHaveProperty('freq');
+    expect(viewport.isZoomed()).toBe(false);
+    expect(filter.filterDragging()).toBe(false);
+  });
+
+  it('toggles both passband overlays with the badge square and H without sending device commands', async () => {
+    const { filter, send } = await load();
+    const { sdrBadgeGeometry } = await import('../ui/sdrBadgeGesture');
+    const { sdrPassbandVisible } = await import('../ui/sdrPassbandState');
+    const box = sdrBadgeGeometry()!.toggle;
+    pointer('pointerdown', box.left + box.width / 2, box.top + box.height / 2);
+    pointer('pointerup', box.left + box.width / 2, box.top + box.height / 2);
+    expect(sdrPassbandVisible.get()).toBe(false);
+    expect(filter.filterGeometry()).toBeNull();
+    expect(sdrBadgeGeometry()).not.toBeNull();
+    const press = (key: string, extra = {}) => document.dispatchEvent(new KeyboardEvent('keydown', {
+      key, bubbles: true, cancelable: true, ...extra,
+    }));
+    press('h'); expect(sdrPassbandVisible.get()).toBe(true);
+    press('h', { repeat: true }); expect(sdrPassbandVisible.get()).toBe(true);
+    const input = document.createElement('input'); document.body.append(input); input.focus();
+    press('h'); expect(sdrPassbandVisible.get()).toBe(true);
+    canvas.focus();
+    press('H', { ctrlKey: true }); expect(sdrPassbandVisible.get()).toBe(true);
+    press('h'); expect(sdrPassbandVisible.get()).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(localStorage.getItem('websa-sdr-passband-visible')).toBe('false');
   });
   it.each([false, true])('shares the cursor readout between plots and clears queued waterfall hover with Zoom %s', async zoom => {
     waterfallPointer();

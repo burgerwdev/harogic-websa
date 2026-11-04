@@ -7,6 +7,7 @@ import { getUiScale } from '../../core/uiScale';
 import { waterfallOn, wfPaused } from '../waterfallState';
 import { pushSpectrumRow } from '../../render/waterfall';
 import { createParam } from '../../core/params';
+import { syncWfRangeUi } from '../wfRange';
 
 /// The waterfall's default height: the CSS box the panel always had.
 const WF_DEFAULT_H = 135;
@@ -136,6 +137,7 @@ export function resetWfSplit(half = false): void {
 export function setWaterfall(on: boolean) {
   if (waterfallOn.get() === on) return;
   waterfallOn.set(on);
+  syncWfRangeUi();
   if (on) S.resetWaterfall();
   const wf = document.getElementById('waterfall');
   if (wf) wf.style.display = on ? '' : 'none';

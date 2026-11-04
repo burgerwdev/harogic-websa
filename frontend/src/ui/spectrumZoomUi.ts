@@ -25,7 +25,7 @@ import { fmtAxisLevel } from '../core/level';
 import { displayUnit } from './displayState';
 import { clearDisplayBounds, displayBoundsMax, displayBoundsMin, getDisplayRange, getDisplayTop, hasDisplayBounds, setDisplayBounds } from './displayRef';
 import { syncControlRailZoom } from './controlRail';
-import { cancelLevelPreview, previewCaptureWindow, previewFreqWindow } from './axisDrag';
+import { cancelLevelPreview, previewCaptureWindow, previewFreqWindow, syncFrequencyPreviewView } from './axisDrag';
 import {
 	DETAIL_HINT_SAMPLES,
 	cancelReceiverFocus,
@@ -55,7 +55,7 @@ function railInput(key: string): HTMLInputElement | null {
 
 function syncZoomRail(on: boolean): void {
 	syncControlRailZoom(on);
-	const capture = getCapture(), view = getView();
+	const capture = previewCaptureWindow() ?? getCapture(), view = previewFreqWindow() ?? getView();
 	const ready = on && !!capture && !!view;
 	const horizontal = railInput('horizontal');
 	if (horizontal) {
@@ -107,6 +107,7 @@ function initZoomRail(): void {
 				// Equal slider steps multiply zoom; the current centre stays fixed until an edge clamps it.
 				const span = fullSpan / Math.pow(fullSpan / min, value / 1000);
 				setView(zoomAround(view, span / (view.hi - view.lo), (view.lo + view.hi) / 2, capture, min), min);
+				syncFrequencyPreviewView();
 			} else {
 				cancelLevelPreview();
 				const top = getDisplayTop(), bottom = top - getDisplayRange();
@@ -218,7 +219,7 @@ export function toggleSpectrumZoom(): void {
 	const next = !zoomEnabled.get();
 	zoomEnabled.set(next);
 	// Off always returns to the full window (design §3); On keeps whatever comes next.
-	if (!next) { setView(null); clearDisplayBounds(); }
+	if (!next) { setView(null); syncFrequencyPreviewView(); clearDisplayBounds(); }
 	syncSpectrumZoomUi(true);
 	requestRender();
 }
@@ -227,6 +228,7 @@ export function toggleSpectrumZoom(): void {
 export function resetSpectrumZoom(): void {
 	if (!isSpectrumZoomOn()) return;
 	setView(null);
+	syncFrequencyPreviewView();
 	clearDisplayBounds();
 	syncSpectrumZoomUi(true);
 	requestRender();

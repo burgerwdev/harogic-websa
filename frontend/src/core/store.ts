@@ -231,14 +231,32 @@ export function setViewMode(v: string) { viewMode = v; }
    // freq x amp probability density (signal trace path)
 export const waterfallRows: Uint16Array[] = [];
 export let waterfallPushes = 0;   // monotonic row counter (rows array saturates at 512)
-export function pushWaterfallRow(row: Uint16Array) {
+export const WATERFALL_HISTORY_BYTES = 64 * 1024 * 1024;
+export let waterfallBytes = 0;
+const waterfallAxes = new Map<Float64Array, number>();
+const waterfallRowAxes = new WeakMap<Uint16Array, Float64Array>();
+export function pushWaterfallRow(row: Uint16Array, axis?: Float64Array | null) {
+  waterfallBytes += row.byteLength;
+  if (axis) {
+    waterfallRowAxes.set(row, axis);
+    const count = waterfallAxes.get(axis) ?? 0;
+    waterfallAxes.set(axis, count + 1);
+    if (!count) waterfallBytes += axis.byteLength;
+  }
   waterfallRows.push(row);
   waterfallPushes++;
-  if (waterfallRows.length > 512) waterfallRows.shift();
+  while (waterfallRows.length > 512 || waterfallBytes > WATERFALL_HISTORY_BYTES) {
+    const old = waterfallRows.shift()!;
+    waterfallBytes -= old.byteLength;
+    const axis = waterfallRowAxes.get(old);
+    if (!axis) continue;
+    const refs = waterfallAxes.get(axis)! - 1;
+    if (refs) waterfallAxes.set(axis, refs);
+    else { waterfallAxes.delete(axis); waterfallBytes -= axis.byteLength; }
+  }
 }
-export function resetWaterfall() { waterfallRows.length = 0; waterfallPushes = 0; }
-// Waterfall colour range: Auto = per-frame relative (noise texture always visible),
-// Fixed = an absolute dBm window shared by both modes.
+export function resetWaterfall() { waterfallRows.length = 0; waterfallPushes = 0; waterfallBytes = 0; waterfallAxes.clear(); }
+// Waterfall range and appearance live in ui/waterfallState.ts.
 export let rtaMode = false;
 export function setRtaMode(v: boolean) { rtaMode = v; }
 // SDR mode: reuses the RTA renderer, but auto-scales the amplitude and draws a
