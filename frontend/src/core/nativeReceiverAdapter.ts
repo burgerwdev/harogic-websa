@@ -90,7 +90,7 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
     const service = this.current.service_id;
     const request = { ...command, service_id: service, request_id: `${this.client}:${command.request_id}` };
     const options: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: AbortSignal.timeout(8000) };
-    if (command.type !== 'record_start' && command.type !== 'record_stop') {
+    if (!command.type.startsWith('record_')) {
     const checked = await fetch(`${api}/preflight`, options);
     if (!checked.ok) throw new Error(`Receiver preflight: HTTP ${checked.status}`);
     const impact = await checked.json() as Impact;

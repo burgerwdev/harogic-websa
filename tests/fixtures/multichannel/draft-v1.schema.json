@@ -715,6 +715,8 @@
     "recording": {
       "type": "object",
       "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "audio_format": { "enum": ["wav", "flac", "opus"] },
         "task_id": {
           "type": "string"
         },
@@ -912,7 +914,8 @@
             "audio_range_max_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
             "audio_flac_export": {
               "type": "boolean"
-            }
+            },
+            "audio_opus_export": { "type": "boolean" }
           },
           "required": [
             "max_channels",
@@ -1090,6 +1093,7 @@
     "command_record_start": {
       "type": "object",
       "properties": {
+        "audio_format": { "enum": ["wav", "flac", "opus"] },
         "type": {
           "const": "record_start"
         },
@@ -1140,6 +1144,27 @@
       ],
       "additionalProperties": false
     },
+    "command_record_rename": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "record_rename" },
+        "request_id": { "type": "string" },
+        "task_id": { "type": "string" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": ["type", "request_id", "task_id", "name"],
+      "additionalProperties": false
+    },
+    "command_record_delete": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "record_delete" },
+        "request_id": { "type": "string" },
+        "task_id": { "type": "string" }
+      },
+      "required": ["type", "request_id", "task_id"],
+      "additionalProperties": false
+    },
     "command": {
       "oneOf": [
         {
@@ -1162,7 +1187,9 @@
         },
         {
           "$ref": "#/$defs/command_record_stop"
-        }
+        },
+        { "$ref": "#/$defs/command_record_rename" },
+        { "$ref": "#/$defs/command_record_delete" }
       ]
     },
     "impact": {

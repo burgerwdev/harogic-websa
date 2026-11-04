@@ -5013,6 +5013,8 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         data.join("harogic-websa/recordings").join(port.to_string())
     });
     let presets_root = recording_root.clone();
+    // Probe once during startup, before snapshots take the acquisition lock.
+    let _ = recording::opus::available();
     match tokio::task::spawn_blocking(move||recording::Manager::open(recording_root)).await? {
         Ok(manager)=>state.recordings=Some(manager),
         Err(error)=>{eprintln!("WebSA recording storage unavailable: {error}");state.recording_error=Some(error.to_string());}
@@ -5056,6 +5058,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/sdr/recordings/{task}/results", get(recording::results::export))
         .route("/api/sdr/recordings/{task}/audio", get(recording::audio::export))
         .route("/api/sdr/recordings/{task}/audio/flac", get(recording::flac::export))
+        .route("/api/sdr/recordings/{task}/audio/opus", get(recording::opus::export))
         .route("/api/sdr/recordings/{task}/audio/range", get(recording::audio_read::export))
         .route("/", get(index))
         .route("/static/dist/{*path}", get(static_files))

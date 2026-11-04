@@ -202,9 +202,10 @@ describe('native receiver control and shared IQ', () => {
     expect(link.getAttribute('href')).toBe('/api/sdr/recordings/audio-history/audio'); expect(link.hasAttribute('download')).toBe(true);
     expect(overview.querySelector('a.mc-audio-flac')).toBeNull();
     session.snapshot.capabilities.audio_flac_export = true; session.notify();
+    overview.querySelector<HTMLButtonElement>('[data-format-task="audio-history"][data-format=flac]')!.click();
     const flac = overview.querySelector<HTMLAnchorElement>('a.mc-audio-flac')!;
     expect(flac.getAttribute('href')).toBe('/api/sdr/recordings/audio-history/audio/flac');
-    expect(flac.title).toContain('quantized 24-bit'); expect(flac.hasAttribute('download')).toBe(true);
+    expect(flac.title).toContain('24-bit PCM'); expect(flac.hasAttribute('download')).toBe(true);
     session.notify(); expect(overview.querySelector('a.mc-audio-download')).toBe(link); expect(overview.querySelector('a.mc-audio-flac')).toBe(flac);
     expect(send).toHaveBeenCalledTimes(1); expect(fetchMock).not.toHaveBeenCalled();
     session.snapshot.capabilities.audio_flac_export = false; session.notify(); expect(overview.querySelector('a.mc-audio-flac')).toBeNull();

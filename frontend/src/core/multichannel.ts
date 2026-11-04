@@ -3,6 +3,7 @@ export type ReceiverUid = string;
 export type U64 = string;
 export type Purpose = 'listen' | 'digital' | 'iq';
 export type TrackKind = 'iq' | 'audio' | 'results';
+export type AudioRecordingFormat = 'wav' | 'flac' | 'opus';
 export type TaskState = 'preparing' | 'waiting' | 'recording' | 'finalizing' | 'completed' | 'failed';
 export type NoiseReductionAlgorithm = 'wiener' | 'dfn' | 'gtcrn' | 'ul-unas' | 'fastenhancer';
 export interface StreamIdentity { source_id: string; epoch: U64; channel_id: U64 }
@@ -49,6 +50,7 @@ export interface RecordingTrack {
   raw_bytes: U64; stored_bytes: U64;
 }
 export interface RecordingTask {
+  name?: string; audio_format?: AudioRecordingFormat;
   task_id: string; receiver_uid: ReceiverUid; state: TaskState;
   tracks: RecordingTrack[]; fault: Fault | null;
   service_id?: string; created_at_ms?: U64; accepted_bytes?: U64; queued_bytes?: U64;
@@ -72,7 +74,7 @@ export function receiverHasResults(snapshot: ServiceSnapshot, config: ReceiverCo
 export interface ServiceSnapshot {
   contract: 'multichannel-draft-v1'; transport: 'fixture' | 'native'; revision: U64;
   service_id?: string; state_revision?: U64;
-  capabilities: { receiver_presets?: boolean; max_channels: number; capacity_target: number; modes: string[]; commands?: string[]; recording?: boolean; recording_kinds?: TrackKind[]; recording_unavailable_reason?: string | null; results_archive_export?: boolean; audio_archive_export?: boolean; audio_flac_export?: boolean; audio_archive_read?: boolean; audio_range_max_samples?: U64; audio_range_max_seconds?: number; iq_archive_read?: boolean; iq_range_max_samples?: U64; iq_file_demodulate?: boolean; iq_file_demodulate_modes?: string[]; iq_file_demodulate_max_seconds?: number; iq_file_demodulate_offset?: boolean; iq_archive_collection?: boolean; iq_collection_max_samples?: U64; iq_collection_max_segments?: number; iq_archive_export?: boolean; iq_export_max_samples?: U64; monitor_mixing?: boolean; mode_descriptors?: ReceiverMode[] };
+  capabilities: { receiver_presets?: boolean; max_channels: number; capacity_target: number; modes: string[]; commands?: string[]; recording?: boolean; recording_kinds?: TrackKind[]; recording_unavailable_reason?: string | null; results_archive_export?: boolean; audio_archive_export?: boolean; audio_flac_export?: boolean; audio_opus_export?: boolean; audio_archive_read?: boolean; audio_range_max_samples?: U64; audio_range_max_seconds?: number; iq_archive_read?: boolean; iq_range_max_samples?: U64; iq_file_demodulate?: boolean; iq_file_demodulate_modes?: string[]; iq_file_demodulate_max_seconds?: number; iq_file_demodulate_offset?: boolean; iq_archive_collection?: boolean; iq_collection_max_samples?: U64; iq_collection_max_segments?: number; iq_archive_export?: boolean; iq_export_max_samples?: U64; monitor_mixing?: boolean; mode_descriptors?: ReceiverMode[] };
   capture: { source_id: string; center_hz: number; usable_bandwidth_hz: number | null;
     input_rate_hz: number | null; epoch: U64; state: 'running' | 'failed' | 'idle';
     parameters_state?: 'live' | 'last_known' | 'unknown' | 'simulated'; source_kind?: 'fixture' | 'hardware' };
@@ -93,8 +95,10 @@ export interface SceneCommand {
   capture_center_hz: number;
 }
 export type ServiceCommand = ConfigureCommand | SceneCommand
-  | { type: 'record_start'; request_id: string; receiver_uid: ReceiverUid; kinds: TrackKind[] }
+  | { type: 'record_start'; request_id: string; receiver_uid: ReceiverUid; kinds: TrackKind[]; audio_format?: AudioRecordingFormat }
   | { type: 'record_stop'; request_id: string; task_id: string }
+  | { type: 'record_rename'; request_id: string; task_id: string; name: string }
+  | { type: 'record_delete'; request_id: string; task_id: string }
   | { type: 'output'; request_id: string; receiver_uid: ReceiverUid; enabled: boolean }
   | { type: 'create'; request_id: string; config: ReceiverConfig }
   | { type: 'retire'; request_id: string; receiver_uid: ReceiverUid };

@@ -1,4 +1,4 @@
-import { clone, receiverHasAudio, receiverHasResults, type ReceiverState, type ReceiverConfig, type ReceiverMode, type ViewBinding, type SceneCommand, type TrackKind, type RecordingTask, type Fault } from '../core/multichannel';
+import { clone, receiverHasAudio, receiverHasResults, type ReceiverState, type ReceiverConfig, type ReceiverMode, type ViewBinding, type SceneCommand, type TrackKind, type RecordingTask, type AudioRecordingFormat, type Fault } from '../core/multichannel';
 import { getLang, onLangChange, t } from '../core/i18n';
 import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { WorkbenchSession } from './workbenchSession';
@@ -10,6 +10,8 @@ import { workbenchIcon as icon } from './workbenchIcons';
 import { convertUnitValue } from '../core/units';
 import { frequencyInput, formatFrequencyValue, syncFrequencyInputs, wireFrequencyInputs } from './frequencyInput';
 import { mountRecordingView } from './recordingView';
+import { mountRecordingLibrary } from './recordingLibrary';
+import { audioDownload, audioFormatMenu, formatAvailable, formatLabel, rememberAudioFormat, savedAudioFormat, syncAudioFormatMenus, wireAudioFormatMenus } from './recordingFormats';
 import { mountQuickListen } from './quickListen';
 import { mountReceiverPresets } from './receiverPresets';
 import { resumeNativeAudio, sdrAudioNeedsGesture } from '../audio/sdrAudio';
@@ -17,7 +19,7 @@ import type { DecoderLogEntry } from '../sdr/decoderLog';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-const button = (action: string, text: string, extra = '', tip = workbenchTip(action)): string => `<button type="button" data-action="${action}" title="${esc(tip)}" ${extra}>${icon(({ create: 'plus', listen: 'volume', results: 'signal', detail: 'external', 'follow-results': 'external', 'channel-view': 'signal', recordings: 'record', 'master-mute': 'muted', 'tab-receive': 'signal', 'tab-recording': 'record', 'tab-output': 'external' } as Record<string, string>)[action] ?? (action.startsWith('rec-') ? 'record' : ''))}<span>${esc(text)}</span></button>`;
+const button = (action: string, text: string, extra = '', tip = workbenchTip(action)): string => `<button type="button" data-action="${action}" title="${esc(tip)}" ${extra}>${icon(({ create: 'plus', listen: 'volume', results: 'signal', detail: 'external', 'follow-results': 'external', 'channel-view': 'signal', recordings: 'record', 'recording-files': 'folder', 'master-mute': 'muted', 'tab-receive': 'signal', 'tab-recording': 'record', 'tab-output': 'external' } as Record<string, string>)[action] ?? (action.startsWith('rec-') ? 'record' : ''))}<span>${esc(text)}</span></button>`;
 const panLabel = (value: number): string => value === 0 ? l('Centre', '居中') : `${value < 0 ? l('L', '左') : l('R', '右')} ${Math.round(Math.abs(value) * 100)}%`;
 const labels = () => ({ listen: l('Audio demodulation', '音频解调'), digital: l('Protocol decoding', '协议解码'), iq: l('No demodulation', '不解调') });
 const audioSettings = (c: ReceiverConfig, audio: boolean): string => {
@@ -66,7 +68,7 @@ const receiverLabel = (state: string): string => ({ running: l('Receiving', '接
 const taskLabel = (state: string): string => ({ preparing: l('Preparing', '准备'), waiting: l('Waiting', '等待'), recording: l('Recording', '记录中'),
   finalizing: l('Finalizing', '收尾'), completed: l('Completed', '完成'), failed: l('Failed', '失败') })[state] ?? state;
 interface Draft { values: Record<string, string | boolean>; revision: string }
-interface Pane { window: FloatingWindow; title(): string; kind: 'overview' | 'detail' | 'results'; binding: ViewBinding; tab: string; renderedUid?: string; renderedTab?: string; decode?: ReceiverDecodeView; inlineDecode?: { root: HTMLElement; view: ReceiverDecodeView }; create?: ReturnType<typeof mountWorkbenchCreate>; presets?: { root: HTMLElement; dispose(): void }; dirty?: boolean; expanded: Set<string>; interacting?: boolean; drafts: Map<string, Draft>; service?: string; savedUid?: string; unwireFrequency?(): void }
+interface Pane { window: FloatingWindow; title(): string; kind: 'overview' | 'detail' | 'results'; binding: ViewBinding; tab: string; renderedUid?: string; renderedTab?: string; decode?: ReceiverDecodeView; inlineDecode?: { root: HTMLElement; view: ReceiverDecodeView }; create?: ReturnType<typeof mountWorkbenchCreate>; presets?: { root: HTMLElement; dispose(): void }; dirty?: boolean; expanded: Set<string>; interacting?: boolean; drafts: Map<string, Draft>; service?: string; savedUid?: string; unwireFrequency?(): void; unwireFormats?(): void }
 
 interface NativeViews {
   results(uid: string): { entries: readonly DecoderLogEntry[]; evicted: number };
@@ -97,10 +99,31 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   const archives = mountRecordingView({ demodulateOffset: () => !!session.snapshot.capabilities.iq_file_demodulate_offset, demodulateModes: () => session.snapshot.capabilities.iq_file_demodulate ? session.snapshot.capabilities.iq_file_demodulate_modes ?? [] : [], collection: () => !!session.snapshot.capabilities.iq_archive_collection, streaming: () => !!session.snapshot.capabilities.iq_archive_export, exportLimit: () => session.snapshot.capabilities.iq_export_max_samples ?? '1048576' });
   let audioArchives: ReturnType<typeof import('./recordingAudioView').mountRecordingAudioView> | null = null;
   let disposed = false;
-  const archiveButton = (task: RecordingTask): string => !fixture && session.snapshot.capabilities.audio_archive_export && ['completed', 'failed'].includes(task.state) && task.tracks.some(track => track.kind === 'audio')
-    ? `${session.snapshot.capabilities.audio_archive_read && task.tracks.some(t => t.kind === 'audio' && t.segments.some(s => BigInt(s.samples) > 0n)) ? button('audio-archive', l('Play audio', '音频试听'), `data-archive-task="${esc(task.task_id)}"`, l('Play a selected original published audio range; live monitoring is independent', '试听所选原始发布音频；实时监听独立')) + ' ' : ''}<a data-key="audio-wav" class="mc-audio-download" href="/api/sdr/recordings/${encodeURIComponent(task.task_id)}/audio" download title="${l('Download exact published Float32 WAV segments and source clocks; browser volume and pan are excluded', '下载实际发布音频的 Float32 WAV 片段及源时钟；不含浏览器音量和声像')}">${l('Download audio', '下载音频')}</a>${session.snapshot.capabilities.audio_flac_export ? ` <a data-key="audio-flac" class="mc-audio-flac" href="/api/sdr/recordings/${encodeURIComponent(task.task_id)}/audio/flac" download title="${l('Export published audio as quantized 24-bit PCM FLAC at the original rate; fixed scale, clipping counts and source clocks included. Original Float32 recording is retained.', '将实际发布音频量化为 24 位 PCM FLAC，保持原采样率；附固定比例、削顶统计和源时钟。保留原 Float32 录音。')}">${l('FLAC · 24 bit', 'FLAC · 24 位')}</a>` : ''}` : !fixture && session.snapshot.capabilities.results_archive_export && ['completed', 'failed'].includes(task.state) && task.tracks.some(track => track.kind === 'results')
-    ? `<a class="mc-results-download" href="/api/sdr/recordings/${encodeURIComponent(task.task_id)}/results" download title="${l('Download saved events and original image updates with task metadata', '下载已保存事件、原始图像更新及任务信息')}">${l('Download results', '下载结果')}</a>` : !fixture && session.snapshot.capabilities.iq_archive_read && ['completed', 'failed'].includes(task.state) && task.tracks.some(track => track.kind === 'iq' && track.segments.some(s => BigInt(s.samples) > 0n))
-    ? button('archive', l('Waveform / SigMF', '波形回放 / SigMF'), `data-archive-task="${esc(task.task_id)}"`, l('Inspect saved IQ or download a selected range; live reception continues', '查看已保存 IQ 或下载所选范围；实时接收继续')) : '';
+  let preferredFormat = savedAudioFormat();
+  const taskFormats = new Map<string, AudioRecordingFormat>();
+  const selectedFormat = (task?: RecordingTask): AudioRecordingFormat => {
+    const format = task ? taskFormats.get(task.task_id) ?? task.audio_format ?? 'wav' : preferredFormat;
+    return formatAvailable(session.snapshot, format) ? format : 'wav';
+  };
+  const openAudio = (task: RecordingTask): void => {
+    void import('./recordingAudioView').then(module => {
+      if (!disposed) { audioArchives ??= module.mountRecordingAudioView(); audioArchives.open(task); }
+    });
+  };
+  const archiveButton = (task: RecordingTask): string => {
+    if (fixture || !['completed', 'failed'].includes(task.state)) return '';
+    const caps = session.snapshot.capabilities;
+    if (caps.audio_archive_export && task.tracks.some(t => t.kind === 'audio')) {
+      const play = caps.audio_archive_read && task.tracks.some(t => t.kind === 'audio' && t.segments.some(s => BigInt(s.samples) > 0n))
+        ? button('audio-archive', l('Play audio', '音频试听'), `data-archive-task="${esc(task.task_id)}"`, l('Listen to saved audio; live monitoring continues independently', '试听已保存音频；实时监听独立运行')) : '';
+      return play + audioDownload(task, selectedFormat(task), session.snapshot);
+    }
+    if (caps.results_archive_export && task.tracks.some(t => t.kind === 'results')) return `<a class="mc-results-download" href="/api/sdr/recordings/${encodeURIComponent(task.task_id)}/results" download title="${l('Download messages, images and task metadata', '下载消息、图像及录制信息')}">${l('Download results', '下载结果')}</a>`;
+    if (caps.iq_archive_read && task.tracks.some(t => t.kind === 'iq' && t.segments.some(s => BigInt(s.samples) > 0n))) return button('archive', l('Waveform / SigMF', '波形回放 / SigMF'), `data-archive-task="${esc(task.task_id)}"`, l('Inspect saved IQ or export files', '回放已保存 IQ 或导出文件'));
+    return '';
+  };
+  const library = mountRecordingLibrary(session, { archive: archiveButton, openAudio, openIq: task => archives.open(task),
+    chooseFormat: (id, format) => { if (formatAvailable(session.snapshot, format)) { taskFormats.set(id, format); session.notify(); } } });
   const available = (command: string): boolean => fixture || !!session.snapshot.capabilities.commands?.includes(command);
   const applyCapabilities = (body: HTMLElement): void => {
     if (fixture) return;
@@ -132,7 +155,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   const recordButton = (uid: string, kind: TrackKind): string => {
     const task = activeTask(uid, kind);
     const name = kind === 'results' ? l('results', '结果') : kind === 'audio' ? l('audio', '音频') : kind.toUpperCase();
-    return button(`rec-${kind}`, task ? task.state === 'finalizing' ? l('Finalizing…', '收尾中…') : l(`Stop ${name} REC`, `停止 ${name} 记录`) : l(`Record ${name}`, `录制 ${name}`), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${task?.state === 'finalizing' || !task && receiver(uid)?.state !== 'running' ? 'disabled' : ''}`, task ? l('Stop this recording and finish saving the file; reception continues', '停止这项录制并完成文件保存；该路继续接收') : kind === 'audio' ? l('Record published audio with shared gain and processing; local speaker controls are excluded', '录制含共享增益与处理的实际输出音频；不含本地扬声器设置') : l(`Save ${name} on the server; listening and decoding can run at the same time`, `在服务器录制 ${name}；可同时监听和解码`));
+    const control = button(`rec-${kind}`, task ? task.state === 'finalizing' ? l('Finalizing…', '收尾中…') : l(`Stop ${name} REC`, `停止 ${name} 记录`) : l(`Record ${name}`, `录制 ${name}`), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${task?.state === 'finalizing' || !task && receiver(uid)?.state !== 'running' ? 'disabled' : ''}`, task ? l('Stop this recording and finish saving the file; reception continues', '停止这项录制并完成文件保存；该路继续接收') : kind === 'audio' ? l('Record published audio with shared gain and processing; local speaker controls are excluded', '录制含共享增益与处理的实际输出音频；不含本地扬声器设置') : l(`Save ${name} on the server; listening and decoding can run at the same time`, `在服务器录制 ${name}；可同时监听和解码`));
+    if (kind !== 'audio') return control;
+    return `<span class="mc-record-controls">${task ? `<span class="mc-record-format" title="${l('Format selected when recording started', '开始录制时选择的格式')}">${formatLabel(task.audio_format ?? 'wav')}</span>` : audioFormatMenu(session.snapshot, selectedFormat(), { receiver: uid })}${control}</span>`;
   };
   const taskSummary = (r: ReceiverState): string => session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid)
     .slice(-3).map(t => `${t.tracks.map(k => k.kind.toUpperCase()).join('+')}: ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}${t.fault ? ` · ${t.fault.message}` : ''}`).join(' / ') || '—';
@@ -170,7 +195,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const task = activeTask(uid, kind);
     if (task?.state === 'finalizing') return;
     send(task ? { type: 'record_stop', request_id: session.requestId(), task_id: task.task_id }
-      : { type: 'record_start', request_id: session.requestId(), receiver_uid: uid, kinds: [kind] });
+      : { type: 'record_start', request_id: session.requestId(), receiver_uid: uid, kinds: [kind], ...(kind === 'audio' ? { audio_format: selectedFormat() } : {}) });
   };
   const resultLabel = (c: ReceiverConfig): string => ['am', 'dsb', 'usb', 'lsb', 'nfm', 'wfm', 'pm', 'drm', 'drmplus'].includes(c.processors[0]?.mode) ? l('Signal info', '信号信息') : l('Results', '查看结果');
   const modeOptions = (c: ReceiverConfig): string => `<option value="" ${!c.processors.length ? 'selected' : ''}>${l('None · IQ only', '不解调 · 仅接收 IQ')}</option>` + (session.snapshot.capabilities.mode_descriptors ?? []).map(mode =>
@@ -273,7 +298,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     }
     if (pane.tab === 'recording') content = `<div class="mc-output-heading"><h3>${l('Capture what matters', '记录需要的信号')}</h3><p>${l('Choose what to save. Each recording runs independently of local listening.', '选择需要保存的内容，录制可与本地监听同时进行。')}</p></div><div class="mc-record-options">
       ${(['audio', 'results', 'iq'] as const).filter(kind => recordKind(kind) && (kind === 'iq' || activeTask(r.receiver_uid, kind) || (kind === 'audio' ? receiverHasAudio(session.snapshot, c) : receiverHasResults(session.snapshot, c)))).map(kind => `<article class="mc-record-kind"><div><h3>${kind === 'audio' ? l('Audio recording', '音频录制') : kind === 'results' ? l('Decoded results', '解码结果') : l('Raw IQ signal', '原始 IQ 信号')}</h3><p>${kind === 'audio' ? l('Save demodulated audio for playback and download.', '保存解调后的音频，支持回听与下载。') : kind === 'results' ? l('Save decoded messages, events and received images.', '保存解码消息、事件和接收图像。') : l('Keep the original signal for playback and further analysis.', '保留原始信号，用于回放和后续分析。')}</p></div>${recordButton(r.receiver_uid, kind)}</article>`).join('')}</div>
-      <div class="mc-record-heading"><h3>${l('Recording history', '录制记录')}</h3><span>${session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid).length} ${l('tasks', '项任务')}</span></div>
+      <div class="mc-record-heading"><h3>${l('Recording history', '录制记录')}</h3>${button('recording-files', l('All files', '全部文件'), 'class="mc-quiet"', l('Manage recordings from every channel', '管理所有信道的录制文件'))}<span>${session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid).length} ${l('tasks', '项任务')}</span></div>
       ${!session.snapshot.recordings.some(t => t.receiver_uid === r.receiver_uid) ? `<div class="mc-workspace-empty mc-record-empty">${icon('record')}<h2>${l('No recordings yet', '还没有录制记录')}</h2><p>${l('Start a recording above. Stop it here when you are ready to play or export the file.', '从上方开始录制，结束后在此试听或导出文件。')}${fixture ? l(' Demo mode simulates recording without writing files.', '演示模式仅模拟录制，不写入文件。') : ''}</p></div>` : ''}
       ${session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid).slice(-10).reverse().map(t => `<article class="mc-task" data-task-id="${esc(t.task_id)}" data-task-state="${t.state}"><b>${t.tracks.map(track => track.kind.toUpperCase()).join(' + ')} · ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}</b>
         ${t.fault ? `<p class="mc-error" role="alert">${esc(t.fault.message)}</p>` : ''}${archiveButton(t)}
@@ -324,8 +349,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       const rows = all.filter(r => `${r.confirmed.name} ${r.confirmed.baseband.frequency_hz} ${r.confirmed.baseband.frequency_hz / 1e6} MHz ${r.confirmed.baseband.frequency_hz / 1000} kHz ${r.confirmed.processors[0]?.mode ?? 'IQ'} ${r.confirmed.tags.join(' ')}`.toLowerCase().includes(search.trim().toLowerCase())
         && (channelFilter === 'all' || channelFilter === 'listening' && receiverHasAudio(session.snapshot, r.confirmed) && session.listening(r.receiver_uid) || channelFilter === 'recording' && recording(r.receiver_uid)));
       const capture = session.snapshot.capture;
-      const history = !fixture && session.snapshot.recordings.some(t => !receiver(t.receiver_uid)) ? `<details class="mc-history" data-section="recording-history" ${pane.expanded.has('recording-history') ? 'open' : ''}><summary>${l('Earlier recording tasks', '历史记录任务')}</summary>${session.snapshot.recordings.filter(t => !receiver(t.receiver_uid)).slice(-20).reverse().map(t => `<p class="mc-clock">${esc(t.task_id)} · ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}<br>${esc(t.fault?.message ?? '')}${archiveButton(t)}</p>`).join('')}</details>` : '';
-      patch(`<header data-key="workspace-head" class="mc-workspace-head"><div><h1>${l('Channel workbench', '信道工作台')}<span class="mc-workspace-count">${all.length} / ${session.snapshot.capabilities.max_channels}</span></h1></div><div class="mc-workspace-actions">${fixture || capture.source_kind === 'fixture' ? `<span class="mc-source-badge">${fixture ? l('Demo', '演示模式') : l('Synthetic source', '模拟源')}</span>` : ''}${button('follow-results', l('Results window', '结果窗口'), `class="mc-quiet" aria-label="${l('Results window', '结果窗口')}"`)}${button('create', l('Add channel', '添加信道'), `class="mc-primary" ${all.length >= session.snapshot.capabilities.max_channels || !available('create') ? 'disabled' : ''}`, all.length >= session.snapshot.capabilities.max_channels ? l('Channel limit reached; delete an unused channel to add one', '信道路数已满，可删除不需要的信道后再添加') : workbenchTip('create'))}</div></header>
+      const history = !fixture && session.snapshot.recordings.some(t => !receiver(t.receiver_uid)) ? `<details class="mc-history" data-section="recording-history" ${pane.expanded.has('recording-history') ? 'open' : ''}><summary>${l('Earlier recording tasks', '历史记录任务')}</summary>${session.snapshot.recordings.filter(t => !receiver(t.receiver_uid)).slice(-20).reverse().map(t => `<div class="mc-clock" data-task-id="${esc(t.task_id)}">${esc(t.task_id)} · ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}<br>${esc(t.fault?.message ?? '')}${archiveButton(t)}</div>`).join('')}</details>` : '';
+      patch(`<header data-key="workspace-head" class="mc-workspace-head"><div><h1>${l('Channel workbench', '信道工作台')}<span class="mc-workspace-count">${all.length} / ${session.snapshot.capabilities.max_channels}</span></h1></div><div class="mc-workspace-actions">${fixture || capture.source_kind === 'fixture' ? `<span class="mc-source-badge">${fixture ? l('Demo', '演示模式') : l('Synthetic source', '模拟源')}</span>` : ''}${button('follow-results', l('Results window', '结果窗口'), `class="mc-quiet" aria-label="${l('Results window', '结果窗口')}"`)}${button('recording-files', l('Recording files', '录制文件'), 'class="mc-quiet"', l('Find, play, download, rename or delete recordings', '查找、试听、下载、重命名或删除录制文件'))}${button('create', l('Add channel', '添加信道'), `class="mc-primary" ${all.length >= session.snapshot.capabilities.max_channels || !available('create') ? 'disabled' : ''}`, all.length >= session.snapshot.capabilities.max_channels ? l('Channel limit reached; delete an unused channel to add one', '信道路数已满，可删除不需要的信道后再添加') : workbenchTip('create'))}</div></header>
       <details data-key="capture-bar" class="mc-capture-bar" data-section="capture" ${pane.expanded.has('capture') ? 'open' : ''}><summary><span><i class="mc-state-dot" data-state="${capture.state}"></i>${l('Shared capture', '共享采集')}<strong>${capture.center_hz / 1e6} MHz</strong><span class="mc-capture-band">${capture.usable_bandwidth_hz === null ? l('Unknown bandwidth', '带宽未知') : `${capture.usable_bandwidth_hz / 1000} kHz`}</span></span><span>${all.filter(r => r.state === 'running').length} ${l('receiving', '路接收中')}</span></summary><p data-capture-status class="mc-clock">${esc(captureSummary())}</p>${fixture ? `<p class="mc-notice">${l('Simulated data. No actual reception, audio or saved files.', '当前为模拟数据，不进行实际接收、播放或文件写入。')}</p>` : ''}</details>
       ${session.fault ? `<p data-key="session-fault" class="mc-error" role="alert">${esc(session.fault.code)}: ${esc(faultText(session.fault))} ${button('dismiss-fault', l('Dismiss', '关闭'))}</p>` : ''}
       <div data-key="content" class="mc-content"><aside data-key="sidebar" class="mc-sidebar" aria-label="${l('Channels', '信道列表')}"><div class="mc-sidebar-head"><h2>${l('Channels', '我的信道')}</h2><span>${all.length}</span></div><label data-key="search" class="mc-search">${icon('search')}<input data-search type="search" aria-label="${l('Find channel by name, frequency or mode', '按名称、频率或模式查找信道')}" placeholder="${l('Name, frequency or mode', '名称、频率或模式')}" value="${esc(search)}"></label>
@@ -369,6 +394,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       if (presetsRoot) pane.presets = { root: presetsRoot, dispose: mountReceiverPresets(presetsRoot, session, uid, config => preview(pane, uid, config)) };
     }
     applyCapabilities(body);
+    syncAudioFormatMenus(body);
   }
   function showScene(pane: Pane): void {
     if (!scene) return;
@@ -391,6 +417,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       : { x: 170 + index * 35, y: 180 + index * 25, w: kind === 'results' ? 620 : 500, h: kind === 'results' ? 520 : 470 });
     const pane: Pane = { kind, binding, window: surface, title, tab: 'receive', expanded: new Set(), drafts: new Map(), service: session.snapshot.service_id }; panes.set(id, pane);
     pane.unwireFrequency = wireFrequencyInputs(surface.body);
+    pane.unwireFormats = wireAudioFormatMenus(surface.body);
     surface.body.addEventListener('toggle', event => {
       const section = event.target as HTMLDetailsElement;
       if (section.matches('details[data-section]') && section.isConnected) {
@@ -420,6 +447,10 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     // Bind release to the current document so Pop out/Dock and releasing outside work too.
     surface.body.addEventListener('click', () => { clearGesture(); pane.interacting = false; }, true);
     surface.body.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        const menu = (event.target as HTMLElement).closest<HTMLDetailsElement>('[data-format-menu]');
+        if (menu?.open) { menu.open = false; menu.querySelector('summary')?.focus(); event.preventDefault(); event.stopPropagation(); return; }
+      }
       if (fixture) return;
       resumeNativeAudio();
       if (event.key.toLowerCase() === 'm' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing
@@ -459,6 +490,15 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       else if (action === 'detail') { session.select(uid); open('detail', { type: 'fixed', receiver_uid: uid }); }
       else if (action === 'results') open('results', { type: 'fixed', receiver_uid: uid });
       else if (action === 'follow-results') open('results');
+      else if (action === 'recording-files') library.open();
+      else if (action === 'choose-audio-format') {
+        const format = target.dataset.format as AudioRecordingFormat;
+        if (!formatAvailable(session.snapshot, format)) return;
+        const menu = target.closest<HTMLDetailsElement>('[data-format-menu]'); if (menu) menu.open = false;
+        if (target.dataset.formatTask) taskFormats.set(target.dataset.formatTask, format);
+        else { preferredFormat = format; rememberAudioFormat(format); }
+        session.notify(); menu?.querySelector('summary')?.focus();
+      }
       else if (action === 'toggle-receiver' && r) void session.configure(uid, { ...clone(r.confirmed), enabled: !r.confirmed.enabled });
       else if (action === 'listen') session.monitor(uid, { enabled: !session.listening(uid) });
       else if (action === 'resume-audio') resumeNativeAudio();
@@ -468,9 +508,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       else if (action.startsWith('rec-')) record(uid, action.slice(4) as TrackKind);
       else if (action === 'audio-archive') {
         const task = session.snapshot.recordings.find(t => t.task_id === target.dataset.archiveTask);
-        if (task) void import('./recordingAudioView').then(module => {
-          if (!disposed) { audioArchives ??= module.mountRecordingAudioView(); audioArchives.open(task); }
-        });
+        if (task) openAudio(task);
       }
       else if (action === 'archive') {
         const task = session.snapshot.recordings.find(t => t.task_id === target.dataset.archiveTask);
@@ -669,7 +707,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       `<button type="button" data-key="${esc(r.receiver_uid)}" title="${l('Select this channel for editing', '选中此信道以编辑设置')}" data-marker-uid="${esc(r.receiver_uid)}" style="left:${50 + (r.confirmed.baseband.frequency_hz - session.snapshot.capture.center_hz) / session.snapshot.capture.usable_bandwidth_hz! * 100}%;top:${r.display_number % 2 * 28 + 8}px;border-color:${esc(r.confirmed.color)}">${esc(`C${r.display_number} ${r.confirmed.name}${session.route(r.receiver_uid).enabled ? ` · ${l('Listen', '监听')}` : ''}`)}</button>`).join(''));
     panes.forEach(pane => renderPane(pane));
   };
-  const recall = (reset = false): void => { panes.forEach(pane => pane.window.recall(reset)); archives.recall(reset); audioArchives?.recall(reset); };
+  const recall = (reset = false): void => { panes.forEach(pane => pane.window.recall(reset)); archives.recall(reset); audioArchives?.recall(reset); library.recall(reset); };
   host.innerHTML = `<header class="mc-banner"><b>HAROGIC WebSA</b><span>${l('Multichannel development prototype', '多信道开发原型')} · FIXTURE</span></header>
     <main class="mc-desktop"><div class="mc-plots"><div class="mc-spectrum" tabindex="0" aria-label="Spectrum"><span>FIXTURE / dBFS · ${l('Right-click to add listening', '右键加入监听')}</span><div data-markers></div><div class="mc-trace"></div></div><div class="mc-waterfall" tabindex="0" aria-label="Waterfall"><span>${l('Illustrative waterfall · right-click to add listening', '示意瀑布 · 右键加入监听')}</span></div></div>
     <aside><b>${l('Shared capture', '共享采集')}</b><p data-capture></p>${button('quick-listen', l('＋ Listen to frequency', '＋ 监听频点'))}<p data-listen-status role="status"></p>${button('workbench', l('Channel workbench', '信道工作台'))}${button('recall', l('Recall all windows', '召回全部窗口'))}${button('reset', l('Reset layout', '重置布局'))}
@@ -722,5 +760,5 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     }, 50);
   });
   const unsubscribe = session.subscribe(render); const stopLang = onLangChange(() => { panes.forEach(p => p.window.sync()); render(); }); render();
-  return { recall, showOverview: () => open('overview'), dispose: () => { document.removeEventListener('websa:sdr-audio-gesture', audioState); unsubscribeResults(); clearTimeout(resultsTimer); unsubscribe(); stopLang(); quickListen.dispose(); archives.dispose(); disposed = true; audioArchives?.dispose(); panes.forEach(p => { p.unwireFrequency?.(); p.create?.dispose(); p.inlineDecode?.view.dispose(); p.presets?.dispose(); p.decode?.dispose(); p.window.dispose(); }); } };
+  return { recall, showOverview: () => open('overview'), dispose: () => { document.removeEventListener('websa:sdr-audio-gesture', audioState); unsubscribeResults(); clearTimeout(resultsTimer); unsubscribe(); stopLang(); quickListen.dispose(); library.dispose(); archives.dispose(); disposed = true; audioArchives?.dispose(); panes.forEach(p => { p.unwireFrequency?.(); p.unwireFormats?.(); p.create?.dispose(); p.inlineDecode?.view.dispose(); p.presets?.dispose(); p.decode?.dispose(); p.window.dispose(); }); } };
 }

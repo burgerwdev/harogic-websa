@@ -13,11 +13,11 @@ P6 首个切片为 `receiver_presets`：服务器持久保存单信道已确认�
 
 `iq_file_demodulate` 能力开放只读有界模拟文件处理，`iq_file_demodulate_modes` 发布 AM／USB／LSB／NFM，时长上限60秒。原任务／服务／UID及逐块u64／分数时钟留在来源中；相对时间Float32音频为派生快照，不是恢复录制、协议输入或实时接收器。不分配／重绑硬件槽，原生DSP及响应共用单读名额和有界传输。播放器与下载tar来自同份结果，编辑／隐藏／销毁会取消并释放。见 [API](API.md) 及 `native_multichannel_demod.py`；数字文件解码继续后续交付。
 
-`audio_flac_export` 为已结束的发布音频任务及原身份恢复前缀增加只读 FLAC 导出。各既有源片段按真实率／声道转换为 signed-24 PCM，固定比例舍入，明确统计饱和值。无损针对已量化的整数输入；原 Float32 位模式仍保存在 WBAU0001 与 WAV 导出中。文件附任务／UID／服务及未改动的逐帧来源。离线有界转换复用单下载名额，不创建实时接收器，不增加来源种类、不自动续录或声称支持 Opus。见 [API](API.md) 与 `native_multichannel_flac.py`。
+`audio_flac_export` 为已结束的发布音频任务及原身份恢复前缀增加只读 FLAC 导出。各既有源片段按真实率／声道转换为 signed-24 PCM，固定比例舍入，明确统计饱和值。无损针对已量化的整数输入；原 Float32 位模式仍保存在 WBAU0001 与 WAV 导出中。文件附任务／UID／服务及未改动的逐帧来源。离线有界转换复用单下载名额，不创建实时接收器，不增加来源种类或自动续录；Opus 导出和文件管理现已另行提供；详情见 [API](API.md) 与 `native_multichannel_flac.py`。
 
-P5 现支持 `kinds:["audio"]` 与 `audio_archive_export`，按描述符实际能力录制 AUD2 PCM，包含数字伴随音频与 codec 输出。`source:"published_audio"`／`format:"f32_le"` 与协议输入或分析音频分开；实际包配置、精确源时钟和样本位模式跨源／格式边界及前缀恢复保留。结束任务下载 Float32 WAV 片段与逐帧时间线，排除浏览器扬声器设置；后端任务共用既有三个 worker。协议输入录制、Opus 与数字文件解码仍待后续。详见 [API](API.md) 及 [DEVELOPMENT](DEVELOPMENT.md) 的独立 `native_multichannel_audio.py` 门禁。
+P5 现支持 `kinds:["audio"]` 与 `audio_archive_export`，按描述符实际能力录制 AUD2 PCM，包含数字伴随音频与 codec 输出。`source:"published_audio"`／`format:"f32_le"` 与协议输入或分析音频分开；实际包配置、精确源时钟和样本位模式跨源／格式边界及前缀恢复保留。结束任务下载 Float32 WAV 片段与逐帧时间线，排除浏览器扬声器设置；后端任务共用既有三个 worker。协议输入录制与数字文件解码仍待后续，Opus 导出现已另行提供。详见 [API](API.md) 及 [DEVELOPMENT](DEVELOPMENT.md) 的独立 `native_multichannel_audio.py` 门禁。
 
-P5 现已提供后端 `kinds:["results"]` 任务和 `results_archive_export`，消费实际 SDE2 发布支路；同 UID 可另启 IQ 任务。工作台按模式实际输出（含模拟模式遥测）决定能力，不按 `purpose` 排除。WBRS0001 恢复、准确增量图像及校验 tar／JSONL 下载语义见 [API](API.md)。浏览器消息／PNG 导出仍是有界会话快照；协议输入音频、Opus 和数字文件解码尚未实现。
+P5 现已提供后端 `kinds:["results"]` 任务和 `results_archive_export`，消费实际 SDE2 发布支路；同 UID 可另启 IQ 任务。工作台按模式实际输出（含模拟模式遥测）决定能力，不按 `purpose` 排除。WBRS0001 恢复、准确增量图像及校验 tar／JSONL 下载语义见 [API](API.md)。浏览器消息／PNG 导出仍是有界会话快照；协议输入音频和数字文件解码尚未实现。
 
 状态：draft-v1，包含 P2 原型/实验、原生 P3 接收/IQ 和 P4 监听/结果及 P5 后端 IQ 记录切片，服务契约仍在演进。最初产品基线为
 `3978ed2439f0bf9385414122e3e720b0a63f2b99`。设计依据是仓库外三份多信道方案。

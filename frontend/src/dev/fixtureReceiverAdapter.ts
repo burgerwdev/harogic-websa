@@ -161,6 +161,7 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
       if (this.state.recordings.some(t => t.receiver_uid === r.receiver_uid && ['preparing', 'recording', 'finalizing'].includes(t.state) && t.tracks.some(track => command.kinds.includes(track.kind)))) return fault('BUSY', 'Recording already active');
       const id = `fixture-task-${this.nextId++}`;
       const task: RecordingTask = { task_id: id, receiver_uid: r.receiver_uid, state: 'preparing', fault: null,
+        name: r.confirmed.name, created_at_ms: String(Date.now()), ...(command.audio_format ? { audio_format: command.audio_format } : {}),
         tracks: command.kinds.map(kind => ({ track_id: `${id}-${kind}`, kind,
           source: kind === 'iq' ? 'baseband' : kind === 'audio' ? 'analysis_audio' : 'decoder_results',
           format: kind === 'iq' ? 'cf32_le' : kind === 'audio' ? 'pcm_f32' : 'jsonl',
@@ -172,6 +173,15 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
       const task = this.state.recordings.find(t => t.task_id === command.task_id);
       if (!task || !['preparing', 'recording', 'waiting'].includes(task.state)) return fault('TASK_STATE', 'Task cannot be stopped');
       this.finish(task);
+    } else if (command.type === 'record_rename' || command.type === 'record_delete') {
+      const task = this.state.recordings.find(t => t.task_id === command.task_id);
+      if (!task || !['completed', 'failed'].includes(task.state)) return fault('TASK_STATE', 'Stop recording before managing files');
+      if (command.type === 'record_delete') this.state.recordings = this.state.recordings.filter(t => t !== task);
+      else {
+        const name = command.name.trim();
+        if (!name || [...name].length > 128 || /[\u0000-\u001f\u007f]/.test(name)) return fault('INVALID_NAME', 'Use 1 to 128 characters');
+        task.name = name;
+      }
     } else if (command.type === 'output') {
       const r = this.state.receivers.find(r => r.receiver_uid === command.receiver_uid);
       if (!r) return fault('NOT_FOUND', 'Unknown receiver');

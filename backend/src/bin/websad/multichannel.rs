@@ -37,12 +37,12 @@ pub(super) struct IqIdentity {
 }
 
 pub(super) struct Directory {
-    boot: String,
+    pub(super) boot: String,
     next: u64,
     snapshot_revision: u64,
     receivers: BTreeMap<u32, LogicalReceiver>,
     history: VecDeque<IqIdentity>,
-    replies: VecDeque<(String, Value, Value)>,
+    pub(super) replies: VecDeque<(String, Value, Value)>,
     recording_requests: BTreeMap<String,(Value,recording::StartTicket)>,
 }
 
@@ -190,10 +190,11 @@ impl DevState {
                 "receiver_presets":self.receiver_presets.is_some(),
                 "modes":websa_channelizer::catalog::manifest().iter().filter_map(|m|m["id"].as_str()).collect::<Vec<_>>(),
                 "mode_descriptors":websa_channelizer::catalog::manifest().into_iter().filter(|m|matches!(m["kind"].as_str(),Some("analog"|"digital"))).collect::<Vec<_>>(),
-                "commands":if self.recordings.is_some() {vec!["create","configure","retire","output","record_start","record_stop"]} else {vec!["create","configure","retire","output"]},
+                "commands":if self.recordings.is_some() {vec!["create","configure","retire","output","record_start","record_stop","record_rename","record_delete"]} else {vec!["create","configure","retire","output"]},
                 "recording":self.recordings.is_some(),"recording_unavailable_reason":self.recording_error,"recording_kinds":if self.recordings.is_some() {vec!["iq","results","audio"]}else{vec![]},
                 "results_archive_export":self.recordings.is_some(),"audio_archive_export":self.recordings.is_some(),
                 "audio_flac_export":self.recordings.is_some(),
+                "audio_opus_export":self.recordings.is_some() && recording::opus::available(),
                 "audio_archive_read":self.recordings.is_some(),"audio_range_max_samples":"1048576","audio_range_max_seconds":60,
                 "iq_file_demodulate":self.recordings.is_some(),"iq_file_demodulate_modes":super::recording_demod::MODES,
                 "iq_file_demodulate_max_seconds":60,
@@ -363,6 +364,9 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
     if matches!(request["type"].as_str(),Some("record_start"|"record_stop")) {
         return recording_command(app,request,id,preview).await;
     }
+    if matches!(request["type"].as_str(),Some("record_rename"|"record_delete")) {
+        return recording::management::command(app, request, id, preview).await;
+    }
     let candidate={
         let mut state=app.state.lock().unwrap();
         if !preview {
@@ -466,6 +470,14 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
                 let uid=request["receiver_uid"].as_str().ok_or("receiver_uid required")?;
                 let slot=state.receiver_slot(uid).ok_or("receiver no longer exists")?;
                 let channel=state.channel_configs()[(slot-1) as usize].clone();
+                let audio_format = match request.get("audio_format") {
+                    None => "wav",
+                    Some(value) => value.as_str().filter(|s| matches!(*s,"wav"|"flac"|"opus"))
+                        .ok_or("audio_format must be wav, flac or opus")?,
+                };
+                if kind != "audio" && request.get("audio_format").is_some() {return Err("audio_format requires an audio recording".into());}
+                if audio_format == "opus" && !recording::opus::available() {return Err("Opus requires FFmpeg with the libopus encoder on the server".into());}
+                let name=state.receivers.receivers.get(&slot).map(|r|r.config["name"].as_str().unwrap_or("").to_owned()).unwrap_or_default();
                 let has_results=channel.processing_enabled && websa_channelizer::catalog::mode(&channel.mode)
                     .is_some_and(|mode|mode.outputs.iter().any(|kind|kind!="audio"));
                 if kind=="audio" && (!channel.processing_enabled || state.receiver_failure.is_some()
@@ -479,8 +491,7 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
                     || !state.channel_configs()[(slot-1) as usize].enabled {return Err("enable a healthy IQ receiver before recording".into());}
                 if !preview {
                     let service=state.receivers.boot.clone();
-                    let pending=if kind=="iq" {state.recordings.as_mut().unwrap().start(uid,&service,&id)?}
-                        else {state.recordings.as_mut().unwrap().start_kind(uid,&service,&id,kind)?};
+                    let pending=state.recordings.as_mut().unwrap().start_configured(uid,&service,&id,kind,audio_format,&name)?;
                     state.receivers.recording_requests.insert(id.clone(),(request.clone(),pending.clone()));ticket=Some(pending);
                 }
             } else {

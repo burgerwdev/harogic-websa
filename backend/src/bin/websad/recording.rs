@@ -21,6 +21,10 @@ pub(super) mod audio;
 pub(super) mod flac;
 #[path = "recording_audio_read.rs"]
 pub(super) mod audio_read;
+#[path = "recording_opus.rs"]
+pub(super) mod opus;
+#[path = "recording_management.rs"]
+pub(super) mod management;
 
 const MAX_ACTIVE: usize = 3;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -45,6 +49,9 @@ fn millis() -> String {
 }
 fn active(state: &str) -> bool {
     matches!(state, "preparing" | "waiting" | "recording" | "finalizing")
+}
+fn entry_file_hidden(path: &FsPath) -> bool {
+    path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))
 }
 fn number(value: &Value) -> u64 {
     value.as_str().and_then(|s| s.parse().ok()).unwrap_or(0)
@@ -251,7 +258,7 @@ impl Manager {
         let mut history = Vec::new();
         for entry in fs::read_dir(&root)? {
             let path = entry?.path();
-            if !path.is_dir() {
+            if !path.is_dir() || entry_file_hidden(&path) {
                 continue;
             }
             let manifest = path.join("task.json");
@@ -306,6 +313,7 @@ impl Manager {
             q.prepared && !q.sealed
         })
     }
+    #[cfg(test)]
     pub(super) fn start(
         &mut self,
         uid: &str,
@@ -314,7 +322,11 @@ impl Manager {
     ) -> Result<StartTicket, String> {
         self.start_kind(uid, service, request, "iq")
     }
+    #[cfg(test)]
     pub(super) fn start_kind(&mut self, uid: &str, service: &str, request: &str, kind: &str) -> Result<StartTicket, String> {
+        self.start_configured(uid, service, request, kind, "wav", "")
+    }
+    pub(super) fn start_configured(&mut self, uid: &str, service: &str, request: &str, kind: &str, audio_format: &str, name: &str) -> Result<StartTicket, String> {
         self.reap();
         if !matches!(kind, "iq" | "results" | "audio") { return Err("unsupported recording kind".into()); }
         if self.lanes.iter().any(|h| h.lane.uid == uid && h.lane.kind == kind) {
@@ -327,6 +339,7 @@ impl Manager {
         let id = format!("{kind}-{service}-{}", self.next);
         let track = format!("{id}-{kind}");
         let mut task = json!({"storage_version":2,"task_id":id,"receiver_uid":uid,"service_id":service,"request_id":request,
+            "name":name,
             "created_at_ms":millis(),"updated_at_ms":millis(),"state":"preparing","fault":null,
             "tracks":[{"track_id":track,"kind":"iq","format":"cf32_le","source":"baseband",
                 "compression":"zstd_auto_lossless","container":"websa-iq-v2","state":"preparing",
@@ -338,6 +351,7 @@ impl Manager {
             t["source"] = json!("decoder_results"); t["container"] = json!("websa-results-v1");
         }
         if kind == "audio" {
+            task["audio_format"] = json!(audio_format);
             let t = &mut task["tracks"][0];
             t["kind"] = json!("audio"); t["format"] = json!("f32_le");
             t["source"] = json!("published_audio"); t["container"] = json!("websa-audio-v1");
@@ -495,6 +509,12 @@ impl Manager {
                 i += 1;
             }
         }
+    }
+    fn managed(&mut self, id: &str, task: Option<Value>) {
+        self.reap();
+        self.history.retain(|t| t["task_id"] != id);
+        if let Some(task) = task { self.history.push(task); }
+        self.history.sort_by_key(|t| t["created_at_ms"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0));
     }
     pub(super) fn shutdown(&mut self) {
         for handle in &self.lanes {
@@ -912,10 +932,12 @@ pub(super) async fn index(
 mod tests {
     use super::*;
     fn directory() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "websa-recording-{}-{}",
+            "websa-recording-{}-{}-{}",
             std::process::id(),
-            millis()
+            millis(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ))
     }
     fn input(sequence: u32, epoch: u32) -> Input {

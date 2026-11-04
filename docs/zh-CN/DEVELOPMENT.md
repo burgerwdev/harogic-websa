@@ -1,5 +1,7 @@
 # 开发指南
 
+工作台音频录制按钮旁提供可记忆的 WAV／FLAC／Opus 菜单，悬停显示简短选择建议；已有录音也可切换下载格式。WAV 保留原始 Float32，FLAC 无损保存量化后的 24 位 PCM，Opus 适合长时间录音和分享。Opus 需服务器安装含 `libopus` 的 FFmpeg，不可用选项会明确提示原因。顶部“结果窗口”旁的“录制文件”统一管理全部信道和历史录制，提供搜索、类型／状态筛选、试听／下载、重命名及单项／批量确认删除；全选仅包含当前筛选列表中已结束的录制，文件与所选合计大小按 B／KB／MB／GB／TB 友好显示。旧服务的删除入口保持可见并说明需更新服务；保留原始录制以便转出其他格式。门禁：构建前后端后执行 `python tools/e2e/native_recording_library.py --artifacts /tmp/websa-recording-library`，独立解码三个 Opus 源片段（含 11025 Hz 和单样本边界），检查真实浏览器格式选择、下载、窄窗口，以及重命名／删除跨服务重启的持久性。
+
 实收准备可运行 `python tools/bench/sdr_capture_observe.py --origin http://127.0.0.1:8080 --expect-service-id <当前服务ID> --seconds 300 --artifacts <新目录>`，先 GET `/api/sdr/receivers` 核对身份。工具只发 GET，拒绝服务身份变化与已有证据目录，保存源时钟／样本推进／告警／录制／负载，不打开 WebSocket 或启动采集；须另有已授权的浏览器／录制消费者。报告仅为观察证据，连接正常或计数前进均不单独证明 RF 接收或物理听感。
 
 设备窗口前完成新版 release 构建；既有进程在明确重启前仍运行旧二进制。替换硬件进程前确认目标实例、N90 占用释放与 RF 来源，另一端口不能隔离同一设备。先恢复一个真实信号，连续观察至少五分钟，检查频谱／调谐、实际输入率、源 epoch／位置及实际听感；逐路增加至三路，完整通带和过渡带须位于同一真实采集范围，再组合 IQ／发布音频／结果录制观察五分钟。停止后独立读取文件，核对 UID／实际率／源边界和接纳／落盘字节。无真实协议源或未试听的项目准确标记未验。合成 `native_multichannel*.py` 会创建／重配自己的服务，不得指向既有硬件实例。
@@ -11,9 +13,9 @@
 
 已录 IQ → 波形回放／SigMF → 文件重新解调，可将选区按 AM、USB、LSB 或 NFM 生成音频，用原生音频控件试听，并下载同份 Float32 WAV 与精确 IQ 来源。选择最多60秒及已录通带内的滤波带宽；USB／LSB为单边带宽。48 kHz单声道结果使用从零开始的原生滤波器，关闭AGC／降噪／静噪，原文件与实时接收独立。门禁：`python tools/e2e/native_multichannel_demod.py --artifacts /tmp/websa-file-demod`；使用独立CRC／WBIQ及SciPy WAV读取器、非整数IQ率的合成已知音调、原生实际AM记录、真实鼠标／键盘媒体操作、420px Pop out／Dock及实时录制隔离。执行前构建前后端。本模拟模式切片不包含数字文件解码或连续长文件播放。
 
-已结束音频任务在 `audio_flac_export` 可用时，于“下载音频”旁提供 **FLAC · 24 位**。它将原已发布音频按真实率量化为 signed-24 PCM，Float32 WAV 继续提供原样本位模式。固定比例、饱和统计及未改动的逐帧来源保存于 tar 清单／时间线。纯 Rust `flacenc` 不新增运行时程序或动态音频库。门禁：`python tools/e2e/native_multichannel_flac.py --artifacts /tmp/websa-flac`，开发验证需安装参考 `flac` CLI（实测1.5.0）。独立解码实际AM／FT8发布音频及合成单／双声道量化边界，核对MD5／样本时钟、窄窗原生下载、取消、损坏、TCP停读与恢复前缀。来源及精确转换见 [API](API.md)。
+已结束音频任务在 `audio_flac_export` 可用时，可在下载格式菜单选择 **FLAC**。它将原已发布音频按真实率量化为 signed-24 PCM，Float32 WAV 继续提供原样本位模式。固定比例、饱和统计及未改动的逐帧来源保存于 tar 清单／时间线。纯 Rust `flacenc` 不新增运行时程序或动态音频库。门禁：`python tools/e2e/native_multichannel_flac.py --artifacts /tmp/websa-flac`，开发验证需安装参考 `flac` CLI（实测1.5.0）。独立解码实际AM／FT8发布音频及合成单／双声道量化边界，核对MD5／样本时钟、窄窗原生下载、取消、损坏、TCP停读与恢复前缀。来源及精确转换见 [API](API.md)。
 
-已发布音频持续录制：工作台 → 录制 →“录制音频”，停止后“下载音频”。真实 AUD2 Float32 PCM 在后端保存，浏览器退出后继续；按实际音频输出能力开放，包含数字模式伴随音频。下载包保留各配置／格式片段的 Float32 WAV 与逐帧时钟／原头／配置，浏览器音量、声像和总静音不改变文件。它是实际共享 PCM，不是未增强的协议输入。Opus 和数字文件解码仍待后续。`recording_audio.rs` 复用 `recording_journal.rs` 的有界 CRC／Zstd codec；`receiver_workers.rs` 将实际包配置随 PCM 传到发布点，避免迟到旧帧串用新设置。门禁：`python tools/e2e/native_multichannel_audio.py --artifacts /tmp/websa-audio`，独立 SciPy WAV／系统 libzstd／CRC、实际网络字节、真实浏览器与恢复／故障验证。完整限额与语义见 [API](API.md)。
+已发布音频持续录制：工作台 → 录制 →“录制音频”，停止后“下载音频”。真实 AUD2 Float32 PCM 在后端保存，浏览器退出后继续；按实际音频输出能力开放，包含数字模式伴随音频。下载包保留各配置／格式片段的 Float32 WAV 与逐帧时钟／原头／配置，浏览器音量、声像和总静音不改变文件。它是实际共享 PCM，不是未增强的协议输入。数字文件解码仍待后续。`recording_audio.rs` 复用 `recording_journal.rs` 的有界 CRC／Zstd codec；`receiver_workers.rs` 将实际包配置随 PCM 传到发布点，避免迟到旧帧串用新设置。门禁：`python tools/e2e/native_multichannel_audio.py --artifacts /tmp/websa-audio`，独立 SciPy WAV／系统 libzstd／CRC、实际网络字节、真实浏览器与恢复／故障验证。完整限额与语义见 [API](API.md)。
 
 持续结果录制：信道工作台 → 录制，对实际具有文字／表格／图像／状态输出的处理器使用“录制结果”。同一 UID 的 IQ 与结果可各自独立录制。停止后“下载结果”流式下载包含任务信息和原发布事件 JSONL 的 tar，保存增量图像像素；从录制启动开始保存，已在接收中的图像可能只有部分。浏览器退出后仍继续。门禁：`python tools/e2e/native_multichannel_results.py --artifacts /tmp/websa-results`，验证实际 FT8／SSTV 回放、独立 CRC／Zstd 与 JSONL／tar 读取、420px 浏览器真实操作／下载及 SIGKILL 恢复。不是硬件 RF 或后端音频录制验收。
 
@@ -174,7 +176,7 @@ Chromium 真实切断并重连 UID 音频 socket，确认实际输出 PCM 恢复
 
 P5 IQ 记录门禁：`python tools/e2e/native_multichannel_recording.py --artifacts /tmp/websa-p5-recording`。脚本隔离存储和服务，独立 CRC32/libzstd 读取器逐块对照实际 IQ 网络字节，验证变率/换频、停止排空、真实鼠标跨轮询点击、420px 弹窗、Dock、关闭浏览器持续记录和 SIGKILL 后恢复。仅为合成源验证，RF 和长期磁盘吞吐须另验。
 
-`WEBSA_RECORDING_DIR` 指定本实例后端存储根；默认 `$XDG_DATA_HOME/harogic-websa/recordings/<port>`（未设置时使用 `~/.local/share`）。目录有独占文件锁，多实例应使用不同目录。启动时流式恢复中断/失败任务的校验前缀与 JSONL 索引；不自动续录。普通工作台显示 IQ 开始/停止、状态和大小，压缩与时钟详情折叠。服务发布 `iq_archive_read` 后，已完成／失败的 IQ 任务提供“波形回放 / SigMF”，旧服务／退役 UID 的任务在“历史记录任务”中可访问。选择片段及样本范围，可查看 I/Q、定位、按实际率播放波形或下载标准 SigMF。每范围限 1,048,576 个样本、4096 块和 4 MiB 来源元数据。协议输入音频、Opus 及文件重解调回放尚未开放。结果窗口可以将已保留消息按筛选条件导出 CSV 或 JSONL（含全部分页），并将选中图像保存为 PNG；它们是有界浏览器会话快照，持续录制仍由后端任务承担。JSONL 区分接收时间与协议 UTC，并保留源位置字符串。未完成图像的文件名带 partial，PNG 导出 RGBA 内存限制为 20 MiB。仅文本／表格模式或已有文本结果显示筛选工具，音频窗口不显示消息筛选或清空操作。AM/WFM 复用旧音频波形绘制器；CW 显示原生速度、音调和调谐偏移；DRM 显示电台／节目及锁定信息。
+`WEBSA_RECORDING_DIR` 指定本实例后端存储根；默认 `$XDG_DATA_HOME/harogic-websa/recordings/<port>`（未设置时使用 `~/.local/share`）。目录有独占文件锁，多实例应使用不同目录。启动时流式恢复中断/失败任务的校验前缀与 JSONL 索引；不自动续录。普通工作台显示 IQ 开始/停止、状态和大小，压缩与时钟详情折叠。服务发布 `iq_archive_read` 后，已完成／失败的 IQ 任务提供“波形回放 / SigMF”，旧服务／退役 UID 的任务在“历史记录任务”中可访问。选择片段及样本范围，可查看 I/Q、定位、按实际率播放波形或下载标准 SigMF。每范围限 1,048,576 个样本、4096 块和 4 MiB 来源元数据。协议输入音频及数字文件解码尚未开放；Opus 导出及模拟文件重新解调见上文。结果窗口可以将已保留消息按筛选条件导出 CSV 或 JSONL（含全部分页），并将选中图像保存为 PNG；它们是有界浏览器会话快照，持续录制仍由后端任务承担。JSONL 区分接收时间与协议 UTC，并保留源位置字符串。未完成图像的文件名带 partial，PNG 导出 RGBA 内存限制为 20 MiB。仅文本／表格模式或已有文本结果显示筛选工具，音频窗口不显示消息筛选或清空操作。AM/WFM 复用旧音频波形绘制器；CW 显示原生速度、音调和调谐偏移；DRM 显示电台／节目及锁定信息。
 
 每路滑块控制当前编辑信道在本浏览器中的监听。先开启该路“监听”，音量显示百分比，声像显示左／中／右位置；声像需要立体声输出。编辑另一信道不会切换正在听的组合。未监听、故障或停用时禁用滑块，总静音／独听屏蔽保留明确状态。通用操作说明已移出主要界面，帮助使用悬停提示，来源细节折叠。
 
