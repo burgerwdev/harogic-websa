@@ -32,6 +32,7 @@ impl DevState {
             if !(minimum..=maximum).contains(&listen) {
                 return Err(format!("listen frequency outside device limits: {listen} Hz; valid RF range {minimum}..={maximum} Hz"));
             }
+            self.restore_retired_listener(&mut configs[0]);
             configs[0].freq=listen;
             // Explicit primary listening is a restart intent. Capture-only pans
             // and bandwidth changes keep the stopped receiver set unchanged.

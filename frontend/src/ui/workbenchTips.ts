@@ -22,6 +22,7 @@ export function workbenchTip(action: string): string {
     create: ['Choose a frequency and mode, then create and start receiving in one step', '选择频率和模式，一步创建并开始接收'],
     duplicate: ['Create another channel with the selected channel’s settings', '按当前信道的设置新建另一条信道'],
     retire: ['Delete the selected channel definition and end its reception and recordings', '删除选中信道，并结束该路接收和录制'],
+    'dismiss-fault': ['Dismiss this error message', '关闭此错误提示'],
     workbench: ['Open or focus the channel workbench', '打开信道工作台或将其置于前台'],
     recall: ['Bring all channel windows back into this page', '将全部信道窗口收回当前页面'],
     reset: ['Restore the default channel window positions and sizes', '恢复信道窗口的默认位置和大小'],

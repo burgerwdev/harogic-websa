@@ -13,13 +13,15 @@ beforeEach(() => {
   snapshot.capabilities.mode_descriptors = ['am', 'usb'].map(id => ({ id, label: id, kind: 'analog', provider: 'native', available: true,
     unavailableReason: null, minimumRateHz: 48000, defaultBandwidthHz: 6000, sideband: 'symmetric', audioCompanion: null, outputs: ['audio'] }));
   snapshot.receivers[0].confirmed.processors[0].mode = 'am';
-  Object.assign(snapshot.receivers[0].confirmed.processors[0], { bandwidth_hz: 8500, pcm_gain: 0.3, agc: false, squelch_dbm: -90 });
+  Object.assign(snapshot.receivers[0].confirmed.processors[0], { bandwidth_hz: 8500, pcm_gain: 0.3, agc: false, squelch_dbm: -90,
+    nr: true, nr_algorithm: 'dfn', nr_strength: 0.25, nr_atten_db: 14 });
 });
 afterEach(() => { vi.restoreAllMocks(); sessionStorage.clear(); });
 
 it('remembers confirmed values per channel and mode across tab reload, without frequency, identity or task state', () => {
   const memory = new ReceiverModeMemory(); memory.observe(snapshot);
   const expected = memory.get('fixture-c1', 'am');
+  expect(expected).toMatchObject({ nr: true, nr_algorithm: 'dfn', nr_strength: 0.25, nr_atten_db: 14 });
   snapshot.receivers[0].confirmed.processors[0].mode = 'usb'; memory.observe(snapshot);
   const restored = new ReceiverModeMemory(); restored.observe(snapshot);
   expect(restored.get('fixture-c1', 'am')).toEqual(expected);

@@ -10,6 +10,7 @@ const paths: Record<string, string> = {
   stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
   settings: '<path d="M4 7h16M4 17h16M8 4v6m8 4v6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
+  edit: '<path d="m15 5 4 4M4 20l4-1L20 7a2.1 2.1 0 0 0-3-3L5 16z"/>',
   channels: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
 };
 export const workbenchIcon = (name: string): string => paths[name] ? `<svg class="mc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>` : '';

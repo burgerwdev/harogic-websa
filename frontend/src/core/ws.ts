@@ -29,7 +29,7 @@ import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
 import { pushSpectrumRow } from '../render/waterfall';
 import { sampleSwpWaterfall } from '../ui/panels/waterfall';
-import { onCommandSent, send, setWS } from './wsSend';
+import { onCommandSent, publishCommandReply, send, setWS } from './wsSend';
 import { premiumRefClockLabel, refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
@@ -280,6 +280,7 @@ export function connectWS() {
     if (typeof event.data === 'string') {
       try {
         const msg = JSON.parse(event.data as string);
+        publishCommandReply(msg);
         if (msg.cmd === 'STATUS') { confirmMeasurementSession(msg); updateStatus(msg); }
         else if (msg.cmd === 'HARM') onHarmResult(msg.list, msg.session_id);
         else if (msg.cmd === 'PNM') onPnmResult(msg);

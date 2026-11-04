@@ -5,7 +5,7 @@ import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountNativeWorkbenchStreams } from '../ui/nativeWorkbenchStreams';
 import { decoderLog, forgetDecoderLog } from '../sdr/decoderLog';
 import { forgetNativeAudio, setNativeAudioRoute } from '../audio/sdrAudio';
-import { send, setWS } from '../core/wsSend';
+import { publishCommandReply, send, setWS } from '../core/wsSend';
 
 vi.mock('../audio/sdrAudio', () => ({ claimNativeAudio: () => vi.fn(), forgetNativeAudio: vi.fn(),
   getSdrAudioStatus: () => [], setNativeAudioRoute: vi.fn(), setNativeMaster: vi.fn() }));
@@ -32,6 +32,108 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.clearAllMocks();
 });
 describe('UID consumer lifecycle', () => {
+  it.each([
+    { cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.11e6, enabled: true },
+    { cmd: 'SET_SDR_CHANNEL', channel: 1, mode: 'nfm', enabled: true },
+    { cmd: 'SET_SDR', center: 7.11e6, listen: 7.11e6 },
+  ])('restores audio on the newly confirmed UID after deleting every channel: $cmd', command => {
+    const recreated = clone(session.snapshot.receivers[0]);
+    session.snapshot = { ...clone(session.snapshot), receivers: [] }; session.notify();
+    session.routes.clear(); session.masterGain = 0.35; session.masterMuted = true;
+    const socket = { readyState: WebSocket.OPEN, send: vi.fn() } as unknown as WebSocket;
+    setWS(socket);
+    try {
+      send(command);
+      const request = JSON.parse(String(vi.mocked(socket.send).mock.calls[0][0]));
+      publishCommandReply({ cmd: 'STATUS', response_to: command.cmd, request_id: request.request_id });
+      expect(session.routes.size).toBe(0);
+      recreated.receiver_uid = 'new-logical-c1'; recreated.confirmed.baseband.frequency_hz = 7.11e6;
+      recreated.state = 'stopped'; recreated.confirmed.enabled = false;
+      session.snapshot.receivers = [recreated]; session.notify();
+      expect(session.route(recreated.receiver_uid).enabled).toBe(false);
+      recreated.state = 'running'; recreated.confirmed.enabled = true; session.notify();
+      expect(session.route(recreated.receiver_uid).enabled).toBe(true);
+      expect(session.masterGain).toBe(0.35); expect(session.masterMuted).toBe(true);
+      expect(setNativeAudioRoute).toHaveBeenCalledWith('new-logical-c1', 'nfm', true, 0.7, 0, false);
+      session.monitor(recreated.receiver_uid, { enabled: false }); session.notify();
+      expect(session.route(recreated.receiver_uid).enabled).toBe(false);
+    } finally { setWS(null); }
+  });
+
+  it.each(['ERROR', 'DISCONNECTED'])('cancels a pending main tune on %s before an unrelated receiver appears', kind => {
+    const receiver = clone(session.snapshot.receivers[0]); receiver.receiver_uid = 'new-logical-c1'; receiver.confirmed.baseband.frequency_hz = 7.11e6;
+    session.snapshot = { ...clone(session.snapshot), receivers: [] }; session.notify();
+    const socket = { readyState: WebSocket.OPEN, send: vi.fn() } as unknown as WebSocket; setWS(socket);
+    try {
+      send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.11e6, enabled: true });
+      const request = JSON.parse(String(vi.mocked(socket.send).mock.calls[0][0]));
+      publishCommandReply({ cmd: kind, response_to: request.cmd, request_id: request.request_id });
+      session.snapshot.receivers = [receiver]; session.notify();
+      expect(session.route(receiver.receiver_uid).enabled).toBe(false);
+    } finally { setWS(null); }
+  });
+
+  it('waits for the exact main tune acknowledgment when the receiver snapshot arrives first', () => {
+    const receiver = clone(session.snapshot.receivers[0]); receiver.receiver_uid = 'new-logical-c1'; receiver.confirmed.baseband.frequency_hz = 7.11e6;
+    session.snapshot = { ...clone(session.snapshot), receivers: [] }; session.notify();
+    const socket = { readyState: WebSocket.OPEN, send: vi.fn() } as unknown as WebSocket; setWS(socket);
+    try {
+      send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.11e6, enabled: true });
+      const request = JSON.parse(String(vi.mocked(socket.send).mock.calls[0][0]));
+      session.snapshot.receivers = [receiver]; session.notify();
+      expect(session.route(receiver.receiver_uid).enabled).toBe(false);
+      publishCommandReply({ cmd: 'STATUS', response_to: request.cmd, request_id: 'older-request' });
+      expect(session.route(receiver.receiver_uid).enabled).toBe(false);
+      publishCommandReply({ cmd: 'STATUS', response_to: request.cmd, request_id: request.request_id });
+      expect(session.route(receiver.receiver_uid).enabled).toBe(true);
+    } finally { setWS(null); }
+  });
+
+  it('preserves an explicit monitor-off choice made before the main acknowledgment', () => {
+    const receiver = clone(session.snapshot.receivers[0]); receiver.receiver_uid = 'new-logical-c1'; receiver.confirmed.baseband.frequency_hz = 7.11e6;
+    session.snapshot = { ...clone(session.snapshot), receivers: [] }; session.notify();
+    const socket = { readyState: WebSocket.OPEN, send: vi.fn() } as unknown as WebSocket; setWS(socket);
+    try {
+      send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.11e6, enabled: true });
+      const request = JSON.parse(String(vi.mocked(socket.send).mock.calls[0][0]));
+      session.snapshot.receivers = [receiver]; session.notify(); session.monitor(receiver.receiver_uid, { enabled: false });
+      publishCommandReply({ cmd: 'STATUS', response_to: request.cmd, request_id: request.request_id });
+      expect(session.route(receiver.receiver_uid).enabled).toBe(false);
+    } finally { setWS(null); }
+  });
+
+  it('follows the latest tune while a recreated receiver awaits its first acknowledgment', () => {
+    const receiver = clone(session.snapshot.receivers[0]); receiver.receiver_uid = 'new-logical-c1'; receiver.confirmed.baseband.frequency_hz = 7.11e6;
+    session.snapshot = { ...clone(session.snapshot), receivers: [] }; session.notify();
+    const socket = { readyState: WebSocket.OPEN, send: vi.fn() } as unknown as WebSocket; setWS(socket);
+    try {
+      send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.11e6, enabled: true });
+      session.snapshot.receivers = [receiver]; session.notify();
+      send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.12e6, enabled: true });
+      const requests = vi.mocked(socket.send).mock.calls.map(([message]) => JSON.parse(String(message)));
+      publishCommandReply({ cmd: 'STATUS', response_to: requests[0].cmd, request_id: requests[0].request_id });
+      expect(session.route(receiver.receiver_uid).enabled).toBe(false);
+      receiver.confirmed.baseband.frequency_hz = 7.12e6; session.notify();
+      publishCommandReply({ cmd: 'STATUS', response_to: requests[1].cmd, request_id: requests[1].request_id });
+      expect(session.route(receiver.receiver_uid).enabled).toBe(true);
+    } finally { setWS(null); }
+  });
+
+  it('does not attach a pending main tune to another frequency or a restarted service', () => {
+    const recreated = clone(session.snapshot.receivers[0]);
+    session.snapshot = { ...clone(session.snapshot), receivers: [] }; session.notify();
+    const socket = { readyState: WebSocket.OPEN, send: vi.fn() } as unknown as WebSocket;
+    setWS(socket);
+    try {
+      send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.11e6, enabled: true });
+      recreated.receiver_uid = 'new-logical-c1';
+      session.snapshot.receivers = [recreated]; session.notify();
+      expect(session.route(recreated.receiver_uid).enabled).toBe(false);
+      session.snapshot.service_id = 'new-service'; recreated.confirmed.baseband.frequency_hz = 7.11e6;
+      session.notify(); expect(session.route(recreated.receiver_uid).enabled).toBe(false);
+    } finally { setWS(null); }
+  });
+
   it('publishes decoder updates independently of receiver controls and speaker routing', () => {
     const stateChanged = vi.fn(), resultsChanged = vi.fn();
     session.subscribe(stateChanged); session.subscribeResults(resultsChanged);

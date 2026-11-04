@@ -2,7 +2,7 @@ import { getLang, onLangChange } from '../core/i18n';
 import { clone, receiverHasAudio, type ReceiverConfig, type ReceiverState } from '../core/multichannel';
 import { formatFreqHz } from '../core/fmt';
 import { currentSdrChannel } from './sdrChannels';
-import { demodBandHz, sdrAgc, sdrDemod, sdrIfbw, sdrListenHz, sdrPitchHz, sdrSquelch, sdrVolume } from './sdrState';
+import { demodBandHz, sdrAgc, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSquelch, sdrVolume } from './sdrState';
 import type { WorkbenchSession } from './workbenchSession';
 
 const l = (en: string, zh: string) => getLang() === 'zh' ? zh : en;
@@ -18,7 +18,8 @@ export function currentChannelConfig(session: WorkbenchSession): ReceiverConfig 
       minimum_rate_hz: Math.max(descriptor.minimumRateHz, passband + 2 * transition) },
     processors: [{ id: `quick-${session.requestId()}`, kind: descriptor.kind === 'analog' ? 'demodulator' : 'decoder',
       mode, minimum_rate_hz: descriptor.minimumRateHz, bandwidth_hz: bandwidth,
-      pcm_gain: sdrVolume.get(), agc: sdrAgc.get(), squelch_dbm: sdrSquelch.get() }] };
+      pcm_gain: sdrVolume.get(), agc: sdrAgc.get(), squelch_dbm: sdrSquelch.get(),
+      nr: sdrNr.get(), nr_algorithm: sdrNrAlgo.get(), nr_strength: sdrNrStrength.get(), nr_atten_db: sdrNrAtten.get() }] };
 }
 
 /** Add the main panel's current frequency; a full service always requires an explicit target. */
@@ -54,7 +55,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
       const detail = option.querySelector('small')!;
       detail.textContent = customName ? name : ''; detail.hidden = !customName;
       option.title = customName ? name : '';
-      option.querySelector('input')!.disabled = !!session.edits.get(uid)?.pending;
+      option.querySelector('input')!.disabled = !!session.edits.get(uid)?.pending || session.retiring(uid);
       revisions.set(uid, receiver.revision);
     }
     targets.querySelectorAll<HTMLLabelElement>('label').forEach(label => { if (!known.has(label.dataset.uid!)) label.remove(); });
@@ -88,7 +89,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
   dialog.addEventListener('submit', event => {
     event.preventDefault(); if (busy || !candidate) return;
     const target = session.snapshot.receivers.find(r => r.receiver_uid === selected());
-    if (!target || session.edits.get(target.receiver_uid)?.pending) return;
+    if (!target || session.edits.get(target.receiver_uid)?.pending || session.retiring(target.receiver_uid)) return;
     if (target.revision !== revisions.get(target.receiver_uid)) { update(); return; }
     busy = true; error.textContent = '';
     dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => { control.disabled = true; });
@@ -110,7 +111,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
       // C1/current receiver is the tuning source. Repeated saves reuse an existing independent copy.
       const duplicate = session.snapshot.receivers.find(r => r.display_number !== currentSdrChannel()
         && Math.abs(r.confirmed.baseband.frequency_hz - config.baseband.frequency_hz) < 0.5
-        && (['mode', 'bandwidth_hz', 'pcm_gain', 'agc', 'squelch_dbm'] as const)
+        && (['mode', 'bandwidth_hz', 'pcm_gain', 'agc', 'squelch_dbm', 'nr', 'nr_algorithm', 'nr_strength', 'nr_atten_db'] as const)
           .every(field => r.confirmed.processors[0]?.[field] === config.processors[0]?.[field]));
       if (duplicate) {
         if (receiverHasAudio(session.snapshot, duplicate.confirmed) && duplicate.state === 'running') session.monitor(duplicate.receiver_uid, { enabled: true });

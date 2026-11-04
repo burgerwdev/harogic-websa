@@ -15,6 +15,13 @@ export class WorkbenchSession {
   private listeners = new Set<() => void>();
   private resultListeners = new Set<(uid: string) => void>();
   private sequence = 0;
+  private commandSequence = 0;
+  private faultSequence = 0;
+  private retirements = new Map<string, Promise<CommandReply>>();
+  private mutationTail: Promise<void> = Promise.resolve();
+  private generation = 0;
+  private disposed = false;
+  private retiredServices = new Set<string | undefined>();
   private stop: () => void;
   constructor(readonly adapter: ReceiverAdapter) {
     this.snapshot = adapter.snapshot(); this.selected = this.snapshot.receivers[0]?.receiver_uid ?? '';
@@ -22,14 +29,23 @@ export class WorkbenchSession {
     this.stop = adapter.subscribe(snapshot => this.accept(snapshot));
   }
   subscribe(fn: () => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  notify(): void { this.listeners.forEach(fn => fn()); }
+  notify(): void { if (!this.disposed) this.listeners.forEach(fn => fn()); }
   subscribeResults(fn: (uid: string) => void): () => void { this.resultListeners.add(fn); return () => this.resultListeners.delete(fn); }
   notifyResults(uid: string): void { this.resultListeners.forEach(fn => fn(uid)); }
   private accept(snapshot: ServiceSnapshot): void {
+    if (this.disposed || this.retiredServices.has(snapshot.service_id)) return;
     if (snapshot.service_id === this.snapshot.service_id && BigInt(snapshot.revision) < BigInt(this.snapshot.revision)) return;
+    if (snapshot.service_id === this.snapshot.service_id && snapshot.state_revision !== undefined && this.snapshot.state_revision !== undefined
+      && BigInt(snapshot.state_revision) < BigInt(this.snapshot.state_revision)) return;
+    const serviceChanged = snapshot.service_id !== this.snapshot.service_id;
+    if (serviceChanged) {
+      this.retiredServices.add(this.snapshot.service_id); this.generation++;
+      this.routes.clear(); this.edits.clear(); this.retirements.clear(); this.mutationTail = Promise.resolve();
+    }
     this.snapshot = snapshot;
     this.modeMemory.observe(snapshot);
     const active = new Set(snapshot.receivers.map(r => r.receiver_uid));
+    if (serviceChanged || this.fault?.scope === 'request' && this.fault.receiver_uid && !active.has(this.fault.receiver_uid)) this.fault = null;
     for (const uid of this.routes.keys()) if (!active.has(uid)) this.routes.delete(uid);
     for (const [uid, edit] of this.edits) if (!active.has(uid) && !edit.pending) this.edits.delete(uid);
     if (!snapshot.receivers.some(r => r.receiver_uid === this.selected)) this.selected = snapshot.receivers[0]?.receiver_uid ?? '';
@@ -50,6 +66,7 @@ export class WorkbenchSession {
     this.routes.set(uid, { ...this.route(uid), ...patch }); this.notify();
   }
   private monitorEligible(uid: string): boolean {
+    if (this.retiring(uid)) return false;
     const r = this.snapshot.receivers.find(r => r.receiver_uid === uid);
     if (!r || r.fault || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
     const route = this.route(uid);
@@ -72,15 +89,57 @@ export class WorkbenchSession {
       .sort((a, b) => a.display_number - b.display_number)[0]?.receiver_uid ?? null;
   }
   audible(uid: string): boolean { return this.monitorEligible(uid) && this.duplicateMonitor(uid) === null; }
+  retiring(uid: string): boolean { return this.retirements.has(uid); }
+  private invalidated(command: ServiceCommand): CommandReply {
+    return { request_id: command.request_id, snapshot: this.snapshot, fault: { scope: 'request',
+      code: this.disposed ? 'CLOSED' : 'SOURCE_RESTARTED', message: 'Receiver session changed before command completion', retryable: !this.disposed } };
+  }
+  private enqueue(command: ServiceCommand): Promise<CommandReply> {
+    const generation = this.generation, captured = clone(command);
+    const operation = this.mutationTail.then(() => {
+      if (this.disposed || generation !== this.generation) return this.invalidated(captured);
+      if (captured.type === 'retire' && !this.snapshot.receivers.some(r => r.receiver_uid === captured.receiver_uid))
+        return { request_id: captured.request_id, snapshot: this.snapshot, fault: null };
+      return this.dispatch(captured);
+    });
+    this.mutationTail = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
   async send(command: ServiceCommand): Promise<CommandReply> {
+    if (this.disposed) return this.invalidated(command);
+    if ((command.type === 'configure' || command.type === 'record_start' || command.type === 'output' && command.enabled)
+      && this.retiring(command.receiver_uid)) return { request_id: command.request_id,
+      snapshot: this.snapshot, fault: { scope: 'request', code: 'BUSY', message: 'Receiver deletion pending',
+        receiver_uid: command.receiver_uid, retryable: true } };
+    if (command.type !== 'retire') return ['create', 'configure', 'scene'].includes(command.type) ? this.enqueue(command) : this.dispatch(command);
+    const pending = this.retirements.get(command.receiver_uid);
+    if (pending) return { ...await pending, request_id: command.request_id };
+    // Configuration and deletion share the native commit revision. Preserve
+    // ingress order across views while coalescing duplicate retirements.
+    const operation = this.enqueue(command).finally(() => {
+      if (this.retirements.get(command.receiver_uid) === operation) this.retirements.delete(command.receiver_uid);
+      this.notify();
+    });
+    this.retirements.set(command.receiver_uid, operation);
+    this.notify();
+    return operation;
+  }
+  private async dispatch(command: ServiceCommand): Promise<CommandReply> {
+    const generation = this.generation, sequence = ++this.commandSequence;
     let reply: CommandReply;
     try { reply = await this.adapter.dispatch(command); }
     catch (error) { reply = { request_id: command.request_id, snapshot: this.snapshot,
       fault: { scope: 'request', code: 'TRANSPORT', message: String(error), retryable: true } }; }
-    this.fault = reply.fault; this.accept(reply.snapshot); return reply;
+    if (this.disposed || generation !== this.generation) return this.invalidated(command);
+    if (reply.fault && 'receiver_uid' in command && !reply.fault.receiver_uid)
+      reply = { ...reply, fault: { ...reply.fault, receiver_uid: command.receiver_uid } };
+    if (sequence >= this.faultSequence) { this.faultSequence = sequence; this.fault = reply.fault; }
+    this.accept(reply.snapshot); return reply;
   }
   /** One in-flight request per receiver, latest queued candidate. Never retargets on selection. */
   async configure(uid: string, config: ReceiverConfig): Promise<void> {
+    if (this.disposed) return;
+    const generation = this.generation;
     const existing = this.edits.get(uid);
     if (existing?.pending) { existing.desired = clone(config); this.notify(); return; }
     const edit = { desired: clone(config), attempted: clone(config), pending: true, request_id: null as string | null, fault: null as Fault | null };
@@ -89,6 +148,7 @@ export class WorkbenchSession {
       const r = this.snapshot.receivers.find(r => r.receiver_uid === uid); if (!r) break;
       const sent = clone(edit.desired), request_id = this.requestId(); edit.request_id = request_id; edit.attempted = clone(sent); this.notify();
       const reply = await this.send({ type: 'configure', request_id, receiver_uid: uid, expected_revision: r.revision, config: sent });
+      if (this.disposed || generation !== this.generation) break;
       edit.fault = reply.fault;
       const confirmed = this.snapshot.receivers.find(r => r.receiver_uid === uid);
       if (!confirmed) {
@@ -101,5 +161,5 @@ export class WorkbenchSession {
     }
     edit.pending = false; edit.request_id = null; this.notify();
   }
-  dispose(): void { this.stop(); this.listeners.clear(); this.resultListeners.clear(); }
+  dispose(): void { this.disposed = true; this.generation++; this.stop(); this.listeners.clear(); this.resultListeners.clear(); this.retirements.clear(); }
 }

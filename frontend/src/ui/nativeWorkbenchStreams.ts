@@ -1,5 +1,5 @@
 import { receiverHasAudio } from '../core/multichannel';
-import { onCommandSent } from '../core/wsSend';
+import { onCommandReply, onCommandSent } from '../core/wsSend';
 import { claimNativeAudio, forgetNativeAudio, getSdrAudioStatus, setNativeAudioRoute, setNativeMaster } from '../audio/sdrAudio';
 import { addDecoderRaster, addDecoderResult, annotateDecoderResult, clearDecoderStatuses, clearGpsSnapshots, decoderLog, endDecoderRasters, forgetDecoderLog } from '../sdr/decoderLog';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
@@ -12,18 +12,42 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   const playbackStatus = (): void => session.notify();
   document.addEventListener('websa:monitor-toggle-mute', toggleMute);
   document.addEventListener('websa:monitor-status', playbackStatus);
+  let pendingMainMonitor: { service: string | undefined; channel: number; frequency: number | null;
+    requestId: unknown; command: unknown; acknowledged: boolean; expires: number } | null = null;
+  const stopMainReplies = onCommandReply(reply => {
+    if (!pendingMainMonitor) return;
+    if (reply.cmd === 'DISCONNECTED') { pendingMainMonitor = null; return; }
+    if (reply.request_id !== pendingMainMonitor.requestId || reply.response_to !== pendingMainMonitor.command) return;
+    if (reply.cmd === 'ERROR') pendingMainMonitor = null;
+    else if (reply.cmd === 'STATUS') { pendingMainMonitor.acknowledged = true; session.notify(); }
+  });
   // A main-panel restart after Stop all restores that receiver's local route. Keep
   // the single UID speaker owner and the user's gain/pan/master preferences.
   // audible() opens the consumer only after a healthy service confirmation.
   const stopMainCommands = onCommandSent(command => {
+    if (command.cmd === 'SET_PRESET' || command.cmd === 'DISCONNECT'
+      || command.cmd === 'SET_MODE' && command.mode !== 'sdr'
+      || command.cmd === 'SET_SDR_CHANNEL' && command.enabled === false
+        && Number(command.channel ?? 1) === pendingMainMonitor?.channel) pendingMainMonitor = null;
     const snapshot = session.snapshot;
-    if (snapshot.receivers.some(r => r.confirmed.enabled)) return;
-    const channel = command.cmd === 'SET_SDR' ? 1 : command.channel ?? 1;
+    const channel = command.cmd === 'SET_SDR' ? 1 : Number(command.channel ?? 1);
     const receiver = snapshot.receivers.find(r => r.display_number === channel);
     const startsReceiver = command.cmd === 'SET_SDR' && typeof command.listen === 'number'
       || command.cmd === 'SET_SDR_CHANNEL' && command.enabled === true
         && (typeof command.freq === 'number' || typeof command.mode === 'string');
-    if (!receiver || !startsReceiver) return;
+    if (!startsReceiver) return;
+    const replacesPending = pendingMainMonitor?.channel === channel;
+    if (snapshot.receivers.some(r => r.confirmed.enabled) && !replacesPending) return;
+    if (!receiver || replacesPending) {
+      // Retiring a channel removes its UID. Wait for the new logical receiver
+      // created by this explicit tune, then attach its browser speaker route.
+      const frequency = command.cmd === 'SET_SDR' ? command.listen : command.freq;
+      pendingMainMonitor = { service: snapshot.service_id, channel,
+        frequency: typeof frequency === 'number' ? frequency : null, requestId: command.request_id,
+        command: command.cmd, acknowledged: false, expires: Date.now() + 8000 };
+      return;
+    }
+    pendingMainMonitor = null;
     session.monitorMode = 'manual';
     session.monitor(receiver.receiver_uid, { enabled: true });
   });
@@ -34,6 +58,21 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   const stopDecoder = (uid: string): void => { decoders.get(uid)?.worker.terminate(); decoders.delete(uid); };
   const sync = (): void => {
     const snapshot = session.snapshot;
+    if (pendingMainMonitor) {
+      const pending = pendingMainMonitor;
+      if (pending.service !== snapshot.service_id || Date.now() >= pending.expires) pendingMainMonitor = null;
+      else {
+        const receiver = snapshot.receivers.find(r => r.display_number === pending.channel);
+        if (pending.acknowledged && receiver?.state === 'running' && !receiver.fault && receiverHasAudio(snapshot, receiver.confirmed)
+          && (pending.frequency === null || Math.abs(receiver.confirmed.baseband.frequency_hz - pending.frequency) < 0.5)) {
+          pendingMainMonitor = null;
+          if (!session.routes.has(receiver.receiver_uid)) {
+            session.monitorMode = 'manual';
+            session.routes.set(receiver.receiver_uid, { ...session.route(receiver.receiver_uid), enabled: true });
+          }
+        }
+      }
+    }
     // A UID is scoped to its service. Retire the owner before dropping history,
     // so already queued callbacks cannot recreate a released result cache.
     for (const uid of audioKeys.keys()) if (service !== snapshot.service_id || !snapshot.receivers.some(r => r.receiver_uid === uid)) {
@@ -94,7 +133,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
     status: (uid: string): string => errors.get(uid) ?? String(getSdrAudioStatus().find(row => row.channel === uid)?.error ?? ''),
     retry(uid: string): void { errors.delete(uid); stopDecoder(uid); audioKeys.delete(uid); forgetNativeAudio(uid); sync(); session.notify(); },
     hasAudio: (uid: string) => { const r = session.snapshot.receivers.find(r => r.receiver_uid === uid); return !!r && receiverHasAudio(session.snapshot, r.confirmed); },
-    dispose(): void { stopMainCommands(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); release(); },
+    dispose(): void { stopMainCommands(); stopMainReplies(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); release(); },
   };
 }
 

@@ -177,6 +177,8 @@ jobs:
         # The same script as the bench run: it is device-agnostic by construction, so the
         # historical slot/pending/hand-off/preset regressions are now gated in CI too.
         run: python tools/e2e/state_regression.py --url http://127.0.0.1:8099
+      - name: Channel workbench transitions and audio controls (isolated fixture service)
+        run: python tools/e2e/multichannel_audio_settings.py --artifacts "$RUNNER_TEMP/multichannel-audio-settings"
       - name: Stop the owned fake-backend service
         id: stop-fake
         if: always() && steps.start-fake.outcome != 'skipped'

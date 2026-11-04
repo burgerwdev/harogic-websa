@@ -56,10 +56,11 @@ local listening gain and routing.
 
 `configure` carries a request ID, expected receiver revision and complete candidate configuration.
 Preflight returns acceptance, faults, candidate capture center, affected receivers/tracks and resource estimates.
-Drafts belong to the editing view; preview precedes explicit apply. Cancel or target changes discard a draft.
-Each receiver has one in-flight request and the latest queued candidate. Selection cannot retarget a request.
+Drafts belong to the editing view, service and receiver; preview precedes explicit apply. Switching channels keeps separate drafts; Reset, retirement or a service restart discards the affected draft.
+Each receiver has one in-flight request and the latest queued candidate. Create/configure/retire commands share an ordered client queue because native admission commits against a shared configuration revision. Repeated retirement requests coalesce; deletion blocks later configuration, recording-start and output-start intents for that receiver. Selection cannot retarget a request.
 Rejection preserves confirmed configuration and stream identity. Older snapshot revisions cannot overwrite newer state.
 The native P3 adapter adds transport timeouts, request-ID deduplication and service restart generations.
+Session generations invalidate queued commands, late replies, edits and UID-bound monitor routes on service restart or disposal. A main-panel tune after retirement restores monitoring only after its exact successful command acknowledgment and a healthy receiver snapshot; rejection, disconnect and expiry cancel that intent. New receivers start with fresh audio defaults, and confirmed processor settings include their effective gain, AGC, squelch and NR parameters.
 
 `scene` carries the full receiver set, shared center and expected service revision. Preflight rejection changes
 nothing; accepted fixture changes commit together. Loading configuration does not restart recording tasks.

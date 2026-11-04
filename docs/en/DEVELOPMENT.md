@@ -232,6 +232,13 @@ Use explicit absence rather than a valid frequency or level as an unset sentinel
 once outside hot loops. Mode switches preserve preferences; explicit handover actions change
 them deliberately.
 
+The channel workbench uses service snapshots as confirmed state. Its session serializes receiver mutations,
+coalesces repeated deletion, and scopes queued edits and late replies to a service generation. Deletion blocks
+later starts for that receiver; restart or disposal invalidates old work. Drafts remain local to each view and
+receiver. Main-panel listening recovery requires the matching command acknowledgment and a healthy snapshot;
+a later explicit monitor choice takes precedence. `tools/e2e/multichannel_audio_settings.py` gates these controls,
+burst deletion, compact layouts and playback recovery on an isolated fixture service.
+
 Keep manual display Ref separate from the requested and effective hardware references. The local
 viewport uses -200..+100 dBm plus Offset; wire requests clamp Ref minus Offset to -160..+40 dBm.
 Matching raw reports must retain the chosen viewport. Repeated clamped targets must reuse pending

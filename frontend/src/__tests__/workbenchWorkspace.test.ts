@@ -4,13 +4,14 @@ import { getLang, setLang } from '../core/i18n';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountWorkbench } from '../ui/workbenchApp';
+import { receiverPlugin } from './pluginFixtures';
 
 let adapter: FixtureReceiverAdapter, session: WorkbenchSession, ui: ReturnType<typeof mountWorkbench>, overview: HTMLElement;
 let language: ReturnType<typeof getLang>;
 const element = <T extends HTMLElement = HTMLElement>(selector: string): T => overview.querySelector<T>(selector)!;
 const click = (action: string): void => element<HTMLButtonElement>(`[data-action="${action}"]`).click();
 const edit = (name: string, value: string): void => {
-  const input = element<HTMLInputElement>(`[data-config] [name="${name}"]`);
+  const input = element<HTMLInputElement>(`[data-config] [name="${name}"], [data-channel-name][name="${name}"]`);
   input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
 };
 const change = (name: string, value: string): void => {
@@ -30,7 +31,131 @@ beforeEach(() => {
 });
 afterEach(() => { ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); setLang(language); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+function nativeWorkspace(): void {
+  ui.dispose(); session.dispose(); document.body.replaceChildren();
+  const snapshot = adapter.snapshot.bind(adapter);
+  vi.spyOn(adapter, 'snapshot').mockImplementation(() => {
+    const state = snapshot(); state.transport = 'native'; state.service_id = 'native-test';
+    state.capabilities.commands = ['configure', 'create', 'retire']; state.capabilities.monitor_mixing = true;
+    state.capabilities.mode_descriptors = ['nfm', 'am', 'usb', 'ft8', 'drm', 'drmplus'].map(id =>
+      receiverPlugin(id, ['drm', 'drmplus'].includes(id) ? { outputs: ['audio'] } : {}));
+    return state;
+  });
+  session = new WorkbenchSession(adapter); ui = mountWorkbench(session, document.body);
+  overview = document.querySelector<HTMLElement>('[data-view-id="overview-follow"]')!;
+}
+
+describe('per-channel audio settings', () => {
+  it('edits the name in the heading and submits it with the existing settings form', async () => {
+    nativeWorkspace();
+    const input = element<HTMLInputElement>('[data-channel-name]');
+    expect(input.closest('[data-advanced-settings]')).toBeNull();
+    expect(input.form).toBe(element('[data-config]'));
+    edit('name', 'My receiver'); input.blur(); session.notify();
+    expect(element<HTMLInputElement>('[data-channel-name]').value).toBe('My receiver');
+    expect(new FormData(element<HTMLFormElement>('[data-config]')).get('name')).toBe('My receiver');
+    const frequency = session.snapshot.receivers[0].confirmed.baseband.frequency_hz;
+    submit(); await settle();
+    expect(session.snapshot.receivers[0].confirmed.name).toBe('My receiver');
+    expect(session.snapshot.receivers[0].confirmed.baseband.frequency_hz).toBe(frequency);
+    click('tab-output'); element<HTMLInputElement>('[data-channel-name]').focus();
+    expect(element('[data-action=tab-receive]').getAttribute('aria-pressed')).toBe('true');
+    expect(element<HTMLInputElement>('[data-channel-name]').form).toBe(element('[data-config]'));
+  });
+
+  it('uses mode bandwidth limits and presets without applying until requested', async () => {
+    nativeWorkspace(); const configure = vi.spyOn(session, 'configure');
+    change('mode', 'am');
+    click('advanced-settings');
+    element<HTMLButtonElement>('[data-bandwidth="3000"]').click();
+    expect(element<HTMLInputElement>('[name=processor-bandwidth]').value).toBe('3000');
+    expect(element('[data-bandwidth="3000"]').getAttribute('aria-pressed')).toBe('true');
+    expect(element('[name=processor-bandwidth]').closest('.mc-parameter-input')!.textContent).toBe('Hz');
+    expect(configure).not.toHaveBeenCalled();
+    submit(); await settle();
+    expect(session.snapshot.receivers[0].confirmed.processors[0].bandwidth_hz).toBe(3000);
+    change('mode', 'usb');
+    expect(element('[data-bandwidth="2700"]')).toBeTruthy();
+    expect(element<HTMLInputElement>('[name=processor-bandwidth]').min).toBe('101');
+    change('mode', 'drm');
+    expect(element<HTMLInputElement>('[name=processor-bandwidth]').readOnly).toBe(true);
+    expect(element('[data-bandwidth-presets]').children).toHaveLength(1);
+  });
+
+  it('applies NR, squelch, AGC and gain only to the selected channel, retaining separate drafts', async () => {
+    nativeWorkspace();
+    const other = clone(session.snapshot.receivers[1]);
+    expect(element('[name=nr]').closest('[data-advanced-settings]')).toBeNull();
+    const nr = element<HTMLInputElement>('[name=nr]'); nr.checked = true; nr.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(element<HTMLInputElement>('[name=pcm-gain]').type).toBe('range');
+    change('nr-algorithm', 'dfn'); edit('nr-atten', '14'); edit('nr-strength', '0.25'); edit('squelch', '-92.3'); edit('pcm-gain', '0.8');
+    const agc = element<HTMLInputElement>('[name=agc]'); agc.checked = false; agc.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(element('[data-squelch-value]').textContent).toBe('-92.3 dBm');
+    expect(element('[data-pcm-gain-value]').textContent).toBe('0.80×');
+    expect(element('[data-nr-atten-value]').textContent).toBe('14 dB');
+    expect(element('[data-nr-strength]').hidden).toBe(true); expect(element('[data-nr-atten]').hidden).toBe(false);
+    session.select('fixture-c2');
+    expect(element<HTMLInputElement>('[name=nr]').checked).toBe(false);
+    session.select('fixture-c1');
+    expect(element<HTMLInputElement>('[name=nr]').checked).toBe(true);
+    expect(element<HTMLSelectElement>('[name=nr-algorithm]').value).toBe('dfn');
+    expect(element<HTMLInputElement>('[name=nr-atten]').value).toBe('14');
+    submit(); await settle();
+    expect(session.snapshot.receivers[0].confirmed.processors[0]).toMatchObject({
+      nr: true, nr_algorithm: 'dfn', nr_strength: 0.25, nr_atten_db: 14, squelch_dbm: -92.3, agc: false, pcm_gain: 0.8,
+    });
+    expect(session.snapshot.receivers[1]).toEqual(other);
+    expect(element('[data-draft-status]').textContent).toBe('Settings applied');
+    change('mode', 'usb'); submit(); await settle();
+    change('mode', 'nfm');
+    expect(element<HTMLInputElement>('[name=nr]').checked).toBe(true);
+    expect(element<HTMLSelectElement>('[name=nr-algorithm]').value).toBe('dfn');
+    expect(element<HTMLInputElement>('[name=nr-atten]').value).toBe('14');
+    expect(element('[data-squelch-value]').textContent).toBe('-92.3 dBm');
+  });
+
+  it('shows Wiener strength and squelch Off, and hides enhancements for DRM and IQ', () => {
+    nativeWorkspace();
+    expect(element('[data-squelch-value]').textContent).toBe('Off');
+    expect(element('[data-nr-strength]').hidden).toBe(false); expect(element('[data-nr-atten]').hidden).toBe(true);
+    edit('nr-strength', '0.75'); expect(element('[data-nr-strength-value]').textContent).toBe('75%');
+    change('mode', 'drm');
+    expect(element('[data-shared-audio]').hidden).toBe(false); expect(element('[data-monitor-enhancements]').hidden).toBe(true);
+    change('mode', ''); expect(element('[data-shared-audio]').hidden).toBe(true);
+    change('mode', 'am'); expect(element('[data-monitor-enhancements]').hidden).toBe(false);
+  });
+});
+
 describe('channel workspace workflows', () => {
+  it('disables every delete button for a pending receiver, including independent windows', async () => {
+    const dispatch = vi.spyOn(adapter, 'dispatch');
+    element<HTMLButtonElement>('[data-uid="fixture-c1"] [data-action=detail]').click();
+    const detail = document.querySelector<HTMLElement>('[data-view-id="detail-fixture-c1"]')!;
+    const remove = detail.querySelector<HTMLButtonElement>('[data-action=retire]')!;
+    remove.click(); remove.click();
+    expect(remove.disabled).toBe(true); expect(remove.textContent).toContain('Deleting');
+    expect(element<HTMLButtonElement>('[data-uid="fixture-c1"] [data-action=retire]').disabled).toBe(true);
+    expect(element<HTMLButtonElement>('.mc-channel-actions [data-action=retire]').disabled).toBe(true);
+    expect(element<HTMLButtonElement>('[data-uid="fixture-c2"] [data-action=retire]').disabled).toBe(false);
+    element<HTMLButtonElement>('[data-uid="fixture-c2"] [data-action=retire]').click();
+    await settle();
+    expect(dispatch.mock.calls.filter(([command]) => command.type === 'retire')).toHaveLength(2);
+    expect(session.snapshot.receivers.map(r => r.receiver_uid)).toEqual(['fixture-c3']);
+    expect(session.fault).toBeNull(); expect(element('[data-key=session-fault]')).toBeNull();
+  });
+
+  it('allows a failed deletion to be retried or its error dismissed without refreshing', async () => {
+    adapter.inject('reject', 'fixture-c1');
+    element<HTMLButtonElement>('.mc-channel-actions [data-action=retire]').click(); await settle();
+    expect(element('[data-key=session-fault]').textContent).toContain('FIXTURE_REJECTED');
+    expect(element<HTMLButtonElement>('.mc-channel-actions [data-action=retire]').disabled).toBe(false);
+    click('dismiss-fault');
+    expect(session.fault).toBeNull(); expect(element('[data-key=session-fault]')).toBeNull();
+    element<HTMLButtonElement>('.mc-channel-actions [data-action=retire]').click(); await settle();
+    expect(session.snapshot.receivers.some(r => r.receiver_uid === 'fixture-c1')).toBe(false);
+    expect(element('[data-key=session-fault]')).toBeNull();
+  });
+
   it('groups the reception switch, duplicate and delete, and offers row-specific management shortcuts', async () => {
     const actions = element('.mc-channel-actions');
     expect([...actions.querySelectorAll('[data-action]')].map(button => button.getAttribute('data-action')))

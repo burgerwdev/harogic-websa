@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountSdrQuickChannel } from '../ui/sdrQuickChannel';
-import { sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength } from '../ui/sdrState';
 import { setCurrentSdrChannel } from '../ui/sdrChannels';
 import { receiverPlugin } from './pluginFixtures';
 
@@ -27,6 +27,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function(this: HTMLDialogElement) { this.open = true; } });
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function(this: HTMLDialogElement) { this.open = false; } });
   sdrListenHz.confirm(7_110_000); sdrDemod.confirm('am'); sdrIfbw.confirm(6000);
+  sdrNr.confirm(true); sdrNrAlgo.confirm('dfn'); sdrNrStrength.confirm(0.25); sdrNrAtten.confirm(12);
 });
 afterEach(() => { ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
@@ -36,7 +37,8 @@ describe('main spectrum quick channel', () => {
     const added = ui.add(); await settle(); await added;
     expect(session.snapshot.receivers.slice(0, 3)).toEqual(previous);
     const receiver = session.snapshot.receivers[3];
-    expect(receiver.confirmed).toMatchObject({ purpose: 'listen', baseband: { frequency_hz: 7_110_000 }, processors: [{ mode: 'am', bandwidth_hz: 6000 }] });
+    expect(receiver.confirmed).toMatchObject({ purpose: 'listen', baseband: { frequency_hz: 7_110_000 }, processors: [{ mode: 'am', bandwidth_hz: 6000,
+      nr: true, nr_algorithm: 'dfn', nr_strength: 0.25, nr_atten_db: 12 }] });
     expect(session.route(receiver.receiver_uid).enabled).toBe(true);
     expect(document.querySelector('dialog')!.open).toBe(false);
   });
@@ -73,5 +75,12 @@ describe('main spectrum quick channel', () => {
     vi.mocked(adapter.dispatch).mockClear();
     await ui.add(); expect(adapter.dispatch).not.toHaveBeenCalled();
     expect(document.querySelector('dialog')!.open).toBe(false);
+  });
+  it('keeps different noise reduction settings as independent channel copies', async () => {
+    mount(5); const first = ui.add(); await settle(); await first;
+    sdrNrAtten.confirm(18);
+    const second = ui.add(); await settle(); await second;
+    expect(session.snapshot.receivers).toHaveLength(5);
+    expect(session.snapshot.receivers.slice(3).map(r => r.confirmed.processors[0].nr_atten_db)).toEqual([12, 18]);
   });
 });

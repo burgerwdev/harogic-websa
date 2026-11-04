@@ -91,6 +91,12 @@ impl ProcessingBranches {
     }
 }
 impl DevState {
+    pub(super) fn restore_retired_listener(&self, config: &mut ChannelConfig) {
+        if !config.enabled && !self.receivers.receivers.contains_key(&config.channel) {
+            config.baseband = None;
+            config.processing_enabled = true;
+        }
+    }
     pub(super) fn processing_source_identity(&self,identity:Option<u64>)->Option<u64> {
         identity.map(|key|self.processing_branches.history.iter().find(|(output,_)|
             service_stream::identity_key(output.channel_id,output.epoch)==key).map_or(key,|(_,source)|
@@ -119,7 +125,8 @@ pub(super) fn config_value(channel: &ChannelConfig, previous: Option<&Value>) ->
     config["processors"]=if channel.processing_enabled {json!([{
         "id":"primary","kind":if config["purpose"]=="digital" {"decoder"} else {"demodulator"},
         "mode":channel.mode,"minimum_rate_hz":websa_channelizer::catalog::mode(&channel.mode).map_or(0,|d|d.minimum_rate_hz),
-        "bandwidth_hz":channel.if_bw,"pcm_gain":channel.volume,"agc":channel.agc,"squelch_dbm":channel.squelch
+        "bandwidth_hz":channel.if_bw,"pcm_gain":channel.volume,"agc":channel.agc,"squelch_dbm":channel.squelch,
+        "nr":channel.nr,"nr_algorithm":channel.nr_algorithm,"nr_strength":channel.nr_strength,"nr_atten_db":channel.nr_atten_db
     }])} else {json!([])};
     config
 }
@@ -282,7 +289,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     if processors.len()>1 || (purpose=="iq" && !processors.is_empty()) || (purpose!="iq" && processors.is_empty()) {
         return Err("Each receiver supports zero or one primary processor; IQ-only receivers must use an empty set".into());
     }
-    let mut channel=state.channel_configs()[(slot-1) as usize].clone();
+    let mut channel=if kind=="create" {ChannelConfig::for_slot(slot)} else {state.channel_configs()[(slot-1) as usize].clone()};
     channel.freq=frequency;channel.enabled=enabled;channel.processing_enabled=!processors.is_empty();
     channel.baseband=Some(baseband);
     if let Some(processor)=processors.first() {
@@ -298,10 +305,20 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         if let Some(gain)=processor.get("pcm_gain") {channel.volume=gain.as_f64().ok_or("invalid PCM gain")?;}
         if let Some(agc)=processor.get("agc") {channel.agc=agc.as_bool().ok_or("invalid AGC flag")?;}
         if let Some(squelch)=processor.get("squelch_dbm") {channel.squelch=squelch.as_f64().ok_or("invalid squelch")?;}
+        if let Some(nr)=processor.get("nr") {channel.nr=nr.as_bool().ok_or("invalid NR flag")?;}
+        if let Some(algorithm)=processor.get("nr_algorithm") {channel.nr_algorithm=algorithm.as_str().ok_or("invalid NR algorithm")?.into();}
+        if let Some(strength)=processor.get("nr_strength") {channel.nr_strength=strength.as_f64().ok_or("invalid NR strength")?;}
+        if let Some(atten)=processor.get("nr_atten_db") {channel.nr_atten_db=atten.as_f64().ok_or("invalid NR attenuation")?;}
         let floor=processor["minimum_rate_hz"].as_f64().filter(|v|v.is_finite()&&*v>=0.0).ok_or("invalid processor minimum rate")?;
         channel.baseband.as_mut().unwrap().minimum_rate_hz=channel.baseband.as_ref().unwrap().minimum_rate_hz.max(floor);
     }
     channel.validate()?;
+    if let Some(processor)=config["processors"].as_array_mut().and_then(|p|p.first_mut()) {
+        processor["bandwidth_hz"]=json!(channel.if_bw);processor["pcm_gain"]=json!(channel.volume);
+        processor["agc"]=json!(channel.agc);processor["squelch_dbm"]=json!(channel.squelch);
+        processor["nr"]=json!(channel.nr);processor["nr_algorithm"]=json!(channel.nr_algorithm);
+        processor["nr_strength"]=json!(channel.nr_strength);processor["nr_atten_db"]=json!(channel.nr_atten_db);
+    }
     let fs=state.capture_bandwidth()/0.8;
     let plan=service_ddc::source_plan(fs,&channel)?;
     if enabled {
@@ -315,7 +332,9 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     }
     let mut data=json!({"cmd":"SET_SDR_CHANNEL","channel":slot,"enabled":enabled,"freq":frequency,
         "mode":channel.mode,"if_bw":channel.if_bw,"baseband":channel.baseband,
-        "processing_enabled":channel.processing_enabled,"volume":channel.volume,"agc":channel.agc,"squelch":channel.squelch,"request_id":request["request_id"]});
+        "processing_enabled":channel.processing_enabled,"volume":channel.volume,"agc":channel.agc,"squelch":channel.squelch,
+        "nr":channel.nr,"nr_algorithm":channel.nr_algorithm,"nr_strength":channel.nr_strength,"nr_atten_db":channel.nr_atten_db,
+        "request_id":request["request_id"]});
     // A retained compatibility mode is irrelevant to IQ-only. Sending it would
     // also look like an explicit legacy decoder-recovery request after a fault.
     if !channel.processing_enabled {data.as_object_mut().unwrap().remove("mode");}
@@ -692,6 +711,99 @@ mod tests {
         let response=command(State(app.clone()),HeaderMap::new(),request.to_string()).await;
         assert_eq!(response.status(),StatusCode::OK);
         serde_json::from_slice(&axum::body::to_bytes(response.into_body(),2*1024*1024).await.unwrap()).unwrap()
+    }
+
+    fn listen_config(frequency:f64)->Value {
+        let mut config=iq_config(frequency);
+        config["purpose"]=json!("listen");
+        config["processors"]=json!([{"id":"primary","kind":"demodulator","mode":"am","minimum_rate_hz":0,
+            "bandwidth_hz":3000,"pcm_gain":0.8,"agc":false,"squelch_dbm":-92.3,
+            "nr":true,"nr_algorithm":"wiener","nr_strength":0.25,"nr_atten_db":14}]);
+        config
+    }
+
+    #[tokio::test]
+    async fn receiver_audio_settings_round_trip_and_reject_invalid_nr_without_affecting_other_channels() {
+        let app=app();
+        let first=run(&app,json!({"type":"create","request_id":"audio-first","config":listen_config(100e6)})).await;
+        assert!(first["fault"].is_null(),"{first}");
+        let second=run(&app,json!({"type":"create","request_id":"audio-second","config":listen_config(100_010_000.0)})).await;
+        assert!(second["fault"].is_null(),"{second}");
+        let before=second["snapshot"]["receivers"].as_array().unwrap();
+        let mut config=before[0]["confirmed"].clone();
+        config["processors"][0]["nr_algorithm"]=json!("dfn");
+        config["processors"][0]["nr_atten_db"]=json!(18);
+        let changed=run(&app,json!({"type":"configure","request_id":"audio-change","receiver_uid":before[0]["receiver_uid"],
+            "expected_revision":before[0]["revision"],"config":config})).await;
+        assert!(changed["fault"].is_null(),"{changed}");
+        assert_eq!(changed["snapshot"]["receivers"][1],before[1]);
+        let after=app.state.lock().unwrap().receiver_snapshot();
+        let processor=&after["receivers"][0]["confirmed"]["processors"][0];
+        for (field,value) in [("nr",json!(true)),("nr_algorithm",json!("dfn")),("nr_strength",json!(0.25)),
+            ("nr_atten_db",json!(18)),("squelch_dbm",json!(-92.3)),("agc",json!(false)),("pcm_gain",json!(0.8))] {
+            if value.is_number() {assert_eq!(processor[field].as_f64(),value.as_f64(),"{field}");}
+            else {assert_eq!(processor[field],value,"{field}");}
+        }
+        let channel=app.state.lock().unwrap().channel_configs()[0].clone();
+        assert!(channel.nr);assert_eq!(channel.nr_algorithm,"dfn");
+        assert_eq!(channel.nr_strength,0.25);assert_eq!(channel.nr_atten_db,18.0);
+        for (index,(field,value)) in [("nr",json!("yes")),("nr_algorithm",json!("unknown")),
+            ("nr_strength",json!(1.1)),("nr_atten_db",json!(101))].into_iter().enumerate() {
+            let mut invalid=after["receivers"][0]["confirmed"].clone();invalid["processors"][0][field]=value;
+            let rejected=run(&app,json!({"type":"configure","request_id":format!("bad-nr-{index}"),
+                "receiver_uid":after["receivers"][0]["receiver_uid"],"expected_revision":after["receivers"][0]["revision"],"config":invalid})).await;
+            assert!(!rejected["fault"].is_null(),"{field}: {rejected}");
+            assert_eq!(rejected["snapshot"],after);
+        }
+    }
+
+    #[tokio::test]
+    async fn reused_receiver_slots_get_fresh_audio_defaults_and_confirm_effective_settings() {
+        let app=app();
+        let created=run(&app,json!({"type":"create","request_id":"old-audio","config":listen_config(100e6)})).await;
+        let uid=&created["snapshot"]["receivers"][0]["receiver_uid"];
+        assert_eq!(created["snapshot"]["receivers"][0]["confirmed"]["processors"][0]["nr"],true);
+        let retired=run(&app,json!({"type":"retire","request_id":"retire-old","receiver_uid":uid})).await;
+        assert!(retired["fault"].is_null(),"{retired}");
+        let mut config=listen_config(100e6);
+        for field in ["pcm_gain","agc","squelch_dbm","nr","nr_algorithm","nr_strength","nr_atten_db"] {
+            config["processors"][0].as_object_mut().unwrap().remove(field);
+        }
+        let fresh=run(&app,json!({"type":"create","request_id":"fresh-audio","config":config})).await;
+        assert!(fresh["fault"].is_null(),"{fresh}");
+        let processor=&fresh["snapshot"]["receivers"][0]["confirmed"]["processors"][0];
+        assert_eq!(processor["nr"],false);assert_eq!(processor["agc"],true);
+        assert_eq!(processor["nr_strength"].as_f64(),Some(0.6));
+        assert_eq!(processor["nr_atten_db"].as_f64(),Some(10.0));
+        assert_eq!(processor["squelch_dbm"].as_f64(),Some(-110.0));
+        let state=app.state.lock().unwrap();let actual=&state.channel_configs()[0];
+        assert_eq!(processor["nr"],actual.nr);assert_eq!(processor["pcm_gain"].as_f64(),Some(actual.volume));
+    }
+
+    #[tokio::test]
+    async fn main_tuning_recreates_a_listener_after_every_receiver_is_retired_including_iq_only() {
+        for iq_only in [false,true] {
+            for cmd in ["SET_SDR_CHANNEL","SET_SDR"] {
+                let app=app();
+                let config=if iq_only {iq_config(100e6)} else {listen_config(100e6)};
+                let created=run(&app,json!({"type":"create","request_id":"create","config":config})).await;
+                assert!(created["fault"].is_null(),"{created}");
+                let old_uid=&created["snapshot"]["receivers"][0]["receiver_uid"];
+                let retired=run(&app,json!({"type":"retire","request_id":"retire","receiver_uid":old_uid})).await;
+                assert!(retired["snapshot"]["receivers"].as_array().unwrap().is_empty());
+                let mut state=app.state.lock().unwrap();
+                let request=if cmd=="SET_SDR" {json!({"center":100_010_000.0,"listen":100_010_000.0})}
+                    else {json!({"channel":1,"enabled":true,"freq":100_010_000.0})};
+                dispatch(&mut state,cmd,&request).unwrap();
+                let snapshot=state.receiver_snapshot();
+                let receivers=snapshot["receivers"].as_array().unwrap();assert_eq!(receivers.len(),1);
+                assert_ne!(receivers[0]["receiver_uid"],*old_uid);
+                assert_eq!(receivers[0]["confirmed"]["purpose"],"listen");
+                assert_eq!(receivers[0]["confirmed"]["enabled"],true);
+                assert_eq!(receivers[0]["confirmed"]["baseband"]["frequency_hz"],100_010_000.0);
+                assert!(state.channel_configs()[0].processing_enabled);
+            }
+        }
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ export type U64 = string;
 export type Purpose = 'listen' | 'digital' | 'iq';
 export type TrackKind = 'iq' | 'audio' | 'results';
 export type TaskState = 'preparing' | 'waiting' | 'recording' | 'finalizing' | 'completed' | 'failed';
+export type NoiseReductionAlgorithm = 'wiener' | 'dfn' | 'gtcrn' | 'ul-unas' | 'fastenhancer';
 export interface StreamIdentity { source_id: string; epoch: U64; channel_id: U64 }
 export interface SourceClock {
   input_index: U64; output_index: U64; fraction_num: U64; fraction_den: U64;
@@ -17,7 +18,9 @@ export interface BasebandConfig {
 export interface ReceiverConfig {
   name: string; color: string; tags: string[]; enabled: boolean; purpose: Purpose;
   baseband: BasebandConfig;
-  processors: { id: string; kind: 'demodulator' | 'decoder'; mode: string; minimum_rate_hz: number; bandwidth_hz?: number; pcm_gain?: number; agc?: boolean; squelch_dbm?: number }[];
+  processors: { id: string; kind: 'demodulator' | 'decoder'; mode: string; minimum_rate_hz: number;
+    bandwidth_hz?: number; pcm_gain?: number; agc?: boolean; squelch_dbm?: number;
+    nr?: boolean; nr_algorithm?: NoiseReductionAlgorithm; nr_strength?: number; nr_atten_db?: number }[];
 }
 export interface Fault {
   scope: 'request' | 'consumer' | 'recording' | 'receiver' | 'capture';
@@ -53,6 +56,7 @@ export interface RecordingTask {
 export interface ReceiverMode {
   id: string; kind: 'analog' | 'digital'; label: string; provider: string; available: boolean;
   unavailableReason: string | null; defaultBandwidthHz: number; minimumRateHz: number;
+  minBandwidthHz?: number; maxBandwidthHz?: number; bandwidthPresetsHz?: number[]; bandwidthEditable?: boolean;
   audioCompanion: string | null; outputs: string[]; sideband: string;
 }
 export function receiverHasAudio(snapshot: ServiceSnapshot, config: ReceiverConfig): boolean {

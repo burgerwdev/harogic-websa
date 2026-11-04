@@ -39,7 +39,7 @@ describe('the receiver mode catalog', () => {
 	});
 
 	it('exposes the requested common badges while retaining dependency gating', async () => {
-		const promoted = ['ais', 'adsb', 'aprs', 'wspr', 'ft4', 'radiofax', 'rtty'];
+		const promoted = ['drm', 'ais', 'adsb', 'aprs', 'wspr', 'ft4', 'radiofax', 'rtty'];
 		const reason = 'RTTY decoder is not installed';
 		setPluginManifest([
 			receiverPlugin('am'), receiverPlugin('usb'),
@@ -53,7 +53,7 @@ describe('the receiver mode catalog', () => {
 		await initSdrDemodGroup(container, { onSelect });
 		const buttons = [...container.querySelectorAll<HTMLButtonElement>('.sdr-mode-common button')];
 		expect(buttons.map((button) => button.dataset.sdrDemod)).toEqual(['am', 'usb', ...promoted]);
-		expect(buttons.map((button) => button.textContent)).toEqual(['AM', 'USB', 'AIS', 'ADS-B', 'APRS', 'WSPR', 'FT4', 'FAX', 'RTTY']);
+		expect(buttons.map((button) => button.textContent)).toEqual(['AM', 'USB', 'DRM', 'AIS', 'ADS-B', 'APRS', 'WSPR', 'FT4', 'FAX', 'RTTY']);
 		for (const id of promoted) {
 			const button = buttons.find((candidate) => candidate.dataset.sdrDemod === id)!;
 			expect(button.disabled).toBe(id === 'rtty');

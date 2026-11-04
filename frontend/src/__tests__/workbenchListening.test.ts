@@ -107,7 +107,7 @@ it('reports a receiver retired in another window without leaving the request pen
   const retire = session.send({ type: 'retire', request_id: 'retire', receiver_uid: 'fixture-c1' });
   await settle(retire);
   const result = await apply;
-  expect(result.fault).not.toBeNull(); expect(session.edits.get('fixture-c1')?.pending).toBe(false);
+  expect(result.fault).not.toBeNull(); expect(session.edits.get('fixture-c1')?.pending).not.toBe(true);
   expect(session.snapshot.receivers.some(r => r.receiver_uid === 'fixture-c1')).toBe(false);
   expect(session.routes.size).toBe(0);
 });

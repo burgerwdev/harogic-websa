@@ -1,9 +1,10 @@
-import type { ServiceSnapshot } from '../core/multichannel';
+import type { NoiseReductionAlgorithm, ServiceSnapshot } from '../core/multichannel';
 
 /** Only confirmed editor parameters, scoped to a service, receiver and browser tab. */
 export interface ReceiverModeSettings {
   passband_hz: number; transition_hz: number; minimum_rate_hz: number;
   bandwidth_hz: number; pcm_gain: number; agc: boolean; squelch_dbm: number;
+  nr: boolean; nr_algorithm: NoiseReductionAlgorithm; nr_strength: number; nr_atten_db: number;
 }
 const key = ['websa', 'workbench', 'modes', 'v1'].join('-'), limit = 256 * 1024;
 const valid = (value: unknown): value is ReceiverModeSettings => {
@@ -11,11 +12,16 @@ const valid = (value: unknown): value is ReceiverModeSettings => {
   const s = value as ReceiverModeSettings;
   return [s.passband_hz, s.transition_hz, s.minimum_rate_hz, s.bandwidth_hz].every(n => Number.isFinite(n) && n > 0)
     && Number.isFinite(s.pcm_gain) && s.pcm_gain >= 0 && s.pcm_gain <= 2
-    && typeof s.agc === 'boolean' && Number.isFinite(s.squelch_dbm);
+    && typeof s.agc === 'boolean' && Number.isFinite(s.squelch_dbm)
+    && (s.nr === undefined || typeof s.nr === 'boolean')
+    && (s.nr_algorithm === undefined || ['wiener', 'dfn', 'gtcrn', 'ul-unas', 'fastenhancer'].includes(s.nr_algorithm))
+    && (s.nr_strength === undefined || Number.isFinite(s.nr_strength) && s.nr_strength >= 0 && s.nr_strength <= 1)
+    && (s.nr_atten_db === undefined || Number.isFinite(s.nr_atten_db) && s.nr_atten_db >= 0 && s.nr_atten_db <= 100);
 };
 const copy = (s: ReceiverModeSettings): ReceiverModeSettings => ({ passband_hz: s.passband_hz,
   transition_hz: s.transition_hz, minimum_rate_hz: s.minimum_rate_hz, bandwidth_hz: s.bandwidth_hz,
-  pcm_gain: s.pcm_gain, agc: s.agc, squelch_dbm: s.squelch_dbm });
+  pcm_gain: s.pcm_gain, agc: s.agc, squelch_dbm: s.squelch_dbm,
+  nr: s.nr ?? false, nr_algorithm: s.nr_algorithm ?? 'wiener', nr_strength: s.nr_strength ?? 0.6, nr_atten_db: s.nr_atten_db ?? 10 });
 
 export class ReceiverModeMemory {
   private service?: string;
@@ -53,7 +59,9 @@ export class ReceiverModeMemory {
       if (c.processors.length > 1 || !allowed.has(mode)) continue;
       const settings = { passband_hz: c.baseband.passband_hz, transition_hz: c.baseband.transition_hz,
         minimum_rate_hz: c.baseband.minimum_rate_hz, bandwidth_hz: processor?.bandwidth_hz ?? descriptor?.defaultBandwidthHz ?? 6000,
-        pcm_gain: processor?.pcm_gain ?? 0.5, agc: processor?.agc !== false, squelch_dbm: processor?.squelch_dbm ?? -160 };
+        pcm_gain: processor?.pcm_gain ?? 0.5, agc: processor?.agc !== false, squelch_dbm: processor?.squelch_dbm ?? -160,
+        nr: processor?.nr ?? false, nr_algorithm: processor?.nr_algorithm ?? 'wiener',
+        nr_strength: processor?.nr_strength ?? 0.6, nr_atten_db: processor?.nr_atten_db ?? 10 };
       if (!valid(settings)) continue;
       const values = this.entries.get(row.receiver_uid) ?? new Map<string, ReceiverModeSettings>();
       values.set(mode, settings); this.entries.set(row.receiver_uid, values);

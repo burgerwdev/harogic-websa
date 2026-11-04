@@ -114,7 +114,7 @@ describe('native receiver control and shared IQ', () => {
     let outputChannels = 2;
     const ui = mountWorkbench(session, host, { results: () => ({ entries: [], evicted: 0 }), status: () => '', retry: () => {}, playback: () => ({ outputChannels }) }), overview = document.querySelector<HTMLElement>('[data-view-id="overview-follow"]')!;
     const gain = overview.querySelector<HTMLInputElement>('[data-gain]')!;
-    expect(gain.disabled).toBe(true); expect(overview.querySelector('[data-monitor-state]')!.textContent).toContain('off');
+    expect(gain.disabled).toBe(true); expect(overview.querySelector('.mc-monitor [data-action=listen]')!.getAttribute('aria-pressed')).toBe('false');
     overview.querySelector<HTMLButtonElement>('.mc-row [data-action=listen]')!.click();
     expect(gain.disabled).toBe(false);
     gain.dispatchEvent(new Event('pointerdown', { bubbles: true })); gain.value = '0.25'; gain.dispatchEvent(new Event('input', { bubbles: true }));
@@ -232,6 +232,19 @@ describe('native receiver control and shared IQ', () => {
     expect(adapter.snapshot()).toEqual(snapshot);
     fetchMock.mockResolvedValueOnce(response(impact)).mockResolvedValueOnce(response({ request_id: 'other', snapshot: { ...snapshot, revision: '99' }, fault: null }));
     await expect(adapter.dispatch(command)).rejects.toThrow('request_id mismatch'); expect(adapter.snapshot().revision).toBe('10');
+  });
+  it('clears an old deletion rejection when polling confirms the target was retired', async () => {
+    const session = new WorkbenchSession(adapter), host = document.createElement('div'); document.body.append(host);
+    const ui = mountWorkbench(session, host);
+    try {
+      fetchMock.mockResolvedValueOnce(response({ ...impact, accepted: false,
+        faults: [{ scope: 'request', code: 'REJECTED', message: 'receiver not found', retryable: false }] }));
+      await session.send({ type: 'retire', request_id: 'gone', receiver_uid: uid });
+      expect(document.querySelector('[data-key=session-fault]')!.textContent).toContain('receiver not found');
+      const next = clone(snapshot); next.revision = '11'; next.receivers = next.receivers.filter(r => r.receiver_uid !== uid);
+      fetchMock.mockResolvedValue(response(next)); await adapter.refresh();
+      expect(session.fault).toBeNull(); expect(document.querySelector('[data-key=session-fault]')).toBeNull();
+    } finally { ui.dispose(); session.dispose(); }
   });
   it('cannot restore a retired service with a delayed command reply', async () => {
     let finish!: (value: unknown) => void;

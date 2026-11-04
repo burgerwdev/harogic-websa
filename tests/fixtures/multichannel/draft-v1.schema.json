@@ -118,6 +118,22 @@
           "type": "number",
           "minimum": -200,
           "maximum": 0
+        },
+        "nr": {
+          "type": "boolean"
+        },
+        "nr_algorithm": {
+          "enum": ["wiener", "dfn", "gtcrn", "ul-unas", "fastenhancer"]
+        },
+        "nr_strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "nr_atten_db": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
         }
       },
       "required": [

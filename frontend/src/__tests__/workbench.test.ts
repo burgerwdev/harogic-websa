@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clone } from '../core/multichannel';
+import { clone, type CommandReply, type ReceiverAdapter, type ServiceCommand, type ServiceSnapshot } from '../core/multichannel';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { createFloatingWindow } from '../ui/floatingWindow';
@@ -11,6 +11,144 @@ let adapter: FixtureReceiverAdapter, session: WorkbenchSession;
 beforeEach(() => { vi.useFakeTimers(); localStorage.clear(); adapter = new FixtureReceiverAdapter(3, 10); session = new WorkbenchSession(adapter); });
 afterEach(() => { session.dispose(); adapter.dispose(); vi.useRealTimers(); vi.restoreAllMocks(); document.body.replaceChildren(); });
 const settle = async <T>(promise: Promise<T>): Promise<T> => { await vi.runAllTimersAsync(); return promise; };
+
+function controlledSession() {
+  session.dispose();
+  const initial = clone(adapter.snapshot()); initial.service_id = 'service-a';
+  let accept!: (snapshot: ServiceSnapshot) => void;
+  const replies: ((reply: CommandReply) => void)[] = [];
+  const dispatch = vi.fn((_command: ServiceCommand) => new Promise<CommandReply>(resolve => replies.push(resolve)));
+  const controlled: ReceiverAdapter = { snapshot: () => clone(initial), subscribe: listener => { accept = listener; return () => {}; },
+    preflight: command => adapter.preflight(command), dispatch };
+  session = new WorkbenchSession(controlled);
+  return { initial, dispatch, replies, accept: (snapshot: ServiceSnapshot) => accept(clone(snapshot)) };
+}
+
+describe('workbench state generations and command ordering', () => {
+  it('serializes configuration and deletion against the shared commit revision', async () => {
+    const dispatch = vi.spyOn(adapter, 'dispatch'), config = clone(session.snapshot.receivers[0].confirmed);
+    config.name = 'Updated';
+    const edit = session.configure('fixture-c1', config);
+    const retire = session.send({ type: 'retire', request_id: 'retire-other', receiver_uid: 'fixture-c2' });
+    await vi.advanceTimersByTimeAsync(0); expect(dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.mock.calls[0][0].type).toBe('configure');
+    await settle(Promise.all([edit, retire]));
+    expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual(['configure', 'retire']);
+    expect(session.snapshot.receivers[0].confirmed.name).toBe('Updated');
+    expect(session.snapshot.receivers.some(r => r.receiver_uid === 'fixture-c2')).toBe(false);
+  });
+
+  it('rejects a configuration after deletion is requested, retaining its rejected draft', async () => {
+    const config = clone(session.snapshot.receivers[0].confirmed), dispatch = vi.spyOn(adapter, 'dispatch');
+    config.name = 'Too late';
+    const retiring = session.send({ type: 'retire', request_id: 'retire', receiver_uid: 'fixture-c1' });
+    await session.configure('fixture-c1', config);
+    expect(session.edits.get('fixture-c1')?.fault?.code).toBe('BUSY');
+    await settle(retiring);
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: 'retire' }));
+  });
+
+  it('invalidates old edits and monitor routes on restart, including a reused UID', async () => {
+    const c = controlledSession(), config = clone(c.initial.receivers[0].confirmed);
+    config.name = 'Old intent'; session.monitor('fixture-c1', { enabled: true });
+    const pending = session.configure('fixture-c1', config);
+    await vi.advanceTimersByTimeAsync(0);
+    void session.configure('fixture-c1', { ...config, name: 'Old queued intent' });
+    const restarted = { ...clone(c.initial), service_id: 'service-b' }; c.accept(restarted);
+    c.replies[0]({ request_id: 'old', snapshot: c.initial, fault: null }); await pending;
+    expect(c.dispatch).toHaveBeenCalledOnce(); expect(session.snapshot.service_id).toBe('service-b');
+    expect(session.edits.size).toBe(0); expect(session.routes.size).toBe(0); expect(session.fault).toBeNull();
+    c.accept(c.initial); expect(session.snapshot.service_id).toBe('service-b');
+  });
+
+  it('keeps new-service retirement ownership when an old callback completes', async () => {
+    const c = controlledSession();
+    const first = session.send({ type: 'retire', request_id: 'old-first', receiver_uid: 'fixture-c1' });
+    const queued = session.send({ type: 'retire', request_id: 'old-queued', receiver_uid: 'fixture-c2' });
+    await vi.advanceTimersByTimeAsync(0);
+    const restarted = { ...clone(c.initial), service_id: 'service-b' }; c.accept(restarted);
+    const current = session.send({ type: 'retire', request_id: 'new', receiver_uid: 'fixture-c2' });
+    await vi.advanceTimersByTimeAsync(0); expect(c.dispatch).toHaveBeenCalledTimes(2);
+    c.replies[0]({ request_id: 'old-first', snapshot: c.initial, fault: null });
+    const old = await Promise.all([first, queued]);
+    expect(old.every(reply => reply.fault?.code === 'SOURCE_RESTARTED')).toBe(true);
+    expect(session.retiring('fixture-c2')).toBe(true);
+    c.replies[1]({ request_id: 'new', snapshot: { ...restarted, receivers: restarted.receivers.filter(r => r.receiver_uid !== 'fixture-c2') }, fault: null });
+    await current; expect(session.retiring('fixture-c2')).toBe(false);
+  });
+
+  it('ignores late completions after disposal and does not replay queued edits', async () => {
+    const c = controlledSession(), config = clone(c.initial.receivers[0].confirmed);
+    const pending = session.configure('fixture-c1', config); await vi.advanceTimersByTimeAsync(0);
+    void session.configure('fixture-c1', { ...config, name: 'Queued' });
+    const notify = vi.fn(); session.subscribe(notify); session.dispose();
+    c.replies[0]({ request_id: 'old', snapshot: c.initial, fault: null }); await pending;
+    expect(c.dispatch).toHaveBeenCalledOnce(); expect(notify).not.toHaveBeenCalled();
+    expect((await session.send({ type: 'retire', request_id: 'closed', receiver_uid: 'fixture-c2' })).fault?.code).toBe('CLOSED');
+  });
+
+  it('rejects older telemetry snapshots within the same configuration revision', () => {
+    const c = controlledSession(); c.accept({ ...c.initial, state_revision: '20' });
+    c.accept({ ...c.initial, state_revision: '19', receivers: [] });
+    expect(session.snapshot.state_revision).toBe('20'); expect(session.snapshot.receivers).toHaveLength(3);
+  });
+
+  it('keeps a newer command error when an older independent command completes later', async () => {
+    const c = controlledSession();
+    const older = session.send({ type: 'output', request_id: 'older', receiver_uid: 'fixture-c1', enabled: true });
+    const newer = session.send({ type: 'record_start', request_id: 'newer', receiver_uid: 'fixture-c2', kinds: ['iq'] });
+    c.replies[1]({ request_id: 'newer', snapshot: c.initial,
+      fault: { scope: 'request', code: 'REJECTED', message: 'Newer failure', retryable: true } });
+    await newer; c.replies[0]({ request_id: 'older', snapshot: c.initial, fault: null }); await older;
+    expect(session.fault?.message).toBe('Newer failure');
+  });
+});
+
+describe('receiver deletion requests', () => {
+  it('shares duplicate requests and serializes deletion of different receivers', async () => {
+    const dispatch = vi.spyOn(adapter, 'dispatch');
+    const first = session.send({ type: 'retire', request_id: 'first', receiver_uid: 'fixture-c1' });
+    const duplicate = session.send({ type: 'retire', request_id: 'duplicate', receiver_uid: 'fixture-c1' });
+    const second = session.send({ type: 'retire', request_id: 'second', receiver_uid: 'fixture-c2' });
+    expect(session.retiring('fixture-c1')).toBe(true); expect(session.retiring('fixture-c2')).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ receiver_uid: 'fixture-c1' }));
+    const replies = await settle(Promise.all([first, duplicate, second]));
+    expect(replies.map(r => r.request_id)).toEqual(['first', 'duplicate', 'second']);
+    expect(replies.every(r => r.fault === null)).toBe(true);
+    expect(dispatch.mock.calls.map(([command]) => 'receiver_uid' in command && command.receiver_uid)).toEqual(['fixture-c1', 'fixture-c2']);
+    expect(session.snapshot.receivers.map(r => r.receiver_uid)).toEqual(['fixture-c3']);
+    expect(session.retiring('fixture-c1')).toBe(false); expect(session.retiring('fixture-c2')).toBe(false);
+    await session.send({ type: 'retire', request_id: 'late-click', receiver_uid: 'fixture-c1' });
+    expect(dispatch).toHaveBeenCalledTimes(2); expect(session.fault).toBeNull();
+  });
+
+  it('releases a rejected deletion for retry and clears errors once that receiver is gone', async () => {
+    adapter.inject('reject', 'fixture-c1');
+    await settle(session.send({ type: 'retire', request_id: 'reject', receiver_uid: 'fixture-c1' }));
+    expect(session.fault).toMatchObject({ code: 'FIXTURE_REJECTED', receiver_uid: 'fixture-c1' });
+    expect(session.retiring('fixture-c1')).toBe(false);
+    // A snapshot from another view/client confirms that the target no longer exists.
+    await settle(adapter.dispatch({ type: 'retire', request_id: 'external', receiver_uid: 'fixture-c1' }));
+    expect(session.fault).toBeNull();
+    session.fault = { scope: 'capture', code: 'CAPTURE_FAILED', message: 'Capture failure', retryable: true };
+    await settle(adapter.dispatch({ type: 'retire', request_id: 'other', receiver_uid: 'fixture-c2' }));
+    expect(session.fault?.code).toBe('CAPTURE_FAILED');
+  });
+
+  it('skips a queued receiver already removed by another client', async () => {
+    const dispatch = vi.spyOn(adapter, 'dispatch');
+    adapter.inject('late', 'fixture-c1');
+    const first = session.send({ type: 'retire', request_id: 'slow-first', receiver_uid: 'fixture-c1' });
+    const second = session.send({ type: 'retire', request_id: 'queued-second', receiver_uid: 'fixture-c2' });
+    await vi.advanceTimersByTimeAsync(0);
+    const external = adapter.dispatch({ type: 'retire', request_id: 'external', receiver_uid: 'fixture-c2' });
+    await settle(Promise.all([first, second, external]));
+    expect(dispatch.mock.calls.map(([command]) => command.request_id)).toEqual(['slow-first', 'external']);
+    expect(session.snapshot.receivers.map(r => r.receiver_uid)).toEqual(['fixture-c3']);
+    expect(session.fault).toBeNull();
+  });
+});
 
 describe('independent receiver, monitor, recording and view lifetimes', () => {
   it('turns a direct Listen action during follow into a manual mix without moving the editing target', () => {

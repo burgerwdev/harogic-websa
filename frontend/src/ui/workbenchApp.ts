@@ -1,5 +1,5 @@
-import { clone, receiverHasAudio, receiverHasResults, type ReceiverState, type ReceiverConfig, type ViewBinding, type SceneCommand, type TrackKind, type RecordingTask, type Fault } from '../core/multichannel';
-import { getLang, onLangChange } from '../core/i18n';
+import { clone, receiverHasAudio, receiverHasResults, type ReceiverState, type ReceiverConfig, type ReceiverMode, type ViewBinding, type SceneCommand, type TrackKind, type RecordingTask, type Fault } from '../core/multichannel';
+import { getLang, onLangChange, t } from '../core/i18n';
 import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { WorkbenchSession } from './workbenchSession';
 import { mountReceiverDecodeView, type ReceiverDecodeView } from './receiverDecodeView';
@@ -20,6 +20,48 @@ const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, 
 const button = (action: string, text: string, extra = '', tip = workbenchTip(action)): string => `<button type="button" data-action="${action}" title="${esc(tip)}" ${extra}>${icon(({ create: 'plus', listen: 'volume', results: 'signal', detail: 'external', 'follow-results': 'external', 'channel-view': 'signal', recordings: 'record', 'master-mute': 'muted', 'tab-receive': 'signal', 'tab-recording': 'record', 'tab-output': 'external' } as Record<string, string>)[action] ?? (action.startsWith('rec-') ? 'record' : ''))}<span>${esc(text)}</span></button>`;
 const panLabel = (value: number): string => value === 0 ? l('Centre', '居中') : `${value < 0 ? l('L', '左') : l('R', '右')} ${Math.round(Math.abs(value) * 100)}%`;
 const labels = () => ({ listen: l('Audio demodulation', '音频解调'), digital: l('Protocol decoding', '协议解码'), iq: l('No demodulation', '不解调') });
+const audioSettings = (c: ReceiverConfig, audio: boolean): string => {
+  const p = c.processors[0], squelch = p?.squelch_dbm ?? -160, algorithm = p?.nr_algorithm ?? 'wiener';
+  return `<fieldset class="mc-channel-audio" data-shared-audio ${audio ? '' : 'hidden'}><legend>${l('Channel audio', '信道音频')}</legend>
+    <label class="mc-audio-slider" title="${l('Channel output gain, also used for audio recordings', '此信道的输出增益，也用于音频录制')}"><span>${l('Audio gain', '音频增益')}</span><input name="pcm-gain" type="range" min="0" max="2" step="0.01" value="${p?.pcm_gain ?? 0.5}"><output data-pcm-gain-value>${(p?.pcm_gain ?? 0.5).toFixed(2)}×</output></label>
+    <div data-monitor-enhancements ${['drm', 'drmplus'].includes(p?.mode) ? 'hidden' : ''}>
+      <label class="mc-audio-slider" title="${esc(t('squelch_tip'))}"><span>${l('Squelch', '静噪')}</span><input name="squelch" type="range" min="-160" max="0" step="0.1" value="${Math.max(-160, squelch)}"><output data-squelch-value>${squelch <= -160 ? t('squelch_off') : `${squelch.toFixed(1)} dBm`}</output></label>
+      <div class="mc-audio-options"><span>${l('Processing', '音频处理')}</span><div class="mc-audio-switches">
+        <label class="mc-audio-toggle" title="${esc(t('agc_tip'))}"><input name="agc" type="checkbox" ${p?.agc !== false ? 'checked' : ''}><span>AGC</span></label>
+        <label class="mc-audio-toggle" title="${l('Enable noise reduction for this channel', '开启此信道的降噪')}"><input name="nr" type="checkbox" ${p?.nr ? 'checked' : ''}><span>NR</span></label>
+        <select name="nr-algorithm" aria-label="${l('NR algorithm', 'NR 算法')}" title="${esc(t('nr_algo_tip'))}">${(['wiener', 'dfn', 'gtcrn', 'ul-unas', 'fastenhancer'] as const).map(value => {
+        const key = value.replace('-', '_');
+        return `<option value="${value}" title="${esc(t(`nr_algo_${key}_tip`))}" ${algorithm === value ? 'selected' : ''}>${esc(t(`nr_algo_${key}`))}</option>`;
+      }).join('')}</select></div></div>
+      <label class="mc-audio-slider" data-nr-strength ${algorithm === 'wiener' ? '' : 'hidden'} title="${esc(t('nr_strength_tip'))}"><span>${l('NR strength', '降噪强度')}</span><input name="nr-strength" type="range" min="0" max="1" step="0.01" value="${p?.nr_strength ?? 0.6}"><output data-nr-strength-value>${Math.round((p?.nr_strength ?? 0.6) * 100)}%</output></label>
+      <label class="mc-audio-slider" data-nr-atten ${algorithm !== 'wiener' ? '' : 'hidden'} title="${esc(t('nr_atten_tip'))}"><span>${l('NR attenuation', '降噪衰减')}</span><input name="nr-atten" type="range" min="0" max="100" step="1" value="${p?.nr_atten_db ?? 10}"><output data-nr-atten-value>${p?.nr_atten_db ?? 10} dB</output></label>
+    </div></fieldset>`;
+};
+const syncAudioSettings = (form: HTMLFormElement): void => {
+  const algorithm = form.querySelector<HTMLSelectElement>('[name=nr-algorithm]')?.value ?? 'wiener';
+  for (const [selector, hidden] of [['[data-nr-strength]', algorithm !== 'wiener'], ['[data-nr-atten]', algorithm === 'wiener']] as const) {
+    const field = form.querySelector<HTMLElement>(selector); if (field) field.hidden = hidden;
+  }
+  const squelch = Number(form.querySelector<HTMLInputElement>('[name=squelch]')?.value ?? -160);
+  const level = form.querySelector('[data-squelch-value]'); if (level) level.textContent = squelch <= -160 ? t('squelch_off') : `${squelch.toFixed(1)} dBm`;
+  const strength = form.querySelector('[data-nr-strength-value]');
+  if (strength) strength.textContent = `${Math.round(Number(form.querySelector<HTMLInputElement>('[name=nr-strength]')?.value ?? 0.6) * 100)}%`;
+  for (const [name, selector, format] of [
+    ['pcm-gain', '[data-pcm-gain-value]', (value: number) => `${value.toFixed(2)}×`],
+    ['nr-atten', '[data-nr-atten-value]', (value: number) => `${value} dB`],
+  ] as const) {
+    const input = form.querySelector<HTMLInputElement>(`[name=${name}]`), output = form.querySelector(selector);
+    if (input && output) output.textContent = format(Number(input.value));
+  }
+};
+const configForm = (element: Element): HTMLFormElement | null => {
+  const form = (element as HTMLInputElement | HTMLSelectElement).form ?? element.closest('form');
+  return form?.hasAttribute('data-config') ? form : null;
+};
+const parameterInput = (name: string, label: string, value: number, unit: string, min = 1): string =>
+  `<label class="mc-parameter-row"><span>${label}</span><span class="mc-parameter-input"><input name="${name}" type="number" min="${min}" step="any" value="${value}" required><span class="mc-parameter-unit">${unit}</span></span></label>`;
+const bandwidthPresets = (mode: ReceiverMode | undefined, current: number): string => (mode?.bandwidthPresetsHz ?? (mode ? [mode.defaultBandwidthHz] : [])).map(hz =>
+  button('bandwidth-preset', hz >= 1000 ? `${hz / 1000} kHz` : `${hz} Hz`, `data-key="bandwidth-${hz}" data-bandwidth="${hz}" aria-pressed="${Math.abs(hz - current) < 0.5}"`, l('Use this demodulation bandwidth; apply to save', '选择此解调带宽，应用设置后生效'))).join('');
 const receiverLabel = (state: string): string => ({ running: l('Receiving', '接收中'), stopped: l('Stopped', '已停用'), interrupted: l('Interrupted', '接收中断'), failed: l('Failed', '接收失败') })[state] ?? state;
 const taskLabel = (state: string): string => ({ preparing: l('Preparing', '准备'), waiting: l('Waiting', '等待'), recording: l('Recording', '记录中'),
   finalizing: l('Finalizing', '收尾'), completed: l('Completed', '完成'), failed: l('Failed', '失败') })[state] ?? state;
@@ -94,11 +136,13 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   };
   const taskSummary = (r: ReceiverState): string => session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid)
     .slice(-3).map(t => `${t.tracks.map(k => k.kind.toUpperCase()).join('+')}: ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}${t.fault ? ` · ${t.fault.message}` : ''}`).join(' / ') || '—';
-  const managementButtons = (): string => {
+  const managementButtons = (uid: string): string => {
     const full = session.snapshot.receivers.length >= session.snapshot.capabilities.max_channels;
-    return button('duplicate', l('Duplicate channel', '复制信道'), full ? 'disabled' : '',
+    const deleting = session.retiring(uid), busy = deleting || !!session.edits.get(uid)?.pending;
+    const owner = `data-receiver-uid="${esc(uid)}"`;
+    return button('duplicate', l('Duplicate channel', '复制信道'), `${owner} ${full || busy ? 'disabled' : ''}`,
       full ? l('Channel limit reached; delete an unused channel to add one', '信道路数已满，可删除不需要的信道后再添加') : workbenchTip('duplicate'))
-      + button('retire', l('Delete channel', '删除信道'));
+      + button('retire', deleting ? l('Deleting…', '正在删除…') : l('Delete channel', '删除信道'), `${owner} ${busy ? 'disabled' : ''}`);
   };
   const duplicateMonitorLabel = (uid: string): string => {
     const owner = receiver(session.duplicateMonitor(uid) ?? '');
@@ -117,7 +161,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       <details class="mc-row-more" data-section="more-${esc(uid)}"><summary>${l('More actions', '更多操作')}${paneDraftCount(uid) ? `<span class="mc-draft-dot">${l('Draft', '草稿')}</span>` : ''}</summary><div class="mc-row-secondary">
         ${audio ? button('solo', l('Solo', '独听'), `aria-pressed="${session.route(uid).solo}" ${session.listening(uid) ? '' : 'disabled'}`) + button('results', resultLabel(row.confirmed)) : ''}
         ${available('record_start') ? `${recordKind('iq') ? recordButton(uid, 'iq') : ''}${recordKind('audio') && (audio || activeTask(uid, 'audio')) ? recordButton(uid, 'audio') : ''}${recordKind('results') && (receiverHasResults(session.snapshot, row.confirmed) || activeTask(uid, 'results')) ? recordButton(uid, 'results') : ''}` : ''}
-        ${button('detail', l('Separate window', '独立窗口'))}${managementButtons()}</div></details>
+        ${button('detail', l('Separate window', '独立窗口'))}${managementButtons(uid)}</div></details>
       ${duplicateMonitorLabel(uid) ? `<small class="mc-row-task">${esc(duplicateMonitorLabel(uid))}</small>` : ''}
       ${recording || recordingFailed ? `<small class="mc-row-task">${esc(taskSummary(row))}</small>` : ''}</article>`;
   };
@@ -131,11 +175,21 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   const resultLabel = (c: ReceiverConfig): string => ['am', 'dsb', 'usb', 'lsb', 'nfm', 'wfm', 'pm', 'drm', 'drmplus'].includes(c.processors[0]?.mode) ? l('Signal info', '信号信息') : l('Results', '查看结果');
   const modeOptions = (c: ReceiverConfig): string => `<option value="" ${!c.processors.length ? 'selected' : ''}>${l('None · IQ only', '不解调 · 仅接收 IQ')}</option>` + (session.snapshot.capabilities.mode_descriptors ?? []).map(mode =>
     `<option value="${esc(mode.id)}" ${c.processors[0]?.mode === mode.id ? 'selected' : ''} ${mode.available ? '' : 'disabled'} title="${esc(mode.unavailableReason ?? '')}">${esc(mode.label)}${mode.available ? '' : ` · ${esc(mode.unavailableReason)}`}</option>`).join('');
+  const syncBandwidthSettings = (form: HTMLFormElement): void => {
+    const field = form.querySelector<HTMLInputElement>('[name=processor-bandwidth]'); if (!field) return;
+    const mode = session.snapshot.capabilities.mode_descriptors?.find(m => m.id === form.querySelector<HTMLSelectElement>('[name=mode]')?.value);
+    field.min = String(mode?.minBandwidthHz ?? 50);
+    if (mode?.maxBandwidthHz !== undefined) field.max = String(mode.maxBandwidthHz); else field.removeAttribute('max');
+    field.readOnly = mode?.bandwidthEditable === false;
+    const presets = form.querySelector<HTMLElement>('[data-bandwidth-presets]');
+    if (presets) patchWorkbench(presets, bandwidthPresets(mode, Number(field.value)));
+  };
   const rememberDraft = (pane: Pane): void => {
     const form = pane.window.body.querySelector<HTMLFormElement>('[data-config]');
     if (!pane.dirty || pane.renderedTab !== 'receive' || !pane.renderedUid || !form) return;
     const values: Draft['values'] = {};
-    form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[name],select[name]').forEach(input => {
+    [...form.elements].filter(element => element.matches('input[name],select[name]')).forEach(element => {
+      const input = element as HTMLInputElement | HTMLSelectElement;
       values[input.name] = input.type === 'checkbox' ? (input as HTMLInputElement).checked : input.value;
     });
     pane.drafts.set(pane.renderedUid, { values, revision: form.dataset.revision! });
@@ -150,6 +204,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     }
     form.dataset.revision = draft.revision;
     syncFrequencyInputs(form);
+    syncAudioSettings(form);
+    syncBandwidthSettings(form);
     const mode = session.snapshot.capabilities.mode_descriptors?.find(m => m.id === draft.values.mode);
     for (const [selector, hidden] of [['[data-process-settings]', !mode], ['[data-shared-audio]', !mode || !(mode.outputs.includes('audio') || mode.audioCompanion !== null)], ['[data-monitor-enhancements]', !mode || ['drm', 'drmplus'].includes(mode.id)]] as const) {
       const element = form.querySelector<HTMLElement>(selector); if (element) element.hidden = hidden;
@@ -158,10 +214,10 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   };
   const draftStatus = (pane: Pane, uid: string): void => {
     const form = pane.window.body.querySelector<HTMLFormElement>('[data-config]'); if (!form) return;
-    const pending = session.edits.get(uid)?.pending, stale = form.dataset.revision !== receiver(uid)?.revision;
+    const pending = session.edits.get(uid)?.pending || session.retiring(uid), stale = form.dataset.revision !== receiver(uid)?.revision;
     const recording = session.snapshot.recordings.some(t => t.receiver_uid === uid && ['preparing', 'recording', 'waiting'].includes(t.state));
     const status = form.querySelector<HTMLElement>('[data-draft-status]')!;
-    status.textContent = pending ? l('Applying…', '正在应用…') : pane.dirty ? stale ? l('Channel updated elsewhere · review before applying', '此信道已在其他位置更新，请检查后应用') : recording ? l('Unapplied · signal changes create recording segments', '尚未应用 · 调整信号将为录制新建片段') : l('Unapplied changes · draft kept when switching', '尚未应用 · 切换时保留草稿') : pane.savedUid === uid ? l('Settings applied', '设置已应用') : l('Settings are up to date', '设置已同步');
+    status.textContent = pending ? l('Applying…', '正在应用…') : pane.dirty ? stale ? l('Channel updated elsewhere · review before applying', '此信道已在其他位置更新，请检查后应用') : recording ? l('Unapplied · signal changes create recording segments', '尚未应用 · 调整信号将为录制新建片段') : l('Unapplied changes', '有未应用的修改') : pane.savedUid === uid ? l('Settings applied', '设置已应用') : '';
     status.classList.toggle('mc-has-draft', !!pane.dirty);
     form.querySelector<HTMLButtonElement>('[type=submit]')!.disabled = !!pending || !pane.dirty;
     form.querySelector<HTMLButtonElement>('[data-action=cancel]')!.disabled = !pane.dirty || !!pending;
@@ -176,6 +232,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   };
   const detail = (r: ReceiverState, pane: Pane): string => {
     const c = r.confirmed, edit = session.edits.get(r.receiver_uid), route = session.route(r.receiver_uid);
+    const formId = `mc-config-${pane.window.root.dataset.viewId}`;
+    const mode = session.snapshot.capabilities.mode_descriptors?.find(m => m.id === c.processors[0]?.mode);
     const playback = native?.playback?.(r.receiver_uid);
     const monitorEnabled = session.listening(r.receiver_uid) && r.state === 'running' && !r.fault;
     const tabs = ['receive', 'recording', 'output'];
@@ -183,21 +241,23 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     let content = '';
     const expanded = (key: string): string => pane.expanded.has(key) ? 'open' : '';
     if (!fixture && pane.tab === 'recording' && !available('record_start')) pane.tab = 'receive';
-    if (pane.tab === 'receive') content = `<form data-key="config-${r.receiver_uid}-receive" data-config data-revision="${r.revision}">
+    if (pane.tab === 'receive') content = `<form id="${esc(formId)}" data-key="config-${r.receiver_uid}-receive" data-config data-revision="${r.revision}">
       <div class="mc-tuning-grid"><label class="mc-frequency-field"><span>${l('Receive frequency', '接收频率')}</span>${frequencyInput(c.baseband.frequency_hz)}</label>
       <label class="mc-mode-field"><span>${l('Demodulate / decode', '解调 / 解码')}</span>${fixture ? `<select name="purpose">${Object.entries(labels()).map(([v, label]) => `<option value="${v}" ${c.purpose === v ? 'selected' : ''}>${label}</option>`).join('')}</select>` : `<select name="mode" title="${l('Choose a mode; bandwidth and rate are adjusted automatically', '选择模式后自动匹配带宽与速率')}">${modeOptions(c)}</select>`}</label></div>
-      <div class="mc-form-actions"><span data-draft-status role="status" class="mc-draft-status">${l('Settings are up to date', '设置已同步')}</span>${button('advanced-settings', l('Advanced', '高级设置'), `class="mc-quiet" aria-expanded="${pane.expanded.has('advanced')}"`, l('Show channel name, IQ bandwidth and processing parameters', '展开信道名称、IQ 带宽及处理参数'))}${button('cancel', l('Reset', '还原'), 'class="mc-quiet"')}<button type="submit" class="mc-primary" title="${l('Apply these settings to this channel', '将设置应用到此信道')}">${icon('check')}${l('Apply settings', '应用设置')}</button></div>
+      ${!fixture ? audioSettings(c, receiverHasAudio(session.snapshot, c)) : ''}
+      <div class="mc-form-actions"><span data-draft-status role="status" class="mc-draft-status"></span>${button('advanced-settings', l('Advanced', '高级设置'), `class="mc-quiet" aria-expanded="${pane.expanded.has('advanced')}"`, l('Show demodulation and IQ bandwidth settings', '展开解调及 IQ 带宽设置'))}${button('cancel', l('Reset', '还原'), 'class="mc-quiet"')}<button type="submit" class="mc-primary" title="${l('Apply these settings to this channel', '将设置应用到此信道')}">${icon('check')}${l('Apply settings', '应用设置')}</button></div>
       <div data-key="preview-${r.receiver_uid}-${pane.tab}" data-preview></div>
       <section class="mc-advanced" data-advanced-settings aria-label="${l('Advanced settings', '高级设置')}" ${pane.expanded.has('advanced') ? '' : 'hidden'}><div class="mc-fields">
-        <label>${l('Channel name', '信道名称')}<input name="name" value="${esc(c.name)}" required></label>
-        ${!fixture ? `<details data-process-settings ${c.processors.length ? '' : 'hidden'} data-section="processor" ${expanded('processor')}><summary>${l('Demodulation and shared audio', '解调与共享音频')}</summary><div class="mc-fields">
-          <label>${l('Demodulation bandwidth / Hz', '解调带宽 / Hz')}<input name="processor-bandwidth" type="number" min="50" value="${c.processors[0]?.bandwidth_hz ?? 6000}"></label>
-          <div data-shared-audio ${receiverHasAudio(session.snapshot, c) ? '' : 'hidden'} class="mc-fields"><label>${l('Shared audio gain', '共享音频增益')}<input name="pcm-gain" type="number" min="0" max="2" step="0.01" value="${c.processors[0]?.pcm_gain ?? 0.5}"></label>
-          <div data-monitor-enhancements ${['drm', 'drmplus'].includes(c.processors[0]?.mode) ? 'hidden' : ''} class="mc-fields"><label>AGC<input name="agc" type="checkbox" ${c.processors[0]?.agc !== false ? 'checked' : ''}></label><label>${l('Squelch / dBm (SDK nominal)', '静噪 / dBm（SDK 名义值）')}<input name="squelch" type="number" value="${c.processors[0]?.squelch_dbm ?? -160}"></label></div></div></div></details>` : ''}
-        <details data-section="iq" ${expanded('iq')}><summary>${l('IQ bandwidth and rate', 'IQ 带宽与速率')}</summary><div class="mc-fields"><label>${l('Full IQ passband / Hz', '完整 IQ 通带 / Hz')}<input name="bandwidth" type="number" min="1" value="${c.baseband.passband_hz}" required></label><label>${l('Transition / Hz', '过渡带 / Hz')}<input name="transition" type="number" min="1" value="${c.baseband.transition_hz}" required></label><label>${l('Minimum IQ rate / S/s', '最低 IQ 率 / S/s')}<input name="minimum-rate" type="number" min="1" value="${c.baseband.minimum_rate_hz}" required></label></div></details>
+        ${!fixture ? `<details data-process-settings ${c.processors.length ? '' : 'hidden'} data-section="processor" ${expanded('processor')}><summary>${l('Demodulation bandwidth', '解调带宽')}</summary><div class="mc-fields mc-processor-fields">
+          ${parameterInput('processor-bandwidth', l('Bandwidth', '带宽'), c.processors[0]?.bandwidth_hz ?? 6000, 'Hz', mode?.minBandwidthHz ?? 50)}
+          <div class="mc-bandwidth-presets" data-bandwidth-presets role="group" aria-label="${l('Bandwidth presets', '带宽快选')}">${bandwidthPresets(mode, c.processors[0]?.bandwidth_hz ?? 6000)}</div></div></details>` : ''}
+        <details data-section="iq" ${expanded('iq')}><summary>${l('IQ bandwidth and rate', 'IQ 带宽与速率')}</summary><div class="mc-fields mc-iq-fields">
+          ${parameterInput('bandwidth', l('Full passband', '完整通带'), c.baseband.passband_hz, 'Hz')}
+          ${parameterInput('transition', l('Transition', '过渡带'), c.baseband.transition_hz, 'Hz')}
+          ${parameterInput('minimum-rate', l('Minimum rate', '最低采样率'), c.baseband.minimum_rate_hz, 'S/s')}</div></details>
       </div></section></form>
       ${!fixture && session.snapshot.capabilities.receiver_presets ? `<details data-key="presets-${esc(session.snapshot.service_id)}-${r.receiver_uid}" data-receiver-presets data-section="presets" ${expanded('presets')}></details>` : ''}
-      <section class="mc-live-section" data-key="live-${esc(r.receiver_uid)}"><header class="mc-section-heading"><div>${icon('signal')}<h3>${c.processors.length ? l('Live signal & results', '实时信号与结果') : l('IQ reception', 'IQ 接收')}</h3><span class="mc-live-badge">${r.state === 'running' ? 'LIVE' : receiverLabel(r.state)}</span></div>${c.processors.length ? button('results', l('Open window', '独立查看'), 'class="mc-quiet"') : ''}</header>
+      <section class="mc-live-section" data-key="live-${esc(r.receiver_uid)}"><header class="mc-section-heading"><div>${icon('signal')}<h3>${c.processors.length ? l('Live signal & results', '实时信号与结果') : l('IQ reception', 'IQ 接收')}</h3></div>${c.processors.length ? button('results', l('Open window', '独立查看'), 'class="mc-quiet"') : ''}</header>
       ${c.processors.length ? '<div data-inline-decode></div>' : `<div class="mc-iq-summary"><strong>${r.clock ? Number(r.clock.actual_rate_hz.toFixed(3)).toLocaleString() : '—'} <small>S/s</small></strong><p>${l('Receiving raw IQ. Record the signal for later analysis, or connect external software through live outputs.', '正在接收原始 IQ。可录制信号以便后续分析，或通过实时输出连接外部软件。')}</p><div class="mc-toolbar">${available('record_start') && recordKind('iq') ? recordButton(r.receiver_uid, 'iq') : ''}${button('tab-output', l('Connect software', '连接外部软件'))}</div></div>`}</section>`;
     if (pane.tab === 'output') {
       const outputs = session.snapshot.outputs.filter(o => o.receiver_uid === r.receiver_uid);
@@ -220,19 +280,18 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         <details data-section="task-${esc(t.task_id)}" ${expanded(`task-${t.task_id}`)}><summary>${l('Compression and stream details', '压缩与数据流详情')}</summary>
         <p>${esc(t.task_id)}<br>${esc(t.service_id ?? '')}</p>${t.tracks.map(track => `<p>${track.kind === 'results' ? 'JSONL' : track.kind === 'audio' ? 'Float32 PCM' : 'CF32 LE'} · ${track.compression} · ${track.segments.length} ${l('segments', '片段')}<br>${l('Source bytes', '原始字节')}: ${track.raw_bytes}<br>${l('Saved bytes', '已保存字节')}: ${track.stored_bytes}${fixture ? ` (${l('fixture, no disk I/O', '模拟，无磁盘写入')})` : ''}</p>
         ${track.segments.map(segment => `<p class="mc-clock">${esc(segment.stream.epoch)} / ${esc(segment.stream.channel_id)} · ${segment.actual_rate_hz} S/s · ${segment.events !== undefined ? `${segment.events} ${l('events', '事件')}` : `${segment.samples} samples`}<br>${l('Source position', '源位置')} ${segment.first_input_index} · ${esc(segment.end_reason ?? '…')}</p>`).join('')}`).join('')}</details></article>`).join('')}`;
-    return `<header data-key="channel-heading" class="mc-channel-heading" style="--channel:${esc(c.color)}"><div class="mc-channel-title"><span class="mc-channel-avatar">${r.display_number.toString().padStart(2, '0')}</span><div><p class="mc-eyebrow">${l('CHANNEL', '接收信道')} ${String(r.display_number).padStart(2, '0')}</p><h2>${esc(c.name)}</h2></div></div></header><div data-key="channel-actions" class="mc-channel-actions"><button type="button" data-action="toggle-receiver" role="switch" aria-checked="${c.enabled}" title="${c.enabled ? l('Stop receiving this channel', '停止此信道的接收') : l('Start receiving this channel', '开始此信道的接收')}" ${edit?.pending ? 'disabled' : ''}><i class="mc-state-dot" data-state="${r.state}"></i><span>${receiverLabel(r.state)}</span><span class="mc-receiver-switch" aria-hidden="true"></span></button>${managementButtons()}</div>
-      <p data-key="channel-clock" class="mc-clock">${(c.baseband.frequency_hz / 1e6).toFixed(6)} MHz <span>·</span> ${esc(c.processors[0]?.mode.toUpperCase() ?? 'IQ')} <span>·</span> IQ ${r.clock ? `${Number(r.clock.actual_rate_hz.toFixed(3)).toLocaleString()} S/s` : l('stopped', '已停止')}</p>
+    return `<header data-key="channel-heading" class="mc-channel-heading" style="--channel:${esc(c.color)}"><div class="mc-channel-title"><span class="mc-channel-avatar">${r.display_number.toString().padStart(2, '0')}</span><div><p class="mc-eyebrow">${l('Channel name', '信道名称')}</p><label class="mc-name-editor"><input data-channel-name name="name" form="${esc(formId)}" value="${esc(c.name)}" maxlength="128" required aria-label="${l('Channel name', '信道名称')}" title="${l('Edit the channel name; press Enter or Apply settings to save', '修改信道名称，按 Enter 或应用设置保存')}" ${session.retiring(r.receiver_uid) ? 'disabled' : ''}>${icon('edit')}</label></div></div><div data-key="channel-actions" class="mc-channel-actions"><button type="button" data-action="toggle-receiver" role="switch" aria-checked="${c.enabled}" title="${c.enabled ? l('Stop receiving this channel', '停止此信道的接收') : l('Start receiving this channel', '开始此信道的接收')}" ${edit?.pending || session.retiring(r.receiver_uid) ? 'disabled' : ''}><span>${receiverLabel(r.state)}</span><span class="mc-receiver-switch" aria-hidden="true"></span></button>${managementButtons(r.receiver_uid)}</div></header>
       ${pane.tab === 'output' ? `<details data-section="clock" ${expanded('clock')}><summary>${l('Stream details', '数据流详情')}</summary><p class="mc-clock">${l('Revision', '修订')} ${r.revision}<br>${esc(r.stream ? `${r.stream.source_id} / epoch ${r.stream.epoch} / channel ${r.stream.channel_id}` : l('No continuous stream', '当前无连续流'))}<br>${r.clock?.actual_rate_hz ?? '—'} S/s</p></details>` : ''}
       ${r.fault ? `<p data-key="receiver-fault" class="mc-error" role="alert">${esc(r.fault.scope)}: ${esc(r.fault.message)}</p>` : ''}
       ${native?.status(r.receiver_uid) ? `<p data-key="consumer-fault" class="mc-error" role="alert">${esc(native.status(r.receiver_uid))} ${button('retry-stream', l('Retry local consumer', '重试本地消费'))}</p>` : ''}
-      ${edit?.pending ? `<p data-key="pending" role="status">${l('Applying settings…', '正在应用设置…')}</p>` : ''}
+      ${edit?.pending && pane.tab !== 'receive' ? `<p data-key="pending" role="status">${l('Applying settings…', '正在应用设置…')}</p>` : ''}
       ${edit?.fault ? `<p data-key="edit-fault" class="mc-error" role="alert">${esc(edit.fault.code)}: ${esc(faultText(edit.fault, edit.attempted))} ${button('retry', l('Retry', '重试'))}</p>` : ''}
       <nav data-key="tabs" class="mc-tabs" aria-label="${l('Channel workspace', '信道工作区')}">${tabs.map((tab, i) => tab === 'recording' && !available('record_start') ? '' : button(`tab-${tab}`, tabNames[i], `aria-pressed="${pane.tab === tab}"`)).join('')}</nav>
       ${receiverHasAudio(session.snapshot, c) ? `<fieldset data-key="monitor" class="mc-monitor"><legend>${fixture ? l('Monitor · simulated', '监听 · 模拟') : l('Monitor', '监听')}</legend>
         ${button('listen', session.listening(r.receiver_uid) ? l('Listening', '监听中') : l('Listen', '监听'), `aria-pressed="${session.listening(r.receiver_uid)}" ${r.state === 'running' && !r.fault ? '' : 'disabled'}`)} ${button('solo', l('Solo', '独听'), `aria-pressed="${route.solo}" ${session.listening(r.receiver_uid) ? '' : 'disabled'}`)}
         <label title="${l('Speaker volume for this channel in this browser', '此信道在当前浏览器的监听音量')}">${l('Volume', '音量')}<input data-key="gain-${esc(r.receiver_uid)}" aria-label="${l('Local volume', '本地音量')}" data-gain type="range" min="0" max="1" step="0.01" value="${route.gain}" ${monitorEnabled ? '' : 'disabled'}><output data-gain-value>${Math.round(route.gain * 100)}%</output></label>
         <label title="${Number(playback?.outputChannels ?? 2) < 2 ? l('This output device is mono', '当前输出设备为单声道') : l('Left/right position in stereo speakers or headphones', '立体声扬声器或耳机中的左右位置')}">${l('Pan', '声像')}<span class="mc-pan-end">L</span><input data-key="pan-${esc(r.receiver_uid)}" aria-label="${l('Local pan', '本地声像')}" data-pan type="range" min="-1" max="1" step="0.1" value="${route.pan}" ${monitorEnabled && Number(playback?.outputChannels ?? 2) > 1 ? '' : 'disabled'}><span class="mc-pan-end">R</span><output data-pan-value>${Number(playback?.outputChannels ?? 2) < 2 ? l('Mono', '单声道') : panLabel(route.pan)}</output></label>
-        <span data-monitor-state>${r.fault ? l('Audio unavailable', '音频不可用') : r.state !== 'running' ? l('Stopped', '已停用') : !session.listening(r.receiver_uid) ? l('Monitor off', '未监听') : session.masterMuted || session.masterGain === 0 ? l('Master muted', '总静音') : route.gain === 0 ? l('Muted', '静音') : duplicateMonitorLabel(r.receiver_uid) || (!session.audible(r.receiver_uid) ? l('Solo muted', '独听已屏蔽') : l('Monitoring', '监听中'))}</span>
+        <span data-monitor-state>${r.fault ? l('Audio unavailable', '音频不可用') : r.state !== 'running' || !session.listening(r.receiver_uid) ? '' : session.masterMuted || session.masterGain === 0 ? l('Master muted', '总静音') : route.gain === 0 ? l('Muted', '静音') : duplicateMonitorLabel(r.receiver_uid) || (!session.audible(r.receiver_uid) ? l('Solo muted', '独听已屏蔽') : '')}</span>
         ${playback?.enabled && (playback.connectionState === 'reconnecting' || playback.contextState === 'suspended') ? `<small role="status" data-playback-state>${playback.connectionState === 'reconnecting' ? l('Reconnecting…', '重连中…') : l('Enable speakers', '启用扬声器')}${playback.contextState === 'suspended' ? button('resume-audio', l('Enable', '启用')) : ''}</small>` : ''}</fieldset>` : ''}
       ${content}`;
   };
@@ -254,6 +313,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const patch = (html: string): void => patchWorkbench(body, html, element =>
       element.hasAttribute('data-decode-view') || element.hasAttribute('data-inline-decode') || element.hasAttribute('data-receiver-presets') || (element.hasAttribute('data-scene') && !!scene) || (sameEditor && (
         (element.hasAttribute('data-config') && (!!pane.dirty || !!focused && element.contains(focused)))
+        || (element.hasAttribute('data-channel-name') && !!pane.dirty)
         || (element.hasAttribute('data-preview') && !!pane.dirty)
         || (element === focused && element.matches('input,select,textarea')))));
     pane.renderedUid = uid; pane.renderedTab = pane.tab;
@@ -267,7 +327,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       const history = !fixture && session.snapshot.recordings.some(t => !receiver(t.receiver_uid)) ? `<details class="mc-history" data-section="recording-history" ${pane.expanded.has('recording-history') ? 'open' : ''}><summary>${l('Earlier recording tasks', '历史记录任务')}</summary>${session.snapshot.recordings.filter(t => !receiver(t.receiver_uid)).slice(-20).reverse().map(t => `<p class="mc-clock">${esc(t.task_id)} · ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}<br>${esc(t.fault?.message ?? '')}${archiveButton(t)}</p>`).join('')}</details>` : '';
       patch(`<header data-key="workspace-head" class="mc-workspace-head"><div><h1>${l('Channel workbench', '信道工作台')}<span class="mc-workspace-count">${all.length} / ${session.snapshot.capabilities.max_channels}</span></h1></div><div class="mc-workspace-actions">${fixture || capture.source_kind === 'fixture' ? `<span class="mc-source-badge">${fixture ? l('Demo', '演示模式') : l('Synthetic source', '模拟源')}</span>` : ''}${button('follow-results', l('Results window', '结果窗口'), `class="mc-quiet" aria-label="${l('Results window', '结果窗口')}"`)}${button('create', l('Add channel', '添加信道'), `class="mc-primary" ${all.length >= session.snapshot.capabilities.max_channels || !available('create') ? 'disabled' : ''}`, all.length >= session.snapshot.capabilities.max_channels ? l('Channel limit reached; delete an unused channel to add one', '信道路数已满，可删除不需要的信道后再添加') : workbenchTip('create'))}</div></header>
       <details data-key="capture-bar" class="mc-capture-bar" data-section="capture" ${pane.expanded.has('capture') ? 'open' : ''}><summary><span><i class="mc-state-dot" data-state="${capture.state}"></i>${l('Shared capture', '共享采集')}<strong>${capture.center_hz / 1e6} MHz</strong><span class="mc-capture-band">${capture.usable_bandwidth_hz === null ? l('Unknown bandwidth', '带宽未知') : `${capture.usable_bandwidth_hz / 1000} kHz`}</span></span><span>${all.filter(r => r.state === 'running').length} ${l('receiving', '路接收中')}</span></summary><p data-capture-status class="mc-clock">${esc(captureSummary())}</p>${fixture ? `<p class="mc-notice">${l('Simulated data. No actual reception, audio or saved files.', '当前为模拟数据，不进行实际接收、播放或文件写入。')}</p>` : ''}</details>
-      ${session.fault ? `<p data-key="session-fault" class="mc-error" role="alert">${esc(session.fault.code)}: ${esc(faultText(session.fault))}</p>` : ''}
+      ${session.fault ? `<p data-key="session-fault" class="mc-error" role="alert">${esc(session.fault.code)}: ${esc(faultText(session.fault))} ${button('dismiss-fault', l('Dismiss', '关闭'))}</p>` : ''}
       <div data-key="content" class="mc-content"><aside data-key="sidebar" class="mc-sidebar" aria-label="${l('Channels', '信道列表')}"><div class="mc-sidebar-head"><h2>${l('Channels', '我的信道')}</h2><span>${all.length}</span></div><label data-key="search" class="mc-search">${icon('search')}<input data-search type="search" aria-label="${l('Find channel by name, frequency or mode', '按名称、频率或模式查找信道')}" placeholder="${l('Name, frequency or mode', '名称、频率或模式')}" value="${esc(search)}"></label>
       <nav class="mc-list-filters" aria-label="${l('Filter channels', '筛选信道')}">${[['all', l('All', '全部')], ['listening', l('Listening', '监听')], ['recording', l('Recording', '录制')]].map(([value, label]) => button(`filter-${value}`, label, `aria-pressed="${channelFilter === value}"`, l(`Show ${value} channels`, `筛选${label}信道`))).join('')}</nav>
       <div data-key="list" class="mc-list">${rows.length ? rows.map(rowHTML).join('') : `<div class="mc-list-empty">${icon('search')}<strong>${all.length ? l('No matching channels', '没有匹配的信道') : l('Your channels appear here', '信道将显示在这里')}</strong><p>${all.length ? l('Try another name, frequency or filter.', '试试其他名称、频率或筛选条件。') : l('Add a frequency to get started.', '添加一个频率，开始接收。')}</p>${all.length ? button('clear-search', l('Clear filters', '清除筛选'), '', l('Clear the search and show all channels', '清除搜索，显示全部信道')) : ''}</div>`}</div>
@@ -294,6 +354,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       updateDecode(pane.decode, uid, r);
     }
     if (!sameEditor) { restoreDraft(pane, uid); const editor = body.querySelector<HTMLElement>('[data-editor]'); if (editor) editor.scrollTop = 0; }
+    const config = body.querySelector<HTMLFormElement>('[data-config]'); if (config) syncBandwidthSettings(config);
     draftStatus(pane, uid);
     const inlineRoot = body.querySelector<HTMLElement>('[data-inline-decode]');
     if (pane.inlineDecode?.root !== inlineRoot) {
@@ -373,12 +434,18 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         if (row && !(event.target as HTMLElement).closest('details,a,input,select')) session.select(row.dataset.uid!);
         return;
       }
+      if (target.matches('button:disabled')) return;
       if (target.tagName === 'BUTTON' && (target as HTMLButtonElement).type !== 'submit') event.preventDefault();
-      const uid = target.closest<HTMLElement>('[data-uid]')?.dataset.uid ?? session.resolve(pane.binding), r = receiver(uid);
+      const uid = target.dataset.receiverUid ?? target.closest<HTMLElement>('[data-uid]')?.dataset.uid ?? session.resolve(pane.binding), r = receiver(uid);
       const action = target.dataset.action!;
       if (action.startsWith('tab-')) { pane.tab = action.slice(4); saveViews(); renderPane(pane); }
       else if (action.startsWith('filter-')) { channelFilter = action.slice(7); renderPane(pane); }
       else if (action === 'clear-search') { search = ''; channelFilter = 'all'; const input = surface.body.querySelector<HTMLInputElement>('[data-search]'); if (input) input.value = ''; renderPane(pane); }
+      else if (action === 'dismiss-fault') { session.fault = null; session.notify(); }
+      else if (action === 'bandwidth-preset') {
+        const field = target.closest('form')?.querySelector<HTMLInputElement>('[name=processor-bandwidth]');
+        if (field) { field.value = target.dataset.bandwidth!; field.dispatchEvent(new Event('input', { bubbles: true })); }
+      }
       else if (action === 'advanced-settings') {
         const section = surface.body.querySelector<HTMLElement>('[data-advanced-settings]');
         if (section) { section.hidden = !section.hidden; if (section.hidden) pane.expanded.delete('advanced'); else pane.expanded.add('advanced'); target.setAttribute('aria-expanded', String(!section.hidden)); }
@@ -419,7 +486,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         enabled: !session.snapshot.outputs.some(o => o.receiver_uid === uid && ['active', 'starting'].includes(o.state)) });
       else if (action === 'duplicate') {
         if (r) create({ ...clone(r.confirmed), name: `${r.confirmed.name} ${l('copy', '副本')}` });
-      } else if (action === 'retire') send({ type: 'retire', request_id: session.requestId(), receiver_uid: uid });
+      } else if (action === 'retire' && r && !session.edits.get(uid)?.pending) send({ type: 'retire', request_id: session.requestId(), receiver_uid: uid });
       else if (action === 'preset-save' && r) { preset = clone(r.confirmed); session.notify(); }
       else if (action === 'preset-load' && preset) preview(pane, uid, clone(preset));
       else if (action === 'cancel') {
@@ -438,7 +505,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       else if (action === 'scene-cancel') { scene = null; renderPane(pane); }
     });
     surface.body.addEventListener('submit', event => {
-      event.preventDefault(); const form = event.target as HTMLFormElement, uid = session.resolve(pane.binding), r = receiver(uid); if (!r) return;
+      event.preventDefault(); const form = event.target as HTMLFormElement, uid = session.resolve(pane.binding), r = receiver(uid); if (!r || session.retiring(uid)) return;
       const data = new FormData(form);
       if (!fixture) {
         const config = clone(r.confirmed), mode = session.snapshot.capabilities.mode_descriptors?.find(m => m.id === data.get('mode'));
@@ -450,7 +517,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
           minimum_rate_hz: mode.minimumRateHz, bandwidth_hz: Number(data.get('processor-bandwidth') ?? (config.processors[0]?.mode === mode.id ? config.processors[0]?.bandwidth_hz : undefined) ?? mode.defaultBandwidthHz),
           pcm_gain: Number(data.get('pcm-gain') ?? config.processors[0]?.pcm_gain ?? 0.5),
           agc: data.has('agc'),
-          squelch_dbm: Number(data.get('squelch') ?? config.processors[0]?.squelch_dbm ?? -160) }];
+          squelch_dbm: Number(data.get('squelch') ?? config.processors[0]?.squelch_dbm ?? -160),
+          nr: data.has('nr'), nr_algorithm: String(data.get('nr-algorithm') ?? 'wiener') as NonNullable<ReceiverConfig['processors'][number]['nr_algorithm']>,
+          nr_strength: Number(data.get('nr-strength') ?? 0.6), nr_atten_db: Number(data.get('nr-atten') ?? 10) }];
         if (mode) {
           const occupied = occupiedBandwidth(mode, config.processors[0].bandwidth_hz!);
           config.baseband.passband_hz = Math.max(config.baseband.passband_hz, occupied);
@@ -472,11 +541,17 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     }, true);
     surface.body.addEventListener('input', event => {
       const input = event.target as HTMLInputElement, uid = session.resolve(pane.binding);
-      if (input.closest('[data-config]')) { pane.dirty = true; surface.body.querySelector('[data-preview]')?.replaceChildren(); rememberDraft(pane); draftStatus(pane, uid); }
+      const form = configForm(input);
+      if (form) { syncAudioSettings(form); syncBandwidthSettings(form); pane.dirty = true; surface.body.querySelector('[data-preview]')?.replaceChildren(); rememberDraft(pane); draftStatus(pane, uid); }
       if (input.matches('[data-search]')) { search = input.value; renderPane(pane); }
       if (input.matches('[data-gain]')) { input.closest('.mc-monitor')!.querySelector('[data-gain-value]')!.textContent = `${Math.round(Number(input.value) * 100)}%`; session.monitor(uid, { gain: Number(input.value) }); }
       if (input.matches('[data-pan]')) { input.closest('.mc-monitor')!.querySelector('[data-pan-value]')!.textContent = panLabel(Number(input.value)); session.monitor(uid, { pan: Number(input.value) }); }
       if (input.matches('[data-master]')) { session.masterGain = Number(input.value); const output = surface.body.querySelector('[data-master-value]'); if (output) output.textContent = `${Math.round(session.masterGain * 100)}%`; session.notify(); }
+    });
+    surface.body.addEventListener('focusin', event => {
+      if ((event.target as HTMLElement).matches('[data-channel-name]') && pane.tab !== 'receive') {
+        pane.tab = 'receive'; saveViews(); renderPane(pane);
+      }
     });
     surface.body.addEventListener('focusout', event => {
       if (!(event.target as HTMLElement).matches('input[type=range]')) return;
@@ -484,7 +559,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     });
     surface.body.addEventListener('change', event => {
       const input = event.target as HTMLSelectElement, uid = session.resolve(pane.binding);
-      if (input.closest('[data-config]')) { pane.dirty = true; surface.body.querySelector('[data-preview]')?.replaceChildren(); rememberDraft(pane); draftStatus(pane, uid); }
+      if (configForm(input)) { pane.dirty = true; surface.body.querySelector('[data-preview]')?.replaceChildren(); rememberDraft(pane); draftStatus(pane, uid); }
       if (!fixture && input.matches('[name=mode],[name=purpose]')) {
         const form = input.closest('form')!, modes = session.snapshot.capabilities.mode_descriptors ?? [];
         const select = form.querySelector<HTMLSelectElement>('[name=mode]')!, purpose = form.querySelector<HTMLSelectElement>('[name=purpose]');
@@ -499,10 +574,12 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         if (remembered) {
           for (const [name, value] of Object.entries({ bandwidth: remembered.passband_hz, transition: remembered.transition_hz,
             'minimum-rate': remembered.minimum_rate_hz, 'processor-bandwidth': remembered.bandwidth_hz,
-            'pcm-gain': remembered.pcm_gain, squelch: remembered.squelch_dbm })) {
-            const field = form.elements.namedItem(name) as HTMLInputElement | null; if (field) field.value = String(value);
+            'pcm-gain': remembered.pcm_gain, squelch: remembered.squelch_dbm,
+            'nr-algorithm': remembered.nr_algorithm, 'nr-strength': remembered.nr_strength, 'nr-atten': remembered.nr_atten_db })) {
+            const field = form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null; if (field) field.value = String(value);
           }
           const agc = form.querySelector<HTMLInputElement>('[name=agc]'); if (agc) agc.checked = remembered.agc;
+          const nr = form.querySelector<HTMLInputElement>('[name=nr]'); if (nr) nr.checked = remembered.nr;
         } else if (mode) {
           if (purpose && input.name === 'mode') purpose.value = mode.kind === 'analog' ? 'listen' : 'digital';
           const bw = mode.defaultBandwidthHz, occupied = occupiedBandwidth(mode);
@@ -513,9 +590,14 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
           form.querySelector<HTMLInputElement>('[name=pcm-gain]')!.value = '0.5';
           form.querySelector<HTMLInputElement>('[name=agc]')!.checked = true;
           form.querySelector<HTMLInputElement>('[name=squelch]')!.value = '-160';
+          form.querySelector<HTMLInputElement>('[name=nr]')!.checked = false;
+          form.querySelector<HTMLSelectElement>('[name=nr-algorithm]')!.value = 'wiener';
+          form.querySelector<HTMLInputElement>('[name=nr-strength]')!.value = '0.6';
+          form.querySelector<HTMLInputElement>('[name=nr-atten]')!.value = '10';
         }
       }
-      if (input.closest('[data-config]')) { rememberDraft(pane); draftStatus(pane, uid); }
+      const form = configForm(input);
+      if (form) { syncAudioSettings(form); syncBandwidthSettings(form); rememberDraft(pane); draftStatus(pane, uid); }
       if (input.matches('[data-monitor-mode]')) { session.monitorMode = input.value as 'manual' | 'follow'; input.blur(); session.notify(); }
       if (input.matches('[data-binding]')) { pane.binding = input.value === 'follow' ? { type: 'follow' } : { type: 'fixed', receiver_uid: input.value }; input.blur(); saveViews(); pane.window.sync(); renderPane(pane); }
     });
@@ -523,7 +605,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   }
   function preview(pane: Pane, uid: string, config: ReceiverConfig, immediate = false): void {
     const r = receiver(uid); if (!r) return;
-    if (session.edits.get(uid)?.pending) return;
+    if (session.edits.get(uid)?.pending || session.retiring(uid)) return;
     const service = session.snapshot.service_id, revision = r.revision;
     const command = { type: 'configure' as const, request_id: session.requestId(), receiver_uid: uid, expected_revision: r.revision, config };
     const impact = session.adapter.preflight(command), target = pane.window.body.querySelector('[data-preview]'); if (!target) return;
@@ -534,12 +616,16 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       const values = { name: config.name, frequency: formatFrequencyValue(convertUnitValue(config.baseband.frequency_hz, 'Hz', unit), unit), purpose: config.purpose,
         bandwidth: config.baseband.passband_hz, transition: config.baseband.transition_hz, 'minimum-rate': config.baseband.minimum_rate_hz,
         mode: processor?.mode ?? '', 'processor-bandwidth': processor?.bandwidth_hz ?? 6000,
-        'pcm-gain': processor?.pcm_gain ?? 0.5, squelch: processor?.squelch_dbm ?? -160 };
+        'pcm-gain': processor?.pcm_gain ?? 0.5, squelch: processor?.squelch_dbm ?? -160,
+        'nr-algorithm': processor?.nr_algorithm ?? 'wiener', 'nr-strength': processor?.nr_strength ?? 0.6, 'nr-atten': processor?.nr_atten_db ?? 10 };
       for (const [name, value] of Object.entries(values)) {
         const input = form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null;
         if (input) input.value = String(value);
       }
       const agc = form.querySelector<HTMLInputElement>('[name=agc]'); if (agc) agc.checked = processor?.agc !== false;
+      const nr = form.querySelector<HTMLInputElement>('[name=nr]'); if (nr) nr.checked = processor?.nr ?? false;
+      syncAudioSettings(form);
+      syncBandwidthSettings(form);
       for (const [selector, hidden] of [['[data-process-settings]', !processor], ['[data-shared-audio]', !receiverHasAudio(session.snapshot, config)],
         ['[data-monitor-enhancements]', !processor || ['drm', 'drmplus'].includes(processor.mode)]] as const) {
         const field = form.querySelector<HTMLElement>(selector); if (field) field.hidden = hidden;
@@ -548,7 +634,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     pane.dirty = true; rememberDraft(pane); draftStatus(pane, uid);
     const submitted = JSON.stringify(pane.drafts.get(uid));
     const applyConfig = (): void => {
-      if (service !== session.snapshot.service_id || receiver(uid)?.revision !== revision || session.edits.get(uid)?.pending) {
+      if (service !== session.snapshot.service_id || receiver(uid)?.revision !== revision || session.edits.get(uid)?.pending || session.retiring(uid)) {
         target.textContent = l('Channel changed; review settings again.', '信道已变化，请重新检查设置后应用。'); return;
       }
       target.replaceChildren();

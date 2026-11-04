@@ -172,6 +172,10 @@ impl DevState {
                 .ok_or("channel must be an integer in 1..=3")? as u32,
         };
         let mut config = self.channel_configs()[(channel - 1) as usize].clone();
+        if data["enabled"] == true && (data.get("freq").is_some() || data.get("listen").is_some())
+            && data.get("baseband").is_none() && data.get("processing_enabled").is_none() {
+            self.restore_retired_listener(&mut config);
+        }
         // An explicit legacy mode selection returns to its mode-derived plan.
         // Frequency-only edits preserve an independently configured IQ plan.
         if (data.get("mode").is_some() || data.get("demod").is_some())

@@ -21,7 +21,7 @@ interface Picker {
 }
 const pickers = new WeakMap<HTMLElement, Picker>();
 const commonModeBadges: Record<string, true> = {
-	ais: true, adsb: true, aprs: true, wspr: true, ft4: true, radiofax: true, rtty: true,
+	drm: true, ais: true, adsb: true, aprs: true, wspr: true, ft4: true, radiofax: true, rtty: true,
 };
 
 export function demodLabel(id: string): string {

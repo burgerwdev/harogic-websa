@@ -82,7 +82,7 @@ export async function applyListen(session: WorkbenchSession, plan: ListenPlan): 
       }
     }
     const confirmed = session.snapshot.receivers.find(r => r.receiver_uid === uid);
-    if (!confirmed || confirmed.state !== 'running' || confirmed.confirmed.purpose !== 'listen'
+    if (!confirmed || session.retiring(confirmed.receiver_uid) || confirmed.state !== 'running' || confirmed.confirmed.purpose !== 'listen'
       || confirmed.confirmed.baseband.frequency_hz !== plan.request.frequency_hz
       || !confirmed.confirmed.processors.some(p => p.kind === 'demodulator' && p.mode === plan.request.mode)) return reject(fault('CONFIRMATION', 'Receiver changed before listening was enabled'));
     session.monitorMode = 'manual'; session.monitor(confirmed.receiver_uid, { enabled: true });

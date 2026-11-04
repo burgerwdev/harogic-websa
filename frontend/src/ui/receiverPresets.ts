@@ -26,7 +26,7 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
   const receiver = () => service === session.snapshot.service_id ? session.snapshot.receivers.find(r => r.receiver_uid === uid) : undefined;
   const controls = (): void => {
     save.disabled = !!abort || !data || !name.value.trim() || !!session.edits.get(uid)?.pending;
-    load.disabled = !!abort || !data || !list.value || !!session.edits.get(uid)?.pending;
+    load.disabled = !!abort || !data || !list.value || !!session.edits.get(uid)?.pending || session.retiring(uid);
     remove.disabled = !!abort || !data || !list.value;
     refresh.disabled = !!abort;
   };
@@ -86,7 +86,7 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
   });
   load.addEventListener('click', () => {
     const r = receiver(), preset = data?.presets.find(p => p.name === list.value);
-    if (r && preset && !session.edits.get(uid)?.pending) review({ ...clone(r.confirmed),
+    if (r && preset && !session.edits.get(uid)?.pending && !session.retiring(uid)) review({ ...clone(r.confirmed),
       purpose: preset.settings.purpose, baseband: clone(preset.settings.baseband), processors: clone(preset.settings.processors) });
   });
   remove.addEventListener('click', () => {
