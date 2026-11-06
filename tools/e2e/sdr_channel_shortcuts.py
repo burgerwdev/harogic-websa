@@ -468,7 +468,7 @@ def browser_gate(origin, artifacts):
         snapshot = api(origin)
         third = next(r for r in snapshot["receivers"] if r["display_number"] == 3)
         third_row = overview.locator(f'[data-uid="{third["receiver_uid"]}"]')
-        third_row.locator(".mc-row-more summary").click()
+        third_row.locator(".mc-row-more > summary").click()
         expect(third_row.locator("[data-action=duplicate]")).to_be_disabled()
         third_row.locator("[data-action=retire]").click()
         expect(third_row).to_have_count(0)
@@ -479,7 +479,7 @@ def browser_gate(origin, artifacts):
             "receiver_uid"
         ]
         first_row = overview.locator(f'[data-uid="{first_uid}"]')
-        first_row.locator(".mc-row-more summary").click()
+        first_row.locator(".mc-row-more > summary").click()
         first_row.locator("[data-action=duplicate]").click()
         page.wait_for_function(
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.length===3)'

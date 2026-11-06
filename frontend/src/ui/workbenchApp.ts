@@ -1,4 +1,4 @@
-import { receiverLive } from './receiverLive';
+import { liveStatus, receiverLive } from './receiverLive';
 import { processingLabel, receiverRuntime } from './receiverRuntime';
 import { analogEnhancementsApplicable } from '../core/receiverControls';
 import { receiverControlFields, readReceiverControlFields, syncReceiverControlFields } from './receiverControlFields';
@@ -9,7 +9,8 @@ import { WorkbenchSession } from './workbenchSession';
 import { mountReceiverDecodeView, type ReceiverDecodeView } from './receiverDecodeView';
 import { workbenchTip } from './workbenchTips';
 import { patchWorkbench } from './workbenchDom';
-import { mountWorkbenchCreate, occupiedBandwidth } from './workbenchCreate';
+import { mountWorkbenchCreate } from './workbenchCreate';
+import { occupiedBandwidth } from '../core/receiverBandwidth';
 import { workbenchIcon as icon } from './workbenchIcons';
 import { convertUnitValue } from '../core/units';
 import { frequencyInput, formatFrequencyValue, syncFrequencyInputs, wireFrequencyInputs } from './frequencyInput';
@@ -20,6 +21,8 @@ import { mountQuickListen } from './quickListen';
 import { mountReceiverPresets } from './receiverPresets';
 import { resumeNativeAudio, sdrAudioNeedsGesture } from '../audio/sdrAudio';
 import type { DecoderLogEntry } from '../sdr/decoderLog';
+import { receiverLevel } from './receiverLevel';
+import { mountReceiverTicker, type ReceiverTicker } from './receiverTicker';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -72,10 +75,10 @@ const receiverLabel = (state: string): string => ({ running: l('Receiving', '接
 const taskLabel = (state: string): string => ({ preparing: l('Preparing', '准备'), waiting: l('Waiting', '等待'), recording: l('Recording', '记录中'),
   finalizing: l('Finalizing', '收尾'), completed: l('Completed', '完成'), failed: l('Failed', '失败') })[state] ?? state;
 interface Draft { values: Record<string, string | boolean>; revision: string }
-interface Pane { window: FloatingWindow; title(): string; kind: 'overview' | 'detail' | 'results'; binding: ViewBinding; tab: string; renderedUid?: string; renderedTab?: string; decode?: ReceiverDecodeView; inlineDecode?: { root: HTMLElement; view: ReceiverDecodeView }; create?: ReturnType<typeof mountWorkbenchCreate>; presets?: { root: HTMLElement; dispose(): void }; dirty?: boolean; expanded: Set<string>; interacting?: boolean; drafts: Map<string, Draft>; service?: string; savedUid?: string; unwireFrequency?(): void; unwireFormats?(): void }
+interface Pane { ticker?: ReceiverTicker; window: FloatingWindow; title(): string; kind: 'overview' | 'detail' | 'results'; binding: ViewBinding; tab: string; renderedUid?: string; renderedTab?: string; decode?: ReceiverDecodeView; inlineDecode?: { root: HTMLElement; view: ReceiverDecodeView }; create?: ReturnType<typeof mountWorkbenchCreate>; presets?: { root: HTMLElement; dispose(): void }; dirty?: boolean; expanded: Set<string>; interacting?: boolean; drafts: Map<string, Draft>; service?: string; savedUid?: string; unwireFrequency?(): void; unwireFormats?(): void; unwireGesture?(): void }
 
 interface NativeViews {
-  results(uid: string): { entries: readonly DecoderLogEntry[]; evicted: number };
+  results(uid: string): { entries: readonly DecoderLogEntry[]; evicted: number; source?: string | null };
   status(uid: string): string; retry(uid: string): void;
   playback?(uid: string): Record<string, string | number | boolean> | undefined;
 }
@@ -140,6 +143,10 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     if (!session.snapshot.capabilities.monitor_mixing) body.querySelectorAll<HTMLElement>('.mc-monitor,footer.mc-toolbar').forEach(element => { element.hidden = true; });
   };
   const panes = new Map<string, Pane>();
+  const disposePane = (pane: Pane): void => {
+    pane.unwireFrequency?.(); pane.unwireFormats?.(); pane.unwireGesture?.(); pane.ticker?.dispose();
+    pane.create?.dispose(); pane.inlineDecode?.view.dispose(); pane.presets?.dispose(); pane.decode?.dispose(); pane.window.dispose();
+  };
   const saveViews = (): void => { try { localStorage.setItem('websa-workbench-views-v1', JSON.stringify([...panes.values()].map(p => ({ kind: p.kind, binding: p.binding, tab: p.tab })))); } catch { /* session only */ } };
   let search = '', channelFilter = 'all', scene: SceneCommand | null = null;
   let preset: ReceiverConfig | null = null;
@@ -155,6 +162,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   };
   const recordKind = (kind: TrackKind): boolean => fixture || !!session.snapshot.capabilities.recording_kinds?.includes(kind);
   const activeTask = (uid: string, kind: TrackKind) => session.snapshot.recordings.find(t => t.receiver_uid === uid && t.tracks.some(track => track.kind === kind) && ['preparing', 'recording', 'waiting', 'finalizing'].includes(t.state));
+  const recordingRequests = new Set<string>();
+  const recordingRequestKey = (uid: string, kind: TrackKind): string => `${session.snapshot.service_id ?? 'fixture'}:${uid}:${kind}`;
+  const recordingPending = (uid: string, kind: TrackKind): boolean => recordingRequests.has(recordingRequestKey(uid, kind));
   const recordingCapacity = (): string => {
     const quota = session.snapshot.recording_resources;
     return quota ? `<span data-recording-capacity class="mc-source-badge" role="status">${l('Recording tasks', '录制任务')} ${quota.active_tasks} / ${quota.max_tasks} · ${l(`${quota.available_tasks} available`, `剩余 ${quota.available_tasks}`)}</span>` : '';
@@ -164,7 +174,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const task = activeTask(uid, kind);
     const full = session.snapshot.recording_resources?.available_tasks === 0;
     const name = kind === 'results' ? l('results', '结果') : kind === 'audio' ? l('audio', '音频') : kind.toUpperCase();
-    const control = button(`rec-${kind}`, task ? task.state === 'finalizing' ? l('Finalizing…', '收尾中…') : l(`Stop ${name} REC`, `停止 ${name} 记录`) : l(`Record ${name}`, `录制 ${name}`), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${task?.state === 'finalizing' || !task && (full || receiver(uid)?.state !== 'running') ? 'disabled' : ''}`, task ? l('Stop this recording and finish saving the file; reception continues', '停止这项录制并完成文件保存；该路继续接收') : full ? l('Recording slots are full; wait for a task to finish', '录制名额已满，等待一项任务完成后再开始') : kind === 'audio' ? l('Record published audio with shared gain and processing; local speaker controls are excluded', '录制含共享增益与处理的实际输出音频；不含本地扬声器设置') : l(`Save ${name} on the server; listening and decoding can run at the same time`, `在服务器录制 ${name}；可同时监听和解码`));
+    const control = button(`rec-${kind}`, task ? task.state === 'finalizing' ? l('Finalizing…', '收尾中…') : l(`Stop ${name} REC`, `停止 ${name} 记录`) : l(`Record ${name}`, `录制 ${name}`), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${recordingPending(uid, kind) || session.retiring(uid) || task?.state === 'finalizing' || !task && (full || receiver(uid)?.state !== 'running') ? 'disabled' : ''}`, task ? l('Stop this recording and finish saving the file; reception continues', '停止这项录制并完成文件保存；该路继续接收') : full ? l('Recording slots are full; wait for a task to finish', '录制名额已满，等待一项任务完成后再开始') : kind === 'audio' ? l('Record published audio with shared gain and processing; local speaker controls are excluded', '录制含共享增益与处理的实际输出音频；不含本地扬声器设置') : l(`Save ${name} on the server; listening and decoding can run at the same time`, `在服务器录制 ${name}；可同时监听和解码`));
     if (kind !== 'audio') return control;
     return `<span class="mc-record-controls">${task ? `<span class="mc-record-format" title="${l('Format selected when recording started', '开始录制时选择的格式')}">${formatLabel(task.audio_format ?? 'wav')}</span>` : audioFormatMenu(session.snapshot, selectedFormat(), { receiver: uid })}${control}</span>`;
   };
@@ -187,8 +197,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const recording = session.snapshot.recordings.filter(t => t.receiver_uid === uid && ['preparing', 'recording', 'waiting', 'finalizing'].includes(t.state)).length;
     const recordingFailed = session.snapshot.recordings.filter(t => t.receiver_uid === uid).at(-1)?.state === 'failed';
     return `<article class="mc-row ${selected ? 'mc-selected' : ''}" data-uid="${esc(uid)}" style="--channel:${esc(row.confirmed.color)}">
-      <button type="button" data-action="select" class="mc-channel-select" aria-pressed="${selected}" title="${esc(workbenchTip('select'))}">
-        <span class="mc-channel-avatar">${row.display_number.toString().padStart(2, '0')}</span><span class="mc-channel-identity"><strong>${esc(row.confirmed.name)}</strong><span>${esc(row.confirmed.processors[0]?.mode.toUpperCase() ?? 'IQ')}<i class="mc-state-dot" data-state="${row.state}"></i>${receiverLabel(row.state)}${row.processing_state && row.processing_state!=='active' && row.processing_state!=='disabled' ? ` · ${esc(processingLabel(row.processing_state))}`:''}</span></span>${selected ? '<span class="mc-selection-mark">›</span>' : ''}</button>
+      <div class="mc-channel-row-head"><button type="button" data-action="select" class="mc-channel-select" aria-pressed="${selected}" title="${esc(workbenchTip('select'))}">
+        <span class="mc-channel-avatar">${row.display_number.toString().padStart(2, '0')}</span><span class="mc-channel-identity"><strong>${esc(row.confirmed.name)}</strong><span>${esc(row.confirmed.processors[0]?.mode.toUpperCase() ?? 'IQ')}<i class="mc-state-dot" data-state="${row.state}"></i>${receiverLabel(row.state)}${row.processing_state && row.processing_state!=='active' && row.processing_state!=='disabled' ? ` · ${esc(processingLabel(row.processing_state))}`:''}</span></span></button><button type="button" class="mc-selection-mark" data-action="detail" title="${esc(workbenchTip('detail'))}" aria-label="${esc(l(`Open ${row.confirmed.name} in a separate window`, `打开 ${row.confirmed.name} 的信道浮窗`))}">${icon('external')}</button></div>
       <div class="mc-row-frequency">${(row.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} <small>MHz</small></div>
       <div class="mc-row-actions">${audio ? button('listen', session.listening(uid) ? l('Listening', '监听中') : l('Listen', '监听'), `aria-pressed="${session.listening(uid)}" ${row.state === 'running' && !row.fault ? '' : 'disabled'}`) : row.confirmed.processors.length ? button('results', resultLabel(row.confirmed)) : button('channel-view', l('Open channel', '查看信道'), '', workbenchTip('select'))}
         ${available('record_start') ? button('recordings', recording ? l(`Recording · ${recording}`, `录制中 · ${recording}`) : recordingFailed ? l('Recording failed', '录制失败') : l('Record', '录制'), `class="${recording || recordingFailed ? 'mc-recording-on' : ''}"`) : ''}</div>
@@ -202,9 +212,11 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   const paneDraftCount = (uid: string): boolean => [...panes.values()].some(p => p.drafts.has(uid));
   const record = (uid: string, kind: TrackKind): void => {
     const task = activeTask(uid, kind);
-    if (task?.state === 'finalizing') return;
-    send(task ? { type: 'record_stop', request_id: session.requestId(), task_id: task.task_id }
-      : { type: 'record_start', request_id: session.requestId(), receiver_uid: uid, kinds: [kind], ...(kind === 'audio' ? { audio_format: selectedFormat() } : {}) });
+    if (task?.state === 'finalizing' || recordingPending(uid, kind) || session.retiring(uid)) return;
+    const key = recordingRequestKey(uid, kind); recordingRequests.add(key); session.notify();
+    void session.send(task ? { type: 'record_stop', request_id: session.requestId(), task_id: task.task_id }
+      : { type: 'record_start', request_id: session.requestId(), receiver_uid: uid, kinds: [kind], ...(kind === 'audio' ? { audio_format: selectedFormat() } : {}) })
+      .finally(() => { recordingRequests.delete(key); if (!disposed) session.notify(); });
   };
   const resultLabel = (c: ReceiverConfig): string => ['am', 'dsb', 'usb', 'lsb', 'nfm', 'wfm', 'pm', 'drm', 'drmplus'].includes(c.processors[0]?.mode) ? l('Signal info', '信号信息') : l('Results', '查看结果');
   const modeOptions = (c: ReceiverConfig): string => `<option value="" ${!c.processors.length ? 'selected' : ''}>${l('None · IQ only', '不解调 · 仅接收 IQ')}</option>` + (session.snapshot.capabilities.mode_descriptors ?? []).map(mode =>
@@ -268,7 +280,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       provider: 'fixture', mode: 'ft8', kind: 'table', bytes: 128,
       data: { decodes: [{ snr_db: -12, audio_hz: 1099, msg: 'FIXTURE CQ TEST AA00' }] } }] : log?.entries ?? [],
       `${session.snapshot.service_id ?? 'fixture'}:${uid}`, r?.confirmed.processors[0]?.mode ?? '', log?.evicted ?? 0,
-      r ? r.state === 'running' ? '' : l('Receiver stopped · retained results', '接收已停止 · 保留历史结果') : l('Receiver retired. Select another channel above.', '信道已删除，可在上方选择其他信道。'));
+      r ? r.state === 'running' ? '' : l('Receiver stopped · retained results', '接收已停止 · 保留历史结果') : l('Receiver retired. Select another channel above.', '信道已删除，可在上方选择其他信道。'), log?.source);
   };
   const detail = (r: ReceiverState, pane: Pane): string => {
     const c = r.confirmed, edit = session.edits.get(r.receiver_uid), route = session.route(r.receiver_uid);
@@ -336,8 +348,36 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         ${playback?.enabled && (playback.connectionState === 'reconnecting' || playback.contextState === 'suspended') ? `<small role="status" data-playback-state>${playback.connectionState === 'reconnecting' ? l('Reconnecting…', '重连中…') : l('Enable speakers', '启用扬声器')}${playback.contextState === 'suspended' ? button('resume-audio', l('Enable', '启用')) : ''}</small>` : ''}</fieldset>` : ''}
       ${content}`;
   };
+  function renderStrip(pane: Pane): void {
+    const strip = pane.window.root.querySelector<HTMLElement>('.mc-channel-strip'); if (!strip) return;
+    const uid = session.resolve(pane.binding), r = receiver(uid);
+    if (!r) { pane.ticker?.dispose(); pane.ticker = undefined; strip.textContent = l('Channel deleted', '信道已删除'); return; }
+    if (strip.dataset.receiverUid !== uid || strip.dataset.serviceId !== (session.snapshot.service_id ?? 'fixture')) pane.expanded.delete('strip-volume');
+    strip.dataset.receiverUid = uid; strip.dataset.serviceId = session.snapshot.service_id ?? 'fixture';
+    const audio = receiverHasAudio(session.snapshot, r.confirmed), monitor = audio && (fixture || !!session.snapshot.capabilities.monitor_mixing);
+    const kinds: TrackKind[] = ['audio', 'results', 'iq'];
+    const kind = kinds.find(kind => activeTask(uid, kind)) ?? kinds.find(kind => recordKind(kind) && (kind === 'iq' || kind === 'audio' && audio || kind === 'results' && receiverHasResults(session.snapshot, r.confirmed)));
+    const task = kind ? activeTask(uid, kind) : undefined;
+    const reception = liveStatus(r), state = reception.kind === 'healthy' ? 'running' : reception.kind === 'fault' ? 'failed' : reception.kind === 'stopped' ? 'stopped' : 'interrupted';
+    const result = native?.results(uid), entries = result?.entries ?? [];
+    const level = receiverLevel(r, entries, native?.playback?.(uid), result?.source);
+    const levelLabel = level ? `${level.source === 'input' ? l('Input', '输入') : l('Audio', '音频')} ${level.db.toFixed(1)} dBFS` : l('No live level', '暂无实时电平');
+    const control = (action: string, glyph: string, label: string, extra = ''): string => `<button type="button" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}" ${extra}>${icon(glyph)}</button>`;
+    const volume = pane.expanded.has('strip-volume'), route = session.route(uid);
+    const recordLabel = kind === 'audio' ? l('audio', '音频') : kind === 'results' ? l('results', '结果') : 'IQ';
+    patchWorkbench(strip, `<div class="mc-strip-identity" title="${esc(`${r.confirmed.name} · ${reception.label}`)}"><span><i class="mc-state-dot" data-state="${state}"></i><b>${esc(r.confirmed.name)}</b></span><small>${(r.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} <span>MHz</span></small></div>
+      <div data-strip-text data-key="strip-text"></div>
+      <div class="mc-strip-level" data-no-drag data-available="${!!level}" title="${esc(levelLabel)}" role="meter" aria-label="${esc(levelLabel)}" aria-valuemin="-100" aria-valuemax="0" aria-valuenow="${level ? Math.max(-100, Math.min(0, level.db)) : -100}" aria-valuetext="${esc(levelLabel)}" style="--level:${level ? Math.max(0, Math.min(100, level.db + 100)) : 0}%"><span class="mc-strip-level-fill"></span><small>${level ? `${level.db.toFixed(0)} dBFS` : '— dBFS'}</small></div>
+      <div class="mc-strip-actions">${monitor ? control('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), `aria-pressed="${session.listening(uid)}" ${r.state !== 'running' || r.fault ? 'disabled' : ''}`) : ''}
+      ${kind && available('record_start') ? control(`rec-${kind}`, 'record', task ? l(`Stop ${recordLabel} recording`, `停止${recordLabel}录制`) : l(`Record ${recordLabel}`, `录制${recordLabel}`), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${recordingPending(uid, kind) || session.retiring(uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running') ? 'disabled' : ''}`) : ''}
+      ${monitor ? `<div class="mc-strip-volume">${control('strip-volume', route.gain ? 'volume' : 'muted', l('Channel volume', '信道音量'), `aria-expanded="${volume}"`)}<div class="mc-strip-volume-panel" data-no-drag ${volume ? '' : 'hidden'}><label>${l('Volume', '音量')}<input data-strip-gain data-key="strip-gain-${esc(uid)}" type="range" min="0" max="1" step="0.01" value="${route.gain}" aria-label="${l('Channel volume', '信道音量')}"></label><output data-strip-volume-value>${Math.round(route.gain * 100)}%</output></div></div>` : ''}
+      ${available('retire') ? control('retire', 'trash', session.retiring(uid) ? l('Deleting…', '正在删除…') : l('Delete channel', '删除信道'), `class="mc-strip-delete" ${session.retiring(uid) || session.edits.get(uid)?.pending ? 'disabled' : ''}`) : ''}</div>`, element => element.hasAttribute('data-strip-text') || element === strip.ownerDocument.activeElement && element.matches('input'));
+    pane.ticker ??= mountReceiverTicker(strip.querySelector<HTMLElement>('[data-strip-text]')!, pane.window.root);
+    pane.ticker.update(entries, r, session.snapshot.service_id ?? 'fixture', result?.source);
+  }
   function renderPane(pane: Pane): void {
     if (pane.interacting) return;
+    renderStrip(pane);
     const uid = session.resolve(pane.binding), r = receiver(uid), body = pane.window.body;
     if (pane.service !== session.snapshot.service_id) { pane.drafts.clear(); pane.dirty = false; pane.renderedUid = undefined; pane.service = session.snapshot.service_id; }
     for (const draftUid of pane.drafts.keys()) if (!receiver(draftUid)) pane.drafts.delete(draftUid);
@@ -432,6 +472,11 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const surface = createFloatingWindow(id, title, kind === 'overview' ? { x: 48, y: 70, w: Math.min(1280, window.innerWidth - 64), h: Math.min(860, window.innerHeight - 96) }
       : { x: 170 + index * 35, y: 180 + index * 25, w: kind === 'results' ? 620 : 500, h: kind === 'results' ? 520 : 470 });
     const pane: Pane = { kind, binding, window: surface, title, tab: 'receive', expanded: new Set(), drafts: new Map(), service: session.snapshot.service_id }; panes.set(id, pane);
+    if (kind !== 'overview') {
+      surface.root.classList.add('mc-channel-window');
+      const strip = document.createElement('div'); strip.className = 'mc-channel-strip';
+      surface.root.querySelector('.mc-head strong')!.after(strip);
+    }
     pane.unwireFrequency = wireFrequencyInputs(surface.body);
     pane.unwireFormats = wireAudioFormatMenus(surface.body);
     surface.body.addEventListener('toggle', event => {
@@ -447,11 +492,12 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       gestureDocument?.defaultView?.removeEventListener('blur', release);
       gestureDocument = null;
     };
+    pane.unwireGesture = clearGesture;
     const release = (): void => {
       clearGesture();
       setTimeout(() => { pane.interacting = false; if (surface.root.isConnected) renderPane(pane); }, 0);
     };
-    surface.body.addEventListener('pointerdown', () => {
+    surface.root.addEventListener('pointerdown', () => {
       clearGesture(); pane.interacting = true;
       gestureDocument = surface.body.ownerDocument;
       gestureDocument.addEventListener('pointerup', release, true);
@@ -461,8 +507,11 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     }, true);
     // Keep the pressed element until click, including synchronous audio-resume notifications.
     // Bind release to the current document so Pop out/Dock and releasing outside work too.
-    surface.body.addEventListener('click', () => { clearGesture(); pane.interacting = false; }, true);
-    surface.body.addEventListener('keydown', event => {
+    surface.root.addEventListener('click', () => { clearGesture(); pane.interacting = false; }, true);
+    surface.root.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && pane.expanded.has('strip-volume')) {
+        pane.expanded.delete('strip-volume'); renderStrip(pane); surface.root.querySelector<HTMLButtonElement>('[data-action=strip-volume]')?.focus(); event.preventDefault(); event.stopPropagation(); return;
+      }
       if (event.key === 'Escape') {
         const menu = (event.target as HTMLElement).closest<HTMLDetailsElement>('[data-format-menu]');
         if (menu?.open) { menu.open = false; menu.querySelector('summary')?.focus(); event.preventDefault(); event.stopPropagation(); return; }
@@ -473,8 +522,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         && !(event.target as HTMLElement).closest('input,select,textarea,[contenteditable=true]')) {
         event.preventDefault(); event.stopPropagation(); session.masterMuted = !session.masterMuted; session.notify();
       }
-    });
-    surface.body.addEventListener('click', event => {
+    }, true);
+    surface.root.addEventListener('click', event => {
       const target = (event.target as HTMLElement).closest<HTMLElement>('[data-action]');
       if (!target) {
         const row = (event.target as HTMLElement).closest<HTMLElement>('[data-uid]');
@@ -483,7 +532,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       }
       if (target.matches('button:disabled')) return;
       if (target.tagName === 'BUTTON' && (target as HTMLButtonElement).type !== 'submit') event.preventDefault();
-      const uid = target.dataset.receiverUid ?? target.closest<HTMLElement>('[data-uid]')?.dataset.uid ?? session.resolve(pane.binding), r = receiver(uid);
+      const uid = target.dataset.receiverUid ?? target.closest<HTMLElement>('.mc-channel-strip')?.dataset.receiverUid ?? target.closest<HTMLElement>('[data-uid]')?.dataset.uid ?? session.resolve(pane.binding), r = receiver(uid);
+      const strip = target.closest<HTMLElement>('.mc-channel-strip');
+      if (strip && (strip.dataset.serviceId !== (session.snapshot.service_id ?? 'fixture') || !r || session.retiring(uid))) { renderPane(pane); return; }
       const action = target.dataset.action!;
       if (action.startsWith('tab-')) { pane.tab = action.slice(4); saveViews(); renderPane(pane); }
       else if (action.startsWith('filter-')) { channelFilter = action.slice(7); renderPane(pane); }
@@ -516,6 +567,11 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         session.notify(); menu?.querySelector('summary')?.focus();
       }
       else if (action === 'toggle-receiver' && r) void session.configure(uid, { ...clone(r.confirmed), enabled: !r.confirmed.enabled });
+      else if (action === 'strip-volume') {
+        if (pane.expanded.has('strip-volume')) pane.expanded.delete('strip-volume'); else pane.expanded.add('strip-volume');
+        renderStrip(pane);
+        if (pane.expanded.has('strip-volume')) surface.root.querySelector<HTMLInputElement>('[data-strip-gain]')?.focus();
+      }
       else if (action === 'listen') session.monitor(uid, { enabled: !session.listening(uid) });
       else if (action === 'resume-audio') resumeNativeAudio();
       else if (action === 'master-mute') { session.masterMuted = !session.masterMuted; session.notify(); }
@@ -587,7 +643,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
           nr: data.has('nr'), nr_algorithm: String(data.get('nr-algorithm') ?? 'wiener') as NonNullable<ReceiverConfig['processors'][number]['nr_algorithm']>,
           nr_strength: Number(data.get('nr-strength') ?? 0.6), nr_atten_db: Number(data.get('nr-atten') ?? 10) }];
         if (mode) {
-          const occupied = occupiedBandwidth(mode, config.processors[0].bandwidth_hz!);
+          const occupied = occupiedBandwidth(mode, config.processors[0].bandwidth_hz!, config.processors[0].pitch);
           config.baseband.passband_hz = Math.max(config.baseband.passband_hz, occupied);
           config.baseband.minimum_rate_hz = Math.max(config.baseband.minimum_rate_hz, mode.minimumRateHz);
         }
@@ -605,11 +661,17 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       let parent = (event.target as HTMLElement).parentElement;
       while (parent && parent !== surface.body) { if (parent.tagName === 'DETAILS') (parent as HTMLDetailsElement).open = true; if (parent.hasAttribute('data-advanced-settings')) { parent.hidden = false; pane.expanded.add('advanced'); surface.body.querySelector('[data-action=advanced-settings]')?.setAttribute('aria-expanded', 'true'); } parent = parent.parentElement; }
     }, true);
-    surface.body.addEventListener('input', event => {
-      const input = event.target as HTMLInputElement, uid = session.resolve(pane.binding);
+    surface.root.addEventListener('input', event => {
+      const input = event.target as HTMLInputElement, uid = input.closest<HTMLElement>('.mc-channel-strip')?.dataset.receiverUid ?? session.resolve(pane.binding);
       const form = configForm(input);
       if (form) { syncAudioSettings(form); syncBandwidthSettings(form); pane.dirty = true; surface.body.querySelector('[data-preview]')?.replaceChildren(); rememberDraft(pane); draftStatus(pane, uid); }
       if (input.matches('[data-search]')) { search = input.value; renderPane(pane); }
+      if (input.matches('[data-strip-gain]')) {
+        const strip = input.closest<HTMLElement>('.mc-channel-strip')!;
+        if (strip.dataset.serviceId !== (session.snapshot.service_id ?? 'fixture') || !receiver(uid) || session.retiring(uid)) return;
+        const output = surface.root.querySelector('[data-strip-volume-value]'); if (output) output.textContent = `${Math.round(Number(input.value) * 100)}%`;
+        session.monitor(uid, { gain: Number(input.value) });
+      }
       if (input.matches('[data-gain]')) { input.closest('.mc-monitor')!.querySelector('[data-gain-value]')!.textContent = `${Math.round(Number(input.value) * 100)}%`; session.monitor(uid, { gain: Number(input.value) }); }
       if (input.matches('[data-pan]')) { input.closest('.mc-monitor')!.querySelector('[data-pan-value]')!.textContent = panLabel(Number(input.value)); session.monitor(uid, { pan: Number(input.value) }); }
       if (input.matches('[data-master]')) { session.masterGain = Number(input.value); const output = surface.body.querySelector('[data-master-value]'); if (output) output.textContent = `${Math.round(session.masterGain * 100)}%`; session.notify(); }
@@ -619,7 +681,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         pane.tab = 'receive'; saveViews(); renderPane(pane);
       }
     });
-    surface.body.addEventListener('focusout', event => {
+    surface.root.addEventListener('focusout', event => {
       if (!(event.target as HTMLElement).matches('input[type=range]')) return;
       setTimeout(() => { if (surface.root.isConnected) renderPane(pane); }, 0);
     });
@@ -727,6 +789,14 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     apply.addEventListener('click', applyConfig); target.appendChild(apply);
   }
   const render = (): void => {
+    let removed = false;
+    for (const [id, pane] of panes) {
+      if (pane.binding.type === 'fixed' && !receiver(pane.binding.receiver_uid)) {
+        panes.delete(id); disposePane(pane); removed = true;
+        try { localStorage.removeItem(`websa-workbench-layout:${id}`); } catch { /* session only */ }
+      }
+    }
+    if (removed) saveViews();
     for (const [action, text] of Object.entries({ workbench: l('Channel workbench', '信道工作台'), recall: l('Recall all windows', '召回全部窗口'), reset: l('Reset layout', '重置布局'), 'quick-listen': l('＋ Listen to frequency', '＋ 监听频点') })) {
       const control = host.querySelector<HTMLElement>(`[data-action="${action}"]`); if (control) { control.textContent = text; control.title = workbenchTip(action); }
     }
@@ -781,7 +851,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       resultsTimer = undefined;
       for (const pane of panes.values()) {
         const uid = session.resolve(pane.binding);
-        if (!changedResults.has(uid) || pane.interacting || pane.window.root.hidden || pane.window.body.hidden || pane.window.root.ownerDocument.hidden) continue;
+        if (!changedResults.has(uid) || pane.interacting || pane.window.root.hidden || pane.window.root.ownerDocument.hidden) continue;
+        renderStrip(pane);
+        if (pane.window.body.hidden) continue;
         const r = receiver(uid);
         if (pane.decode) updateDecode(pane.decode, uid, r);
         if (pane.inlineDecode) updateDecode(pane.inlineDecode.view, uid, r);
@@ -789,6 +861,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       changedResults.clear();
     }, 50);
   });
+  const levelTimer = setInterval(() => {
+    for (const pane of panes.values()) if (pane.kind !== 'overview' && pane.window.body.hidden && !pane.window.root.hidden && !pane.interacting && !pane.window.root.ownerDocument.hidden) renderStrip(pane);
+  }, 250);
   const unsubscribe = session.subscribe(render); const stopLang = onLangChange(() => { panes.forEach(p => p.window.sync()); render(); }); render();
-  return { recall, showOverview: () => open('overview'), dispose: () => { document.removeEventListener('websa:sdr-audio-gesture', audioState); unsubscribeResults(); clearTimeout(resultsTimer); unsubscribe(); stopLang(); quickListen.dispose(); library.dispose(); archives.dispose(); disposed = true; audioArchives?.dispose(); panes.forEach(p => { p.unwireFrequency?.(); p.unwireFormats?.(); p.create?.dispose(); p.inlineDecode?.view.dispose(); p.presets?.dispose(); p.decode?.dispose(); p.window.dispose(); }); } };
+  return { recall, showOverview: () => open('overview'), dispose: () => { document.removeEventListener('websa:sdr-audio-gesture', audioState); unsubscribeResults(); clearTimeout(resultsTimer); clearInterval(levelTimer); unsubscribe(); stopLang(); quickListen.dispose(); library.dispose(); archives.dispose(); disposed = true; audioArchives?.dispose(); panes.forEach(disposePane); } };
 }

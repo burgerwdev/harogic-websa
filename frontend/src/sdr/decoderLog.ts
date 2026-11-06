@@ -1,3 +1,4 @@
+import type { CwMark } from './cwLog';
 // Session-only provider output; stream identity remains owned by SDE2.
 export type DecoderResultKind = 'text' | 'table' | 'image' | 'status';
 export interface DecoderResult {
@@ -14,6 +15,16 @@ export interface DecoderLogEntry extends DecoderResult {
   acknowledged?: boolean;
   timing?: { input_index: string; input_rate: number; fraction_num: string; fraction_den: string;
     delay_seconds: number; delay_known: boolean; causal_presentation: boolean; baseband_stream?: unknown };
+}
+export interface DecoderTextLine { text: string; endsLine: boolean; marks: CwMark[] }
+export function decoderTextLine(entry: DecoderResult): DecoderTextLine | null {
+  if (!['cw', 'rtty', 'rtty-reverse'].includes(entry.mode) || entry.kind !== 'text') return null;
+  if (entry.mode !== 'cw' && entry.provider !== 'onair-rtty') return null;
+  const data = entry.data;
+  if (typeof data === 'string') return { text: data, endsLine: data.endsWith('\n'), marks: [] };
+  if (!data || typeof data !== 'object' || !('text' in data) || typeof data.text !== 'string') return null;
+  const line = data as Partial<DecoderTextLine>;
+  return { text: data.text, endsLine: line.endsLine === true || data.text.endsWith('\n'), marks: Array.isArray(line.marks) ? line.marks : [] };
 }
 export interface DecoderImageStrip { png: string; y: number; rows: number; pw: number; ph: number }
 export interface DecoderImage {
@@ -146,6 +157,21 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
     result = { ...result, data: { id: data.id, label: String(data.label ?? ''), w: data.w, h: data.h, final: data.final === true && !partial, partial, strips } };
     if (old) id = old.id;
   } else {
+    const cw = decoderTextLine(result);
+    if (cw) {
+      const index = log.entries.findIndex(entry => entry.mode === result.mode && entry.kind === 'text' && entry.provider === result.provider);
+      const candidate = index >= 0 ? log.entries[index] : undefined;
+      const prior = candidate && candidate.source === source ? decoderTextLine(candidate) : null;
+      // Keep transmissions, not individual characters, within the history budget.
+      if (prior && !prior.endsLine) previous = index;
+      const oldText = previous >= 0 ? prior!.text : '';
+      const share = typeof data?.share === 'number' && Number.isFinite(data.share) ? data.share : 1;
+      const marks = result.mode !== 'cw' ? [] : cw.marks.length ? cw.marks : Array.from({ length: cw.text.length }, (_, i) => ({
+        share, gap: i === 0 ? oldText.endsWith(' ') : cw.text[i - 1] === ' ',
+      }));
+      result = { ...result, data: { ...data, text: oldText + cw.text, endsLine: cw.endsLine,
+        marks: [...(previous >= 0 ? prior!.marks : []), ...marks] } satisfies DecoderTextLine };
+    }
     bytes = JSON.stringify(result.data).length * 2;
     // Live snapshots replace their previous view; message batches remain incremental.
     if (gpsSnapshot(result)) {
@@ -160,7 +186,7 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
   if (bytes > limit && result.kind !== 'image') { log.evicted++; listeners.forEach(fn => fn()); return; }
   reserveHistory(channel, bytes, old);
   if (old) { log.bytes -= old.bytes; id = old.id; log.entries.splice(log.entries.indexOf(old), 1); }
-  log.entries.unshift({ ...result, id, at: Date.now(), source, bytes, acknowledged: typeof channel === 'number' });
+  log.entries.unshift({ ...result, id, at: decoderTextLine(result) && old ? old.at : Date.now(), source, bytes, ...(decoderTextLine(result) && old?.timing ? { timing: old.timing } : {}), acknowledged: typeof channel === 'number' });
   log.bytes += bytes;
   listeners.forEach(fn => fn());
 }
@@ -216,7 +242,8 @@ export function addDecoderRaster(channel: string, mode: string, source: string, 
   listeners.forEach(fn => fn());
 }
 export function annotateDecoderResult(channel: string, timing: NonNullable<DecoderLogEntry['timing']>): void {
-  const entry = channelLog(channel).entries[0]; if (entry) entry.timing = timing;
+  const entry = channelLog(channel).entries[0];
+  if (entry && !(decoderTextLine(entry) && entry.timing)) entry.timing = timing;
 }
 export function forgetDecoderLog(channel: string): void { channels.delete(channel); }
 

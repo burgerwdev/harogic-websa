@@ -1,4 +1,6 @@
 import { DecodeSequence, MAX_DECODE_BYTES, type DecodeEnvelope } from './decodeProtocol';
+import { StreamRetry } from './streamRetry';
+import { MAX_QUEUED_EVENTS, MAX_QUEUED_BYTES } from './streamLimits';
 
 interface DecoderWorkerHost {
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -10,14 +12,13 @@ let socket: WebSocket | null = null;
 let enabled = false;
 let url = '';
 let retry: number | null = null;
+let recovery = new StreamRetry();
 let inFlight = 0;
 let inFlightBytes = 0;
 let queuedBytes = 0;
 const queue: { envelope: DecodeEnvelope; bytes: number; connection: WebSocket }[] = [];
 const applied = new Map<string, { envelope: DecodeEnvelope; connection: WebSocket }>();
 const snapshotAck = new WeakMap<WebSocket, boolean>();
-const MAX_QUEUED_EVENTS = 32;
-const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 function fail(message: string): void {
   enabled = false;
   if (retry !== null) { self.clearTimeout(retry); retry = null; }
@@ -59,6 +60,7 @@ function connect(): void {
     try {
       if (!(event.data instanceof ArrayBuffer) || event.data.byteLength - 8 > MAX_DECODE_BYTES) throw new Error('Expected bounded binary SDE2');
       const envelope = sequence.accept(event.data);
+      if (envelope.seq > 0) recovery.progress();
       if (envelope.seq === 0 && envelope.event.type === 'start' && envelope.event.snapshotAck === true) {
         snapshotAck.set(connection, true);
       }
@@ -70,11 +72,19 @@ function connect(): void {
       deliver();
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   };
-  connection.onerror = () => { if (enabled && socket === connection) host.postMessage({ type: 'error', message: 'Decoded-output connection failed' }); };
+  // Browser onerror precedes onclose and has no useful failure classification.
+  // Let onclose schedule a new subscription instead of killing this owner.
+  connection.onerror = () => {};
   connection.onclose = (event) => {
     if (socket !== connection) return;
     socket = null;
     if (!enabled) return;
+    const delay = recovery.delay(event.code, event.reason);
+    if (delay !== null) {
+      host.postMessage({ type: 'closed', message: `Decoded-output stream interrupted (${event.code}): ${event.reason}; reconnecting` });
+      retry = self.setTimeout(() => { retry = null; connect(); }, delay);
+      return;
+    }
     if (event.code === 1013) { fail(`Slow decoded-output consumer: ${event.reason}`); return; }
     if (event.code === 1011 && event.reason === 'receiver failed') {
       fail('Decoded-output receiver failed');
@@ -84,14 +94,14 @@ function connect(): void {
       fail('Decoded-output source stream invalid');
       return;
     }
-    host.postMessage({ type: 'closed', message: `Decoded-output stream closed (${event.code}): ${event.reason}` });
-    // FIFO delivery preserves old tails before the next stream boundary.
-    retry = self.setTimeout(() => { retry = null; connect(); }, 2000);
+    fail(`Decoded-output stream closed (${event.code}): ${event.reason}`);
   };
 }
 host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: string }>) => {
   const message = event.data;
   if (message.type === 'start') {
+    if (enabled) return;
+    recovery = new StreamRetry();
     enabled = true;
     url = message.url ?? '';
     connect();

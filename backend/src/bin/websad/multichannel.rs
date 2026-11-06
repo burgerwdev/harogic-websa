@@ -913,6 +913,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ft8_quick_copy_requires_processor_passband_and_never_changes_primary_on_rejection() {
+        let app=app();
+        // The main panel already receives FT8 when the user presses quick-add.
+        {
+            let mut state=app.state.lock().unwrap();
+            state.sdr_channels[0].enabled=true;
+            state.sdr_demod="ft8".into();
+            state.sdr_if_bw=3000.0;
+        }
+        let before=app.state.lock().unwrap().channel_configs();
+        let primary=app.state.lock().unwrap().receiver_snapshot()["receivers"][0].clone();
+        let mut config=iq_config(100_010_000.0);
+        config["purpose"]=json!("digital");
+        // The search overlay ends at 3000 Hz, but the input filter needs 3200 Hz.
+        config["baseband"]["passband_hz"]=json!(6000);
+        config["baseband"]["minimum_rate_hz"]=json!(8400);
+        config["processors"]=json!([{"id":"ft8-copy","kind":"decoder","mode":"ft8",
+            "bandwidth_hz":3000,"minimum_rate_hz":6000}]);
+        let rejected=run(&app,json!({"type":"create","request_id":"ft8-too-narrow","config":config})).await;
+        assert_eq!(rejected["fault"]["message"],"processor passband exceeds configured baseband");
+        assert_eq!(app.state.lock().unwrap().channel_configs(),before);
+        assert_eq!(rejected["snapshot"]["receivers"].as_array().unwrap().len(),1);
+        assert_eq!(rejected["snapshot"]["receivers"][0]["confirmed"],primary["confirmed"]);
+        assert_eq!(rejected["snapshot"]["receivers"][0]["revision"],primary["revision"]);
+        config["baseband"]["passband_hz"]=json!(6400);
+        let request=json!({"type":"create","request_id":"ft8-copy","config":config});
+        let accepted=run(&app,request.clone()).await;
+        assert!(accepted["fault"].is_null(),"{accepted}");
+        assert_eq!(accepted["snapshot"]["receivers"].as_array().unwrap().len(),2);
+        assert_eq!(accepted["snapshot"]["receivers"][0]["confirmed"],primary["confirmed"]);
+        assert_eq!(accepted["snapshot"]["receivers"][0]["revision"],primary["revision"]);
+        assert_eq!(app.state.lock().unwrap().channel_configs()[0],before[0]);
+        assert_eq!(accepted["snapshot"]["receivers"][1]["confirmed"]["processors"][0]["mode"],"ft8");
+        assert_eq!(run(&app,request).await,accepted); // request replay cannot allocate another channel
+    }
+
+    #[tokio::test]
     async fn receiver_audio_settings_round_trip_and_reject_invalid_nr_without_affecting_other_channels() {
         let app=app();
         let first=run(&app,json!({"type":"create","request_id":"audio-first","config":listen_config(100e6)})).await;
@@ -968,6 +1005,34 @@ mod tests {
         assert_eq!(processor["squelch_dbm"].as_f64(),Some(-110.0));
         let state=app.state.lock().unwrap();let actual=&state.channel_configs()[0];
         assert_eq!(processor["nr"],actual.nr);assert_eq!(processor["pcm_gain"].as_f64(),Some(actual.volume));
+    }
+
+    #[tokio::test]
+    async fn main_tuning_after_retiring_c1_preserves_saved_c2() {
+        let app=app();
+        let first=run(&app,json!({"type":"create","request_id":"main","config":listen_config(100e6)})).await;
+        let old_uid=first["snapshot"]["receivers"][0]["receiver_uid"].clone();
+        let mut config=listen_config(100_010_000.0);
+        config["processors"][0]["mode"]=json!("usb");
+        config["processors"][0]["bandwidth_hz"]=json!(2700);
+        config["baseband"]["passband_hz"]=json!(5400);
+        config["baseband"]["minimum_rate_hz"]=json!(7400);
+        let second=run(&app,json!({"type":"create","request_id":"saved","config":config})).await;
+        assert!(second["fault"].is_null(),"{second}");
+        let saved=second["snapshot"]["receivers"][1].clone();
+        let before=app.state.lock().unwrap().channel_configs()[1].clone();
+        let retired=run(&app,json!({"type":"retire","request_id":"remove-main","receiver_uid":old_uid})).await;
+        assert!(retired["fault"].is_null(),"{retired}");
+        let mut state=app.state.lock().unwrap();
+        dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"channel":1,"enabled":true,"freq":100_005_000.0})).unwrap();
+        dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"channel":1,"enabled":true,"mode":"usb","ifbw":2400})).unwrap();
+        let snapshot=state.receiver_snapshot();
+        assert_eq!(snapshot["receivers"].as_array().unwrap().len(),2);
+        assert_ne!(snapshot["receivers"][0]["receiver_uid"],old_uid);
+        assert_eq!(state.channel_configs()[1],before);
+        for field in ["receiver_uid","revision","confirmed","stream"] {
+            assert_eq!(snapshot["receivers"][1][field],saved[field],"{field}");
+        }
     }
 
     #[tokio::test]

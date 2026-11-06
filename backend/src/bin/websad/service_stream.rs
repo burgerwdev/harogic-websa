@@ -6,7 +6,7 @@ pub(super) struct DecodeSnapshots { channels:BTreeMap<u32,DecodeSnapshot> }
 struct DecodeSnapshot { envelope:Value, serial:String, width:u32, height:u32, lines:u32, rgb:Vec<u8>, meta:Value, fax:Option<FaxChannel> }
 const FAX_ROWS:u32=64;
 const FAX_MAX_LINES:u32=2400;
-const FAX_BYTE_LIMIT:usize=20*1024*1024;
+const FAX_BYTE_LIMIT:usize=FAX_SNAPSHOT_BYTES_PER_CHANNEL;
 struct FaxChannel { segments:Vec<FaxSegment>, state:Option<Value> }
 struct FaxSegment { gray:Vec<u8>, revision:u32, meta:Value, width:u32, transmission:String, index:u32 }
 #[derive(serde::Deserialize)]

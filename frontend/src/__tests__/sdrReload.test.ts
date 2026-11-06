@@ -858,6 +858,42 @@ describe('SDR entry and reload', () => {
 		worker.onmessage!({ data: { type: 'connected' } });
 		expect(sdrIqStats().pipelineReady).toBe(false);
 	});
+	it.each(['receiver', 'subscription'])('recovers a %s failure on a healthy processing generation without changing IQ identity', async kind => {
+		class Receiver {
+			static instances: Receiver[] = [];
+			onmessage: ((event: { data: Record<string, unknown> }) => void) | null = null;
+			onerror = null;
+			postMessage = vi.fn(); terminate = vi.fn();
+			constructor() { Receiver.instances.push(this); }
+		}
+		vi.stubGlobal('Worker', Receiver);
+		await load();
+		const { sdrIqStats } = await import('../sdr/iqStream');
+		const snapshot = (generation: string, state = 'active') => ({ ...status('sdr'),
+			actual: { channel_registry: [{ channel: 1, channel_id: 17, epoch: 9, state: 'active' }] },
+			sdr: { ...status('sdr').sdr, receiver_error: null, channels: [{ channel: 1, enabled: true, processing_enabled: true,
+				freq: 1e9, mode: 'am', control: { service_id: 'service', receiver_uid: 'uid-c1' },
+				processing_runtime: { processing_generation: generation, state, fault: null } }] } });
+		receive(snapshot('4'));
+		const old = Receiver.instances.at(-1)!;
+		const count = Receiver.instances.length;
+		// A UID audio socket must never latch every receiver as failed.
+		document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', {
+			detail: { stream: 'audio', channel: 'uid-c2', message: 'Backend audio receiver failed' } }));
+		expect(sdrIqStats().receiverFailed).toBe(false);
+		expect(old.terminate).not.toHaveBeenCalled();
+		if (kind === 'receiver') receive({ cmd: 'RECEIVER_ERROR', error: 'queue full', failed: true, scope: 'all_receivers' });
+		else old.onmessage!({ data: { type: 'error', message: 'Decoded-output source stream invalid' } });
+		expect(old.terminate).toHaveBeenCalledOnce();
+		receive(snapshot('4')); receive(snapshot('5', 'failed'));
+		expect(Receiver.instances).toHaveLength(count);
+		receive(snapshot('5'));
+		expect(Receiver.instances).toHaveLength(count + 1);
+		expect(sdrIqStats().receiverFailed).toBe(false);
+		old.onmessage!({ data: { type: 'error', message: 'stale callback' } });
+		expect(sdrIqStats().lastError).toBe('');
+	});
+
 	it('keeps a crashed decode worker stopped until fresh healthy receiver identity arrives', async () => {
 		class Receiver {
 			static instances: Receiver[] = [];

@@ -1,9 +1,10 @@
+import { occupiedBandwidth } from '../core/receiverBandwidth';
 import { copyModeControls, modeControlKeys } from '../core/receiverControls';
 import { getLang, onLangChange } from '../core/i18n';
 import { clone, receiverHasAudio, type ReceiverConfig, type ReceiverState } from '../core/multichannel';
 import { formatFreqHz } from '../core/fmt';
 import { currentSdrChannel } from './sdrChannels';
-import { demodBandHz, sdrAgc, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSquelch, sdrVolume } from './sdrState';
+import { sdrAgc, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSquelch, sdrVolume } from './sdrState';
 import { sdrAmSync, sdrDeemph, sdrSstvMode, sdrRadiofaxAcquisition, sdrRadiofaxIoc, sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPolarity, sdrRadiofaxClockRecovery, sdrRadiofaxPhasePixels, sdrRadiofaxClockPpm } from './sdrState';
 import type { WorkbenchSession } from './workbenchSession';
 
@@ -12,8 +13,7 @@ export function currentChannelConfig(session: WorkbenchSession): ReceiverConfig 
   const mode = sdrDemod.get(), bandwidth = sdrIfbw.get(), hz = sdrListenHz.get();
   const descriptor = session.snapshot.capabilities.mode_descriptors?.find(m => m.id === mode);
   if (!descriptor?.available) throw new Error(l('This mode is unavailable.', '当前解调模式不可用。'));
-  const [lo, hi] = demodBandHz(mode, bandwidth, sdrPitchHz.get());
-  const passband = Math.max(Math.abs(lo), Math.abs(hi)) * 2, transition = 1000;
+  const passband = occupiedBandwidth(descriptor, bandwidth, sdrPitchHz.get()), transition = 1000;
   return { name: `${formatFreqHz(hz)} · ${descriptor.label}`, color: '#e6b95c', tags: [], enabled: true,
     purpose: descriptor.kind === 'analog' ? 'listen' : 'digital',
     baseband: { frequency_hz: hz, passband_hz: passband, transition_hz: transition,

@@ -65,8 +65,9 @@ mod service_preflight;
 mod eight_channel_tests;
 #[path = "websad/server_mode.rs"]
 mod server_mode;
-/// Product receiver capacity, independent of coarse frequency bins and recording slots.
-const MAX_CHANNELS: usize = 8;
+#[path = "websad/receiver_limits.rs"]
+mod receiver_limits;
+use receiver_limits::*;
 fn channel_identities() -> Arc<[AtomicU64]> {
     (0..MAX_CHANNELS).map(|_| AtomicU64::new(0)).collect()
 }
@@ -180,18 +181,12 @@ impl Outbound {
     }
 }
 
-// Three retained 20 MiB channels, base64 encoded, plus envelope overhead. This
-// reservation covers queued and currently sending batches; a separate 4 MiB
-// credit budget bounds sent frames awaiting application ACKs. Frame count never
-// consumes FIFO slots.
-const DECODE_PENDING_BYTE_LIMIT: u64 = 3 * (20 * 1024 * 1024u64).div_ceil(3) * 4 + 4 * 1024 * 1024;
-
 #[derive(Debug)]
 struct DecodeReservation { pending: Arc<AtomicU64>, bytes: u64 }
 impl DecodeReservation {
     fn iq(pending:&Arc<AtomicU64>,bytes:u64)->Option<Self> {
         pending.try_update(Ordering::AcqRel,Ordering::Acquire,|used|
-            used.checked_add(bytes).filter(|&total|total<=4*1024*1024)).ok()?;
+            used.checked_add(bytes).filter(|&total|total<=IQ_PENDING_BYTES)).ok()?;
         Some(Self {pending:pending.clone(),bytes})
     }
     fn acquire(pending: &Arc<AtomicU64>, bytes: u64) -> Option<Self> {
@@ -4414,11 +4409,6 @@ fn enqueue(client: &Client, packet: Outbound) {
 
 type WsSink = futures_util::stream::SplitSink<WebSocket, Message>;
 
-const SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const DECODE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
-
-const DECODE_ACK_WINDOW: usize = 16;
-const DECODE_ACK_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq)]
 struct DecodeApplied { channel: u32, channel_id: u32, epoch: u32, seq: u32 }
@@ -5002,8 +4992,8 @@ fn load_golden() -> (Value, Value) {
     }
     let mut channel = schema["commands"]["SET_SDR_DEMOD"].clone();
     channel["params"].as_array_mut().unwrap().push(json!({
-        "name": "channel", "type": "integer", "choices": [1, 2, 3], "default": 1,
-        "min": 1, "max": 3, "required": false, "unit": ""
+        "name": "channel", "type": "integer", "choices": (1..=MAX_CHANNELS).collect::<Vec<_>>(), "default": 1,
+        "min": 1, "max": MAX_CHANNELS, "required": false, "unit": ""
     }));
     schema["commands"]["SET_SDR_CHANNEL"] = channel;
     (serde_json::from_str(STATE).expect("embedded golden state JSON"), schema)
@@ -6824,7 +6814,7 @@ mod tests {
         let mut output=receiver_workers::ReceiverFrames::default();
         // Almost 20 MiB of gray per channel: five retained segments, 184 image
         // chunks per channel. One synchronous delivery exceeds both old limits.
-        for channel in 1..=3 {
+        for channel in 1..=MAX_CHANNELS as u32 {
             output.decode.push(frame(channel,0,json!({"type":"start"})));
             let mut seq=0;
             for (segment,lines) in [2400u32,2400,2400,2400,1986].into_iter().enumerate() {
@@ -6846,18 +6836,18 @@ mod tests {
         let count=output.decode.len();
         assert!(count>64);
         let wire_bytes:usize=output.decode.iter().map(Vec::len).sum();
-        assert!(wire_bytes>3*4*1024*1024);
+        assert!(wire_bytes>MAX_CHANNELS*DECODE_ACK_BYTES);
         assert!((wire_bytes as u64)<DECODE_PENDING_BYTE_LIMIT);
         {
             let state=app.state.lock().unwrap();
             service_stream::deliver_receiver(&state,&app,output,false);
             let mut following=receiver_workers::ReceiverFrames::default();
-            for channel in 1..=3 {following.decode.push(frame(channel,185,json!({"type":"radiofax-state"})));}
+            for channel in 1..=MAX_CHANNELS as u32 {following.decode.push(frame(channel,185,json!({"type":"radiofax-state"})));}
             service_stream::deliver_receiver(&state,&app,following,false);
         }
-        let mut sequences=[0u32;3];
+        let mut sequences=[0u32;MAX_CHANNELS];
         let mut total=0;
-        for index in 0..count+3 {
+        for index in 0..count+MAX_CHANNELS {
             let bytes=next_binary(&mut paced).await;
             let event:Value=serde_json::from_slice(&bytes[8..]).unwrap();
             let channel=event["channel"].as_u64().unwrap() as usize;
@@ -6876,7 +6866,7 @@ mod tests {
             total+=bytes.len();
             paced.send(WsMessage::Text(json!({"type":"ack","channel":channel,"channel_id":channel+10,"epoch":7,"seq":seq}).to_string().into())).await.unwrap();
         }
-        assert_eq!(sequences,[186;3]);
+        assert_eq!(sequences,[186;MAX_CHANNELS]);
         assert!(total>=wire_bytes);
         expect_silence(&mut paced,Duration::from_millis(20)).await;
         for client in app.clients.lock().iter() {

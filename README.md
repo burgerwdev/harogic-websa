@@ -36,7 +36,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
 - **SDR receiver** — IQ streaming with native Rust DSP: AM/DSB/USB/LSB/CW/NFM/WFM/PM
   demodulators, noise reduction (Wiener, DeepFilterNet3, GTCRN, UL_UNAS, FastEnhancer), audio chain, panadapter and
   waterfall; the browser handles control, playback and display
-- **Eight-channel workbench** — independent tuning and modes in one capture, main-panel selection, local mixing and eight service-wide recording tasks. Ordinary narrowband reception includes the 50 MHz capture window; model choices are independent; actual overload is reported per receiver with bounded queues and explicit retry. This per-receiver isolation build passed thirty minutes of ordinary RF reception, eleven minutes of mixed RF reception, and more than ten minutes of eight-task recording at 50 MHz on the tested host; see [known issues](docs/en/KNOWN_ISSUES.md).
+- **Eight-channel workbench** — independent tuning and modes in one capture, main-panel selection, local mixing and eight service-wide recording tasks. Ordinary narrowband reception includes the 50 MHz capture window; model choices are independent; actual overload is reported per receiver with bounded queues and explicit retry. Earlier per-receiver isolation builds recorded thirty minutes of ordinary RF reception, eleven minutes of mixed RF reception, and more than ten minutes of eight-task recording at 50 MHz on the tested host; these results apply to those recorded builds; see [known issues](docs/en/KNOWN_ISSUES.md).
 - **SDR filter** — per-mode presets and exact Hz/kHz/MHz entry. Drag the spectrum passband edges
   to adjust bandwidth, or its top frequency handle to tune. View focuses the passband for fine adjustment.
 - **Digital modes** — FT8 decoding, CW decoding, DRM/DRM+ reception, SSTV picture decoding (18 modes) and HF radiofax reception. Radiofax uses a 12 kHz USB path, IOC 288/576, 60/90/120/240 LPM, continuous pages and PNG export. The FT8 window supports QSO highlighting, regex filtering and column sorting. Current decoder and playback limits are documented in [KNOWN_ISSUES](docs/en/KNOWN_ISSUES.md).
@@ -140,7 +140,9 @@ It starts an ordinary background process with `nohup` and, when available, `sets
 session is needed. `--instance NAME` or `WEBSA_INSTANCE` selects a checkout-scoped instance
 (default `websad`), replacing the former `--unit` / `WEBSA_UNIT` interface. `./stop.sh` validates
 the recorded PID, start time, executable and working directory before signalling it; repeated stops succeed.
-`./status.sh` uses the recorded host/port and prints the PID, log path and HTTP state.
+`./status.sh` uses the recorded host/port and prints the PID, log path, HTTP health and a concise
+device/frequency/decoder summary (Python 3, when available). `--quiet` prints nothing and preserves
+the process/HTTP health exit status for scripts; full JSON diagnostics remain at `/api/state`.
 Private state and append-only logs live below `$XDG_RUNTIME_DIR/harogic-websa` when available,
 otherwise `${XDG_STATE_HOME:-$HOME/.local/state}/harogic-websa`, separated by checkout and instance.
 There is no automatic process restart; use `make restart` after a process failure.

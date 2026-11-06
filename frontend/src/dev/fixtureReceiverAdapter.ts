@@ -2,9 +2,13 @@ import { clone, type ReceiverAdapter, type ReceiverConfig, type ServiceSnapshot,
   type ConfigureCommand, type SceneCommand, type Impact, type Fault, type CommandReply,
   type RecordingTask, type TaskState, type ReceiverState, type TrackKind } from '../core/multichannel';
 
+// Demo seed count is independent of native capacity, which comes from the service.
+const DEMO_PURPOSES = ['listen', 'digital', 'iq'] as const;
+const DEMO_COLORS = ['#72dd91', '#e8cd72', '#76c9ed'];
+
 export function fixtureConfig(purpose: ReceiverConfig['purpose'], number = 1): ReceiverConfig {
   return { name: ['本地守听', '台站 A', '未知信号'][number - 1] ?? `Channel ${number}`,
-    color: ['#72dd91', '#e8cd72', '#76c9ed'][(number - 1) % 3], tags: [], enabled: true, purpose,
+    color: DEMO_COLORS[(number - 1) % DEMO_COLORS.length], tags: [], enabled: true, purpose,
     baseband: { frequency_hz: [7_100_000, 7_074_000, 7_150_000][number - 1] ?? 7_120_000,
       passband_hz: purpose === 'listen' ? 12_500 : purpose === 'digital' ? 6_400 : 3_000, transition_hz: 1_000, minimum_rate_hz: purpose === 'digital' ? 8_000 : 6_000 },
     processors: purpose === 'iq' ? [] : [{ id: `processor-${number}`,
@@ -22,12 +26,12 @@ function fixtureRate(config: ReceiverConfig): number {
   }
   return NaN;
 }
-export function fixtureSnapshot(maxChannels = 3): ServiceSnapshot {
+export function fixtureSnapshot(maxChannels: number = DEMO_PURPOSES.length): ServiceSnapshot {
   return { contract: 'multichannel-draft-v1', transport: 'fixture', revision: '1',
     capabilities: { max_channels: maxChannels, capacity_target: 128, modes: ['nfm', 'am', 'usb', 'ft8'] },
     capture: { source_id: 'fixture-rf', center_hz: 7_100_000, usable_bandwidth_hz: 250_000,
       input_rate_hz: 976_562.5, epoch: '1', state: 'running' },
-    receivers: (['listen', 'digital', 'iq'] as const).map((purpose, i) => ({
+    receivers: DEMO_PURPOSES.slice(0, maxChannels).map((purpose, i) => ({
       receiver_uid: `fixture-c${i + 1}`, source_id: 'fixture-rf', display_number: i + 1, revision: '1',
       confirmed: fixtureConfig(purpose, i + 1), state: 'running', fault: null,
       stream: { source_id: 'fixture-rf', epoch: '1', channel_id: String(i + 1) },
@@ -45,7 +49,7 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
   private rejectNext = false;
   private delayNext = false;
   private disposed = false;
-  constructor(maxChannels = 3, private latency = 180) { this.state = fixtureSnapshot(maxChannels); }
+  constructor(maxChannels: number = DEMO_PURPOSES.length, private latency = 180) { this.state = fixtureSnapshot(maxChannels); }
   snapshot(): ServiceSnapshot { return clone(this.state); }
   subscribe(listener: (state: ServiceSnapshot) => void): () => void {
     this.listeners.add(listener); return () => this.listeners.delete(listener);
@@ -194,7 +198,7 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
       this.state.receivers = this.state.receivers.filter(r => r.receiver_uid !== command.receiver_uid);
       this.state.outputs = this.state.outputs.filter(o => o.receiver_uid !== command.receiver_uid);
     } else if (command.type === 'create') {
-      if (this.state.receivers.length >= this.state.capabilities.max_channels) return fault('LIMIT', 'Fixture runtime limit reached (3); 128 is a validation target');
+      if (this.state.receivers.length >= this.state.capabilities.max_channels) return fault('LIMIT', `Fixture runtime limit reached (${this.state.capabilities.max_channels}); ${this.state.capabilities.capacity_target} is a validation target`);
       const id = this.nextId;
       const r = clone(fixtureSnapshot().receivers[2]); r.receiver_uid = `fixture-c${id}`;
       r.display_number = id; r.confirmed = clone(command.config); r.stream!.channel_id = String(id);

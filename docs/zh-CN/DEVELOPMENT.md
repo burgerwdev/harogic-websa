@@ -1,5 +1,7 @@
 # 开发指南
 
+信道容量由 `backend/src/bin/websad/receiver_limits.rs` 定义；接口 schema、槽位准入、执行线程／订阅游标数和聚合快照预算均从它派生。浏览器与工具读取服务能力或公布的信道表。旧 AUX/DDC 命令有意仅保留 2／3 槽，不能当作通用信道上限。`contracts/stream-limits.json` 是 Rust／浏览器共用的 SDE2 大小与 ACK 额度契约：Cargo 生成 Rust 常量，Vite 直接导入 JSON。源码分发须包含此文件，`make build` 无需额外生成步骤。后台处理恢复策略归属 `reception_recovery.rs`，浏览器订阅重试／缓冲策略归属 `frontend/src/sdr/streamLimits.ts`；录制名额、DSP 队列预算及 AudioWorklet 延迟目标分别独立设限。容量回归覆盖最后一个合法槽、全部信道图像快照交付与交错解码游标。
+
 工作台音频录制按钮旁提供可记忆的 WAV／FLAC／Opus 菜单，悬停显示简短选择建议；已有录音也可切换下载格式。WAV 保留原始 Float32，FLAC 无损保存量化后的 24 位 PCM，Opus 适合长时间录音和分享。Opus 需服务器安装含 `libopus` 的 FFmpeg，不可用选项会明确提示原因。顶部“结果窗口”旁的“录制文件”统一管理全部信道和历史录制，提供搜索、类型／状态筛选、试听／下载、重命名及单项／批量确认删除；全选仅包含当前筛选列表中已结束的录制，文件与所选合计大小按 B／KB／MB／GB／TB 友好显示。旧服务的删除入口保持可见并说明需更新服务；保留原始录制以便转出其他格式。门禁：构建前后端后执行 `python tools/e2e/native_recording_library.py --artifacts /tmp/websa-recording-library`，独立解码三个 Opus 源片段（含 11025 Hz 和单样本边界），检查真实浏览器格式选择、下载、窄窗口，以及重命名／删除跨服务重启的持久性。
 
 实收准备可运行 `python tools/bench/sdr_capture_observe.py --origin http://127.0.0.1:8080 --expect-service-id <当前服务ID> --seconds 300 --artifacts <新目录>`，先 GET `/api/sdr/receivers` 核对身份。工具只发 GET，拒绝服务身份变化与已有证据目录，保存源时钟／样本推进／告警／录制／负载，不打开 WebSocket 或启动采集；须另有已授权的浏览器／录制消费者。报告仅为观察证据，连接正常或计数前进均不单独证明 RF 接收或物理听感。

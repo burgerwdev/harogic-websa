@@ -1,3 +1,4 @@
+import { workbenchIcon } from './workbenchIcons';
 import { getLang } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { createSurfacePortal, type SurfacePortal } from './surfacePortal';
@@ -15,7 +16,7 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   const doc = document, parent = window;
   const root = doc.createElement('section'); root.className = 'mc-window'; root.dataset.viewId = id;
   root.setAttribute('role', 'dialog'); root.tabIndex = -1;
-  root.innerHTML = '<header class="mc-head"><strong></strong><button data-collapse>−</button><button data-pop>Pop out</button><button data-dock hidden>Dock</button><button data-close>×</button></header><p data-popup-error role="alert" hidden></p><div class="mc-body"></div>';
+  root.innerHTML = '<header class="mc-head"><strong></strong><div class="mc-window-actions"><button data-collapse>−</button><button data-pop>Pop out</button><button data-dock hidden>Dock</button><button data-close>×</button></div></header><p data-popup-error role="alert" hidden></p><div class="mc-body"></div>';
   const head = root.querySelector<HTMLElement>('.mc-head')!, body = root.querySelector<HTMLElement>('.mc-body')!;
   const key = `websa-workbench-layout:${id}`;
   let layout: FloatingLayout = { geometry: { ...initial }, hidden: false, collapsed: false };
@@ -25,20 +26,28 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   } catch { /* disabled or invalid storage */ }
   const save = (): void => { try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* session only */ } };
   const clamp = (g: Geometry): Geometry => {
-    const bounded = clampFloatingGeometry(g, parent, { w: 300, h: 160 });
+    const bounded = clampFloatingGeometry(g, parent, { w: 300 * getUiScale(), h: 160 });
     // Keep the close/Dock controls reachable after shrinking the host viewport.
     bounded.x = Math.min(bounded.x, Math.max(0, parent.innerWidth - bounded.w));
-    bounded.y = Math.min(bounded.y, Math.max(0, parent.innerHeight - bounded.h));
+    const height = layout.collapsed ? root.getBoundingClientRect().height : bounded.h;
+    bounded.y = Math.min(Math.max(0, g.y), Math.max(0, parent.innerHeight - height));
     return bounded;
   };
   const apply = (): void => {
     root.style.zoom = String(getUiScale());
+    root.classList.toggle('mc-collapsed', layout.collapsed); body.hidden = layout.collapsed;
+    root.hidden = layout.hidden;
     if (!portal.isPoppedOut()) {
+      // Measure the collapsed strip at its new width/scale, preserving the
+      // expanded height solely for the next expansion.
+      if (layout.collapsed) {
+        root.style.width = `${clampFloatingGeometry(layout.geometry, parent, { w: 300 * getUiScale(), h: 160 }).w / getUiScale()}px`;
+        root.style.height = 'auto';
+      }
       layout.geometry = clamp(layout.geometry); const g = layout.geometry, s = getUiScale();
       applyFloatingGeometry(root, g, s);
       if (layout.collapsed) root.style.height = 'auto';
     }
-    root.classList.toggle('mc-collapsed', layout.collapsed); body.hidden = layout.collapsed;
     root.hidden = layout.hidden; root.setAttribute('aria-label', title());
     head.querySelector('strong')!.textContent = title();
     const zh = getLang() === 'zh';
@@ -47,7 +56,9 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
       ['[data-pop]', zh ? '弹出' : 'Pop out', zh ? '移到独立桌面窗口；接收和录制继续' : 'Move this view to a separate desktop window'],
       ['[data-dock]', zh ? '停靠' : 'Dock', zh ? '将此视图移回页面内' : 'Return this view to the main page'],
       ['[data-close]', '×', zh ? '隐藏此窗口；接收和录制继续' : 'Hide this view; reception and recording continue'],
-    ]) { const control = head.querySelector<HTMLButtonElement>(selector)!; control.textContent = text; control.title = tip; control.setAttribute('aria-label', tip); }
+    ]) { const control = head.querySelector<HTMLButtonElement>(selector)!; const symbol = selector === '[data-pop]' ? 'external' : selector === '[data-dock]' ? 'dock'
+      : selector === '[data-close]' ? 'close' : layout.collapsed ? 'expand' : 'minus';
+      control.innerHTML = `${workbenchIcon(symbol)}<span>${text}</span>`; control.title = tip; control.setAttribute('aria-label', tip); }
   };
   let gesture: { start: Geometry; px: number; py: number; direction: string } | null = null;
   const portal = createSurfacePortal(root, { title, beforeMove: () => { gesture = null; },
@@ -66,7 +77,7 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   });
   const wire = (handle: HTMLElement, direction: string): void => {
     handle.addEventListener('pointerdown', event => {
-      if (portal.isPoppedOut() || (event.target as HTMLElement).closest('button,input,select')) return;
+      if (portal.isPoppedOut() || (event.target as HTMLElement).closest('button,input,select,[data-no-drag]')) return;
       gesture = { start: { ...layout.geometry }, px: event.clientX, py: event.clientY, direction };
       try { handle.setPointerCapture(event.pointerId); } catch { /* synthetic pointer */ }
       event.preventDefault();
@@ -77,12 +88,12 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
       const dx = event.clientX - px, dy = event.clientY - py; const next = { ...g };
       if (d === 'move') { next.x += dx; next.y += dy; }
       else {
-        if (d.includes('e')) next.w = Math.max(300, g.w + dx);
+        if (d.includes('e')) next.w = Math.max(300 * getUiScale(), g.w + dx);
         if (d.includes('s')) next.h = Math.max(160, g.h + dy);
-        if (d.includes('w')) { next.w = Math.max(300, g.w - dx); next.x = g.x + g.w - next.w; }
+        if (d.includes('w')) { next.w = Math.max(300 * getUiScale(), g.w - dx); next.x = g.x + g.w - next.w; }
         if (d.includes('n')) { next.h = Math.max(160, g.h - dy); next.y = g.y + g.h - next.h; }
       }
-      layout.geometry = clamp(next); apply();
+      layout.geometry = next; apply();
     });
     const stop = (): void => { gesture = null; save(); };
     handle.addEventListener('pointerup', stop); handle.addEventListener('pointercancel', stop);
@@ -91,11 +102,17 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   wire(head, 'move');
   for (const d of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) {
     const h = doc.createElement('i'); h.dataset.resize = d; h.className = `mc-resize mc-resize-${d}`;
+    if (d === 'e' || d === 'w') h.title = getLang() === 'zh' ? '拖动调整窗口宽度' : 'Drag to resize window width';
     root.appendChild(h); wire(h, d);
   }
   const resize = (): void => { apply(); save(); };
+  // Text rows, localization and width changes can change the strip height.
+  const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+    if (layout.collapsed && !layout.hidden && !portal.isPoppedOut()) resize();
+  });
+  observer?.observe(root);
   parent.addEventListener('resize', resize); doc.body.appendChild(root); apply(); front();
   return { root, body, portal, show, hide, sync: () => portal.sync(),
     recall: (reset = false) => { portal.dock(); if (reset) { layout.geometry = { ...initial }; layout.collapsed = false; } show(); },
-    dispose: () => { portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
+    dispose: () => { observer?.disconnect(); portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
 }

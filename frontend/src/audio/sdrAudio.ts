@@ -1,3 +1,4 @@
+import { AUDIO_QUEUE_SECONDS } from '../sdr/streamLimits';
 import { isChannelNumber } from '../core/channelState';
 // Backend AUD2 playback: each channel has one ingress worker and one output node.
 let ctx: AudioContext | null = null;
@@ -175,7 +176,7 @@ class AudioChain {
   private fail(message: string): void {
     if (message === 'Backend audio receiver failed') {
       this.setReceiverError(message);
-      document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'audio', message } }));
+      document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'audio', channel: this.channel, message } }));
       return;
     }
     this.error = message;
@@ -240,7 +241,7 @@ class AudioChain {
     this.debug();
   }
   private legacy(context: AudioContext): void {
-    this.ring = new Float32Array(Math.ceil(context.sampleRate * 3) * 2);
+    this.ring = new Float32Array(Math.ceil(context.sampleRate * AUDIO_QUEUE_SECONDS) * 2);
     const node = context.createScriptProcessor(2048, 0, 2);
     node.onaudioprocess = (event: AudioProcessingEvent) => {
       const left = event.outputBuffer.getChannelData(0);
@@ -269,7 +270,7 @@ class AudioChain {
       const channels = data.stereo ? 2 : 1;
       const samples = data.samples;
       if (channels !== this.channels) { this.clearRing(); this.channels = channels; }
-      if (this.available + samples.length > ctx!.sampleRate * 3 * channels) {
+      if (this.available + samples.length > ctx!.sampleRate * AUDIO_QUEUE_SECONDS * channels) {
         this.fail('Audio consumer is too slow: compatibility queue exceeded three seconds');
         return;
       }

@@ -52,10 +52,11 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
     session.monitor(receiver.receiver_uid, { enabled: true });
   });
   const decoders = new Map<string, { worker: Worker; service: string | undefined }>();
+  const processingSources = new Map<string, string>();
   const errors = new Map<string, string>();
   const audioKeys = new Map<string, string>();
   let service = session.snapshot.service_id;
-  const stopDecoder = (uid: string): void => { decoders.get(uid)?.worker.terminate(); decoders.delete(uid); };
+  const stopDecoder = (uid: string): void => { decoders.get(uid)?.worker.terminate(); decoders.delete(uid); processingSources.delete(uid); };
   const sync = (): void => {
     const snapshot = session.snapshot;
     if (pendingMainMonitor) {
@@ -101,6 +102,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
           try {
             for (const envelope of message.envelopes as DecodeEnvelope[]) {
               if (envelope.receiver_uid !== uid || envelope.service_id !== owner.service || envelope.channel !== receiver.display_number) throw new Error('Decoded output logical source mismatch');
+              processingSources.set(uid, `${envelope.epoch}:${envelope.channel_id}`);
               const previous = decoderLog(uid).entries[0];
               consumeReceiverResult(uid, envelope);
               if (envelope.event.type !== 'start' && decoderLog(uid).entries[0] !== previous) annotateDecoderResult(uid, { input_index: envelope.input_index, input_rate: envelope.input_rate,
@@ -110,6 +112,8 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
             // Decoding updates the retained log immediately. Views can coalesce paint
             // without re-running every receiver's controls and speaker routing.
             acknowledgeDecoderLog(uid); worker.postMessage({ type: 'ack' }); session.notifyResults(uid);
+            // A fresh validated delivery confirms this subscription recovered.
+            if (errors.delete(uid)) session.notify();
           } catch (error) { fail(String(error)); }
         } else if (message.type === 'error') fail(message.message);
         else if (message.type === 'closed') {
@@ -120,7 +124,8 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
           } else errors.set(uid, message.message);
           session.notify();
         }
-        else if (message.type === 'connected') { errors.delete(uid); session.notify(); }
+        // A socket opening does not yet prove that decoding has resumed.
+        else if (message.type === 'connected') { session.notify(); }
       };
       worker.onerror = event => fail(event.message || 'Decoder worker failed');
       const url = new URL('/ws/decode', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -129,7 +134,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   };
   const unsubscribe = session.subscribe(sync); sync();
   return {
-    results: (uid: string) => session.snapshot.receivers.some(r => r.receiver_uid === uid) ? decoderLog(uid) : { entries: [], evicted: 0 },
+    results: (uid: string) => ({ ...(session.snapshot.receivers.some(r => r.receiver_uid === uid) ? decoderLog(uid) : { entries: [], evicted: 0 }), source: processingSources.get(uid) ?? null }),
     playback: (uid: string) => getSdrAudioStatus().find(row => row.channel === uid),
     status: (uid: string): string => errors.get(uid) ?? String(getSdrAudioStatus().find(row => row.channel === uid)?.error ?? ''),
     retry(uid: string): void { errors.delete(uid); stopDecoder(uid); audioKeys.delete(uid); forgetNativeAudio(uid); sync(); session.notify(); },
@@ -143,8 +148,14 @@ export function consumeReceiverResult(uid: string, envelope: DecodeEnvelope): vo
   const event = envelope.event, source = `${envelope.epoch}:${envelope.channel_id}`;
   const result = (kind: 'text' | 'table' | 'status', data: unknown): void => addDecoderResult({ provider: 'native', mode: envelope.mode, kind, data }, source, uid);
   if (event.type === 'start') { clearDecoderStatuses(uid); clearGpsSnapshots(uid); endDecoderRasters(uid); return; }
+  if (event.type === 'processing-end') {
+    clearDecoderStatuses(uid); clearGpsSnapshots(uid); endDecoderRasters(uid); return;
+  }
   if (event.type === 'decoder-result') {
-    addDecoderResult({ provider: event.provider!, mode: envelope.mode, kind: event.kind!, data: event.data }, source, uid); return;
+    const rttyState = ['rtty', 'rtty-reverse'].includes(envelope.mode) && event.kind === 'table'
+      && event.data && typeof event.data === 'object' && !Array.isArray(event.data) && 'state' in event.data;
+    addDecoderResult({ provider: event.provider!, mode: envelope.mode, kind: rttyState ? 'status' : event.kind!,
+      data: rttyState ? { ...event.data as object, type: 'rtty-state' } : event.data }, source, uid); return;
   }
   if (event.type === 'sstv-image' || event.type === 'radiofax-image') {
     const { width: w, row, rows } = event;
@@ -169,9 +180,18 @@ export function consumeReceiverResult(uid: string, envelope: DecodeEnvelope): vo
     result('status', { ...event, type: 'cw-level', text: undefined });
     annotateDecoderResult(uid, { input_index: envelope.input_index, input_rate: envelope.input_rate, fraction_num: envelope.input_fraction_num,
       fraction_den: envelope.input_fraction_den, delay_seconds: envelope.delay_seconds, delay_known: envelope.delay_known, causal_presentation: envelope.causal_presentation });
-    if (event.text) result('text', event.text + (event.endsLine ? '\n' : ''));
+    if (event.text || event.endsLine) result('text', { text: (event.text ?? '') + (event.endsLine ? '\n' : ''), endsLine: event.endsLine === true, share: event.share });
   }
-  else if (event.type === 'drm') result('status', { ...event, input_index: envelope.input_index });
+  else if (event.type === 'drm' || event.type === 'drm-constellation') {
+    // Both messages describe one live receiver. Keep the plot and heartbeat metadata
+    // together, scoped to this UID and stream, instead of discarding the constellation.
+    const previous = decoderLog(uid).entries.find(entry => entry.source === source && entry.mode === envelope.mode
+      && entry.kind === 'status' && (entry.data as { type?: string })?.type === 'drm')?.data as Record<string, unknown> | undefined;
+    const lines = Array.isArray(event.lines) && event.lines.length ? event.lines : previous?.lines ?? [];
+    result('status', { ...previous, ...event, type: 'drm', lines,
+      snrDb: Number.isFinite(event.snrDb) ? event.snrDb : Array.isArray(event.lines) && event.lines.length ? null : previous?.snrDb,
+      points: event.status?.locked === false ? [] : event.points ?? previous?.points ?? [], input_index: envelope.input_index });
+  }
   else if (event.type === 'wfm-info' || event.type === 'am-info') result('status', event);
-  else if (!['drm-constellation'].includes(event.type)) result('status', event);
+  else result('status', event);
 }

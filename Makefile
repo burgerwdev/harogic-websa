@@ -132,7 +132,7 @@ bench-record:  ## Re-record the performance baseline on this host
 
 ##@ E2E
 
-e2e-fake: native  ## UI smoke against the native fixture service; production remains unchanged
+e2e-fake: build  ## UI smoke against the native fixture service; production remains unchanged
 	@bash -eu -o pipefail -c '\
 	WEBSA_FAKE_PORT=$${WEBSA_FAKE_PORT:-8099}; \
 	export WEBSA_PORT=$$WEBSA_FAKE_PORT; \

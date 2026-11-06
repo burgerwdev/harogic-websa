@@ -280,7 +280,7 @@ pub struct AudioFrameMetadata {
 }
 
 pub const AUDIO_HEADER_BYTES: usize = 96;
-pub const MAX_DECODE_EVENT_BYTES: usize = 2 * 1024 * 1024;
+pub use crate::stream_limits::MAX_DECODE_EVENT_BYTES;
 
 pub fn encode_audio(meta: AudioFrameMetadata, samples: &[f32]) -> Result<Vec<u8>, &'static str> {
     if !(1..=2).contains(&meta.channels)

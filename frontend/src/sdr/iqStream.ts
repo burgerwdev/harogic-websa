@@ -28,17 +28,29 @@ let enabled = false;
 let worker: Worker | null = null;
 let streamFailed = false;
 let streamFailedRegistry: readonly ChannelRegistryEntry[] | null = null;
+const transportErrors = new Set<number>();
 let connected = false;
 let blocks = 0;
 let lastError = '';
 let current: DecodeEnvelope | null = null;
 let failedRegistry: readonly ChannelRegistryEntry[] | null = null;
+interface ProcessingChannel {
+  channel: number; enabled: boolean; processing_enabled?: boolean;
+  control?: { service_id?: string; receiver_uid?: string };
+  processing_runtime?: { processing_generation?: string; state?: string; fault?: unknown } | null;
+}
+let processing = new Map<number, string>();
+let failedProcessing = new Map<number, string>();
 let identityChanges = 0;
 let ft8Text = '', ft8Count = 0, ft8Detail = '';
 const pictures = new Map<number, { identity: string; serial: string; width: number; height: number; rgb: Uint8Array; nextRow: number }>();
 document.addEventListener('websa:sdr-stream-error', (event) => {
   const detail = (event as CustomEvent).detail;
-  if (detail?.stream === 'audio' && detail.message === 'Backend audio receiver failed') failSdrReceiver(detail.message);
+  // A UID speaker subscription belongs to the workbench, not every legacy
+  // channel. Never turn one socket close into an all-receivers failure.
+  if (detail?.stream === 'audio' && typeof detail.channel === 'number') {
+    setDecodeError(detail.channel, detail.message, 'transport');
+  }
 });
 
 export function confirmSdrChannelRegistry(registry: readonly ChannelRegistryEntry[] | null): void {
@@ -65,25 +77,36 @@ export function failSdrReceiver(message: string): void {
     setSstvDecoderState(null, channel);
     endRadiofaxStream(channel);
   }
-  reportError(message);
+  reportError(message, 'receiver');
 }
 
-export function confirmSdrReceiverError(error: string | null | undefined): boolean {
+export function confirmSdrReceiverError(error: string | null | undefined, channels?: readonly ProcessingChannel[]): boolean {
+  const active = channels?.filter(row => row.enabled && row.processing_enabled !== false) ?? [];
+  const nextProcessing = new Map(active.filter(row => row.processing_runtime?.processing_generation)
+    .map(row => [row.channel, `${row.control?.service_id}:${row.control?.receiver_uid}:${row.processing_runtime!.processing_generation}`]));
+  const healthyProcessing = active.length > 0 && active.every(row => !row.processing_runtime?.fault
+    && ['active', 'backlogged'].includes(row.processing_runtime?.state ?? ''));
+  if (channels) processing = nextProcessing;
   if (typeof error === 'string') { failSdrReceiver(error); return false; }
+  const processingChanged = healthyProcessing && failedProcessing.size > 0
+    && [...failedProcessing].some(([channel, key]) => nextProcessing.get(channel) !== key);
+  const replacedProcessing = processingChanged && [...failedProcessing].every(([channel, key]) => nextProcessing.get(channel) !== key);
   if (error === null && streamFailed && confirmedRegistry?.some(entry => entry.state === 'active')
-      && streamFailedRegistry !== null && !streamFailedRegistry.some(old => confirmedRegistry!.some(next => next.state === 'active'
-        && old.channel_id === next.channel_id && old.epoch === next.epoch))) {
+      && (processingChanged || streamFailedRegistry !== null && !streamFailedRegistry.some(old => confirmedRegistry!.some(next => next.state === 'active'
+        && old.channel_id === next.channel_id && old.epoch === next.epoch)))) {
     streamFailed = false;
     streamFailedRegistry = null;
+    if (failedRegistry === null) failedProcessing.clear();
     lastError = '';
   }
   if (error !== null || failedRegistry === null || !confirmedRegistry?.some(entry => entry.state === 'active')) return false;
   // A healthy report for the failed identities cannot revive their latched workers.
-  if (failedRegistry.some(old => confirmedRegistry!.some(next => next.state === 'active'
+  if (!replacedProcessing && failedRegistry.some(old => confirmedRegistry!.some(next => next.state === 'active'
     && old.channel_id === next.channel_id && old.epoch === next.epoch))) return false;
   failedRegistry = null;
   streamFailed = false;
   streamFailedRegistry = null;
+  failedProcessing.clear();
   lastError = '';
   current = null;
   clearAmState();
@@ -99,13 +122,15 @@ function publishIqDebug(): void {
     + ` delay_known=${current?.delay_known ?? false} causal_presentation=${current?.causal_presentation ?? false}`
     + (lastError ? ` error=${lastError}` : '');
 }
-function reportError(message: string): void {
+function reportError(message: string, kind: 'receiver' | 'transport' | 'reconnecting' = 'transport'): void {
+  if ((streamFailed || failedRegistry !== null) && failedProcessing.size === 0) failedProcessing = new Map(processing);
   if (streamFailed && streamFailedRegistry === null) streamFailedRegistry = confirmedRegistry ?? [];
   lastError = message;
   connected = false;
   for (const channel of knownSdrChannelNumbers()) {
     clearGpsSnapshots(channel);
-    endRadiofaxStream(channel); setAmInfo(null, channel); setDecodeError(channel, message);
+    endRadiofaxStream(channel); setAmInfo(null, channel); setDecodeError(channel, message, kind);
+    if (kind !== 'receiver') transportErrors.add(channel);
   }
   console.error(`SDR decoded stream: ${message}`);
   document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'decode', message } }));
@@ -115,6 +140,7 @@ function reportError(message: string): void {
 }
 /** Drop AM sync telemetry and decode errors on every channel (unsafe badge must not outlive the stream). */
 function clearAmState(): void {
+  transportErrors.clear();
   for (const channel of knownSdrChannelNumbers()) { setAmInfo(null, channel); setDecodeError(channel, null); }
 }
 function startStream(): void {
@@ -134,14 +160,13 @@ function startStream(): void {
   };
   receiver.onmessage = (message: MessageEvent<{ type: string; envelopes?: DecodeEnvelope[]; message?: string }>) => {
     if (receiver !== worker) return;
-    if (message.data.type === 'connected') { connected = true; lastError = ''; publishIqDebug(); return; }
+    if (message.data.type === 'connected') { connected = true; publishIqDebug(); return; }
     if (message.data.type === 'error' || message.data.type === 'closed') {
       const text = message.data.message ?? 'Decoded-output stream failed';
-      if (text === 'Decoded-output receiver failed') failSdrReceiver(text);
-      else {
-        if (message.data.type === 'error') { streamFailed = true; worker = null; receiver.terminate(); }
-        reportError(text);
-      }
+      if (message.data.type === 'error') { streamFailed = true; worker = null; receiver.terminate(); }
+      // A failed aggregate subscription is not evidence that every backend
+      // receiver failed. Only the authoritative control status may latch it.
+      reportError(text, message.data.type === 'closed' ? 'reconnecting' : 'transport');
       return;
     }
     if (message.data.type !== 'frames') return;
@@ -150,12 +175,15 @@ function startStream(): void {
       if (!envelopes?.length) throw new Error('Missing validated receiver events');
       ingestDecodeEvents(() => {
         for (const envelope of envelopes) {
+          if (transportErrors.delete(envelope.channel)) setDecodeError(envelope.channel, null);
           consumeDecode(envelope);
           blocks++;
           current = envelope;
         }
       });
       receiver.postMessage({ type: 'ack' });
+      lastError = '';
+      connected = true;
       publishIqDebug();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
@@ -245,6 +273,18 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
     return;
   }
   switch (d.type) {
+    case 'processing-end':
+      // Retuning retires the old processor, not the aggregate subscription.
+      // Keep decoded history and accept the successor's ordered start marker.
+      pictures.delete(channel);
+      clearGpsSnapshots(channel);
+      endRadiofaxStream(channel);
+      setAmInfo(null, channel);
+      setWfmInfo(null, channel);
+      setCwLevel(0, false, {}, channel);
+      setFt8DecoderState(null, channel);
+      setSstvDecoderState(null, channel);
+      break;
     case 'decoder-result':
       if (!d.provider || d.mode !== envelope.mode || !d.kind || d.data === undefined) throw new Error('Invalid decoder result');
       addDecoderResult({ provider: d.provider, mode: d.mode, kind: d.kind, data: d.data }, identity, channel);
@@ -369,6 +409,7 @@ export function setSdrIqEnabled(on: boolean): void {
   else {
     streamFailed = false;
     streamFailedRegistry = null;
+    if (failedRegistry === null) failedProcessing.clear();
     worker?.postMessage({ type: 'stop' });
     worker?.terminate();
     worker = null;

@@ -4,6 +4,7 @@ import { consumeDecode } from '../sdr/iqStream';
 import { setDecodeChannelMode, decodeWindowMode } from '../ui/decodeWindow';
 import { clearDecoderLog, decoderLog } from '../sdr/decoderLog';
 import { renderDecoderResults } from '../ui/decoderResults';
+import { clearFt8Spots, ft8Spots } from '../sdr/ft8Log';
 
 function frame(overrides: Partial<DecodeEnvelope> = {}): ArrayBuffer {
   const value: DecodeEnvelope = { version: 1, channel: 1, channel_id: 17, epoch: 9, seq: 0,
@@ -22,6 +23,29 @@ function amEvent(overrides: Record<string, unknown> = {}): DecodeEnvelope['event
     ...overrides } as DecodeEnvelope['event'];
 }
 describe('native decoded stream boundaries', () => {
+  it('accepts a processing end and the successor FT8 stream without failing reception', () => {
+    clearFt8Spots(1);
+    const stream = new DecodeSequence();
+    consumeDecode(stream.accept(frame()));
+    consumeDecode(stream.accept(frame({ seq: 1, event: { type: 'cw', text: 'TAIL' } })));
+    const end = { type: 'processing-end', processing_generation: '4', drained: false,
+      tail_complete: true, processing_complete: false, reason: 'reconfigured' };
+    consumeDecode(stream.accept(frame({ seq: 2, event: end })));
+    consumeDecode(stream.accept(frame({ channel_id: 18, mode: 'ft8' })));
+    consumeDecode(stream.accept(frame({ channel_id: 18, mode: 'ft8', seq: 1, event: {
+      type: 'ft8', text: 'CQ W1ABC FN42', centerHz: 14_074_000, frequencyHz: 1234, snrDb: -10,
+    } })));
+    expect(ft8Spots()[0]).toMatchObject({ text: 'CQ W1ABC FN42', hz: 14_075_234 });
+    expect(decodeWindowMode()).toBe('ft8');
+    clearFt8Spots(1);
+  });
+  it('rejects malformed processing end boundaries', () => {
+    for (const invalid of [{ processing_generation: '-1' }, { tail_complete: 'true' }, { reason: null }]) {
+      const stream = new DecodeSequence(); stream.accept(frame());
+      expect(() => stream.accept(frame({ seq: 1, event: { type: 'processing-end', processing_generation: '4',
+        drained: false, tail_complete: true, processing_complete: false, reason: 'reconfigured', ...invalid } as DecodeEnvelope['event'] }))).toThrow();
+    }
+  });
   it('retains a retiring provider result without rolling back the confirmed pane', () => {
     clearDecoderLog(1);
     setDecodeChannelMode(1, 'am');
@@ -472,7 +496,7 @@ describe('native decoded stream boundaries', () => {
   it.each([
     ['receiver failed', 'Decoded-output receiver failed'],
     ['subscriber source stream invalid', 'Decoded-output source stream invalid'],
-  ])('stops on %s without reconnecting and permits an explicit new start', async (reason, message) => {
+  ])('retries %s at fresh subscription boundaries with a bounded budget', async (reason, message) => {
     const messages: Array<{ type: string; message?: string }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
       postMessage: (message: { type: string; message?: string }) => messages.push(message),
@@ -491,14 +515,52 @@ describe('native decoded stream boundaries', () => {
       // Worker initialization binds self; load only after installing this worker's globals.
       await import('../sdr/decodeWorker');
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
-      sockets[0].onclose!({ code: 1011, reason });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        sockets[attempt].onclose!({ code: 1011, reason });
+        expect(host.setTimeout.mock.calls.at(-1)?.[1]).toBe(1000 * 2 ** attempt);
+        host.setTimeout.mock.calls.at(-1)![0]();
+      }
+      sockets[3].onclose!({ code: 1011, reason });
       sockets[0].onmessage!({ data: frame() });
-      expect(messages).toEqual([{ type: 'error', message }]);
-      expect(host.setTimeout).not.toHaveBeenCalled();
-      expect(sockets).toHaveLength(1);
+      expect(messages.at(-1)).toEqual({ type: 'error', message });
+      expect(host.setTimeout).toHaveBeenCalledTimes(3);
+      expect(sockets).toHaveLength(4);
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
-      sockets[1].onmessage!({ data: frame() });
-      expect(messages[1].type).toBe('frames');
+      sockets[4].onmessage!({ data: frame() });
+      expect(messages.at(-1)?.type).toBe('frames');
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('keeps the decode owner alive after onerror and reconnects with an independent sequence', async () => {
+    const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message),
+      setTimeout: vi.fn(), clearTimeout: vi.fn() };
+    class Socket {
+      static instances: Socket[] = [];
+      onerror: (() => void) | null = null;
+      onclose: ((event: { code: number; reason: string }) => void) | null = null;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      constructor() { Socket.instances.push(this); }
+      close(): void {}
+    }
+    vi.resetModules(); vi.stubGlobal('self', host); vi.stubGlobal('WebSocket', Socket);
+    try {
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      const old = Socket.instances[0]; old.onmessage!({ data: frame() });
+      host.onmessage!({ data: { type: 'ack' } });
+      old.onerror!(); expect(messages.some(message => message.type === 'error')).toBe(false);
+      old.onclose!({ code: 1006, reason: '' });
+      expect(messages.at(-1)?.type).toBe('closed');
+      host.setTimeout.mock.calls.at(-1)![0]();
+      Socket.instances[1].onmessage!({ data: frame() });
+      expect(messages.at(-1)?.envelopes?.[0].seq).toBe(0);
+      const count = messages.length;
+      old.onmessage!({ data: frame({ seq: 20 }) }); old.onclose!({ code: 1011, reason: 'receiver failed' });
+      expect(messages).toHaveLength(count);
+      Socket.instances[1].onclose!({ code: 1006, reason: '' });
+      host.onmessage!({ data: { type: 'stop' } });
+      expect(host.clearTimeout).toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); }
   });
   it.each(['stop', 'error'])('clears in-flight delivery on %s and ignores the old socket callbacks', async (type) => {

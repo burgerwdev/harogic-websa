@@ -910,12 +910,16 @@ def main() -> int:
             kept = state(url)
             check("a settings change does not undo a level the user set",
                   abs(float(kept["ref"]) - low) < 1.5, f'asked {low}, device {kept["ref"]}')
+            previous_seq = int(kept["auto_ref"].get("seq", 0))
             page.click("#btn-ref-auto")
-            # Gain changes can move the trace between Ref steps; await the bounded fit.
+            # The click queues a WebSocket command. A GET can still return the
+            # preceding idle snapshot; await this decision as well as completion.
+            # Gain changes can move the trace between Ref steps during the fit.
             fixed = {}
             for _ in range(24):                     # up to 12 s
                 fixed = state(url)
-                if not fixed.get("auto_ref", {}).get("adjusting"):
+                auto = fixed.get("auto_ref", {})
+                if int(auto.get("seq", 0)) > previous_seq and not auto.get("adjusting"):
                     break
                 page.wait_for_timeout(500)
             fixed_floor = fixed["auto_ref"].get("last_noise_floor")

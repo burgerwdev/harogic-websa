@@ -1,6 +1,7 @@
 """Exercise the real fixture daemon through the portable root launchers."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -67,12 +68,72 @@ def test_fixture_lifecycle_uses_saved_endpoint_and_is_idempotent(launcher):
     status = invoke('status.sh', env=status_env)
     assert status.returncode == 0, status.stderr
     assert f'127.0.0.1:{metadata[7]}/api/state' in status.stdout
+    assert 'HTTP: healthy' in status.stdout
+    assert 'Device:' in status.stdout and 'RF: center' in status.stdout
+    assert '"actual"' not in status.stdout and '"preset_defaults"' not in status.stdout
+    assert len(status.stdout.splitlines()) <= 10
+    quiet = invoke('status.sh', '--quiet')
+    assert quiet.returncode == 0 and not quiet.stdout and not quiet.stderr
     duplicate = invoke('run.sh')
     assert duplicate.returncode != 0 and 'already running' in duplicate.stderr
     assert invoke('stop.sh').returncode == 0
     assert invoke('stop.sh').returncode == 0
     assert invoke('status.sh', '--quiet').returncode != 0
     assert invoke('run.sh').returncode == 0
+
+
+def test_status_summary_keeps_faults_and_http_health_contract(launcher, tmp_path):
+    invoke, env, _, _, _ = launcher
+    assert invoke('run.sh').returncode == 0
+    # Preserve real process/listener ownership checks, replacing only HTTP data.
+    commands = tmp_path / 'status commands'
+    commands.mkdir()
+    body = tmp_path / 'response.json'
+    curl = commands / 'curl'
+    curl.write_text('#!/bin/sh\ncat "$STATUS_RESPONSE"\nexit "${STATUS_EXIT:-0}"\n')
+    curl.chmod(0o755)
+    status_env = {**env, 'PATH': f'{commands}:{env["PATH"]}', 'STATUS_RESPONSE': str(body)}
+    body.write_text(json.dumps({
+        'connected': True, 'mode': 'sdr', 'caps': {'name': 'SAN-90'},
+        'center': 14_270_000, 'span': 781_250, 'ref': -37,
+        'sdr': {'listen': 14_275_001, 'demod': 'usb', 'if_bw': 2400},
+        'actual': {'iq_rate': 3_906_250, 'receiver_workers': {'branches': [
+            {'channel': 1, 'lifecycle': 'active', 'fault': None},
+            {'channel': 2, 'lifecycle': 'retiring', 'fault': {'error': 'sequence failure'}},
+        ]}, 'iqs_events': {'large_diagnostic': 'hidden' * 1000}},
+        'last_error': 'source timeout\nretry pending', 'status_warning': -12,
+    }))
+    result = invoke('status.sh', env=status_env)
+    assert result.returncode == 0, result.stderr
+    assert 'SAN-90 | connected | mode SDR' in result.stdout
+    assert 'center 14.27 MHz | span 781.25 kHz | ref -37.0 dBm' in result.stdout
+    assert 'listen 14.275001 MHz | USB | IF 2.4 kHz | IQ 3.90625 MS/s' in result.stdout
+    assert 'Decoders: 1 active | 1 failed' in result.stdout
+    assert 'Fault C2: sequence failure' in result.stdout
+    assert 'Device error: source timeout retry pending' in result.stdout
+    assert 'Device warning: -12' in result.stdout
+    assert 'large_diagnostic' not in result.stdout and 'hidden' not in result.stdout
+    # Device failures must not change the launcher health exit code used by make.
+    body.write_text(json.dumps({'connected': False, 'mode': 'std', 'actual': None}))
+    result = invoke('status.sh', env=status_env)
+    assert result.returncode == 0 and 'disconnected' in result.stdout
+    assert 'Decoders:' not in result.stdout and 'center unknown' in result.stdout
+    body.write_text(json.dumps({'mode': 'server', 'server': {
+        'state': 'failed', 'bind_address': '127.0.0.1', 'port': 55132, 'error': 'bind failed',
+    }}))
+    result = invoke('status.sh', env=status_env)
+    assert result.returncode == 0 and 'Server: failed | 127.0.0.1:55132' in result.stdout
+    assert 'Server error: bind failed' in result.stdout and 'RF:' not in result.stdout
+    body.write_text('not JSON')
+    result = invoke('status.sh', env=status_env)
+    assert result.returncode == 0 and 'summary unavailable' in result.stdout
+    body.write_text('')
+    for args in [(), ('--quiet',)]:
+        result = invoke('status.sh', *args, env={**status_env, 'STATUS_EXIT': '22'})
+        assert result.returncode == 22
+        assert 'HTTP: healthy' not in result.stdout
+        if args:
+            assert not result.stdout and not result.stderr
 
 
 @pytest.mark.parametrize('field,value', [(1, '0'), (3, '/unrelated'), (5, '/unrelated')])

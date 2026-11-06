@@ -13,6 +13,114 @@ beforeEach(() => { setLang('en'); host = document.createElement('div'); document
 afterEach(() => { vi.restoreAllMocks(); forgetDecoderLog(uid); document.body.replaceChildren(); });
 
 describe('receiver Decode interaction and live results', () => {
+  it('presents RTTY as continuous text plus metrics without repeating snapshot text', () => {
+    const view = mountReceiverDecodeView(host);
+    const entries: DecoderLogEntry[] = [
+      { ...message(1, ''), provider: 'onair-rtty', mode: 'rtty', kind: 'text', data: { text: 'CQ CQ DE TEST', endsLine: false } },
+      { ...message(2, ''), provider: 'onair-rtty', mode: 'rtty', kind: 'status', data: { type: 'rtty-state', state: 'receiving', text: 'DO NOT REPEAT', baud: 45.45, shiftHz: 170, framingErrors: 2, characters: 13 } },
+    ];
+    view.update(entries, uid, 'rtty', 0, '');
+    expect(host.querySelector('.mc-text-transcript')?.textContent).toContain('CQ CQ DE TEST');
+    expect(host.querySelector('.decoder-metrics')?.textContent).toContain('45.45');
+    expect(host.textContent).not.toContain('DO NOT REPEAT');
+    expect(host.querySelectorAll('.decoder-result-text')).toHaveLength(0);
+    view.dispose();
+  });
+  it('renders CW as chronological transmissions and clears only this view even when a live line grows', () => {
+    const view = mountReceiverDecodeView(host), other = document.createElement('div'), sibling = mountReceiverDecodeView(other);
+    const push = (text: string, endsLine = false, share = 1, source = '1:1') => {
+      addDecoderResult({ provider: 'native', mode: 'cw', kind: 'text', data: { text: text + (endsLine ? '\n' : ''), endsLine, share } }, source, uid);
+      view.update(decoderLog(uid).entries, uid, 'cw', 0, '', source);
+      sibling.update(decoderLog(uid).entries, uid, 'cw', 0, '', source);
+    };
+    push('C'); push('Q'); push(' DE '); push('TEST', true);
+    push('N', false, 0.2); push('EW');
+    expect(host.querySelectorAll('.cw-line')).toHaveLength(2);
+    expect(host.querySelector('.cw-text')?.textContent).toBe('CQ DE TEST');
+    expect(host.querySelector('.cw-ch.weak')?.textContent).toBe('N');
+    expect(host.querySelectorAll('.decoder-result-text')).toHaveLength(0);
+    const current = host.querySelector('.cw-line.current');
+    push(' CQ'); expect(host.querySelector('.cw-line.current')).toBe(current);
+    const search = host.querySelector<HTMLInputElement>('[data-decode-search]')!;
+    search.value = 'DE TEST'; search.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(host.querySelectorAll('.cw-line')).toHaveLength(1);
+    search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true }));
+    click('[data-decode-action=clear]'); click('[data-decode-action=clear-confirm]');
+    expect(host.querySelectorAll('.cw-line')).toHaveLength(0);
+    push(' APPENDED');
+    expect(host.querySelector('.cw-text')?.textContent).toBe(' APPENDED▌');
+    expect(other.querySelector('.cw-line.current')?.textContent).toContain('NEW CQ APPENDED');
+    push('DIFFERENT', false, 1, '2:2');
+    expect(host.querySelectorAll('.cw-line')).toHaveLength(2);
+    view.update(decoderLog(uid).entries, uid, 'cw', 0, 'Receiver stopped', null);
+    expect(host.querySelector('.cw-cursor')).toBeNull();
+    view.dispose(); sibling.dispose();
+  });
+  it('shows localized FT8 countries and transmitted grid coordinates, with sortable columns', () => {
+    const view = mountReceiverDecodeView(host);
+    const entries = [message(1, 'CQ W1ABC FN42'), message(2, 'W1ABC JA1ABC PM95'), message(3, 'JA1ABC W1ABC R-12')];
+    view.update(entries, uid, 'ft8', 0, '');
+    const cell = (id: number, suffix: string) => host.querySelector(`tr[data-key="${id}:0"] .mc-message-${suffix}`)!.textContent;
+    expect(cell(1, 'country')).toBe('United States');
+    expect(cell(1, 'location')).toBe('42.5°N 71.0°W');
+    expect(cell(2, 'country')).toBe('Japan → United States');
+    expect(cell(2, 'location')).toBe('35.5°N 139.0°E');
+    expect(cell(3, 'location')).toBe('—');
+    click('[data-sort=country]');
+    expect(host.querySelector('tbody tr')?.getAttribute('data-key')).toBe('2:0');
+    setLang('zh'); view.update(entries, uid, 'ft8', 0, '');
+    expect(cell(1, 'country')).toBe('美国');
+    expect(host.querySelector('thead')!.textContent).toContain('国家/地区');
+    view.dispose();
+  });
+  it('highlights FT8 QSO peers locally and keeps hover through new messages, clearing on identity changes', () => {
+    const other = document.createElement('div'); document.body.append(other);
+    const view = mountReceiverDecodeView(host), sibling = mountReceiverDecodeView(other);
+    const entries = [message(1, 'CQ W1ABC FN42'), message(2, 'W1ABC K2XYZ -12'),
+      message(3, 'K2XYZ W1ABC R-08'), message(4, 'W1ABC N3DEF 73'), message(5, 'CQ G4ZZZ IO91')];
+    view.update(entries, uid, 'ft8', 0, ''); sibling.update(entries, uid, 'ft8', 0, '');
+    const row = (id: number) => host.querySelector<HTMLElement>(`tr[data-key="${id}:0"]`)!;
+    row(2).firstElementChild!.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    expect(row(2).classList.contains('qso-focus')).toBe(true);
+    expect(row(3).classList.contains('qso-peer')).toBe(true);
+    expect(host.querySelectorAll('.qso-peer')).toHaveLength(1);
+    expect(other.querySelectorAll('.qso-peer,.qso-focus')).toHaveLength(0);
+    // Moving between cells of the same row must not clear the session.
+    row(2).firstElementChild!.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget: row(2).lastElementChild }));
+    expect(row(3).classList.contains('qso-peer')).toBe(true);
+    view.update([...entries, message(6, 'W1ABC K2XYZ 73')], uid, 'ft8', 0, '');
+    expect(row(6).classList.contains('qso-peer')).toBe(true);
+    row(1).dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    expect(host.querySelectorAll('.qso-peer')).toHaveLength(4);
+    expect(row(5).classList.contains('qso-peer')).toBe(false);
+    row(1).dispatchEvent(new MouseEvent('pointerout', { bubbles: true }));
+    expect(host.querySelectorAll('.qso-peer,.qso-focus')).toHaveLength(0);
+    row(2).focus(); expect(row(3).classList.contains('qso-peer')).toBe(true);
+    view.update(entries, 'different-channel', 'ft8', 0, '');
+    expect(host.querySelectorAll('.qso-peer,.qso-focus')).toHaveLength(0);
+    row(2).dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    const search = host.querySelector<HTMLInputElement>('[data-decode-search]')!;
+    search.value = 'G4ZZZ'; search.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(host.querySelectorAll('.qso-peer,.qso-focus')).toHaveLength(0);
+    view.dispose(); sibling.dispose();
+  });
+  it('presents DRM quality, frame counts, services and constellation and clears the plot after lock loss', () => {
+    const view = mountReceiverDecodeView(host);
+    const data = { type: 'drm', snrDb: 20, lines: ['FAC MER 23.5 dB', '42 MSC frames, 84 audio AUs, FAC ok 40 err 2'],
+      points: [{ re: 0.7, im: -0.7 }], status: { locked: true, mode: 'B', stationLabel: 'Station <one>',
+        facOk: 40, facErrors: 2, sdcOk: 9, carrierOffsetHz: 1.2,
+        services: [{ label: 'News', serviceId: 123, audioCoding: 3, sampleRate: 24000, channels: 2 }] } };
+    const entry: DecoderLogEntry = { ...message(1, ''), kind: 'status', mode: 'drm', data };
+    view.update([entry], uid, 'drm', 0, '');
+    expect(host.querySelector('.decoder-metrics')?.textContent).toContain('23.5 dB');
+    expect(host.querySelector('.decoder-metrics')?.textContent).toContain('MSC frames42');
+    expect(host.querySelector('.decoder-service')?.textContent).toContain('NewsID 123 · xHE-AAC · 24 kHz · 2 ch');
+    expect(host.querySelector('.decoder-signal-heading')?.textContent).toBe('Station <one>');
+    expect(host.querySelectorAll('.decoder-constellation circle:not([class])')).toHaveLength(1);
+    view.update([{ ...entry, data: { ...data, status: { ...data.status, locked: false } } }], uid, 'drm', 0, '');
+    expect(host.querySelectorAll('.decoder-constellation circle:not([class])')).toHaveLength(0);
+    view.dispose();
+  });
   it('only offers text tools for text results and resets an old filter when the signal mode changes', () => {
     const view = mountReceiverDecodeView(host);
     view.update([message(1, 'CQ TEST')], uid, 'ft8', 0, '');

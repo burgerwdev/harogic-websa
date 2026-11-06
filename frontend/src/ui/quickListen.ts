@@ -66,7 +66,7 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
     const lines = [same ? l('Already receiving this frequency. Only the local listening route changes.', '此信道已接收该频点，仅开启本地监听，不重启接收。')
       : receiver ? `${l('Tune only', '仅调谐')} C${receiver.display_number}: ${receiver.confirmed.baseband.frequency_hz / 1e6} → ${frequency() / 1e6} MHz`
         : l('Adds an independent listening channel to the local mix.', '新增独立听音信道，并加入本地混听。')];
-    if (next.disabled) lines.push(l('All channels occupied. Retune a listening channel; digital and IQ channels stay intact.', '三路已占用，可调谐已有听音信道；数字和 IQ 信道保持原配置。').replace('三路', `${session.snapshot.capabilities.max_channels} 路`));
+    if (next.disabled) lines.push(l('All channels occupied. Retune a listening channel; digital and IQ channels stay intact.', `${session.snapshot.capabilities.max_channels} 路已占用，可调谐已有听音信道；数字和 IQ 信道保持原配置。`));
     if (plan.affected_tracks.length) lines.push(`${l('Recording continues with new segments', '记录继续，并为以下轨道建立新片段')}: ${[...new Set(session.snapshot.recordings.flatMap(t => t.tracks).filter(track => plan!.affected_tracks.includes(track.track_id)).map(track => track.kind.toUpperCase()))].join(' / ')}`);
     if (session.monitorMode === 'follow') lines.push(l('Switches to manual mixing; the channel being edited stays selected.', '切换为手动混听，保留当前正在编辑的信道。'));
     if (session.masterGain === 0 || (receiver && (session.route(receiver.receiver_uid).gain === 0 || [...session.routes].some(([uid, route]) => route.solo && uid !== receiver.receiver_uid)))) lines.push(l('Existing volume and Solo settings still apply.', '现有音量与 Solo 设置仍然生效。'));

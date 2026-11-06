@@ -41,6 +41,8 @@ async def protocol(origin, channels=3, *, raw_capture=False, center=100e6):
     post(origin, {'cmd': 'SET_MODE', 'mode': 'sdr'})
     post(origin, {'cmd': 'SET_SDR', 'center': center, **({'decimate': 1} if raw_capture else {})})
     initial = api(origin)
+    if not 3 <= channels <= initial['capabilities']['max_channels']:
+        raise ValueError('This middle-slot reuse scenario needs 3..max_channels receivers')
     for receiver in initial['receivers']:
         reply = api(origin, payload={'type': 'retire', 'request_id': 'clear-' + receiver['receiver_uid'], 'receiver_uid': receiver['receiver_uid']})
         assert reply['fault'] is None, reply
@@ -317,7 +319,7 @@ async def capture_boundary(origin):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--channels', type=int, choices=[3, 8], default=3)
+    parser.add_argument('--channels', type=int, default=3)
     parser.add_argument('--artifacts', type=Path, default=Path('/tmp/websa-p3-native'))
     args = parser.parse_args(); args.artifacts.mkdir(parents=True, exist_ok=True)
     os.environ['WEBSA_RECORDING_DIR'] = str((args.artifacts / 'recordings').resolve())

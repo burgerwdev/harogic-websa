@@ -21,7 +21,7 @@ const INPUT_MEDIA_NS_PER_CHANNEL:u64=2_000_000_000;
 const RESULT_CAPACITY: usize = 32;
 // Two pending protocol windows per UID, independent of the number of receivers.
 const SEARCH_CAPACITY: usize = 2;
-const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_EVENT_BYTES: usize = websa_channelizer::MAX_DECODE_EVENT_BYTES;
 const OUTPUT_BYTES_PER_CHANNEL:u64=8*1024*1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -316,7 +316,7 @@ impl InputPermit {
         let media=(samples as f64/rate*1e9).ceil() as u64;
         branch.input_bytes.try_update(Ordering::AcqRel,Ordering::Acquire,
             |held|held.checked_add(bytes).filter(|total|*total<=INPUT_BYTES_PER_CHANNEL))
-            .map_err(|_|"receiver input queue failure: retained input including execution exceeds 4 MiB per UID".to_owned())?;
+            .map_err(|_|format!("receiver input queue failure: retained input including execution exceeds {INPUT_BYTES_PER_CHANNEL} bytes per UID"))?;
         if branch.input_media_ns.try_update(Ordering::AcqRel,Ordering::Acquire,
             |held|held.checked_add(media).filter(|total|*total<=INPUT_MEDIA_NS_PER_CHANNEL)).is_err() {
             branch.input_bytes.fetch_sub(bytes,Ordering::AcqRel);
@@ -337,9 +337,9 @@ impl Shared {
         self.fail_generation(slot,self.generations[slot].load(Ordering::Acquire),error);
     }
     fn fail_generation(&self,slot:usize,generation:u64,error:String) {
-        if self.generations[slot].load(Ordering::Acquire)!=generation {return;}
         let branch=&self.branches[slot];
         let mut failure=branch.failure.lock().unwrap_or_else(|e|e.into_inner());
+        if self.generations[slot].load(Ordering::Acquire)!=generation {return;}
         if failure.as_ref().is_none_or(|fault|fault.generation!=generation) {
             let binding=branch.binding.lock().unwrap_or_else(|e|e.into_inner());
             let rows=self.metrics.snapshot();
@@ -365,7 +365,7 @@ impl Shared {
         let bytes=output.frames.audio.iter().chain(&output.frames.decode).map(|frame|frame.len() as u64).sum::<u64>();
         self.branches[slot].output_bytes.try_update(Ordering::AcqRel,Ordering::Acquire,
             |held|held.checked_add(bytes).filter(|sum|*sum<=OUTPUT_BYTES_PER_CHANNEL))
-            .map_err(|_|"per-channel receiver output exceeds 8 MiB pending payload; no samples were skipped to resume".to_owned())?;
+            .map_err(|_|format!("per-channel receiver output exceeds {OUTPUT_BYTES_PER_CHANNEL} bytes pending payload; no samples were skipped to resume"))?;
         if self.branches[slot].output_pending.try_update(Ordering::AcqRel,Ordering::Acquire,
             |count|(count<RESULT_CAPACITY).then_some(count+1)).is_err() {
             self.branches[slot].output_bytes.fetch_sub(bytes,Ordering::AcqRel);
@@ -880,6 +880,14 @@ impl ReceiverWorkers {
     }
 
     fn bump_generation(&self, slot: usize) -> Result<(), String> {
+        // Serialize fault publication with generation changes: an old worker
+        // must not mark a replacement as retiring after its generation check.
+        let _failure=self.shared.branches[slot].failure.lock().unwrap_or_else(|e|e.into_inner());
+        self.bump_generation_locked(slot)
+    }
+
+    // Caller holds this branch's failure mutex.
+    fn bump_generation_locked(&self, slot: usize) -> Result<(), String> {
         self.shared.generations[slot].try_update(Ordering::AcqRel, Ordering::Acquire,
             |generation| generation.checked_add(1))
             .map(|_| ()).map_err(|_| "receiver configuration generation overflow".into())
@@ -1062,17 +1070,33 @@ impl ReceiverWorkers {
         self.close_channels(channels, true)
     }
 
+    fn request_live_retirement(&mut self, slot:usize)->Result<(),String> {
+        // A capture boundary can keep the exact same demodulator settings.
+        // Invalidate admitted IQ and FT8 jobs before the out-of-band close can
+        // erase their state. Otherwise a queued nonzero packet restarts it.
+        let mut close=self.shared.branches[slot].close.lock().unwrap_or_else(|e|e.into_inner());
+        let failure=self.shared.branches[slot].failure.lock().unwrap_or_else(|e|e.into_inner());
+        let generation=self.shared.generations[slot].load(Ordering::Acquire);
+        if failure.as_ref().is_some_and(|fault|fault.generation==generation) {return Ok(());}
+        self.bump_generation_locked(slot)?;
+        if close.is_none() {self.shared.pending.fetch_add(1,Ordering::AcqRel);}
+        *close=Some((generation,true));
+        self.active[slot]=None;
+        self.levels[slot]=None;
+        self.squelch[slot]=None;
+        Ok(())
+    }
+
     fn close_channels(&mut self, channels: &[u32], live: bool) -> Result<ReceiverFrames, String> {
         if live {
+            let mut frames=self.poll()?;
             for &channel in channels {
                 let slot=channel.checked_sub(1).filter(|&slot|(slot as usize)<MAX_CHANNELS).ok_or("invalid receiver channel")? as usize;
                 if self.threads[slot].as_ref().is_none_or(JoinHandle::is_finished) {continue;}
-                let generation=self.shared.generations[slot].load(Ordering::Acquire);
-                let mut close=self.shared.branches[slot].close.lock().unwrap_or_else(|e|e.into_inner());
-                if close.is_none() {self.shared.pending.fetch_add(1,Ordering::AcqRel);}
-                *close=Some((generation,true));
+                self.request_live_retirement(slot)?;
             }
-            return self.poll();
+            frames.append(self.poll()?);
+            return Ok(frames);
         }
         let mut frames=self.finish()?;
         for &channel in channels {
@@ -1295,12 +1319,41 @@ struct BoundedJson(Vec<u8>);
 impl Write for BoundedJson {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self.0.len().saturating_add(bytes.len()) > MAX_EVENT_BYTES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "receiver event exceeds 2 MiB"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("receiver event exceeds {MAX_EVENT_BYTES} bytes")));
         }
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+fn close_retired_state(worker:usize,states:&mut [Option<ChannelState>],output:&mpsc::SyncSender<Output>,shared:&Arc<Shared>) {
+    let closing=shared.branches[worker].close.lock().unwrap_or_else(|e|e.into_inner()).take();
+    if let Some((generation,live))=closing {
+        let _pending=Pending {shared:shared.clone(),queue_id:None,tracking:None};
+        if shared.branch_failure(worker).is_none() {
+            // Several capture changes may coalesce while a native call runs.
+            // Close any state at/before this fence, never a newer stream.
+            if let Some(state)=states[worker].as_mut().filter(|state|state.generation<=generation) {
+                let generation=state.generation;
+                let mut frames=ReceiverFrames::default();
+                let result=state.close(worker,&mut frames,live).and_then(|_| {
+                    frames.decode.push(state.event(worker,state.last_clock,serde_json::json!({
+                        "type":"processing-end","drained":false,"tail_complete":true,"processing_complete":false,
+                        "reason":"reconfigured","processing_generation":generation.to_string()}))?);
+                    let bytes=frames.decode.iter().map(|frame|frame.len() as u64).sum();
+                    let accounting=state.metrics.as_ref().map(|lane|lane.hold_output(serde_json::json!({
+                        "input_index":state.last_clock.first_sample_index.to_string(),"input_rate":state.last_clock.input_rate}),bytes,"tail"));
+                    let closed=Output {slot:worker,generation,frames,squelch:None,accounting,permit:None,
+                        retired:true,stream:Some((state.channel_id,state.epoch))};
+                    shared.publish(&output,closed)
+                });
+                if let Err(error)=result {shared.fail_generation(worker,generation,error);}
+                states[worker]=None;
+                shared.branches[worker].state_generation.store(0,Ordering::Release);
+            }
+        }
+    }
 }
 
 fn run_realtime(worker:usize,mut input: mpsc::Receiver<PendingWork>, output: mpsc::SyncSender<Output>,
@@ -1309,29 +1362,7 @@ fn run_realtime(worker:usize,mut input: mpsc::Receiver<PendingWork>, output: mps
     let mut prefer_return=false;
     while !shared.stopping.load(Ordering::Acquire) {
         if let Some(replacement)=shared.branches[worker].mailbox.lock().unwrap_or_else(|e|e.into_inner()).take() {input=replacement;}
-        let closing=shared.branches[worker].close.lock().unwrap_or_else(|e|e.into_inner()).take();
-        if let Some((generation,live))=closing {
-            let _pending=Pending {shared:shared.clone(),queue_id:None,tracking:None};
-            if shared.branch_failure(worker).is_none() {
-                if let Some(state)=states[worker].as_mut().filter(|state|state.generation==generation) {
-                    let mut frames=ReceiverFrames::default();
-                    let result=state.close(worker,&mut frames,live).and_then(|_| {
-                        frames.decode.push(state.event(worker,state.last_clock,serde_json::json!({
-                            "type":"processing-end","drained":false,"tail_complete":true,"processing_complete":false,
-                            "reason":"reconfigured","processing_generation":generation.to_string()}))?);
-                        let bytes=frames.decode.iter().map(|frame|frame.len() as u64).sum();
-                        let accounting=state.metrics.as_ref().map(|lane|lane.hold_output(serde_json::json!({
-                            "input_index":state.last_clock.first_sample_index.to_string(),"input_rate":state.last_clock.input_rate}),bytes,"tail"));
-                        let closed=Output {slot:worker,generation,frames,squelch:None,accounting,permit:None,
-                            retired:true,stream:Some((state.channel_id,state.epoch))};
-                        shared.publish(&output,closed)
-                    });
-                    if let Err(error)=result {shared.fail_generation(worker,generation,error);}
-                    states[worker]=None;
-                    shared.branches[worker].state_generation.store(0,Ordering::Release);
-                }
-            }
-        }
+        close_retired_state(worker,&mut states,&output,&shared);
         if shared.branches[worker].lifecycle.load(Ordering::Acquire)==2 {break;}
         let returned=||returns.as_ref().and_then(|rx|rx.try_recv().ok());
         let next=if prefer_return {returned().or_else(||input.try_recv().ok())}
@@ -1350,6 +1381,8 @@ fn run_realtime(worker:usize,mut input: mpsc::Receiver<PendingWork>, output: mps
         let (slot,generation)=match &work {Work::Packet(packet)=>(packet.slot,packet.generation),
             Work::Search(result)=>(result.slot,result.generation),
             Work::FinishRadiofax {slot,generation,..}|Work::Deactivate {slot,generation,..}=>(*slot,*generation)};
+        // A boundary can arrive while recv_timeout waits for the new start.
+        close_retired_state(worker,&mut states,&output,&shared);
         pending.started();
         if let Some(tracking)=pending.tracking.as_mut() {tracking.start();}
         let packet_samples=match &work {Work::Packet(packet)=>Some(packet.iq.len() as u64/2),_=>None};
@@ -1575,6 +1608,99 @@ fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSend
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn retirement_packet(generation:u64,epoch:u32,seq:u32)->Packet {
+        let samples=if seq==0 {0}else{4096};
+        Packet {slot:0,generation,config:Arc::new(ChannelConfig {mode:"usb".into(),if_bw:2400.0,squelch:-160.0,..ChannelConfig::default()}),
+            channel_id:1,epoch,seq,rate:12_000.0,frequency:14_270_000.0,
+            clock:InputClock {first_sample_index:u64::from(seq.saturating_sub(1))*4096,input_rate:12_000.0,delay_input_samples:0.0},
+            power_dbm:Some(-60.0),iq:IqSamples::new(vec![0.1,0.0].repeat(samples)).unwrap(),radiofax_new_page:false,
+            prepared:None,metrics:None,input_permit:None,commands:Vec::new()}
+    }
+
+    #[test]
+    fn live_retirement_fences_queued_iq_before_restarting_unchanged_demodulator() {
+        let mut workers=ReceiverWorkers::new().unwrap();
+        let shared=workers.shared.clone();
+        let generation=shared.generations[0].load(Ordering::Acquire);
+        let (output,received)=mpsc::sync_channel(RESULT_CAPACITY);
+        let (search,_jobs)=mpsc::sync_channel(SEARCH_CAPACITY);
+        let mut states:Vec<_>=(0..MAX_CHANNELS).map(|_|None).collect();
+        process_packet(retirement_packet(generation,7,0),&mut states,&search,&shared).unwrap();
+        process_packet(retirement_packet(generation,7,1),&mut states,&search,&shared).unwrap();
+        // The close mailbox overtakes already admitted nonzero IQ, exactly as
+        // a capture reconfiguration can do while inference is still running.
+        workers.request_live_retirement(0).unwrap();
+        close_retired_state(0,&mut states,&output,&shared);
+        let stale=process_packet(retirement_packet(generation,7,2),&mut states,&search,&shared);
+        assert!(matches!(stale,Ok(None)),"retired IQ must be cancelled, never restart a receiver: {:?}",stale.err());
+        let next_generation=shared.generations[0].load(Ordering::Acquire);
+        process_packet(retirement_packet(next_generation,8,0),&mut states,&search,&shared).unwrap();
+        let audio=process_packet(retirement_packet(next_generation,8,1),&mut states,&search,&shared).unwrap().unwrap();
+        assert!(audio.frames.audio.iter().any(|frame|frame.len()>96));
+        assert!(shared.branch_failure(0).is_none());
+        let tails:Vec<_>=received.try_iter().collect();
+        assert_eq!(tails.len(),1);
+        assert!(tails[0].retired);
+        assert_eq!(tails[0].stream,Some((1,7)));
+        assert_eq!(shared.pending.load(Ordering::Acquire),0);
+    }
+
+    #[test]
+    fn coalesced_retirement_closes_oldest_state_without_closing_new_stream() {
+        let mut workers=ReceiverWorkers::new().unwrap();
+        let shared=workers.shared.clone();
+        let generation=shared.generations[0].load(Ordering::Acquire);
+        let other_generation=shared.generations[1].load(Ordering::Acquire);
+        let (output,received)=mpsc::sync_channel(RESULT_CAPACITY);
+        let (search,_jobs)=mpsc::sync_channel(SEARCH_CAPACITY);
+        let mut states:Vec<_>=(0..MAX_CHANNELS).map(|_|None).collect();
+        process_packet(retirement_packet(generation,7,0),&mut states,&search,&shared).unwrap();
+        workers.request_live_retirement(0).unwrap();
+        workers.request_live_retirement(0).unwrap();
+        assert_eq!(shared.pending.load(Ordering::Acquire),1);
+        close_retired_state(0,&mut states,&output,&shared);
+        assert!(states[0].is_none());
+        let tails:Vec<_>=received.try_iter().collect();
+        assert_eq!(tails.len(),1);
+        assert_eq!(tails[0].generation,generation);
+        assert_eq!(tails[0].stream,Some((1,7)));
+        // Even the start marker of an intermediate capture has been retired.
+        assert!(process_packet(retirement_packet(generation+1,8,0),&mut states,&search,&shared).unwrap().is_none());
+        workers.request_live_retirement(0).unwrap();
+        let current=shared.generations[0].load(Ordering::Acquire);
+        process_packet(retirement_packet(current,9,0),&mut states,&search,&shared).unwrap();
+        // Simulate delivery after the new state is already established.
+        close_retired_state(0,&mut states,&output,&shared);
+        assert_eq!(states[0].as_ref().unwrap().epoch,9);
+        let audio=process_packet(retirement_packet(current,9,1),&mut states,&search,&shared).unwrap().unwrap();
+        assert!(audio.frames.audio.iter().any(|frame|frame.len()>96));
+        assert_eq!(shared.generations[1].load(Ordering::Acquire),other_generation);
+        assert!(shared.branch_failure(0).is_none());
+        assert_eq!(shared.pending.load(Ordering::Acquire),0);
+    }
+
+    #[test]
+    fn retirement_rejects_stale_faults_and_preserves_current_faults() {
+        let mut workers=ReceiverWorkers::new().unwrap();
+        let shared=workers.shared.clone();
+        shared.branches[0].lifecycle.store(1,Ordering::Release);
+        let old=shared.generations[0].load(Ordering::Acquire);
+        workers.request_live_retirement(0).unwrap();
+        let current=shared.generations[0].load(Ordering::Acquire);
+        shared.fail_generation(0,old,"late result from retired stream".into());
+        assert!(shared.branch_failure(0).is_none());
+        assert_eq!(shared.branches[0].lifecycle.load(Ordering::Acquire),1);
+        shared.fail_generation(0,current,"current receiver failure".into());
+        workers.request_live_retirement(0).unwrap();
+        assert_eq!(shared.generations[0].load(Ordering::Acquire),current);
+        assert_eq!(shared.branch_failure(0).unwrap().error,"current receiver failure");
+        assert_eq!(shared.branches[0].lifecycle.load(Ordering::Acquire),2);
+        let (output,_received)=mpsc::sync_channel(RESULT_CAPACITY);
+        let mut states:Vec<_>=(0..MAX_CHANNELS).map(|_|None).collect();
+        close_retired_state(0,&mut states,&output,&shared);
+        assert_eq!(shared.pending.load(Ordering::Acquire),0);
+    }
 
     #[test]
     fn packet_statistics_follow_actual_dsp_success_squelch_and_failure() {

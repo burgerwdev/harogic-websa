@@ -1,5 +1,7 @@
+import { AUDIO_QUEUE_SECONDS } from '../sdr/streamLimits';
 // One worker owns one backend audio subscription and its playback port.
 import { StreamingFloatResampler } from './sdrResampler';
+import { StreamRetry } from '../sdr/streamRetry';
 
 interface Fraction { num: bigint; den: bigint }
 interface Identity {
@@ -15,7 +17,7 @@ let muted = false;
 let failed = false;
 let reconnect = false;
 let retry: ReturnType<typeof setTimeout> | null = null;
-let retryAttempt = 0;
+let recovery = new StreamRetry();
 let identity: Identity | null = null;
 let identityHighWater: { epoch: number; channel: number } | null = null;
 let playbackMode = 'default';
@@ -37,7 +39,6 @@ let sinkLimit = 0;
 const resampler = new StreamingFloatResampler();
 let packets = 0;
 let rms = 0;
-const MAX_QUEUE_SECONDS = 3;
 function post(message: Record<string, unknown>, transfer: Transferable[] = []): void {
   // DOM declares the Window overload; workers accept a transfer list as the second argument.
   const scope = self as unknown as { postMessage: (m: unknown, t: Transferable[]) => void };
@@ -90,12 +91,11 @@ function cancelRetry(): void {
   if (retry !== null) clearTimeout(retry);
   retry = null;
 }
-function disconnected(): void {
+function disconnected(delay: number): void {
   // A transport gap is a new subscription boundary, never continuous PCM.
   flush(); identity = null; modeBoundaryPending = false;
   output({ type: 'enabled', value: false });
   post({ type: 'connection', state: 'reconnecting' });
-  const delay = Math.min(500 * 2 ** Math.min(retryAttempt++, 4), 5000);
   cancelRetry();
   retry = setTimeout(() => { retry = null; connect(); }, delay);
 }
@@ -122,7 +122,7 @@ function acceptStatus(data: Record<string, unknown>): void {
 function deliver(samples: Float32Array, channels: number): void {
   const frames = samples.length / channels;
   if (frames === 0) return;
-  if (pending + frames > targetRate * MAX_QUEUE_SECONDS) {
+  if (pending + frames > targetRate * AUDIO_QUEUE_SECONDS) {
     fail('Audio consumer is too slow: delivery queue exceeded three seconds');
     return;
   }
@@ -199,7 +199,6 @@ function receive(buffer: ArrayBuffer): void {
     post({ type: 'identity', channelId: next.channel, epoch: next.epoch, streamKey: `${next.epoch}:${next.channel}`,
       inputIndex: inputIndex.toString(), audioIndex: index.toString(), delaySeconds: next.delay,
       totalDelayUnknown: Boolean(next.flags & 0x10000), causalPresentation: Boolean(next.flags & 0x20000) });
-    retryAttempt = 0;
     post({ type: 'connection', state: 'connected' });
     output({ type: 'enabled', value: enabled });
     return;
@@ -209,7 +208,7 @@ function receive(buffer: ArrayBuffer): void {
     || identity.tuned !== next.tuned) {
     throw new Error('AUD2 identity or geometry changed without a boundary');
   }
-  if (frames === 0 || frames > next.rate * MAX_QUEUE_SECONDS || sequence === 0xffffffff || seq !== sequence + 1) {
+  if (frames === 0 || frames > next.rate * AUDIO_QUEUE_SECONDS || sequence === 0xffffffff || seq !== sequence + 1) {
     throw new Error('AUD2 sequence gap or invalid frame count');
   }
   const causal = Boolean(next.flags & 0x20000);
@@ -227,6 +226,7 @@ function receive(buffer: ArrayBuffer): void {
     sum += sample * sample;
   }
   sequence = seq;
+  recovery.progress();
   audioIndex += BigInt(frames);
   previousSource = position;
   source = fraction(position.num * sourceStep.den + BigInt(frames) * sourceStep.num * position.den, position.den * sourceStep.den);
@@ -259,7 +259,8 @@ function connect(): void {
   current.onclose = (event) => {
     if (socket !== current) return;
     socket = null;
-    if (reconnect && enabled && !failed && [1001, 1006, 1012].includes(event.code)) { disconnected(); return; }
+    const delay = reconnect && enabled && !failed ? recovery.delay(event.code, event.reason) : null;
+    if (delay !== null) { disconnected(delay); return; }
     fail(event.code === 1011 && event.reason === 'receiver failed'
       ? 'Backend audio receiver failed' : `Backend audio connection closed (${event.code}): ${event.reason}`);
   };
@@ -295,7 +296,7 @@ self.onmessage = (event: MessageEvent) => {
   } else if (message.type === 'enabled') {
     enabled = Boolean(message.value);
     if (!enabled) {
-      cancelRetry(); retryAttempt = 0;
+      cancelRetry(); recovery = new StreamRetry();
       const previous = socket;
       socket = null;
       previous?.close();

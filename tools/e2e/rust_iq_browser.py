@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native fixture IQ -> AUD2 -> browser audio worker/AudioWorklet, up to three slots.
+"""Native fixture IQ -> AUD2 -> browser audio worker/AudioWorklet, using the advertised receiver capacity.
 
 Uses the production websad service and committed AM fixture (1 kHz, 50% depth).
 Requires an already built backend/target/release/websad and frontend/dist.
@@ -92,7 +92,11 @@ def start_service(port, *, hardware=False, log=None, startup_timeout=10.0, binar
 
 def configure(origin, frequencies):
     post(origin, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-    for slot in range(1, 4):
+    available = state(origin)['sdr']['channels']
+    if not frequencies or len(frequencies) > len(available):
+        raise ValueError(f'requested {len(frequencies)} channels; service advertises {len(available)}')
+    for channel in available:
+        slot = channel['channel']
         payload = {'cmd': 'SET_SDR_CHANNEL', 'channel': slot,
                    'enabled': slot <= len(frequencies)}
         if slot <= len(frequencies):
@@ -195,7 +199,7 @@ def shutdown(page):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--channels', type=int, default=3, choices=range(1, 4))
+    parser.add_argument('--channels', type=int, default=len(CHANNELS))
     parser.add_argument('--seconds', type=float, default=3.0)
     args = parser.parse_args()
     if args.seconds <= 0:
@@ -203,7 +207,11 @@ def main() -> int:
     worklet, worker = asset('sdrAudioWorklet-*.js'), asset('sdrAudioWorker-*.js')
     service, origin = start_service(free_port())
     try:
-        configure(origin, CHANNELS[:args.channels])
+        capacity = len(state(origin)['sdr']['channels'])
+        if not 1 <= args.channels <= capacity:
+            parser.error(f'--channels must be between 1 and the service capacity ({capacity})')
+        frequencies = [CHANNELS[0] + index * 100_000 for index in range(args.channels)]
+        configure(origin, frequencies)
         with sync_playwright() as driver:
             browser = driver.chromium.launch(
                 headless=True, args=['--autoplay-policy=no-user-gesture-required'])

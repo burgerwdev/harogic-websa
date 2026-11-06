@@ -42,6 +42,17 @@ describe('main spectrum quick channel', () => {
     expect(session.route(receiver.receiver_uid).enabled).toBe(true);
     expect(document.querySelector('dialog')!.open).toBe(false);
   });
+  it.each([3000, 6000])('copies FT8 with a sufficient input passband at %i Hz without changing C1', async bandwidth => {
+    mount(4); sdrDemod.confirm('ft8'); sdrIfbw.confirm(bandwidth);
+    const before = structuredClone(session.snapshot.receivers);
+    const config = currentChannelConfig(session);
+    expect(config.baseband.passband_hz).toBe(Math.max(3200, bandwidth) * 2);
+    expect(config.baseband.minimum_rate_hz).toBeGreaterThanOrEqual(config.baseband.passband_hz + 2000);
+    const added = ui.add(); await settle(); await added;
+    expect(session.snapshot.receivers.slice(0, 3)).toEqual(before);
+    expect(adapter.dispatch).toHaveBeenCalledTimes(1);
+    expect(session.snapshot.receivers[3].confirmed.processors[0]).toMatchObject({ mode: 'ft8', bandwidth_hz: bandwidth });
+  });
   it('requires an explicit replacement when full and cancels without a command', async () => {
     mount(); await ui.add();
     expect(document.querySelectorAll('[name=replace]')).toHaveLength(3);

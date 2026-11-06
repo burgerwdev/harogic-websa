@@ -556,7 +556,8 @@ export function updateStatus(s: any) {
   S.setDeviceConnected(s.connected === true);
   const previousReceiverError = sdrIqStats().lastError;
   confirmSdrChannelRegistry(Array.isArray(s.actual.channel_registry) ? s.actual.channel_registry : null);
-  const recoveredReceiver = confirmSdrReceiverError(s.connected === true ? s.sdr?.receiver_error : undefined);
+  const recoveredReceiver = confirmSdrReceiverError(s.connected === true ? s.sdr?.receiver_error : undefined,
+    s.connected === true && Array.isArray(s.sdr?.channels) ? s.sdr.channels : undefined);
   if (typeof s.sdr?.receiver_error === 'string') rejectSdrFilterRequest(undefined, undefined, true);
   if (recoveredReceiver && previousReceiverError
       && S.statusError === localizedError({ msg: previousReceiverError })) S.setStatusError(null);

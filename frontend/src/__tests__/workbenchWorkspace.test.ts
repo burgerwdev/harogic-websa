@@ -144,11 +144,72 @@ describe('per-channel audio settings', () => {
 });
 
 describe('channel workspace workflows', () => {
+  it('closes fixed windows only after successful deletion and removes them from recall and saved views', async () => {
+    element('[data-uid="fixture-c1"] [data-action=detail]').click();
+    click('follow-results');
+    const detail = document.querySelector<HTMLElement>('[data-view-id="detail-fixture-c1"]')!;
+    expect(detail).not.toBeNull();
+    adapter.inject('reject', 'fixture-c1');
+    detail.querySelector<HTMLButtonElement>('[data-action=retire]')!.click();
+    expect(detail.isConnected).toBe(true);
+    await settle(); expect(detail.isConnected).toBe(true);
+    detail.querySelector<HTMLButtonElement>('[data-action=retire]')!.click();
+    await settle(); expect(detail.isConnected).toBe(false);
+    ui.recall();
+    expect(document.querySelector('[data-view-id="detail-fixture-c1"]')).toBeNull();
+    expect(document.querySelector('[data-view-id="results-follow"]')).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem('websa-workbench-views-v1')!).some((view: any) => view.binding.receiver_uid === 'fixture-c1')).toBe(false);
+  });
+
+  it('keeps an in-progress volume gesture on its original receiver when a following window changes selection', async () => {
+    click('follow-results');
+    const window = document.querySelector<HTMLElement>('[data-view-id="results-follow"]')!;
+    window.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    window.querySelector<HTMLButtonElement>('[data-action=strip-volume]')!.click();
+    const gain = window.querySelector<HTMLInputElement>('[data-strip-gain]')!;
+    gain.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    session.select('fixture-c2');
+    gain.value = '0.19'; gain.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(session.route('fixture-c1').gain).toBe(0.19);
+    expect(session.route('fixture-c2').gain).toBe(0.7);
+    document.dispatchEvent(new Event('pointerup')); await vi.advanceTimersByTimeAsync(0);
+    expect(window.querySelector<HTMLElement>('.mc-channel-strip')!.dataset.receiverUid).toBe('fixture-c2');
+    expect(window.querySelector('[data-strip-gain]')).toBeNull();
+  });
+  it('keeps collapsed controls bound to their channel while selection, recording and volume change', async () => {
+    const uid = 'fixture-c1';
+    const opener = element<HTMLButtonElement>(`[data-uid="${uid}"] .mc-selection-mark`);
+    expect(opener.closest('[data-action=select]')).toBeNull(); opener.click();
+    const detail = document.querySelector<HTMLElement>(`[data-view-id="detail-${uid}"]`)!;
+    detail.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    expect(detail.classList.contains('mc-collapsed')).toBe(true);
+    session.select('fixture-c2');
+    const strip = detail.querySelector<HTMLElement>('.mc-channel-strip')!;
+    const listening = session.listening(uid);
+    strip.querySelector<HTMLButtonElement>('[data-action=listen]')!.click();
+    expect(session.listening(uid)).toBe(!listening); expect(session.selected).toBe('fixture-c2');
+    const dispatch = vi.spyOn(adapter, 'dispatch'); adapter.inject('late', uid);
+    const record = strip.querySelector<HTMLButtonElement>('[data-action=rec-audio]')!;
+    record.click(); record.click();
+    expect(record.disabled).toBe(true);
+    expect(dispatch.mock.calls.filter(([command]) => command.type === 'record_start')).toHaveLength(1);
+    await settle();
+    expect(session.snapshot.recordings.some(task => task.receiver_uid === uid && task.state === 'recording')).toBe(true);
+    strip.querySelector<HTMLButtonElement>('[data-action=strip-volume]')!.click();
+    const gain = strip.querySelector<HTMLInputElement>('[data-strip-gain]')!;
+    gain.value = '0.27'; gain.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(session.route(uid).gain).toBe(0.27);
+    gain.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(detail.hidden).toBe(false); expect(strip.querySelector<HTMLElement>('.mc-strip-volume-panel')!.hidden).toBe(true);
+    strip.querySelector<HTMLButtonElement>('[data-action=rec-audio]')!.click(); await settle();
+    expect(session.snapshot.recordings[0].state).toBe('completed');
+    expect(session.snapshot.receivers.find(r => r.receiver_uid === uid)?.state).toBe('running');
+  });
   it('disables every delete button for a pending receiver, including independent windows', async () => {
     const dispatch = vi.spyOn(adapter, 'dispatch');
     element<HTMLButtonElement>('[data-uid="fixture-c1"] [data-action=detail]').click();
     const detail = document.querySelector<HTMLElement>('[data-view-id="detail-fixture-c1"]')!;
-    const remove = detail.querySelector<HTMLButtonElement>('[data-action=retire]')!;
+    const remove = detail.querySelector<HTMLButtonElement>('.mc-body [data-action=retire]')!;
     remove.click(); remove.click();
     expect(remove.disabled).toBe(true); expect(remove.textContent).toContain('Deleting');
     expect(element<HTMLButtonElement>('[data-uid="fixture-c1"] [data-action=retire]').disabled).toBe(true);

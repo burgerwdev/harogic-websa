@@ -3,10 +3,12 @@ import type { DrmReceiverStatus } from './drmLog';
 import type { RadiofaxClockSource, RadiofaxClockStatus, RadiofaxStage } from './radiofaxLog';
 import { parseRadiofaxTransmissionId } from './radiofaxLog';
 import { readDecoderImageStrip, type DecoderResultKind } from './decoderLog';
-export const MAX_DECODE_BYTES = 2 * 1024 * 1024;
+import { MAX_DECODE_BYTES } from './streamLimits';
+export { MAX_DECODE_BYTES } from './streamLimits';
 const U64_MAX = (1n << 64n) - 1n;
 export interface ReceiverEvent {
 	type: string;
+	processing_generation?: string; drained?: boolean; tail_complete?: boolean; processing_complete?: boolean;
 	provider?: string; mode?: string; kind?: DecoderResultKind; data?: unknown;
 	snapshotAck?: boolean;
 	text?: string; endsLine?: boolean; share?: number; rms?: number; keyed?: boolean;
@@ -122,6 +124,12 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		throw new Error('Invalid receiver snapshotAck');
 	}
 	const d = value.event;
+	if (d.type === 'processing-end') {
+		uint64(d.processing_generation);
+		if (typeof d.reason !== 'string' || ['drained', 'tail_complete', 'processing_complete'].some(key => typeof d[key] !== 'boolean')) {
+			throw new Error('Invalid processing end boundary');
+		}
+	}
 	if (d.type === 'decoder-result') {
 		if (typeof d.provider !== 'string' || !d.provider || d.provider.length > 64
 			|| typeof d.mode !== 'string' || d.mode !== value.mode

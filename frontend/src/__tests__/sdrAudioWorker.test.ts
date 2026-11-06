@@ -91,7 +91,7 @@ describe('AUD2 audio ingress', () => {
     send({ type: 'enabled', value: false });
     await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(2);
   });
-  it('backs off repeated UID network failures but latches receiver and slow-consumer errors', async () => {
+  it('backs off UID failures and bounds receiver and slow-consumer subscription retries', async () => {
     vi.useFakeTimers(); vi.resetModules(); posted = []; sockets = [];
     await import('../audio/sdrAudioWorker');
     send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true });
@@ -101,12 +101,22 @@ describe('AUD2 audio ingress', () => {
     sockets[1].onclose!({ code: 1006, reason: '' });
     await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(3);
-    sockets[2].onclose!({ code: 1011, reason: 'receiver failed' });
-    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(3);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      sockets[2 + attempt].onclose!({ code: 1011, reason: 'receiver failed' });
+      await vi.advanceTimersByTimeAsync(1000 * 2 ** attempt);
+      expect(sockets).toHaveLength(4 + attempt);
+    }
+    sockets[5].onclose!({ code: 1011, reason: 'receiver failed' });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(6);
     expect(posted.at(-1)?.message).toBe('Backend audio receiver failed');
+    send({ type: 'enabled', value: false });
     send({ type: 'enabled', value: true });
-    sockets[3].onclose!({ code: 1013, reason: 'slow consumer' });
-    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(4);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      sockets[6 + attempt].onclose!({ code: 1013, reason: 'slow consumer' });
+      await vi.advanceTimersByTimeAsync(1000 * 2 ** attempt);
+    }
+    sockets[9].onclose!({ code: 1013, reason: 'slow consumer' });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(10);
     expect(posted.at(-1)?.message).toContain('slow consumer');
   });
   it('preserves stereo and source positions beyond Number integer precision', () => {

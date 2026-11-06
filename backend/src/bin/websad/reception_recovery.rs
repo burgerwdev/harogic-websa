@@ -3,6 +3,17 @@ use super::*;
 use std::collections::VecDeque;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+// Processor recovery policy (not browser subscription retries).
+const RETRY_LIMIT: u8 = 3;
+const RETRY_INITIAL_MS: u64 = 500;
+const RETRY_FAILURE_MS: u64 = 1000;
+const PROGRESS_MAX_GAP: Duration = Duration::from_secs(1);
+const STABLE_PROGRESS: Duration = Duration::from_secs(30);
+const CHECK_PERIOD: Duration = Duration::from_millis(100);
+const PREPARING_POLL: Duration = Duration::from_millis(500);
+const PREPARING_TIMEOUT: Duration = Duration::from_secs(10);
+const HISTORY_LIMIT: usize = 7;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Policy {
@@ -23,9 +34,9 @@ impl FaultKind {
         if [
             "fine input queue full;",
             "fine output queue full;",
-            "fine output exceeds 8 MiB",
-            "fine input exceeds 4 MiB",
-            "direct fine input exceeds 4 MiB",
+            "fine output exceeds ",
+            "fine input exceeds ",
+            "direct fine input exceeds ",
             "publisher IQ FIFO full;",
         ]
         .iter()
@@ -39,7 +50,7 @@ impl FaultKind {
     pub fn processing(error: &str) -> Self {
         if error
             .starts_with("receiver input queue failure: retained input including execution exceeds")
-            || error.starts_with("per-channel receiver output exceeds 8 MiB")
+            || error.starts_with("per-channel receiver output exceeds ")
             || error == "per-channel receiver output queue full"
             || [
                 "receiver input queue failure: sending on a full channel",
@@ -119,12 +130,12 @@ impl Lane {
         }
         if self
             .last_progress
-            .is_none_or(|last| now.duration_since(last) > Duration::from_secs(1))
+            .is_none_or(|last| now.duration_since(last) > PROGRESS_MAX_GAP)
         {
             self.stable = None;
             return;
         }
-        if now.duration_since(*self.stable.get_or_insert(now)) >= Duration::from_secs(30) {
+        if now.duration_since(*self.stable.get_or_insert(now)) >= STABLE_PROGRESS {
             self.attempts = 0;
         }
     }
@@ -152,7 +163,7 @@ fn now_ms() -> u64 {
 impl Supervisor {
     pub fn snapshot(&self, slot: u32) -> Value {
         self.lanes.get(&slot).map_or(Value::Null,|r|json!({"policy":r.policy,"state":r.phase,
-            "interruptions":r.count,"attempts":r.attempts,"retry_limit":3,
+            "interruptions":r.count,"attempts":r.attempts,"retry_limit":RETRY_LIMIT,
             "retry_in_ms":(r.phase=="recovering").then(||r.due.saturating_duration_since(Instant::now()).as_millis() as u64),
             "manual_recovery_allowed":r.phase=="stopped" && r.interruption.kind.recoverable(),
             "last_error":r.last_error,"last_interruption":r.interruption,"history":r.history,
@@ -208,10 +219,10 @@ impl Supervisor {
             history.push_back(r.interruption);
             (r.count + 1, r.attempts, history)
         });
-        while history.len() > 7 {
+        while history.len() > HISTORY_LIMIT {
             history.pop_front();
         }
-        let recover = policy == Policy::Continuous && kind.recoverable() && attempts < 3;
+        let recover = policy == Policy::Continuous && kind.recoverable() && attempts < RETRY_LIMIT;
         self.lanes.insert(
             slot,
             Lane {
@@ -222,7 +233,7 @@ impl Supervisor {
                 attempts,
                 phase: if recover { "recovering" } else { "stopped" },
                 since: Instant::now(),
-                due: Instant::now() + Duration::from_millis(500u64 << attempts.min(3)),
+                due: Instant::now() + Duration::from_millis(RETRY_INITIAL_MS << attempts.min(RETRY_LIMIT)),
                 stable: None,
                 last_progress: None,
                 progress: 0,
@@ -385,7 +396,7 @@ impl DevState {
         if self.reception.next_check.is_some_and(|next| next > now) {
             return;
         }
-        self.reception.next_check = Some(now + Duration::from_millis(100));
+        self.reception.next_check = Some(now + CHECK_PERIOD);
         let configs = self.channel_configs();
         let registry = self.stream_registry();
         for config in configs.iter().filter(|c| c.enabled) {
@@ -548,8 +559,8 @@ impl DevState {
                 .is_some_and(|w| !w.restart_ready(slot))
             {
                 lane.last_error = Some("waiting for previous execution owner to exit".into());
-                lane.due = now + Duration::from_millis(500);
-                if lane.since.elapsed() > Duration::from_secs(10) {
+                lane.due = now + PREPARING_POLL;
+                if lane.since.elapsed() > PREPARING_TIMEOUT {
                     lane.phase = "stopped";
                 }
                 continue;
@@ -566,8 +577,8 @@ impl DevState {
                 }
                 Err(error) => {
                     lane.last_error = Some(error);
-                    lane.due = now + Duration::from_secs(1u64 << lane.attempts.min(3));
-                    if lane.attempts >= 3
+                    lane.due = now + Duration::from_millis(RETRY_FAILURE_MS << lane.attempts.min(RETRY_LIMIT));
+                    if lane.attempts >= RETRY_LIMIT
                         || !lane
                             .last_error
                             .as_ref()
@@ -620,10 +631,11 @@ mod tests {
     #[test]
     fn bounded_retries_keep_gap_records_and_require_a_new_identity() {
         let mut s = Supervisor::default();
-        for n in 1..=4 {
+        for n in 1..=u32::from(RETRY_LIMIT)+1 {
             fault(&mut s, n, Policy::Continuous, FaultKind::Overload);
             assert_eq!(s.snapshot(1)["interruptions"], n);
-            if n == 4 {
+            assert_eq!(s.snapshot(1)["retry_limit"], RETRY_LIMIT);
+            if n == u32::from(RETRY_LIMIT)+1 {
                 assert_eq!(s.snapshot(1)["state"], "stopped");
                 break;
             }
@@ -644,7 +656,7 @@ mod tests {
                 "40"
             );
         }
-        assert_eq!(s.snapshot(1)["history"].as_array().unwrap().len(), 3);
+        assert_eq!(s.snapshot(1)["history"].as_array().unwrap().len(), usize::from(RETRY_LIMIT));
         s.manual(1).unwrap();
         assert!(
             s.manual(1).is_err(),
@@ -660,10 +672,10 @@ mod tests {
         assert_eq!(s.snapshot(1)["interruptions"], 2);
         let now = Instant::now();
         let lane = s.lanes.get_mut(&1).unwrap();
-        lane.attempts = 3;
+        lane.attempts = RETRY_LIMIT;
         lane.note_progress(now, true);
         lane.note_progress(now + Duration::from_secs(31), false);
-        assert_eq!(lane.attempts, 3, "idle time must not reset the budget");
+        assert_eq!(lane.attempts, RETRY_LIMIT, "idle time must not reset the budget");
         for n in 32..=62 {
             lane.note_progress(now + Duration::from_secs(n), true);
         }

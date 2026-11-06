@@ -47,7 +47,11 @@ describe('local speaker graph', () => {
     expect(ctx.gains[0].gain.value).toBe(0);
     await vi.advanceTimersByTimeAsync(20);
     expect(Worker.instances[1].terminate).toHaveBeenCalledOnce(); expect(Worker.instances[2].terminate).not.toHaveBeenCalled();
+    const dispatch = vi.spyOn(document, 'dispatchEvent');
     Worker.instances[2].onmessage!({ data: { type: 'error', message: 'Backend audio receiver failed' } });
+    const failure = dispatch.mock.calls.map(([event]) => event as CustomEvent).find(event => event.type === 'websa:sdr-stream-error');
+    expect(failure?.detail).toMatchObject({ stream: 'audio', channel: 'uid-b', message: 'Backend audio receiver failed' });
+    expect(audio.getSdrAudioStatus().find(r => r.channel === 'uid-a')?.error).toBe('');
     expect(audio.getSdrAudioStatus().find(r => r.channel === 'uid-b')?.error).toBe('Backend audio receiver failed');
     audio.setNativeAudioRoute('uid-b', 'usb', true, 0.3, 0.6, true);
     expect(Worker.instances).toHaveLength(4);

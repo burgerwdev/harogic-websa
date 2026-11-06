@@ -267,7 +267,7 @@ fn publish(frames: IqFrames, shared: &Arc<Shared>, tx: &SyncSender<Output>) -> b
         let mut stats = shared.stats.lock();
         if stats.output_bytes + bytes > OUTPUT_BYTES {
             drop(stats);
-            shared.fail("fine output exceeds 8 MiB retained payload", None);
+            shared.fail(&format!("fine output exceeds {OUTPUT_BYTES} bytes retained payload"), None);
             return false;
         }
         stats.output_bytes += bytes;
@@ -555,7 +555,7 @@ impl FineWorker {
                     stats.rejected += 1;
                     drop(stats);
                     lane.shared
-                        .fail("direct fine input exceeds 4 MiB", Some(input_index));
+                        .fail(&format!("direct fine input exceeds {INPUT_BYTES} bytes"), Some(input_index));
                     continue;
                 }
                 stats.held_bytes += bytes;
@@ -654,7 +654,7 @@ impl FineWorker {
                     stats.rejected += 1;
                     drop(stats);
                     lane.shared.fail(
-                        "fine input exceeds 4 MiB retained payload",
+                        &format!("fine input exceeds {INPUT_BYTES} bytes retained payload"),
                         Some(packet.input_index),
                     );
                     continue;

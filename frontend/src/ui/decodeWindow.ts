@@ -1,3 +1,4 @@
+import { cwLineFor } from './cwLine';
 // One Decode surface for native analysis, protocol text, tables and retained images.
 // The opener owns receiver state and subscriptions; a popup adopts the same DOM subtree.
 // Floating geometry persists in viewport pixels outside the zoomed analyzer frame.
@@ -5,8 +6,7 @@
 import { channelState } from '../core/channelState';
 import { currentSdrChannel, knownSdrChannelNumbers } from './sdrChannels';
 import { clearFt8Spots, clock, ft8DecoderState, ft8Spots, setFt8Channel, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
-import { clearCwLog, cwLevel, cwLog, setCwChannel, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
-	type CwLine, type CwMark } from '../sdr/cwLog';
+import { clearCwLog, cwLevel, cwLog, setCwChannel, subscribeCwLevel, subscribeCwLog } from '../sdr/cwLog';
 import { clearDrm, drmStatus, setDrmChannel, subscribeDrm } from '../sdr/drmLog';
 import {
 	deleteSstvAll,
@@ -41,9 +41,9 @@ import { renderDecoderResults } from './decoderResults';
 import { createDecodePopout, type DecodePopout } from './decodePopout';
 import { applyFloatingGeometry, clampFloatingGeometry } from './floatingGeometry';
 import './decodeResults.css';
-import { formatLatLon, geoFor } from '../sdr/ft8Geo';
-import { parseFt8Message } from '../sdr/ft8Message';
-import { getLang, onLangChange, t } from '../core/i18n';
+import { ft8GeoTexts } from './ft8GeoText';
+import { ft8SessionKey, markQsoRows } from './ft8Qso';
+import { onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
 import { sdrAmSync, sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxClockRecovery,
 	sdrRadiofaxIoc, sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPhasePixels,
@@ -123,6 +123,7 @@ export interface DecodeTiming {
 }
 const channelTiming = channelState<DecodeTiming | null>(() => null);
 const channelErrors = channelState<string | null>(() => null);
+const channelErrorKinds = channelState<'receiver' | 'transport' | 'reconnecting'>(() => 'receiver');
 let ingesting = false;
 let pendingPaint: number | null = null;
 let paintWindow: Window | null = null;
@@ -151,8 +152,9 @@ function deferDecodePaint(): boolean {
 	return true;
 }
 
-export function setDecodeError(channel: DecodeChannel, message: string | null): void {
+export function setDecodeError(channel: DecodeChannel, message: string | null, kind: 'receiver' | 'transport' | 'reconnecting' = 'receiver'): void {
 	channelErrors[channel] = message;
+	channelErrorKinds[channel] = kind;
 	if (message) { amInfo[channel] = null; amMeters[channel] = null; }
 	if (channel === selectedChannel && mode === 'am') renderAm();
 	if (channel === selectedChannel) renderDecodeTiming();
@@ -164,18 +166,21 @@ export function setDecodeTiming(channel: DecodeChannel, timing: DecodeTiming): v
 }
 
 function renderDecodeTiming(): void {
-	if (deferDecodePaint()) return;
-	const status = element('decode-source-timing');
-	const timing = channelTiming[selectedChannel];
 	const error = channelErrors[selectedChannel];
 	const errorText = error ? t('decode_error', { message: error }) : '';
 	const inline = document.getElementById('sdr-receiver-error');
 	if (inline) {
 		inline.hidden = !error;
-		inline.textContent = error ? t('receiver_failed') : '';
+		inline.textContent = error ? t(channelErrorKinds[selectedChannel] === 'reconnecting' ? 'receiver_reconnecting'
+      : channelErrorKinds[selectedChannel] === 'transport' ? 'receiver_connection_failed' : 'receiver_failed') : '';
 		inline.title = errorText;
 		inline.setAttribute('aria-label', errorText);
 	}
+  // This badge lives in the main panel. It must update even when Decode is
+  // closed and its own rendering is deferred during a batch of recovered data.
+  if (deferDecodePaint()) return;
+  const status = element('decode-source-timing');
+  const timing = channelTiming[selectedChannel];
 	const timingTip = timing ? [
 		t(timing.delayKnown && !timing.causalPresentation ? 'decode_timing_known' : 'decode_timing_unknown'),
 		t(mode === 'drm' || mode === 'drmplus' ? 'decode_timing_drm_tip' : 'decode_timing_source_tip'),
@@ -413,37 +418,6 @@ function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowE
 	return row;
 }
 
-/** Country pair and grid position as the row displays them (shared by the sort keys). */
-function ft8GeoTexts(spot: Ft8Spot): { country: string; location: string } {
-	const geo = geoFor(spot.text);
-	const isZh = getLang() === 'zh';
-	const sender = geo.sender ? (isZh ? geo.sender.zh : geo.sender.name) : '—';
-	const country = geo.receiver
-		? `${sender} → ${isZh ? geo.receiver.zh : geo.receiver.name}`
-		: sender;
-	return { country, location: geo.location ? formatLatLon(geo.location) : '—' };
-}
-
-/** The callsign pair a decode belongs to (unordered; a CQ groups by the caller alone). */
-function ft8SessionKey(text: string): string {
-	const { sender, receiver } = parseFt8Message(text);
-	if (!sender) return '';
-	return receiver ? [sender, receiver].sort().join('↔') : sender;
-}
-
-/** Highlight the hovered decode and every decode of the same callsign pair (null clears). */
-function markQsoRows(body: HTMLElement, row: Element | null): void {
-	const key = (row as HTMLElement | null)?.dataset?.qso || '';
-	for (const peer of Array.from(body.querySelectorAll('tr.ft8-row'))) {
-		const el = peer as HTMLElement;
-		const pk = el.dataset.qso || '';
-		// A CQ row groups by the caller alone, so it marks every decode that call took part in.
-		const match = key !== '' && pk !== '' && (pk === key || (!key.includes('↔') && pk.split('↔').includes(key)));
-		peer.classList.toggle('qso-focus', match && peer === row);
-		peer.classList.toggle('qso-peer', match && peer !== row);
-	}
-}
-
 /** The header marker for the active sort column (the ▸ glyph comes from the CSS). */
 function syncFt8SortUi(): void {
 	for (const th of surfaceDocument().querySelectorAll('#decode-window-table th[data-sortable]')) {
@@ -496,8 +470,8 @@ function renderFt8Rows(): void {
 			}
 		};
 		shown.sort((a, b) => {
-			const ga = ft8GeoTexts(a);
-			const gb = ft8GeoTexts(b);
+			const ga = ft8GeoTexts(a.text);
+			const gb = ft8GeoTexts(b.text);
 			const ka = key(a, ga), kb = key(b, gb);
 			return (ka < kb ? -1 : ka > kb ? 1 : 0);
 		});
@@ -515,78 +489,8 @@ function renderFt8Rows(): void {
 		return;
 	}
 	for (const spot of shown.slice(0, MAX_ROWS)) {
-		body.appendChild(rowFor(spot, ft8GeoTexts(spot).country, ft8GeoTexts(spot).location));
+		body.appendChild(rowFor(spot, ft8GeoTexts(spot.text).country, ft8GeoTexts(spot.text).location));
 	}
-}
-
-/** One CW line: the clock time it started at, then the text (the current line is marked).
- *
- * The text is built as runs rather than per character: a clean decode is one text node (the common
- * case by far), and only a doubtful character breaks the run into a span - which keeps a window full
- * of lines cheap to re-render as characters keep arriving. A word-length pause is drawn as a faint
- * dot, so "the sender is thinking" cannot be mistaken for "the page is stuck".
- */
-function cwLineFor(
-	line: CwLine | { at: number; text: string; marks: CwMark[] }, current: boolean,
-): HTMLElement {
-	const row = surfaceDocument().createElement('div');
-	row.className = current ? 'cw-line current' : 'cw-line';
-	const at = surfaceDocument().createElement('span');
-	at.className = 'cw-time';
-	at.textContent = clock(line.at, utcTime);
-	const text = surfaceDocument().createElement('span');
-	text.className = 'cw-text';
-	let run = '';
-	let weak = false;
-	let runShare = 1;
-	const flush = (): void => {
-		if (!run) return;
-		if (weak) {
-			const span = surfaceDocument().createElement('span');
-			span.className = 'cw-ch weak';
-			span.textContent = run;
-			// Per *run*, not per character: a doubtful character is rare and usually lasts a few
-			// characters, and one span per character would rebuild thousands of nodes per line.
-			span.title = t('cw_confidence_tip', { pct: Math.round(runShare * 100) });
-			text.appendChild(span);
-		} else {
-			text.appendChild(surfaceDocument().createTextNode(run));
-		}
-		run = '';
-		runShare = 1;
-	};
-	for (let i = 0; i < line.text.length; i++) {
-		const mark = line.marks[i];
-		// Never at the start of a line: the timestamp already says a new transmission began, and a dot
-		// under it reads as stray punctuation.
-		if (mark && mark.gap && !weak && i > 0) {
-			flush();
-			// Empty on purpose: the dot is drawn by CSS (`.cw-gap::before`), so the pause is visible
-			// without ever entering the text - copying a line, or the log's own textContent, must not
-			// come back with punctuation the sender never keyed.
-			const gap = surfaceDocument().createElement('span');
-			gap.className = 'cw-gap';
-			gap.title = t('cw_pause_tip');
-			text.appendChild(gap);
-		}
-		const doubtful = !!mark && mark.share < CW_WEAK_SHARE;
-		if (doubtful !== weak) {
-			flush();
-			weak = doubtful;
-		}
-		if (mark && mark.share < runShare) runShare = mark.share;
-		run += line.text[i];
-	}
-	flush();
-	if (current) {
-		const cursor = surfaceDocument().createElement('span');
-		cursor.className = 'cw-cursor';
-		cursor.textContent = '▌';
-		text.appendChild(cursor);
-	}
-	row.appendChild(at);
-	row.appendChild(text);
-	return row;
 }
 
 function renderCwLines(): void {
@@ -607,11 +511,11 @@ function renderCwLines(): void {
 	}
 	// Two tracks, and the boundary is the sender's own pause: everything above is confirmed (the line
 	// is closed and will not change), the bottom row is what is arriving right now.
-	for (const line of lines.slice(-MAX_CW_ROWS)) pane.appendChild(cwLineFor(line, false));
+	for (const line of lines.slice(-MAX_CW_ROWS)) pane.appendChild(cwLineFor(line, false, surfaceDocument(), utcTime));
 	if (current) {
 		const live = surfaceDocument().createElement('div');
 		live.className = 'cw-live';
-		live.appendChild(cwLineFor({ at: Date.now(), text: current, marks }, true));
+		live.appendChild(cwLineFor({ at: Date.now(), text: current, marks }, true, surfaceDocument(), utcTime));
 		pane.appendChild(live);
 	}
 	if (follow && body) body.scrollTop = body.scrollHeight;

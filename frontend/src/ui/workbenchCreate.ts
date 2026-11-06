@@ -1,3 +1,4 @@
+import { occupiedBandwidth } from '../core/receiverBandwidth';
 import { CHANNEL_COLORS } from '../core/channelColors';
 import { getLang } from '../core/i18n';
 import { receiverHasAudio, type ReceiverConfig, type ReceiverMode } from '../core/multichannel';
@@ -15,11 +16,6 @@ function modes(session: WorkbenchSession): ReceiverMode[] {
     defaultBandwidthHz: id === 'nfm' ? 12500 : id === 'am' ? 6000 : 3000,
     minimumRateHz: id === 'ft8' ? 8000 : 6000, sideband: ['usb', 'ft8'].includes(id) ? 'upper' : 'symmetric',
     audioCompanion: null, outputs: id === 'ft8' ? ['table'] : ['audio'] }));
-}
-
-export function occupiedBandwidth(mode: ReceiverMode, bandwidth = mode.defaultBandwidthHz): number {
-  return ['upper', 'lower'].includes(mode.sideband) ? Math.max(bandwidth, mode.id === 'ft8' ? 3200 : 0) * 2
-    : mode.id === 'cw' ? bandwidth + 1400 : bandwidth;
 }
 
 /** Configure a channel before creating it, so one submit can start reception and monitoring. */

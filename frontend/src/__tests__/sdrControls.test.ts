@@ -92,6 +92,42 @@ describe('SDR zoom follows confirmed tuning', () => {
     expect(state.sdrListenHz.get()).toBe(98e6);
     expect(state.sdrDemod.get()).toBe('am');
   });
+  it('keeps a retired C1 as the tuning target while C2 remains saved, discarding queued edits and stale replies', async () => {
+    const { controls, state, send } = await load();
+    const { currentSdrChannel, confirmSdrReceiverNumbers } = await import('../ui/sdrChannels');
+    const report = (version: number, enabled: boolean, uid: string | null, freq = 14.074e6) => ({
+      ...status(), config_version: version, response_to: 'STATUS', sdr: { ...status().sdr,
+        center: 14.2e6, listen: freq, channels: [
+          { channel: 1, enabled, freq, mode: 'ft8', if_bw: 3000,
+            control: { service_id: 'radio', receiver_uid: uid, revision: String(version) } },
+          { channel: 2, enabled: true, freq: 14.27e6, mode: 'usb', if_bw: 2700,
+            control: { service_id: 'radio', receiver_uid: 'saved-c2', revision: '1' } },
+        ] },
+    });
+    confirmSdrReceiverNumbers([1, 2]); controls.syncSdrPanel(report(1, true, 'old-c1'));
+    document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="14.075">');
+    controls.applySdrTune();
+    const pending = vi.mocked(send).mock.calls.at(-1)![0];
+    document.querySelector<HTMLInputElement>('#input-sdr-listen')!.value = '14.076';
+    controls.applySdrTune();
+    confirmSdrReceiverNumbers([2]); controls.syncSdrPanel(report(3, false, null));
+    expect(currentSdrChannel()).toBe(1);
+    expect(state.sdrPrimaryEnabled.get()).toBe(false);
+    expect(state.sdrDemod.get()).toBe('ft8');
+    vi.mocked(send).mockClear();
+    controls.syncSdrPanel({ ...report(2, true, 'old-c1', 14.075e6), response_to: 'SET_SDR_CHANNEL', request_id: (pending as Record<string, unknown>).request_id });
+    expect(send).not.toHaveBeenCalled();
+    expect(state.sdrPrimaryEnabled.get()).toBe(false);
+    // A new explicit main-panel action can recreate C1; the C2 identity is never used.
+    document.querySelector<HTMLInputElement>('#input-sdr-listen')!.value = '14.08';
+    controls.applySdrTune();
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 1, freq: 14.08e6, enabled: true }));
+    controls.syncSdrPanel(report(4, true, 'new-c1', 14.08e6));
+    state.sdrDemod.set('am'); controls.applySdrDemod();
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 1, mode: 'am', receiver_uid: 'new-c1' }));
+    expect(vi.mocked(send).mock.calls.every(([command]) => (command as Record<string, unknown>).channel !== 2)).toBe(true);
+    confirmSdrReceiverNumbers(null);
+  });
   it.each([98, 125])('sets capture and listening together when entering center %s MHz', async center => {
     const { controls, state, send } = await load();
     controls.syncSdrPanel(status('sdr', 'usb'));

@@ -160,6 +160,20 @@ describe('decoder channel selection', () => {
 		vi.restoreAllMocks();
 	});
 
+	it('clears the main reception badge during recovered batches while Decode is closed', () => {
+		document.body.insertAdjacentHTML('beforeend', '<span id="sdr-receiver-error" hidden></span>');
+		if (decodeWindowOpen()) toggleDecodeWindow();
+		const badge = document.getElementById('sdr-receiver-error')!;
+		setDecodeError(1, 'temporary interruption', 'reconnecting');
+		expect(badge.hidden).toBe(false);
+		expect(badge.textContent).toBe(t('receiver_reconnecting'));
+		ingestDecodeEvents(() => setDecodeError(1, null));
+		expect(badge.hidden).toBe(true);
+		expect(badge.textContent).toBe('');
+		expect(badge.title).toBe('');
+		expect(decodeWindowOpen()).toBe(false);
+	});
+
 	it('selects the confirmed mode and retained output for each receiver', () => {
 		setDecodeChannelMode(1, 'ft8');
 		setDecodeChannelMode(2, 'cw');

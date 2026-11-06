@@ -26,7 +26,7 @@ function fieldLabel(key: string): string {
 function fields(host: HTMLElement, data: Record<string, unknown>, status = false): void {
   const doc = host.ownerDocument;
   const list = doc.createElement('dl');
-  list.className = 'decoder-fields';
+  list.className = status ? 'decoder-fields decoder-metrics' : 'decoder-fields';
   const hasRows = Object.values(data).some(Array.isArray);
   for (const [key, value] of Object.entries(data)) {
     if (['v', 'kind', 'type', 'png'].includes(key) || Object.prototype.hasOwnProperty.call(provenanceFields, key) || /^virtual/i.test(key) || Array.isArray(value)) continue;
@@ -36,7 +36,10 @@ function fields(host: HTMLElement, data: Record<string, unknown>, status = false
     term.textContent = fieldLabel(key);
     const description = doc.createElement('dd');
     description.textContent = readable(value);
-    list.append(term, description);
+    if (status) {
+      const cell = doc.createElement('div'); cell.className = `decoder-metric${['message', 'why', 'reason'].includes(key) ? ' decoder-metric-wide' : ''}`;
+      cell.append(term, description); list.append(cell);
+    } else list.append(term, description);
   }
   if (list.childElementCount) host.appendChild(list);
 }
@@ -150,16 +153,21 @@ function fillResultBody(body: HTMLElement, entry: DecoderLogEntry, utc: boolean)
   };
   const data = entry.data;
   if (entry.kind === 'status' && record(data)
-    && (typeof data.type === 'string' ? ['am-info', 'wfm-info', 'drm', 'ft8-state', 'sstv-state', 'radiofax-state', 'cw-level'].includes(data.type)
+    && (typeof data.type === 'string' ? ['am-info', 'wfm-info', 'drm', 'ft8-state', 'sstv-state', 'radiofax-state', 'cw-level', 'rtty-state'].includes(data.type)
       : 'carrierHz' in data || 'rdsLocked' in data || record(data.status))
-    && ['am', 'wfm', 'drm', 'drmplus', 'ft8', 'sstv', 'radiofax', 'cw'].includes(entry.mode)) {
+    && ['am', 'wfm', 'drm', 'drmplus', 'ft8', 'sstv', 'radiofax', 'cw', 'rtty', 'rtty-reverse'].includes(entry.mode)) {
     const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
     const metric = (label: string, value: unknown, unit = '', digits = 1): void => {
+      const cell = doc.createElement('div'); cell.className = `decoder-metric${label === 'RadioText' ? ' decoder-metric-wide' : ''}`;
       const term = doc.createElement('dt'), description = doc.createElement('dd'); term.textContent = label;
-      description.textContent = typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(digits)}${unit ? ` ${unit}` : ''}` : typeof value === 'string' && value ? value : '—';
-      metrics.append(term, description);
+      const numeric = typeof value === 'number' || typeof value === 'string' && (unit !== '' || digits === 0) && value.trim() !== '' && Number.isFinite(Number(value));
+      description.textContent = numeric && Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : typeof value === 'string' && value ? value : '—';
+      if (unit && numeric && Number.isFinite(Number(value))) { const suffix = doc.createElement('small'); suffix.textContent = ` ${unit}`; description.append(suffix); }
+      cell.append(term, description); metrics.append(cell);
     };
-    const heading = doc.createElement('strong'), metrics = doc.createElement('dl'); metrics.className = 'decoder-fields';
+    const heading = doc.createElement('strong'), metrics = doc.createElement('dl'); metrics.className = 'decoder-fields decoder-metrics';
+    heading.className = 'decoder-signal-heading';
+    const extras = doc.createElement('div'); extras.className = 'decoder-signal-extras';
     if (entry.mode === 'am') {
       heading.textContent = data.syncEnabled === true ? data.syncLocked ? t('drm_locked') : l('Acquiring carrier', '正在捕获载波') : l('AM signal', 'AM 信号');
       metric(l('Carrier', '载波'), typeof data.carrierHz === 'number' ? data.carrierHz / 1e6 : undefined, 'MHz', 6);
@@ -176,30 +184,69 @@ function fillResultBody(body: HTMLElement, entry: DecoderLogEntry, utc: boolean)
       metric('PI', data.rdsLocked && typeof data.rdsPi === 'number' ? data.rdsPi.toString(16).toUpperCase().padStart(4, '0') : undefined);
       metric(l('Peak deviation', '峰值频偏'), typeof data.peakDevHz === 'number' ? data.peakDevHz / 1000 : undefined, 'kHz');
       metric(l('Pilot', '导频'), data.pilotPct, '%');
+      metric(l('Pilot SNR', '导频信噪比'), data.pilotSnrDb, 'dB');
+      metric(l('Pilot deviation', '导频频偏'), data.pilotDevHz, 'Hz');
       metric(l('Carrier', '载波'), typeof data.carrierHz === 'number' ? data.carrierHz / 1e6 : undefined, 'MHz', 6);
       metric(l('Audio peak', '音频峰值'), data.peakDbFs, 'dBFS');
+      metric(l('Peak hold', '峰值保持'), data.peakHoldDb, 'dBFS');
+      metric(l('RDS groups', 'RDS 组数'), data.rdsGroups, '', 0);
       if (Array.isArray(data.scopeL)) audio.push(data.scopeL);
       if (data.stereo && Array.isArray(data.scopeR)) audio.push(data.scopeR);
     } else if (entry.mode === 'drm' || entry.mode === 'drmplus') {
       const status = record(data.status) ? data.status : {};
-      heading.textContent = String(status.stationLabel || t('drm_station_waiting'));
-      metric(l('Status', '状态'), t(status.locked ? 'drm_locked' : 'drm_searching'));
-      metric(l('Mode', '模式'), status.mode);
-      metric('SNR', data.snrDb, 'dB');
+      const lines = Array.isArray(data.lines) ? data.lines.filter((line): line is string => typeof line === 'string') : [];
+      const lockedLine = lines.find(line => line.startsWith('locked: '));
+      const locked = status.locked ?? !!lockedLine;
+      const counts = lines.find(line => line.includes(' MSC frames,'))?.match(/^(\d+) MSC frames, (\d+) audio AUs, FAC ok (\d+) err (\d+)/);
+      const measured = (name: string): number | undefined => {
+        const match = lines.find(line => line.startsWith(`FAC ${name} `))?.match(/ (-?\d+(?:\.\d+)?) dB/);
+        return match ? Number(match[1]) : undefined;
+      };
+      heading.textContent = String(status.stationLabel || lines.find(line => line.startsWith('station: '))?.slice(9) || t('drm_station_waiting'));
+      metric(l('Status', '状态'), t(locked ? 'drm_locked' : 'drm_searching'));
+      metric(l('Mode', '模式'), status.mode || lockedLine?.slice(8) || lines.find(line => line.startsWith('DRM searching: '))?.match(/,\s*([A-E]\s+[\d.]+\s*kHz)/)?.[1]);
+      metric('FAC SNR', locked ? measured('SNR') ?? data.snrDb : undefined, 'dB');
+      metric('FAC MER', locked ? measured('MER') : undefined, 'dB');
       metric(l('Carrier offset', '载波偏移'), status.carrierOffsetHz, 'Hz');
-      metric('FAC', typeof status.facOk === 'number' ? `${status.facOk} / ${status.facErrors ?? '—'}` : undefined);
+      metric(l('FAC valid', 'FAC 正确'), status.facOk ?? counts?.[3], '', 0);
+      metric(l('FAC errors', 'FAC 错误'), status.facErrors ?? counts?.[4], '', 0);
       metric('SDC', status.sdcOk, '', 0);
+      metric(l('MSC frames', 'MSC 帧数'), counts?.[1], '', 0);
+      metric(l('Audio AUs', '音频单元'), counts?.[2], '', 0);
       if (Array.isArray(status.services)) for (const service of status.services) if (record(service)) {
-        metric(l('Programme', '节目'), service.label);
-        metric(l('Audio sample rate', '音频采样率'), service.sampleRate, 'Hz', 0);
-        metric(l('Audio channels', '音频声道数'), service.channels, '', 0);
+        const card = doc.createElement('section'); card.className = 'decoder-service';
+        const name = doc.createElement('strong'), info = doc.createElement('span');
+        name.textContent = String(service.label || l('Programme', '节目'));
+        info.textContent = [`ID ${service.serviceId ?? '—'}`, service.audioCoding === 0 ? 'AAC' : service.audioCoding === 3 ? 'xHE-AAC' : service.audioCoding != null ? `${l('Audio coding', '音频编码')} ${service.audioCoding}` : '',
+          typeof service.sampleRate === 'number' ? `${service.sampleRate / 1000} kHz` : '', typeof service.channels === 'number' ? `${service.channels} ch` : ''].filter(Boolean).join(' · ');
+        card.append(name, info); extras.append(card);
       }
+      const plot = doc.createElement('figure'); plot.className = 'decoder-constellation';
+      const caption = doc.createElement('figcaption'); caption.textContent = l('FAC constellation', 'FAC 星座图');
+      const points = locked && Array.isArray(data.points) ? data.points.filter(p => record(p) && Number.isFinite(p.re) && Number.isFinite(p.im)).slice(-1024) as { re: number; im: number }[] : [];
+      // A bounded vector plot stays crisp in both docked and desktop windows.
+      plot.innerHTML = `<svg viewBox="0 0 180 180" role="img" aria-label="${caption.textContent}"><path class="decoder-plot-grid" d="M90 8v164M8 90h164"/>${[-1, 1].flatMap(re => [-1, 1].map(im => `<circle class="decoder-plot-target" cx="${90 + re * 56.57}" cy="${90 + im * 56.57}" r="5"/>`)).join('')}${points.map(p => `<circle cx="${Math.max(2, Math.min(178, 90 + p.re * 80))}" cy="${Math.max(2, Math.min(178, 90 - p.im * 80))}" r="1.2"/>`).join('')}</svg>`;
+      if (!points.length) { const empty = doc.createElement('span'); empty.textContent = l('Waiting for constellation', '等待星座数据'); plot.append(empty); }
+      plot.append(caption);
+      const dashboard = doc.createElement('div'); dashboard.className = 'decoder-drm-dashboard'; dashboard.append(metrics, extras, plot);
+      body.append(heading, dashboard);
+    } else if (entry.mode === 'rtty' || entry.mode === 'rtty-reverse') {
+      heading.textContent = data.state === 'receiving' ? l('Receiving RTTY', '正在接收 RTTY')
+        : data.state === 'tone-pair-locked' ? l('Tone pair locked', '双音已锁定') : l('Searching for RTTY', '正在搜索 RTTY');
+      metric(l('Baud', '波特率'), data.baud, 'Bd', 2);
+      metric(l('Shift', '频移'), data.shiftHz, 'Hz');
+      metric('Mark', data.markHz, 'Hz'); metric('Space', data.spaceHz, 'Hz');
+      metric(l('Quality', '质量'), data.quality, '', 2);
+      metric(l('Characters', '字符数'), data.characters, '', 0);
+      metric(l('Framing errors', '帧错误'), data.framingErrors, '', 0);
+      metric(l('Polarity', '极性'), data.reverse ? l('Reverse', '反转') : l('Normal', '正常'));
     } else if (entry.mode === 'cw') {
       heading.textContent = data.keyed ? l('Morse signal detected', '检测到摩尔斯信号') : l('Waiting for Morse signal', '等待摩尔斯信号');
       metric(l('Speed', '速度'), data.wpm, 'WPM');
       metric(l('Tone', '音调'), data.pitchHz, 'Hz');
       metric(l('Tuning offset', '调谐偏移'), data.afcHz, 'Hz');
       metric(l('Signal level', '信号电平'), typeof data.rms === 'number' && data.rms > 0 ? 20 * Math.log10(data.rms) : undefined, 'dBFS');
+      metric(l('Tone energy share', '窄带能量占比'), typeof data.share === 'number' ? data.share * 100 : undefined, '%');
     } else {
       heading.textContent = entry.mode === 'radiofax' && typeof data.stage === 'string' ? t(`radiofax_stage_${data.stage}`)
         : entry.mode === 'sstv' ? data.hasPicture ? l('Receiving picture', '正在接收图像') : t('sstv_waiting')
@@ -207,9 +254,19 @@ function fillResultBody(body: HTMLElement, entry: DecoderLogEntry, utc: boolean)
       metric(l('Audio buffered', '已缓冲音频'), data.bufferedSeconds, 's');
       metric(l('Decode attempts', '解码尝试'), data.attempts, '', 0);
       if (entry.mode === 'ft8') metric(l('Messages decoded', '已解码消息'), data.count, '', 0);
-      if (entry.mode === 'radiofax') { metric('IOC', data.ioc, '', 0); metric('LPM', data.lpm, '', 0); }
+      if (entry.mode === 'sstv') { metric(l('Signal level', '信号电平'), data.level); metric(l('Source level', '输入电平'), data.srcLevel); }
+      if (entry.mode === 'radiofax') {
+        metric('IOC', data.ioc, '', 0); metric('LPM', data.lpm, '', 0);
+        metric(l('Signal level', '信号电平'), data.signalLevel);
+        metric(l('Carrier coherence', '载波相干度'), data.carrierCoherence, '', 2);
+        metric(l('Elapsed', '已接收'), data.elapsedSeconds, 's');
+        metric(l('Clock correction', '时钟校正'), data.clockPpm, 'ppm');
+        metric(l('Clock confidence', '时钟置信度'), data.clockConfidence, '', 2);
+        metric(l('Phase', '相位'), data.phasePixels, 'px');
+        metric(l('Modulation', '调制'), data.modulation); metric(l('Polarity', '极性'), data.polarity);
+      }
     }
-    body.append(heading, metrics);
+    if (!body.contains(heading)) body.append(heading, metrics);
     if (audio.some(samples => samples.length > 1)) {
       const canvas = doc.createElement('canvas'); canvas.dataset.audioScope = ''; canvas.dataset.key = 'audio-scope';
       canvas.width = 640; canvas.height = audio.length > 1 ? 160 : 100;

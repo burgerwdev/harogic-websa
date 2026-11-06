@@ -32,6 +32,42 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.clearAllMocks();
 });
 describe('UID consumer lifecycle', () => {
+  it('restarts only the recovered UID when its processing generation changes with the same IQ source', () => {
+    session.snapshot = clone(session.snapshot);
+    const receiver = session.snapshot.receivers[0];
+    receiver.processing_state = 'active';
+    receiver.processing_runtime = { state: 'active', processing_generation: '4', oldest_input_wait_ns: 0,
+      input_held_bytes: 0, input_held_media_ns: 0, fault: null };
+    session.monitor('fixture-c1', { enabled: true });
+    const old = Worker.instances.at(-1)!, neighbor = Worker.instances[1];
+    const iq = clone(receiver.stream);
+    old.onmessage!({ data: { type: 'error', message: 'subscription retries exhausted' } });
+    const count = Worker.instances.length;
+    session.notify(); expect(Worker.instances).toHaveLength(count);
+    receiver.processing_runtime.processing_generation = '5';
+    session.notify();
+    expect(receiver.stream).toEqual(iq);
+    expect(Worker.instances).toHaveLength(count + 1);
+    expect(streams.status('fixture-c1')).toBe('');
+    expect(neighbor.terminate).not.toHaveBeenCalled();
+    expect(setNativeAudioRoute).toHaveBeenCalledWith('fixture-c1', 'nfm', true, 0.7, 0, true);
+    old.onmessage!({ data: { type: 'error', message: 'obsolete callback' } });
+    expect(streams.status('fixture-c1')).toBe('');
+  });
+
+  it('keeps retrying subscription errors local and clears them only after validated delivery', () => {
+    const worker = Worker.instances[0];
+    worker.onmessage!({ data: { type: 'closed', message: 'receiver failed; reconnecting' } });
+    expect(streams.status('fixture-c1')).toContain('reconnecting');
+    expect(streams.status('fixture-c2')).toBe('');
+    expect(worker.terminate).not.toHaveBeenCalled();
+    worker.onmessage!({ data: { type: 'connected' } });
+    expect(streams.status('fixture-c1')).toContain('reconnecting');
+    worker.result();
+    expect(streams.status('fixture-c1')).toBe('');
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: 'ack' });
+  });
+
   it.each([
     { cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 7.11e6, enabled: true },
     { cmd: 'SET_SDR_CHANNEL', channel: 1, mode: 'nfm', enabled: true },

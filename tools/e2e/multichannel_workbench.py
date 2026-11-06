@@ -124,7 +124,7 @@ def main() -> None:
         row2 = overview.locator('[data-uid="fixture-c2"]')
         row1.locator('[data-action="rec-iq"]').click()
         expect(row1).to_contain_text('记录中')
-        row1.locator('[data-action="detail"]').click()
+        row1.locator('.mc-selection-mark[data-action="detail"]').click()
         pinned = page.locator('[data-view-id="detail-fixture-c1"]')
         expect(pinned).to_be_visible()
         pinned.locator('[data-close]').click()

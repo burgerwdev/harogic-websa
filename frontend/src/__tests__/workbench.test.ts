@@ -275,6 +275,30 @@ describe('independent receiver, monitor, recording and view lifetimes', () => {
 });
 
 describe('multiple surface portals', () => {
+  it.each([1, 1.5])('drags collapsed strips to the viewport bottom at scale %s and restores expanded bounds', scale => {
+    setUiScale(scale);
+    const surface = createFloatingWindow('collapsed-bounds', () => 'C1', { x: 30, y: 40, w: 500, h: 320 });
+    let height = 60 * scale;
+    vi.spyOn(surface.root, 'getBoundingClientRect').mockImplementation(() => ({ height } as DOMRect));
+    const head = surface.root.querySelector<HTMLElement>('.mc-head')!;
+    const pointer = (target: HTMLElement, type: string, x: number, y: number): void => {
+      target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
+    };
+    surface.root.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    pointer(head, 'pointerdown', 50, 50); pointer(head, 'pointermove', 50, 2000); pointer(head, 'pointerup', 50, 2000);
+    expect(Number.parseFloat(surface.root.style.top) * scale).toBe(window.innerHeight - height);
+    expect(surface.root.style.height).toBe('auto');
+    const resize = surface.root.querySelector<HTMLElement>('[data-resize=e]')!;
+    height += 20; // A wrapped text row can grow as width / content changes.
+    pointer(resize, 'pointerdown', 500, 0); pointer(resize, 'pointermove', 600, 0); pointer(resize, 'pointerup', 600, 0);
+    expect(Number.parseFloat(surface.root.style.top) * scale).toBe(window.innerHeight - height);
+    expect(JSON.parse(localStorage.getItem('websa-workbench-layout:collapsed-bounds')!).geometry.h).toBe(320);
+    surface.root.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    expect(Number.parseFloat(surface.root.style.height) * scale).toBe(320);
+    expect(Number.parseFloat(surface.root.style.top) * scale).toBe(window.innerHeight - 320);
+    surface.dispose(); setUiScale(1);
+  });
+
   it('synchronizes both documents, docks only the closed child and disposes callbacks', () => {
     const frames = [document.createElement('iframe'), document.createElement('iframe')];
     frames.forEach(frame => document.body.appendChild(frame));

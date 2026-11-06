@@ -42,7 +42,7 @@ import { measureChannel, clearChannel } from '../meas/channel';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply, repaintPnm } from '../meas/phaseNoise';
 
-import { t } from '../core/i18n';
+import { getLang, t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { resetTrigger, syncTriggerMode } from './triggerState';
 import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, confirmSdrAxisWindow, rejectAxisRef, resetAxisPreview, sdrAxisOwnsViewport, type Axis } from './axisDrag';
@@ -1130,20 +1130,31 @@ function syncSdrChannelButtons(): void {
     button.setAttribute('aria-label', t(button.dataset.action === 'sdr-channel-prev' ? 'sdr_channel_prev' : 'sdr_channel_next'));
   });
   const label = document.getElementById('sdr-current-channel');
-  if (label) label.textContent = `C${currentSdrChannel()}`;
+  if (label) {
+    const channel = currentSdrChannel(), selected = definitions.find(row => row.channel === channel);
+    const stopped = !selected?.enabled;
+    label.textContent = `C${channel}${stopped ? getLang() === 'zh' ? ' · 已停止' : ' · Stopped' : ''}`;
+    label.title = stopped
+      ? getLang() === 'zh' ? `调整频点或解调方式可恢复 C${channel}；其他信道保持独立。` : `Tune or choose a mode to resume C${channel}; other channels remain independent.`
+      : getLang() === 'zh' ? `主界面正在调整 C${channel}` : `Main panel controls C${channel}`;
+  }
   const add = document.querySelector('[data-action="sdr-channel-add"]');
   add?.setAttribute('aria-label', t('sdr_channel_add_tip'));
 }
 
-export function selectMainSdrChannel(channel: SdrChannel): void {
-  if (channel === currentSdrChannel() || !lastSdrPanelReport) return;
+function resetMainReceiverInteraction(): void {
   cancelSdrCanvasGesture(); cancelSdrTuningEdit(); cancelSdrFilterEdit();
   clearReceiverEdit(); clearAmSyncRequest(); clearRadiofaxRequest(); resetSdrAgcRequest();
   resetSdrTuneSession(); clearPassbandView(); sdrFilterLimits.confirm(null);
   confirmAmSyncGeneration(null);
   setSdrHoverFrequency(null); resetCarrierEvidence();
-  setCurrentSdrChannel(channel);
   sdrDemod.reset(); sdrIfbw.reset(); sdrAmSync.reset();
+}
+
+export function selectMainSdrChannel(channel: SdrChannel): void {
+  if (channel === currentSdrChannel() || !lastSdrPanelReport) return;
+  resetMainReceiverInteraction();
+  setCurrentSdrChannel(channel);
   setDecodeChannel(channel);
   syncSdrPanel({ ...lastSdrPanelReport, response_to: 'STATUS', request_id: undefined });
   document.dispatchEvent(new CustomEvent('websa:sdr-channel-selection'));
@@ -1206,20 +1217,27 @@ export function syncSdrPanel(s: any) {
   }
   const a = sdr.actual || {};
   const channels = Array.isArray(sdr.channels) ? sdr.channels : [];
-  confirmSdrChannels(channels);
-  lastSdrPanelReport = s;
+  const primary = channels.find((channel: { channel: number }) => channel.channel === currentSdrChannel());
+  const previous = lastSdrPanelReport?.sdr?.channels?.find((channel: { channel: number }) => channel.channel === currentSdrChannel());
+  const previousVersion = Number(lastSdrPanelReport?.config_version), nextVersion = Number(s.config_version);
+  const serviceChanged = previous?.control?.service_id && primary?.control?.service_id
+    && previous.control.service_id !== primary.control.service_id;
+  const currentReport = serviceChanged || !Number.isFinite(previousVersion) || !Number.isFinite(nextVersion) || nextVersion >= previousVersion;
+  if (currentReport) {
+    // Retiring the selected receiver leaves this tuning slot vacant. It must never
+    // transfer edits to a saved receiver, nor replay queued input onto a new UID.
+    if (previous && (previous.control?.receiver_uid !== primary?.control?.receiver_uid
+      || previous.enabled && primary?.enabled === false)) resetMainReceiverInteraction();
+    confirmSdrChannels(channels);
+    lastSdrPanelReport = s;
+  }
   const descriptors = sdrModeIds().map(modeDescriptor).filter((mode): mode is NonNullable<typeof mode> => mode!==undefined);
   if (descriptors.length && channels.some((row:any)=>row.control?.receiver_uid)) {
     sharedReceiverModeMemory.observe({service_id:channels.find((row:any)=>row.control?.receiver_uid)?.control.service_id,
       capabilities:{mode_descriptors:descriptors},receivers:channels.filter((row:any)=>row.control?.receiver_uid&&row.confirmed)
         .map((row:any)=>({receiver_uid:row.control.receiver_uid,revision:row.control.revision,confirmed:row.confirmed}))});
   }
-  if (sdrChannelMarks().length && !sdrChannelMarks().some(c => c.channel === currentSdrChannel())) {
-    selectMainSdrChannel(sdrChannelMarks()[0].channel);
-    return;
-  }
   syncSdrChannelButtons();
-  const primary = channels.find((channel: { channel: number }) => channel.channel === currentSdrChannel());
   const receiver = primary || sdr;
   if (primary) syncMainReceiverControls(primary, send);
   const ownReply = typeof s.request_id === 'string' && s.request_id.startsWith('sdr-filter-');

@@ -491,6 +491,44 @@ mod tests {
     }
 
     #[tokio::test(flavor="current_thread")]
+    async fn front_end_recapture_keeps_usb_audio_without_a_demodulator_change() {
+        let _guard=hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        let app=app();
+        command(&app,"SET_SDR_CHANNEL",json!({"channel":1,"mode":"usb","if_bw":2400.0,"squelch":-160.0})).await.unwrap();
+        let mut previous_epoch=None;
+        for (cmd,data) in [("SET_REF",json!({"ref":-50.0})),("SET_REF",json!({"ref":-40.0})),
+            ("SET_AMP",json!({"atten":10})),("SET_REFCK",json!({"mode":"external"}))] {
+            {
+                let mut state=app.state.lock().unwrap();
+                let registry=state.stream_registry();
+                let mut frames=Vec::new();
+                for _ in 0..160 {frames.extend(state.ddc.as_mut().unwrap().0.packet().unwrap());}
+                let output=state.process_receiver_frames_with_registry(&frames,&registry,true).unwrap();
+                assert!(output.audio.iter().any(|frame|frame.len()>96),"audio before {cmd}");
+                if let Some(epoch)=previous_epoch {assert_ne!(registry[0].epoch,epoch);}
+                previous_epoch=Some(registry[0].epoch);
+                // Leave source data to be admitted as old-stream tails during
+                // the command, without waiting for receiver execution.
+                let pending=state.ddc.as_mut().unwrap().0.packet().unwrap();
+                state.pending_iq.extend(pending);
+            }
+            command(&app,cmd,data).await.unwrap();
+            let mut state=app.state.lock().unwrap();
+            let registry=state.stream_registry();
+            let mut frames=std::mem::take(&mut state.pending_iq);
+            for _ in 0..160 {frames.extend(state.ddc.as_mut().unwrap().0.packet().unwrap());}
+            let output=state.process_receiver_frames_with_registry(&frames,&registry,false).unwrap();
+            let mut output=output;
+            output.append(state.receiver_workers.as_mut().unwrap().finish().unwrap());
+            assert!(output.audio.iter().any(|frame|frame.len()>96
+                && u32::from_le_bytes(frame[36..40].try_into().unwrap())==registry[0].epoch),"new stream audio after {cmd}");
+            assert!(state.receiver_failure.is_none(),"{:?}",state.receiver_failure);
+            assert!(state.receiver_workers.as_ref().unwrap().channel_failure(1).is_none());
+            assert_eq!(state.channel_configs()[0].mode,"usb");
+        }
+    }
+
+    #[tokio::test(flavor="current_thread")]
     async fn front_end_ack_reports_resolved_gain_before_next_spectrum() {
         let _guard=hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e|e.into_inner());
         let app=app();

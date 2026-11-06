@@ -61,11 +61,10 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let seconds=args.get(2).map(|s|s.parse::<u64>()).transpose()?.unwrap_or(45);
     let initial=curl("/api/state",None)?;fs::write(root.join("initial-state.json"),serde_json::to_vec(&initial)?)?;
     if initial["connected"]!=true || initial["mode"]!="sdr" {return Err("live SDR must already be connected".into());}
-    const MAX_CHANNEL:u32=3;
     let selected=args.get(4).map(|s|s.parse::<u32>()).transpose()?.unwrap_or(1);
-    if !(1..=MAX_CHANNEL).contains(&selected) {return Err("channel must be 1..3".into());}
-    let slot=(selected-1) as usize;
-    let channel=&initial["sdr"]["channels"][slot];
+    let channel=initial["sdr"]["channels"].as_array().ok_or("missing channel registry")?
+        .iter().find(|row|row["channel"].as_u64()==Some(u64::from(selected)))
+        .ok_or("selected channel is not advertised by the service")?;
     let restore=json!({"cmd":"SET_SDR_CHANNEL","channel":selected,"nr":channel["nr"],
         "nr_algorithm":channel["nr_algorithm"],"nr_atten_db":channel["nr_atten_db"],"nr_strength":channel["nr_strength"]});
     let _restore=Restore(restore);let mut reports=Vec::new();
@@ -132,8 +131,11 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     drop(_restore);
     let restored=curl("/api/state",None)?;
     fs::write(root.join("restored-state.json"),serde_json::to_vec(&restored)?)?;
+    let restored_channel=restored["sdr"]["channels"].as_array().ok_or("missing restored channel registry")?
+        .iter().find(|row|row["channel"].as_u64()==Some(u64::from(selected)))
+        .ok_or("selected channel disappeared during validation")?;
     for key in ["freq","mode","if_bw","volume","agc","nr","nr_algorithm","nr_atten_db","nr_strength","squelch"] {
-        if restored["sdr"]["channels"][slot][key]!=channel[key] {return Err(format!("receiver setting not restored: {key}").into());}
+        if restored_channel[key]!=channel[key] {return Err(format!("receiver setting not restored: {key}").into());}
     }
     Ok(())
 }
