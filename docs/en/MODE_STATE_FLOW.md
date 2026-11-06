@@ -69,6 +69,14 @@ Channel and Signal show a preview only for a valid target, with one frequency la
 
 The AM `am_sync` preference defaults to false (envelope detection), remains stored when another demodulator is selected and is restored with SDR preferences. A successful Preset restores false. Changing only this preference is a live detector update, preserving capture configuration, stream identity and source/audio clock continuity.
 
+Main-panel demodulator switching restores confirmed per-mode bandwidth and processor controls and derives baseband geometry again. Independent workbench IQ constraints are not replayed. A local fine-owner change waits up to 100 ms for accepted input to finish before closing its queue; a busy rejection leaves the previous stream running and does not create a source fault.
+
+Main-panel bandwidth bounds probe the same candidate as its `mode` + `ifbw` command: a mode-derived baseband with processing enabled. A narrower independent workbench IQ width, including one restored from mode memory, must not cap this editor. Independent baseband edits still validate the processor against their explicit IQ width. Protocol-fixed bandwidth modes remain non-editable.
+
+A delayed channel acknowledgement may settle its exact pending request, but an older configuration snapshot cannot replace the selected receiver, mode-settings form or confirmed mode memory. Receiver retirement removes the form and invalidates its handlers; service/UID replacement cancels queued tuning intent before the slot is reused.
+
+Graceful capture retirement rejects old IQ and pending search work while preserving decode events already assigned source sequence numbers, including completed results still queued or finishing a native call. Those events retain FIFO order before the terminal marker and successor stream. Obsolete PCM and squelch are not restored. Only a terminal batch closes a retired subscription; explicit failure recovery fences all prior completed output. Subscriber sequence validation remains strict.
+
 Channel commands validate the candidate settings before mutation. Invalid CW pitch returns `bad_parameter` without failing receivers. NR changes preserve decoder history and continuous PCM `audio_index`; source position advances over any discarded reducer tail. DRM/DRM+ retain NR preferences with effective NR Off. Runtime DFN errors use the receiver failure path; only initialization failure or unsupported operation selects Wiener explicitly.
 
 A shared receiver worker failure sets `sdr.receiver_error` and sends `RECEIVER_ERROR` for all receivers. Audio and decode subscriptions stop; their controls show the error inline. Capture, PFB, fine DDC, raw IQ, spectra and waterfall continue without a spectrum error overlay. Tuning and zoom remain available.

@@ -110,6 +110,11 @@ impl DevState {
         if self.swp.mode != "sdr" || !primary.enabled {
             return json!({"mode": mode, "min_hz": minimum, "max_hz": Value::Null});
         }
+        // The main panel sends mode + ifbw, which returns to a mode-derived
+        // baseband in parse_channel_config_base. Probe that same candidate;
+        // retaining a workbench/mode-memory IQ width falsely locks out widening.
+        primary.baseband = None;
+        primary.processing_enabled = true;
         let center = self.capture_center();
         let bandwidth = self.capture_bandwidth();
         let (fs, taps) = if let Some(pipeline) = self.pipeline.as_ref() {
@@ -635,6 +640,45 @@ mod tests {
             assert!(state.parse_channel_config(&json!({"channel":2,"enabled":true,"freq":freq})).is_err());
         }
         assert!(state.parse_channel_config(&json!({"channel":2,"enabled":false,"volume":3})).is_err());
+    }
+
+    #[test]
+    fn primary_filter_limits_match_mode_edits_after_independent_baseband() {
+        let mut state = DevState::new(json!({"preset_defaults": {}}), json!({}));
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 9_500_000.0;
+        state.sdr_listen = 9_635_100.0;
+        let mut conflicts = Vec::new();
+        for mode in ["am", "dsb", "usb", "lsb", "cw", "nfm", "wfm", "pm"] {
+            let descriptor = websa_channelizer::catalog::mode(mode).unwrap();
+            state.sdr_demod = mode.into();
+            state.sdr_if_bw = descriptor.bandwidth_presets_hz[0];
+            state.sdr_channels[0].baseband = None;
+            state.sdr_channels[0].processing_enabled = true;
+            let expected = state.filter_limits();
+            let plan = service_ddc::channel_plan(COARSE_RATE, &state.channel_configs()[0]).unwrap();
+            state.sdr_channels[0].baseband = Some(receiver_workers::BasebandConfig {
+                passband_hz: plan.occupied_bandwidth_hz,
+                transition_hz: plan.transition_hz,
+                minimum_rate_hz: plan.output_rate,
+            });
+            let before = state.channel_configs();
+            let revision = state.config_version;
+            let actual = state.filter_limits();
+            if actual != expected { conflicts.push(format!("{mode}: expected {expected}, got {actual}")); }
+            // The same wider preset is already accepted by the main-panel command.
+            let widest = *descriptor.bandwidth_presets_hz.last().unwrap();
+            let edit = state.parse_channel_config(&json!({"channel":1,"enabled":true,"mode":mode,"ifbw":widest})).unwrap();
+            assert!(edit.baseband.is_none());
+            assert!(edit.processing_enabled);
+            let fs = state.capture_bandwidth() / 0.8;
+            let source = service_ddc::source_plan(fs, &edit).unwrap();
+            service_ddc::validate_source_frequency(state.capture_center(), state.capture_bandwidth(),
+                fs, state.sdr_pfb_taps_per_phase, edit.freq, &source).unwrap();
+            assert_eq!(state.channel_configs(), before);
+            assert_eq!(state.config_version, revision);
+        }
+        assert!(conflicts.is_empty(), "{}", conflicts.join("\n"));
     }
 
     #[test]

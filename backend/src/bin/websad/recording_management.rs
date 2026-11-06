@@ -78,6 +78,11 @@ fn perform(app: &Arc<App>, request: &Value, preview: bool) -> Result<(), String>
     } else {
         persist(&path, &task)
     };
+    // Commit the tombstone before reporting success; a power loss must not
+    // resurrect a deleted recording during the next metadata-only startup.
+    let durable = if deleting && operation.is_ok() {
+        File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all())
+    } else { Ok(()) };
     state = app.state.lock().unwrap();
     operation.map_err(|e| e.to_string())?;
     state
@@ -90,5 +95,57 @@ fn perform(app: &Arc<App>, request: &Value, preview: bool) -> Result<(), String>
         // Hidden tombstones are never recovered, even if cleanup is interrupted.
         let _ = fs::remove_dir_all(tombstone);
     }
-    Ok(())
+    durable.map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deletion_invalidates_lookup_and_index_and_never_reappears_on_restart() {
+        let root = std::env::temp_dir().join(format!("websa-delete-{}-{}", std::process::id(), millis()));
+        let mut manager = Manager::open(root.clone()).unwrap();
+        manager.start("uid", "service", "delete-test").unwrap().wait().unwrap();
+        let id = manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        manager.stop(&id).unwrap();
+        manager.shutdown();
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.recordings = Some(manager);
+        let app = Arc::new(App {
+            state: StateMutex::new(state), clients: PLMutex::new(Vec::new()),
+            next_client: AtomicU64::new(0), epoch: Arc::new(AtomicU64::new(0)),
+            display_version: Arc::new(AtomicU64::new(0)), identities: channel_identities(),
+        });
+        let request = json!({"type":"record_delete","task_id":id});
+        let response = super::super::index(State(app.clone()), Path(id.clone()), Query(HashMap::new())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        fs::write(root.join(&id).join("iq-000000.jsonl"), vec![b'x'; 256*1024+1]).unwrap();
+        let response = super::super::index(State(app.clone()), Path(id.clone()), Query(HashMap::new())).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let lease = super::super::super::recording_read::READER.try_acquire().unwrap();
+        assert!(perform(&app, &request, false).unwrap_err().contains("in progress"));
+        assert!(root.join(&id).exists());
+        drop(lease);
+        perform(&app, &request, false).unwrap();
+        {
+            let state = app.state.lock().unwrap();
+            let manager = state.recordings.as_ref().unwrap();
+            assert!(manager.snapshots().is_empty());
+            assert_eq!(manager.readable_task(&id).unwrap_err(), "recording task not found");
+        }
+        let response = super::super::index(State(app.clone()), Path(id.clone()), Query(HashMap::new())).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(!root.join(&id).exists());
+        drop(app);
+        // A crash during cleanup can leave a complete manifest in the tombstone.
+        let tombstone = root.join(format!(".deleted-{id}"));
+        fs::create_dir(&tombstone).unwrap();
+        fs::write(tombstone.join("task.json"), b"not even a valid manifest").unwrap();
+        let manager = Manager::open(root.clone()).unwrap();
+        assert!(manager.snapshots().is_empty());
+        drop(manager);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

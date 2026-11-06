@@ -1706,6 +1706,19 @@ describe('radiofax logical page browser', () => {
 		document.body.innerHTML = '';
 	});
 
+	it('does not rewrite any radiofax select attributes or options during decoder refreshes', () => {
+		image('live');
+		const selects = [...document.querySelectorAll<HTMLSelectElement>('#decode-window-radiofax select')];
+		expect(selects.length).toBeGreaterThan(5);
+		const observer = new MutationObserver(() => {});
+		const setters = selects.map(select => vi.spyOn(select, 'value', 'set'));
+		for (const select of selects) observer.observe(select, { attributes: true, subtree: true, childList: true, characterData: true });
+		for (let i = 0; i < 5; i++) ui.refreshDecodeWindow();
+		for (const select of selects) { select.focus(); ui.refreshDecodeWindow(); select.blur(); }
+		expect(observer.takeRecords()).toEqual([]); observer.disconnect();
+		for (const setter of setters) expect(setter).not.toHaveBeenCalled();
+	});
+
 	it('can render another mode before the Radiofax panels become native popovers', () => {
 		const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'hidePopover');
 		const hide = vi.fn(function (this: HTMLElement) {

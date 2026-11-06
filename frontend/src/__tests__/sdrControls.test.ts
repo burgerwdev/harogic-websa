@@ -128,6 +128,30 @@ describe('SDR zoom follows confirmed tuning', () => {
     expect(vi.mocked(send).mock.calls.every(([command]) => (command as Record<string, unknown>).channel !== 2)).toBe(true);
     confirmSdrReceiverNumbers(null);
   });
+  it('does not rebind mode settings to a retired UID on a delayed acknowledgement', async () => {
+    document.body.insertAdjacentHTML('beforeend', '<div><div id="sdr-ifbw-group"></div></div>');
+    const { controls, send } = await load();
+    const report = (version: number, uid: string | null) => ({ ...status('sdr', 'am', {
+      control: { service_id: 'radio', receiver_uid: uid, revision: String(version), action_token: 'token' },
+      confirmed: { baseband: { passband_hz: 6000, transition_hz: 1000, minimum_rate_hz: 12000 },
+        processors: [{ mode: 'am', bandwidth_hz: 6000, pcm_gain: 0.8, agc: true, squelch_dbm: -160 }] },
+    }), config_version: version });
+    controls.syncSdrPanel(report(1, 'old-c1'));
+    controls.syncSdrPanel(report(3, 'new-c1'));
+    controls.syncSdrPanel({ ...report(2, 'old-c1'), response_to: 'SET_SDR_CHANNEL', request_id: 'late-edit' });
+    const form = document.querySelector<HTMLFormElement>('#sdr-mode-controls')!;
+    expect(JSON.parse(form.dataset.context!).receiver_uid).toBe('new-c1');
+    const { sharedReceiverModeMemory } = await import('../ui/receiverModeMemory');
+    expect(sharedReceiverModeMemory.get('new-c1', 'am')?.bandwidth_hz).toBe(6000);
+    expect(sharedReceiverModeMemory.get('old-c1', 'am')).toBeUndefined();
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ receiver_uid: 'new-c1', expected_revision: '3' }));
+    controls.syncSdrPanel(report(4, null));
+    expect(document.querySelector('#sdr-mode-settings')).toBeNull();
+    vi.mocked(send).mockClear();
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    expect(send).not.toHaveBeenCalled();
+  });
   it.each([98, 125])('sets capture and listening together when entering center %s MHz', async center => {
     const { controls, state, send } = await load();
     controls.syncSdrPanel(status('sdr', 'usb'));
@@ -1060,6 +1084,24 @@ describe('SDR control intent and STATUS', () => {
 		expect(state.sdrIfbw.desiredValue()).toBeNull();
 		expect(send).toHaveBeenCalledTimes(2);
 	});
+
+  it('restores mode controls without replaying independent IQ constraints from another capture', async () => {
+    const { controls, send } = await load();
+    controls.syncSdrPanel(status('sdr', 'cw', {
+      if_bw: 500,
+      control: { service_id: 'radio', receiver_uid: 'c1', revision: '1' },
+      confirmed: { baseband: { passband_hz: 3000, transition_hz: 1, minimum_rate_hz: 62500000 },
+        processors: [{ mode: 'cw', bandwidth_hz: 500, pcm_gain: 0.6, pitch: 900, agc: false, squelch_dbm: -120 }] },
+    }));
+    controls.syncSdrPanel(status('sdr', 'am', {
+      control: { service_id: 'radio', receiver_uid: 'c1', revision: '2' },
+      confirmed: { baseband: { passband_hz: 12000, transition_hz: 1500, minimum_rate_hz: 1 },
+        processors: [{ mode: 'am', bandwidth_hz: 12000, pcm_gain: 1, agc: true, squelch_dbm: -160 }] },
+    }));
+    controls.selectSdrDemod('cw');
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'cw', ifbw: 500,
+      baseband: null, processing_enabled: true, volume: 0.6, pitch: 900, agc: false }));
+  });
 
 	it('Preset clears filter preferences and invalidates an outstanding filter ACK', async () => {
 		const { controls, state, send } = await load();

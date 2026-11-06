@@ -16,12 +16,13 @@ import { convertUnitValue } from '../core/units';
 import { frequencyInput, formatFrequencyValue, syncFrequencyInputs, wireFrequencyInputs } from './frequencyInput';
 import { mountRecordingView } from './recordingView';
 import { mountRecordingLibrary } from './recordingLibrary';
+import { recordingDeleteUnavailable } from './recordingDelete';
 import { audioDownload, audioFormatMenu, formatAvailable, formatLabel, rememberAudioFormat, savedAudioFormat, syncAudioFormatMenus, wireAudioFormatMenus } from './recordingFormats';
 import { mountQuickListen } from './quickListen';
 import { mountReceiverPresets } from './receiverPresets';
 import { resumeNativeAudio, sdrAudioNeedsGesture } from '../audio/sdrAudio';
 import type { DecoderLogEntry } from '../sdr/decoderLog';
-import { receiverLevel } from './receiverLevel';
+import { receiverLevel, receiverLevelScale } from './receiverLevel';
 import { mountReceiverTicker, type ReceiverTicker } from './receiverTicker';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
@@ -103,7 +104,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     return l('The full channel passband and transition are outside the shared capture.', '信道完整通带及过渡带超出共享采集范围。') + current + needed
       + l(' Adjust the shared centre or capture bandwidth in the main SDR panel, then retry. Shared capture changes affect all channels.', ' 请在主 SDR 面板调整共享中心或采集带宽，覆盖所需频段后重试；共享采集变更会影响所有信道。');
   };
-  const archives = mountRecordingView({ demodulateOffset: () => !!session.snapshot.capabilities.iq_file_demodulate_offset, demodulateModes: () => session.snapshot.capabilities.iq_file_demodulate ? session.snapshot.capabilities.iq_file_demodulate_modes ?? [] : [], collection: () => !!session.snapshot.capabilities.iq_archive_collection, streaming: () => !!session.snapshot.capabilities.iq_archive_export, exportLimit: () => session.snapshot.capabilities.iq_export_max_samples ?? '1048576' });
+  const archives = mountRecordingView({ session, demodulateOffset: () => !!session.snapshot.capabilities.iq_file_demodulate_offset, demodulateModes: () => session.snapshot.capabilities.iq_file_demodulate ? session.snapshot.capabilities.iq_file_demodulate_modes ?? [] : [], collection: () => !!session.snapshot.capabilities.iq_archive_collection, streaming: () => !!session.snapshot.capabilities.iq_archive_export, exportLimit: () => session.snapshot.capabilities.iq_export_max_samples ?? '1048576' });
   let audioArchives: ReturnType<typeof import('./recordingAudioView').mountRecordingAudioView> | null = null;
   let disposed = false;
   let preferredFormat = savedAudioFormat();
@@ -113,8 +114,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     return formatAvailable(session.snapshot, format) ? format : 'wav';
   };
   const openAudio = (task: RecordingTask): void => {
+    const service = session.snapshot.service_id;
     void import('./recordingAudioView').then(module => {
-      if (!disposed) { audioArchives ??= module.mountRecordingAudioView(); audioArchives.open(task); }
+      if (!disposed && service === session.snapshot.service_id && session.snapshot.recordings.some(t => t.task_id === task.task_id)) { audioArchives ??= module.mountRecordingAudioView(session); audioArchives.open(task); }
     });
   };
   const archiveButton = (task: RecordingTask): string => {
@@ -131,6 +133,10 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   };
   const library = mountRecordingLibrary(session, { archive: archiveButton, openAudio, openIq: task => archives.open(task),
     chooseFormat: (id, format) => { if (formatAvailable(session.snapshot, format)) { taskFormats.set(id, format); session.notify(); } } });
+  const deleteRecordingButton = (task: RecordingTask): string => {
+    const reason = recordingDeleteUnavailable(session, task);
+    return button('delete-recording', l('Delete recording', '删除录制'), `class="mc-file-delete" data-archive-task="${esc(task.task_id)}" ${reason ? 'disabled' : ''}`, reason || l('Delete this recording and all its files', '删除此录制及其全部文件'));
+  };
   const available = (command: string): boolean => fixture || !!session.snapshot.capabilities.commands?.includes(command);
   const applyCapabilities = (body: HTMLElement): void => {
     if (fixture) return;
@@ -328,7 +334,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       <div class="mc-record-heading"><h3>${l('Recording history', '录制记录')}</h3>${button('recording-files', l('All files', '全部文件'), 'class="mc-quiet"', l('Manage recordings from every channel', '管理所有信道的录制文件'))}<span>${session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid).length} ${l('tasks', '项任务')}</span></div>
       ${!session.snapshot.recordings.some(t => t.receiver_uid === r.receiver_uid) ? `<div class="mc-workspace-empty mc-record-empty">${icon('record')}<h2>${l('No recordings yet', '还没有录制记录')}</h2><p>${l('Start a recording above. Stop it here when you are ready to play or export the file.', '从上方开始录制，结束后在此试听或导出文件。')}${fixture ? l(' Demo mode simulates recording without writing files.', '演示模式仅模拟录制，不写入文件。') : ''}</p></div>` : ''}
       ${session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid).slice(-10).reverse().map(t => `<article class="mc-task" data-task-id="${esc(t.task_id)}" data-task-state="${t.state}"><b>${t.tracks.map(track => track.kind.toUpperCase()).join(' + ')} · ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}</b>
-        ${t.fault ? `<p class="mc-error" role="alert">${esc(t.fault.message)}</p>` : ''}${archiveButton(t)}
+        ${t.fault ? `<p class="mc-error" role="alert">${esc(t.fault.message)}</p>` : ''}${archiveButton(t)}${deleteRecordingButton(t)}
         <details data-section="task-${esc(t.task_id)}" ${expanded(`task-${t.task_id}`)}><summary>${l('Compression and stream details', '压缩与数据流详情')}</summary>
         <p>${esc(t.task_id)}<br>${esc(t.service_id ?? '')}</p>${t.tracks.map(track => `<p>${track.kind === 'results' ? 'JSONL' : track.kind === 'audio' ? 'Float32 PCM' : 'CF32 LE'} · ${track.compression} · ${track.segments.length} ${l('segments', '片段')}<br>${l('Source bytes', '原始字节')}: ${track.raw_bytes}<br>${l('Saved bytes', '已保存字节')}: ${track.stored_bytes}${fixture ? ` (${l('fixture, no disk I/O', '模拟，无磁盘写入')})` : ''}</p>
         ${track.segments.map(segment => `<p class="mc-clock">${esc(segment.stream.epoch)} / ${esc(segment.stream.channel_id)} · ${segment.actual_rate_hz} S/s · ${segment.events !== undefined ? `${segment.events} ${l('events', '事件')}` : `${segment.samples} samples`}<br>${l('Source position', '源位置')} ${segment.first_input_index} · ${esc(segment.end_reason ?? '…')}</p>`).join('')}`).join('')}</details></article>`).join('')}`;
@@ -361,13 +367,14 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const reception = liveStatus(r), state = reception.kind === 'healthy' ? 'running' : reception.kind === 'fault' ? 'failed' : reception.kind === 'stopped' ? 'stopped' : 'interrupted';
     const result = native?.results(uid), entries = result?.entries ?? [];
     const level = receiverLevel(r, entries, native?.playback?.(uid), result?.source);
+    const levelScale = receiverLevelScale(level);
     const levelLabel = level ? `${level.source === 'input' ? l('Input', '输入') : l('Audio', '音频')} ${level.db.toFixed(1)} dBFS` : l('No live level', '暂无实时电平');
     const control = (action: string, glyph: string, label: string, extra = ''): string => `<button type="button" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}" ${extra}>${icon(glyph)}</button>`;
     const volume = pane.expanded.has('strip-volume'), route = session.route(uid);
     const recordLabel = kind === 'audio' ? l('audio', '音频') : kind === 'results' ? l('results', '结果') : 'IQ';
     patchWorkbench(strip, `<div class="mc-strip-identity" title="${esc(`${r.confirmed.name} · ${reception.label}`)}"><span><i class="mc-state-dot" data-state="${state}"></i><b>${esc(r.confirmed.name)}</b></span><small>${(r.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} <span>MHz</span></small></div>
       <div data-strip-text data-key="strip-text"></div>
-      <div class="mc-strip-level" data-no-drag data-available="${!!level}" title="${esc(levelLabel)}" role="meter" aria-label="${esc(levelLabel)}" aria-valuemin="-100" aria-valuemax="0" aria-valuenow="${level ? Math.max(-100, Math.min(0, level.db)) : -100}" aria-valuetext="${esc(levelLabel)}" style="--level:${level ? Math.max(0, Math.min(100, level.db + 100)) : 0}%"><span class="mc-strip-level-fill"></span><small>${level ? `${level.db.toFixed(0)} dBFS` : '— dBFS'}</small></div>
+      <div class="mc-strip-level" data-no-drag data-available="${!!level}" title="${esc(levelLabel)}" role="meter" aria-label="${esc(levelLabel)}" aria-valuemin="${levelScale.min}" aria-valuemax="0" aria-valuenow="${levelScale.value}" aria-valuetext="${esc(levelLabel)}" style="--level:${levelScale.percent}%"><span class="mc-strip-level-fill"></span><small>${level ? `${level.db.toFixed(0)} dBFS` : '— dBFS'}</small></div>
       <div class="mc-strip-actions">${monitor ? control('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), `aria-pressed="${session.listening(uid)}" ${r.state !== 'running' || r.fault ? 'disabled' : ''}`) : ''}
       ${kind && available('record_start') ? control(`rec-${kind}`, 'record', task ? l(`Stop ${recordLabel} recording`, `停止${recordLabel}录制`) : l(`Record ${recordLabel}`, `录制${recordLabel}`), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${recordingPending(uid, kind) || session.retiring(uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running') ? 'disabled' : ''}`) : ''}
       ${monitor ? `<div class="mc-strip-volume">${control('strip-volume', route.gain ? 'volume' : 'muted', l('Channel volume', '信道音量'), `aria-expanded="${volume}"`)}<div class="mc-strip-volume-panel" data-no-drag ${volume ? '' : 'hidden'}><label>${l('Volume', '音量')}<input data-strip-gain data-key="strip-gain-${esc(uid)}" type="range" min="0" max="1" step="0.01" value="${route.gain}" aria-label="${l('Channel volume', '信道音量')}"></label><output data-strip-volume-value>${Math.round(route.gain * 100)}%</output></div></div>` : ''}
@@ -393,7 +400,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const focused = body.ownerDocument.activeElement;
     const patch = (html: string): void => patchWorkbench(body, html, element =>
       element.hasAttribute('data-decode-view') || element.hasAttribute('data-inline-decode') || element.hasAttribute('data-receiver-presets') || (element.hasAttribute('data-scene') && !!scene) || (sameEditor && (
-        (element.hasAttribute('data-config') && (!!pane.dirty || !!focused && focused.matches('input,select,textarea') && element.contains(focused)))
+        (element.hasAttribute('data-config') && (!!pane.dirty || !!focused && !!focused.closest('input,select,textarea') && element.contains(focused)))
         || (element.hasAttribute('data-channel-name') && !!pane.dirty)
         || (element.hasAttribute('data-preview') && !!pane.dirty)
         || (element === focused && element.matches('input,select,textarea')))));
@@ -405,7 +412,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       const rows = all.filter(r => `${r.confirmed.name} ${r.confirmed.baseband.frequency_hz} ${r.confirmed.baseband.frequency_hz / 1e6} MHz ${r.confirmed.baseband.frequency_hz / 1000} kHz ${r.confirmed.processors[0]?.mode ?? 'IQ'} ${r.confirmed.tags.join(' ')}`.toLowerCase().includes(search.trim().toLowerCase())
         && (channelFilter === 'all' || channelFilter === 'listening' && receiverHasAudio(session.snapshot, r.confirmed) && session.listening(r.receiver_uid) || channelFilter === 'recording' && recording(r.receiver_uid)));
       const capture = session.snapshot.capture;
-      const history = !fixture && session.snapshot.recordings.some(t => !receiver(t.receiver_uid)) ? `<details class="mc-history" data-section="recording-history" ${pane.expanded.has('recording-history') ? 'open' : ''}><summary>${l('Earlier recording tasks', '历史记录任务')}</summary>${session.snapshot.recordings.filter(t => !receiver(t.receiver_uid)).slice(-20).reverse().map(t => `<div class="mc-clock" data-task-id="${esc(t.task_id)}">${esc(t.task_id)} · ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}<br>${esc(t.fault?.message ?? '')}${archiveButton(t)}</div>`).join('')}</details>` : '';
+      const history = !fixture && session.snapshot.recordings.some(t => !receiver(t.receiver_uid)) ? `<details class="mc-history" data-section="recording-history" ${pane.expanded.has('recording-history') ? 'open' : ''}><summary>${l('Earlier recording tasks', '历史记录任务')}</summary>${session.snapshot.recordings.filter(t => !receiver(t.receiver_uid)).slice(-20).reverse().map(t => `<div class="mc-clock" data-task-id="${esc(t.task_id)}">${esc(t.task_id)} · ${taskLabel(t.state)} · ${size(t.tracks[0]?.stored_bytes ?? '0')}<br>${esc(t.fault?.message ?? '')}${archiveButton(t)}${deleteRecordingButton(t)}</div>`).join('')}</details>` : '';
       patch(`<header data-key="workspace-head" class="mc-workspace-head"><div><h1>${l('Channel workbench', '信道工作台')}<span class="mc-workspace-count">${all.length} / ${session.snapshot.capabilities.max_channels}</span></h1></div><div class="mc-workspace-actions">${recordingCapacity()}${fixture || capture.source_kind === 'fixture' ? `<span class="mc-source-badge">${fixture ? l('Demo', '演示模式') : l('Synthetic source', '模拟源')}</span>` : ''}${button('follow-results', l('Results window', '结果窗口'), `class="mc-quiet" aria-label="${l('Results window', '结果窗口')}"`)}${button('recording-files', l('Recording files', '录制文件'), 'class="mc-quiet"', l('Find, play, download, rename or delete recordings', '查找、试听、下载、重命名或删除录制文件'))}${button('create', l('Add channel', '添加信道'), `class="mc-primary" ${all.length >= session.snapshot.capabilities.max_channels || !available('create') ? 'disabled' : ''}`, all.length >= session.snapshot.capabilities.max_channels ? l('Channel limit reached; delete an unused channel to add one', '信道路数已满，可删除不需要的信道后再添加') : workbenchTip('create'))}</div></header>
       <details data-key="capture-bar" class="mc-capture-bar" data-section="capture" ${pane.expanded.has('capture') ? 'open' : ''}><summary><span><i class="mc-state-dot" data-state="${capture.state}"></i>${l('Shared capture', '共享采集')}<strong>${capture.center_hz / 1e6} MHz</strong><span class="mc-capture-band">${capture.usable_bandwidth_hz === null ? l('Unknown bandwidth', '带宽未知') : `${capture.usable_bandwidth_hz / 1000} kHz`}</span></span><span>${all.filter(r => r.state === 'running').length} ${l('receiving', '路接收中')}</span></summary><p data-capture-status class="mc-clock">${esc(captureSummary())}</p>${fixture ? `<p class="mc-notice">${l('Simulated data. No actual reception, audio or saved files.', '当前为模拟数据，不进行实际接收、播放或文件写入。')}</p>` : ''}</details>
       ${session.fault ? `<p data-key="session-fault" class="mc-error" role="alert">${esc(session.fault.code)}: ${esc(faultText(session.fault))} ${button('dismiss-fault', l('Dismiss', '关闭'))}</p>` : ''}
@@ -417,20 +424,21 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       <section data-key="editor" class="mc-editor" data-editor aria-label="${l('Selected channel', '所选信道')}">${r ? detail(r, pane) : `<div class="mc-workspace-empty">${icon('channels')}<p class="mc-eyebrow">READY TO RECEIVE</p><h2>${l('Start with a frequency', '从一个频率开始')}</h2><p>${l('Add a channel to listen, decode signals and save recordings in one workspace.', '添加信道，在同一工作区完成监听、信号解码和录制。')}</p>${button('create', l('Add your first channel', '添加第一个信道'), 'class="mc-primary"')}</div>`}${history}<div data-key="scene" data-scene></div></section></div>
       <footer data-key="master" class="mc-toolbar mc-master"><div class="mc-master-label">${icon('volume')}<span>${l('Speakers', '扬声器')}<small>${all.filter(r => session.listening(r.receiver_uid) && receiverHasAudio(session.snapshot, r.confirmed)).length} ${l('channels selected', '路已加入监听')}</small></span></div>
       ${button('master-mute', session.masterMuted ? l('Unmute', '取消静音') : l('Mute', '静音'), `aria-pressed="${session.masterMuted}"`)}<label>${l('Master volume', '总音量')}<input aria-label="${l('Master volume', '总音量')}" data-master type="range" min="0" max="1" step="0.01" value="${session.masterGain}"><output data-master-value>${Math.round(session.masterGain * 100)}%</output></label>
-      <label class="mc-mix-rule"><select data-monitor-mode aria-label="${l('Monitor rule', '监听规则')}" title="${l('Mix channels manually, or listen to the selected channel', '手动混听，或只监听当前选中的信道')}"><option value="manual">${l('Manual mix', '手动混听')}</option><option value="follow">${l('Follow selection', '跟随所选信道')}</option></select></label>${sdrAudioNeedsGesture() ? button('resume-audio', l('Enable speakers', '启用扬声器'), 'class="mc-primary"') : ''}</footer>`);
-      body.querySelector<HTMLSelectElement>('[data-monitor-mode]')!.value = session.monitorMode;
+      <label class="mc-mix-rule"><select data-monitor-mode aria-label="${l('Monitor rule', '监听规则')}" title="${l('Mix channels manually, or listen to the selected channel', '手动混听，或只监听当前选中的信道')}"><option value="manual" ${session.monitorMode === 'manual' ? 'selected' : ''}>${l('Manual mix', '手动混听')}</option><option value="follow" ${session.monitorMode === 'follow' ? 'selected' : ''}>${l('Follow selection', '跟随所选信道')}</option></select></label>${sdrAudioNeedsGesture() ? button('resume-audio', l('Enable speakers', '启用扬声器'), 'class="mc-primary"') : ''}</footer>`);
       if (scene) showScene(pane);
     } else if (pane.kind === 'detail') patch(r ? detail(r, pane) : l('Receiver retired.', '信道已删除。'));
     else {
-      patch(`<div data-key="decode-toolbar" class="mc-decode-binding"><label>${l('Channel', '信道')} <select data-binding aria-label="${l('Decode channel', '解码信道')}"><option value="follow">${l('Follow selection', '跟随选择')}</option>
+      patch(`<div data-key="decode-toolbar" class="mc-decode-binding"><label>${l('Channel', '信道')} <select data-binding aria-label="${l('Decode channel', '解码信道')}"><option value="follow" ${pane.binding.type === 'follow' ? 'selected' : ''}>${l('Follow selection', '跟随选择')}</option>
         ${!r && pane.binding.type === 'fixed' ? `<option value="${esc(uid)}" disabled>${l('Receiver retired', '信道已删除')}</option>` : ''}
-        ${session.snapshot.receivers.map(row => `<option value="${row.receiver_uid}">C${row.display_number} · ${esc(row.confirmed.name)}</option>`).join('')}</select></label>
+        ${session.snapshot.receivers.map(row => `<option value="${row.receiver_uid}" ${pane.binding.type === 'fixed' && pane.binding.receiver_uid === row.receiver_uid ? 'selected' : ''}>C${row.display_number} · ${esc(row.confirmed.name)}</option>`).join('')}</select></label>
         ${r && receiverHasAudio(session.snapshot, r.confirmed) ? button('listen', l('Listen', '监听'), `aria-pressed="${session.listening(uid)}"`) : ''}
         ${r && available('record_start') && recordKind('iq') ? recordButton(uid, 'iq') : ''}${r && available('record_start') && recordKind('results') && (receiverHasResults(session.snapshot, r.confirmed) || activeTask(uid, 'results')) ? recordButton(uid, 'results') : ''}
+        ${button('recording-files', l('Recording files', '录制文件'), 'class="mc-quiet"')}
         <span class="mc-decode-source">${esc(r ? `${(r.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} MHz · ${r.confirmed.processors[0]?.mode.toUpperCase() ?? 'IQ'}` : l('Receiver retired', '信道已删除'))}</span></div>
         ${native?.status(uid) ? `<p data-key="decode-error" class="mc-error" role="alert">${esc(native.status(uid))}${button('retry-stream', l('Retry', '重试'))}</p>` : ''}
+        <details data-key="decode-recordings" data-section="decode-recordings" ${pane.expanded.has('decode-recordings') ? 'open' : ''}><summary>${l('Recording history', '录制记录')}</summary>
+        ${session.snapshot.recordings.filter(t => t.receiver_uid === uid && t.tracks.some(track => track.kind === 'iq' || track.kind === 'results')).slice(-10).reverse().map(t => `<article class="mc-task" data-task-id="${esc(t.task_id)}"><b>${esc(t.name || t.task_id)} · ${t.tracks.map(track => track.kind.toUpperCase()).join(' + ')} · ${taskLabel(t.state)}</b><div class="mc-toolbar">${archiveButton(t)}${deleteRecordingButton(t)}</div></article>`).join('') || `<p>${l('No recordings yet', '还没有录制记录')}</p>`}</details>
         <div data-key="decode-view" data-decode-view></div>`);
-      body.querySelector<HTMLSelectElement>('[data-binding]')!.value = pane.binding.type === 'follow' ? 'follow' : pane.binding.receiver_uid;
       pane.decode ??= mountReceiverDecodeView(body.querySelector<HTMLElement>('[data-decode-view]')!);
       updateDecode(pane.decode, uid, r);
     }
@@ -558,6 +566,10 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       else if (action === 'results') open('results', { type: 'fixed', receiver_uid: uid });
       else if (action === 'follow-results') open('results');
       else if (action === 'recording-files') library.open();
+      else if (action === 'delete-recording') {
+        const task = session.snapshot.recordings.find(t => t.task_id === target.dataset.archiveTask);
+        if (task) library.confirmDelete(task);
+      }
       else if (action === 'choose-audio-format') {
         const format = target.dataset.format as AudioRecordingFormat;
         if (!formatAvailable(session.snapshot, format)) return;

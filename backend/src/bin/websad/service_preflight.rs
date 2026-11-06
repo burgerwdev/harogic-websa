@@ -660,7 +660,11 @@ mod tests {
             let registry=state.stream_registry();
             let mut frames=Vec::new();
             for _ in 0..160 {frames.extend(state.ddc.as_mut().unwrap().0.packet().unwrap());}
-            state.submit_receiver_frames(&frames).unwrap();
+            // Only already-produced PCM is retained across this boundary.
+            // Queued old-generation input is intentionally cancelled on retirement.
+            let output=state.process_receiver_frames_with_registry(&frames,&registry,true).unwrap();
+            assert!(!output.audio.is_empty());
+            state.pending_receiver.append(output);
             registry
         };
         command(&app,"SET_PRESET",json!({})).await.unwrap();

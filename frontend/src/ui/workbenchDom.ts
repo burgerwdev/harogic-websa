@@ -1,3 +1,5 @@
+import { selectIsEditing } from './selectControl';
+
 /** Reconcile a workbench surface without detaching live controls or scroll containers.
  * Keys describe ownership, so a retired/rebound receiver never inherits another draft.
  */
@@ -36,7 +38,9 @@ export function patchWorkbench(host: HTMLElement, html: string, preserve: (eleme
           for (const attr of [...element.attributes]) if (!keep(attr.name) && !fresh.hasAttribute(attr.name)) element.removeAttribute(attr.name);
           for (const attr of [...fresh.attributes]) if (!keep(attr.name) && element.getAttribute(attr.name) !== attr.value) element.setAttribute(attr.name, attr.value);
           const selectedValue = fresh.tagName === 'SELECT' ? (fresh as HTMLSelectElement).value : '';
-          patch(element, fresh);
+          // Protect the entire native menu, not just its value: changing option
+          // labels, order or selected attributes also resets the hovered item.
+          if (element.tagName !== 'SELECT' || !selectIsEditing(element as HTMLSelectElement)) patch(element, fresh);
           // Properties can differ from the template attributes after native editing.
           if (element.tagName === 'INPUT') {
             const input = element as HTMLInputElement, value = fresh as HTMLInputElement;
@@ -45,7 +49,7 @@ export function patchWorkbench(host: HTMLElement, html: string, preserve: (eleme
               if (input.checked !== value.checked) input.checked = value.checked;
             }
           }
-          if (element.tagName === 'SELECT' && element !== host.ownerDocument.activeElement) {
+          if (element.tagName === 'SELECT' && !selectIsEditing(element as HTMLSelectElement)) {
             const select = element as HTMLSelectElement, value = selectedValue;
             if (select.value !== value) select.value = value;
           }

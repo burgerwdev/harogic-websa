@@ -1,3 +1,4 @@
+import { setDomProperty } from './domState';
 import { occupiedBandwidth } from '../core/receiverBandwidth';
 import { CHANNEL_COLORS } from '../core/channelColors';
 import { getLang } from '../core/i18n';
@@ -68,11 +69,11 @@ export function mountWorkbenchCreate(session: WorkbenchSession, root: HTMLElemen
     const config = candidate(), listen = !field<HTMLElement>('[data-create-listen]').hidden && field<HTMLInputElement>('[name=listen]').checked;
     const previous = new Set(session.snapshot.receivers.map(r => r.receiver_uid));
     busy = true;
-    dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { el.disabled = true; });
+    dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { setDomProperty(el, 'disabled', true); });
     field<HTMLButtonElement>('[type=submit]').textContent = l('Creating…', '正在创建…');
     void session.send({ type: 'create', request_id: session.requestId(), config }).then(reply => {
       busy = false; if (disposed) return;
-      dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { el.disabled = false; });
+      dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { setDomProperty(el, 'disabled', false); });
       validate();
       if (reply.fault) { field<HTMLElement>('[data-create-error]').textContent = reply.fault.message; return; }
       const added = reply.snapshot.receivers.find(r => !previous.has(r.receiver_uid));
@@ -84,7 +85,7 @@ export function mountWorkbenchCreate(session: WorkbenchSession, root: HTMLElemen
   return { open: () => {
     if (dialog.open) { field<HTMLInputElement>('[name=frequency]').focus(); return; }
     const add = (parent: HTMLElement, value: string, text: string, disabled = false): void => {
-      const option = doc.createElement('option'); option.value = value; option.textContent = text; option.disabled = disabled; parent.append(option);
+      const option = doc.createElement('option'); option.value = value; option.textContent = text; setDomProperty(option, 'disabled', disabled); parent.append(option);
     };
     dialog.innerHTML = `<form><header><strong>${l('Add channel', '添加信道')}</strong><button type="button" data-dismiss aria-label="${l('Cancel adding a channel', '取消添加信道')}" title="${l('Cancel adding a channel', '取消添加信道')}">×</button></header>
       <p class="mc-notice">${l('Choose a frequency and mode. Bandwidth and rate are set automatically.', '选择频率和模式，自动设置合适的带宽与速率。')}</p>

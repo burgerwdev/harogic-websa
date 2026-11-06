@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { pushSpectrumRow } from '../render/waterfall';
@@ -26,6 +26,25 @@ beforeEach(() => {
 });
 
 afterEach(() => S.setSdrMode(false));
+
+it('preserves open waterfall menus until focus leaves, then applies the latest state', () => {
+  S.setSdrMode(true); deviceMode.confirm('sdr'); initWfRange();
+  const previousState = [wfPalette.get(), wfFloorSource.get(), wfRangeMode.get()] as const;
+  for (const [id, update, next] of [
+    ['select-wf-palette', () => wfPalette.confirm('blue'), 'blue'],
+    ['select-wf-floor-source', () => wfFloorSource.confirm('view'), 'view'],
+    ['select-wf-range', () => wfRangeMode.confirm('fixed'), 'fixed'],
+  ] as const) {
+    const select = document.getElementById(id) as HTMLSelectElement;
+    const previous = select.value, setter = vi.spyOn(select, 'value', 'set');
+    for (let i = 0; i < 5; i++) syncWfRangeUi();
+    expect(setter).not.toHaveBeenCalled();
+    select.focus(); update(); syncWfRangeUi();
+    expect(select.value).toBe(previous); expect(setter).not.toHaveBeenCalled();
+    select.blur(); syncWfRangeUi(); expect(select.value).toBe(next); setter.mockRestore();
+  }
+  wfPalette.confirm(previousState[0]); wfFloorSource.confirm(previousState[1]); wfRangeMode.confirm(previousState[2]);
+});
 
 it('preserves paused SDR amplitude history when adjusting range, palette and contrast', () => {
   S.setSdrMode(true);

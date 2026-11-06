@@ -28,6 +28,7 @@ INDEX = ROOT / 'frontend' / 'index.html'
 #: ids read on purpose even though they may be absent (popovers injected at runtime, ...).
 OPTIONAL: dict[str, str] = {
     'sdr-mode-controls': 'Created by syncMainReceiverControls after logical channel identity is known.',
+    'sdr-mode-settings': 'Dynamic mode-controls disclosure; removed when its receiver or session ends.',
     'zoom-rail-controls': 'Created by initControlRail with the navigation items.',
     'zoom-rail-switch': 'Created with the zoom rail; visible only while zoom is on.',
     'zoom-rail-horizontal-value': 'Created with the zoom rail slider outputs.',

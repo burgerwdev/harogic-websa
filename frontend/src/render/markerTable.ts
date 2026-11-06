@@ -7,6 +7,8 @@ import { requestRender } from './redraw';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak } from '../dsp/markerTracking';
 import { updateMarkersAllBtn } from '../ui/panels/markers';
+import { setDomProperty } from '../ui/domState';
+import { syncSelectValue } from '../ui/selectControl';
 
 export function initMarkerTable() {
   const tbody = document.getElementById('marker-tbody');
@@ -97,11 +99,11 @@ export function updateMarkerTable(powers: Float32Array | null) {
     markerToggle.title = markerOn ? t('off') : t('on');
     const selMode = cells[1].querySelector('select') as HTMLSelectElement;
     const showMode = m.mode === 'OFF' ? 'NORMAL' : m.mode;
-    if (document.activeElement !== selMode && selMode.value !== showMode) selMode.value = showMode;
-    selMode.disabled = !markerOn;
+    syncSelectValue(selMode, showMode);
+    setDomProperty(selMode, 'disabled', !markerOn);
     const selRef = cells[4].querySelector('select') as HTMLSelectElement;
-    if (document.activeElement !== selRef && selRef.value !== String(m.refId)) selRef.value = String(m.refId);
-    selRef.disabled = !markerOn;
+    syncSelectValue(selRef, String(m.refId));
+    setDomProperty(selRef, 'disabled', !markerOn);
 
     let fStr = '-', aStr = '-';
     if (m.enabled && m.mode !== 'OFF' && powers) {

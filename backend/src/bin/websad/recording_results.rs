@@ -468,7 +468,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn corruption_rejects_download_then_restart_recovers_only_verified_prefix_without_rebinding() {
+    fn completed_content_is_checked_on_read_and_interrupted_content_is_recovered() {
         let root = directory();
         let mut manager = Manager::open(root.clone()).unwrap();
         manager
@@ -493,9 +493,16 @@ mod tests {
         assert!(visit(&path, &task, &AtomicBool::new(false), |_| Ok(())).is_err());
         drop(manager);
         let manager = Manager::open(root.clone()).unwrap();
+        assert_eq!(manager.snapshots()[0], task);
+        assert!(visit(&path, &manager.snapshots()[0], &AtomicBool::new(false), |_| Ok(())).is_err());
+        drop(manager);
+        let mut interrupted = task;
+        interrupted["state"] = json!("finalizing");
+        persist(&path, &interrupted).unwrap();
+        let manager = Manager::open(root.clone()).unwrap();
         let recovered = manager.snapshots()[0].clone();
         assert_eq!(recovered["state"], "failed");
-        assert_eq!(recovered["fault"]["code"], "ARCHIVE_CORRUPT");
+        assert_eq!(recovered["fault"]["code"], "SERVICE_INTERRUPTED");
         assert_eq!(recovered["tracks"][0]["blocks"], "1");
         assert_eq!(recovered["service_id"], "service");
         let mut out = Vec::new();

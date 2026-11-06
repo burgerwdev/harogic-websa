@@ -9,9 +9,11 @@ beforeEach(() => {
 it('only displays confirmed sizes through request, warming, active and fallback states', () => {
   initWfRange(); syncDisplayFftUi(true, { available: true, size: 0 });
   const select = document.querySelector('select')!;
+  select.focus();
   select.value = '65536'; select.dispatchEvent(new Event('change'));
   expect(send).toHaveBeenCalledWith({ cmd: 'SET_SDR_FFT', size: 65536 });
   expect(select.value).toBe('0');
+  expect(document.activeElement).not.toBe(select);
   syncDisplayFftUi(true, { available: true, size: 0, requested_size: 65536, state: 'warming' });
   expect(select.value).toBe('0');
   syncDisplayFftUi(true, { available: true, size: 65536, state: 'active', observation_ms: 16.78, bin_spacing_hz: 59.6, enbw_hz: 224.7 });
@@ -37,10 +39,18 @@ it('leaves the native popup selection untouched by repeated status refreshes', (
   const select = document.querySelector('select')!;
   select.focus();
   const writeValue = vi.spyOn(select, 'value', 'set');
+  const mutations = new MutationObserver(() => {});
+  mutations.observe(document.body, { attributes: true, childList: true, subtree: true, characterData: true });
   for (let i = 0; i < 20; i++) syncDisplayFftUi(true, { available: true, size: 32768 });
   expect(writeValue).not.toHaveBeenCalled();
+  expect(mutations.takeRecords()).toEqual([]);
+  syncDisplayFftUi(true, { available: true, size: 65536 });
+  expect(select.value).toBe('32768');
+  expect(writeValue).not.toHaveBeenCalled();
+  select.blur();
   syncDisplayFftUi(true, { available: true, size: 65536 });
   expect(select.value).toBe('65536');
+  mutations.disconnect();
   writeValue.mockRestore();
 });
 

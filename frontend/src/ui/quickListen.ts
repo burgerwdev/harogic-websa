@@ -1,8 +1,10 @@
+import { setDomProperty } from './domState';
 import { getLang, onLangChange } from '../core/i18n';
 import { convertUnitValue } from '../core/units';
 import { frequencyInput, formatFrequencyValue, syncFrequencyInputs, wireFrequencyInputs } from './frequencyInput';
 import { applyListen, defaultListenTarget, LISTEN_MODES, planListen, type ListenPlan } from './workbenchListening';
 import type { WorkbenchSession } from './workbenchSession';
+import { syncSelectOptions } from './selectControl';
 
 const l = (en: string, zh: string) => getLang() === 'zh' ? zh : en;
 function errorText(error: { code: string; message: string }): string {
@@ -35,23 +37,16 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
   const update = (): void => {
     if (!dialog.open || busy) return;
     const previous = target.value;
-    target.replaceChildren();
-    const next = doc.createElement('option'); next.value = 'new';
-    next.disabled = session.snapshot.receivers.length >= session.snapshot.capabilities.max_channels;
-    next.textContent = next.disabled ? l('New channel · limit reached', '新建听音信道 · 路数已满') : l('New listening channel', '新建听音信道');
-    target.appendChild(next);
-    for (const receiver of session.snapshot.receivers.filter(r => r.confirmed.purpose === 'listen')) {
-      const option = doc.createElement('option'); option.value = receiver.receiver_uid;
-      option.textContent = `C${receiver.display_number} · ${receiver.confirmed.name} · ${receiver.confirmed.baseband.frequency_hz / 1e6} MHz`;
-      target.appendChild(option);
-    }
-    target.value = previous || defaultListenTarget(session, frequency());
-    if (!target.value) target.value = defaultListenTarget(session, frequency());
-    const oldMode = preferredMode ?? mode.value; preferredMode = null; mode.replaceChildren();
-    for (const name of LISTEN_MODES.filter(m => session.snapshot.capabilities.modes.includes(m))) {
-      const option = doc.createElement('option'); option.value = name; option.textContent = name.toUpperCase(); mode.appendChild(option);
-    }
-    if (oldMode) mode.value = oldMode;
+    const full = session.snapshot.receivers.length >= session.snapshot.capabilities.max_channels;
+    const targets = [{ value: 'new', disabled: full,
+      label: full ? l('New channel · limit reached', '新建听音信道 · 路数已满') : l('New listening channel', '新建听音信道') },
+      ...session.snapshot.receivers.filter(r => r.confirmed.purpose === 'listen').map(receiver => ({
+        value: receiver.receiver_uid, label: `C${receiver.display_number} · ${receiver.confirmed.name} · ${receiver.confirmed.baseband.frequency_hz / 1e6} MHz`,
+      }))];
+    syncSelectOptions(target, targets, targets.some(row => row.value === previous) ? previous : defaultListenTarget(session, frequency()));
+    const oldMode = preferredMode ?? mode.value; preferredMode = null;
+    const modes = LISTEN_MODES.filter(m => session.snapshot.capabilities.modes.includes(m));
+    syncSelectOptions(mode, modes.map(name => ({ value: name, label: name.toUpperCase() })), oldMode || modes[0] || '');
     plan = planListen(session, { frequency_hz: frequency(), target: target.value, mode: mode.value });
     dialog.querySelector('[data-title]')!.textContent = l('Add frequency to listening', '将频点加入监听');
     dialog.querySelector('[data-fixture]')!.textContent = l('FIXTURE · simulated routing, no speaker output', 'FIXTURE · 模拟监听路由，不输出实际声音');
@@ -61,12 +56,12 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
     const receiver = session.snapshot.receivers.find(r => r.receiver_uid === target.value);
     const same = !plan.command && !plan.fault;
     submit.textContent = same ? l('Enable listening', '开启监听') : target.value === 'new' ? l('Add and listen', '新增并监听') : l('Tune and listen', '调谐并监听');
-    submit.disabled = !!plan.fault; submit.title = l('Apply the frequency and enable local listening after confirmation', '确认频率设置后，开启本地监听');
+    setDomProperty(submit, 'disabled', !!plan.fault); submit.title = l('Apply the frequency and enable local listening after confirmation', '确认频率设置后，开启本地监听');
     const dismiss = dialog.querySelector<HTMLButtonElement>('[data-dismiss]')!; dismiss.title = l('Cancel adding a listening frequency', '取消添加监听频点'); dismiss.setAttribute('aria-label', dismiss.title);
     const lines = [same ? l('Already receiving this frequency. Only the local listening route changes.', '此信道已接收该频点，仅开启本地监听，不重启接收。')
       : receiver ? `${l('Tune only', '仅调谐')} C${receiver.display_number}: ${receiver.confirmed.baseband.frequency_hz / 1e6} → ${frequency() / 1e6} MHz`
         : l('Adds an independent listening channel to the local mix.', '新增独立听音信道，并加入本地混听。')];
-    if (next.disabled) lines.push(l('All channels occupied. Retune a listening channel; digital and IQ channels stay intact.', `${session.snapshot.capabilities.max_channels} 路已占用，可调谐已有听音信道；数字和 IQ 信道保持原配置。`));
+    if (full) lines.push(l('All channels occupied. Retune a listening channel; digital and IQ channels stay intact.', `${session.snapshot.capabilities.max_channels} 路已占用，可调谐已有听音信道；数字和 IQ 信道保持原配置。`));
     if (plan.affected_tracks.length) lines.push(`${l('Recording continues with new segments', '记录继续，并为以下轨道建立新片段')}: ${[...new Set(session.snapshot.recordings.flatMap(t => t.tracks).filter(track => plan!.affected_tracks.includes(track.track_id)).map(track => track.kind.toUpperCase()))].join(' / ')}`);
     if (session.monitorMode === 'follow') lines.push(l('Switches to manual mixing; the channel being edited stays selected.', '切换为手动混听，保留当前正在编辑的信道。'));
     if (session.masterGain === 0 || (receiver && (session.route(receiver.receiver_uid).gain === 0 || [...session.routes].some(([uid, route]) => route.solo && uid !== receiver.receiver_uid)))) lines.push(l('Existing volume and Solo settings still apply.', '现有音量与 Solo 设置仍然生效。'));
@@ -78,6 +73,7 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
   dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
   dialog.addEventListener('input', update);
   dialog.addEventListener('change', update);
+  dialog.addEventListener('focusout', () => queueMicrotask(() => { if (!disposed) update(); }));
   target.addEventListener('change', () => {
     const receiver = session.snapshot.receivers.find(r => r.receiver_uid === target.value);
     preferredMode = receiver?.confirmed.processors.find(p => p.kind === 'demodulator')?.mode ?? 'nfm'; update();
@@ -86,11 +82,11 @@ export function mountQuickListen(session: WorkbenchSession, host: HTMLElement): 
   dialog.addEventListener('submit', event => {
     event.preventDefault(); if (busy || !plan || plan.fault) return;
     const confirmedPlan = plan; busy = true;
-    dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { el.disabled = true; });
+    dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { setDomProperty(el, 'disabled', true); });
     submit.textContent = l('Request pending…', '请求中…');
     void applyListen(session, confirmedPlan).then(result => {
       busy = false; if (disposed) return;
-      dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { el.disabled = false; });
+      dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { setDomProperty(el, 'disabled', false); });
       if (result.fault) { update(); error.textContent = errorText(result.fault); return; }
       const receiver = session.snapshot.receivers.find(r => r.receiver_uid === result.receiver_uid)!;
       host.querySelector<HTMLElement>('[data-listen-status]')!.textContent = `${receiver.confirmed.baseband.frequency_hz / 1e6} MHz → C${receiver.display_number} · ${session.audible(receiver.receiver_uid) ? l('Listening route enabled (fixture)', '已加入监听（模拟）') : l('Added; check volume / Solo (fixture)', '已加入，请检查音量 / Solo（模拟）')}`;

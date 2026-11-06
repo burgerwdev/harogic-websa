@@ -1,3 +1,4 @@
+import { syncSelectValue } from '../ui/selectControl';
 // WebSocket protocol layer + STATUS handling
 import { requestRender } from '../render/redraw';
 import { updateFreqUIInputs } from '../ui/freqInputs';
@@ -676,7 +677,7 @@ export function updateStatus(s: any) {
   setSelect('select-tracealign', traceAlign.get());
   setSelect('select-points-strategy', pointsStrategy.get());
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
-  if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
+  if (s.window != null) syncSelectValue(wsel, String(s.window));
   syncSweepStatus(s);
   if (isRtaStatus) {
     const spanSelect = document.getElementById('select-rta-span') as HTMLSelectElement | null;
@@ -685,7 +686,7 @@ export function updateStatus(s: any) {
       const nearest = options.reduce((best, option) =>
         Math.abs(Number(option.value) - spanHz.get()) < Math.abs(Number(best.value) - spanHz.get())
           ? option : best, options[0]);
-      if (nearest) spanSelect.value = nearest.value;
+      if (nearest) syncSelectValue(spanSelect, nearest.value);
     }
   }
 
@@ -733,7 +734,7 @@ export function updateStatus(s: any) {
     if (pop && pop.style.display !== 'none') fillGnssDetail();
   }
   const rc = document.getElementById('select-refclk') as HTMLSelectElement;
-  if (rc) {
+  if (rc && !rc.contains(rc.ownerDocument.activeElement)) {
     let premium = rc.querySelector<HTMLOptionElement>('option[value="premium"]');
     const available = s.has_premium_ref_clock === true;
     if (available && !premium) {
@@ -744,7 +745,10 @@ export function updateStatus(s: any) {
       premium.remove();
       premium = null;
     }
-    if (premium) premium.textContent = premiumRefClockLabel(s);
+    if (premium) {
+      const label = premiumRefClockLabel(s);
+      if (premium.textContent !== label) premium.textContent = label;
+    }
   }
   refreshRefClockHint(s, s.response_to);
   syncRefClockStatus(s);
@@ -778,7 +782,7 @@ function setInput(id: string, v: string, force = false) {
 }
 function setSelect(id: string, v: string) {
   const el = document.getElementById(id) as HTMLSelectElement;
-  if (el && el.value !== v && document.activeElement !== el) el.value = v;
+  syncSelectValue(el, v);
 }
 
 // Sync frequency input fields

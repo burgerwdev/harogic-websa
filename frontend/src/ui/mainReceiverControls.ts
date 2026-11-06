@@ -8,10 +8,16 @@ interface Context { service_id: string; receiver_uid: string; revision: string; 
 interface Row extends ModeControls, Pick<ReceiverState,'processing_runtime'|'processing_state'|'processing_fault'> { channel:number; mode: string; control?: Context; control_receipts?: {status: string; request_id: string}[] }
 let service = '', active = '', revision = '', dirty = false, language = '';
 const drafts = new Map<string, {html: ModeControls; revision: string}>();
+/** Invalidate closures as well as the visible editor when its receiver disappears. */
+export function clearMainReceiverControls(): void {
+  document.getElementById('sdr-mode-settings')?.remove();
+  drafts.delete(active); active = ''; revision = ''; dirty = false;
+}
 /** The compatibility panel uses the same fields/serializer as the workbench. */
 export function syncMainReceiverControls(row: Row, send: (command: Record<string, unknown>) => void): void {
   const context = row.control, anchor = document.getElementById('sdr-ifbw-group')?.parentElement;
-  if (!context?.receiver_uid || !anchor) return;
+  if (!context?.receiver_uid) { clearMainReceiverControls(); return; }
+  if (!anchor) return;
   let form = document.getElementById('sdr-mode-controls') as HTMLFormElement | null;
   if (!form) {
     active='';revision='';dirty=false;language='';
@@ -22,12 +28,14 @@ export function syncMainReceiverControls(row: Row, send: (command: Record<string
     form.addEventListener('change', () => { dirty = true; });
     form.addEventListener('submit', event => {
       event.preventDefault();
+      if (!form!.isConnected) return;
       const captured = JSON.parse(form!.dataset.context!) as Context;
       send({cmd:'SET_SDR_CHANNEL',...captured,expected_revision:form!.dataset.revision,
         ...readReceiverControlFields(form!),request_id:`main-mode-${crypto.randomUUID()}`});
       // Keep the draft until the server confirms its revision; rejection remains editable.
     });
     form.addEventListener('click', event => {
+      if (!form!.isConnected) return;
       const button = (event.target as Element).closest<HTMLButtonElement>('[data-action]'); if (!button) return;
       const captured = JSON.parse(form!.dataset.context!) as Context;
       if (button.dataset.action === 'recover-processing') {send({cmd:'SET_SDR_CHANNEL',...captured,recover:true});return;}
@@ -43,9 +51,14 @@ export function syncMainReceiverControls(row: Row, send: (command: Record<string
   if (service !== context.service_id) {drafts.clear();dirty = false;active = '';service = context.service_id;}
   if (active && active !== context.receiver_uid && dirty) drafts.set(active,{html:readReceiverControlFields(form),revision:form.dataset.revision!});
   if (active !== context.receiver_uid) {dirty = drafts.has(context.receiver_uid);revision = '';}
-  form.dataset.context = JSON.stringify({...context,channel:row.channel});
+  const serializedContext = JSON.stringify({...context,channel:row.channel});
+  if (form.dataset.context !== serializedContext) form.dataset.context = serializedContext;
   const lang = getLang();
-  if (revision !== context.revision && !dirty || active !== context.receiver_uid || language !== lang) {
+  const focused = form.ownerDocument.activeElement;
+  const editing = !!focused && form.contains(focused) && !!focused.closest('input,select,textarea');
+  // A status revision can change while a native menu is open, before change/input
+  // marks the form dirty. Keep that editor mounted until the user leaves it.
+  if (revision !== context.revision && !dirty && !editing || active !== context.receiver_uid || language !== lang) {
     const draft = drafts.get(context.receiver_uid);
     const values = dirty && active === context.receiver_uid ? readReceiverControlFields(form) : draft?.html ?? row;
     form.innerHTML = receiverControlFields(values,row.mode)

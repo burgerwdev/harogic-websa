@@ -515,6 +515,7 @@ body:has(#workbench-app) { display:block; }
 .mc-file-confirm>span { flex:1; min-width:180px; font-size:11px; color:var(--text); }
 .mc-file-confirm>button { font-size:11px; }
 .mc-file-confirm>button.mc-file-delete { color:var(--sa-warning); border-color:var(--sa-warning); }
+[data-recording-delete] .mc-file-confirm { margin:10px 0; border-radius:5px; }
 .mc-file-fault { margin:7px 0 0; color:var(--sa-warning); font-size:11px; overflow-wrap:anywhere; }
 .mc-files-note { margin:0; padding:5px 22px; color:var(--label); font-size:11px; background:var(--panel-2); }
 .mc-files-body>.mc-error { margin:0; padding:9px 22px; font-size:11px; }

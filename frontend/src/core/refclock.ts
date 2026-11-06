@@ -1,5 +1,6 @@
 // Reference-clock: minimal detail popover (current source + output) + box flash on apply.
 import { t } from './i18n';
+import { setDomProperty } from '../ui/domState';
 
 export type RefClockStatus = 'applied' | 'fallback' | 'forced' | 'unverified';
 
@@ -81,7 +82,7 @@ export function applyRefClockSteadyState(status: RefClockSnapshot): void {
   const sel = refClockSelect();
   if (sel) {
     sel.classList.toggle('refclk-warn', warn);
-    sel.title = warn ? refClockStatusText(state) : '';
+    setDomProperty(sel, 'title', warn ? refClockStatusText(state) : '');
   }
   const label = document.getElementById('refclk-label');
   if (label) label.classList.toggle('refclk-label-on', !!status?.refclk_out);

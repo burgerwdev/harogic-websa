@@ -35,6 +35,16 @@ beforeEach(() => {
   } as unknown as WebSocket);
 });
 
+it('does not reset the reference-clock menu on repeated status or while choosing another source', () => {
+  const select = source(), setter = vi.spyOn(select, 'value', 'set');
+  for (let i = 0; i < 5; i++) syncRefClockStatus({ ref_clock: 'internal' });
+  expect(setter).not.toHaveBeenCalled();
+  select.focus(); syncRefClockStatus({ ref_clock: 'external' });
+  expect(select.value).toBe('internal'); expect(setter).not.toHaveBeenCalled();
+  select.blur(); syncRefClockStatus({ ref_clock: 'external' });
+  expect(select.value).toBe('external');
+});
+
 afterEach(() => {
   setWS(null);
   resetRefClockIntent();

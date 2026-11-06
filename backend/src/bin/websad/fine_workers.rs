@@ -773,29 +773,39 @@ impl FineWorker {
     pub fn collect_snapshot(&self) -> websa_channelizer::timing::TimingSnapshot {
         self.collect_timing.snapshot()
     }
-    /// A local reconfiguration never drains or joins unrelated owners. A long
-    /// native call returns a retryable retiring error, rather than blocking capture.
+    /// Wait only for this lane before closing its owner. Keep admission open
+    /// until it is idle so a timed-out edit leaves the existing stream usable.
     pub fn pause_channel(&mut self, slot: u32, frames: &mut IqFrames) -> Result<(), String> {
         let Some(lane) = self.lanes.get_mut(&slot) else {
             return Ok(());
         };
         flush_lane(lane);
-        lane.tx.take();
         let started = Instant::now();
-        while !lane.join.as_ref().unwrap().is_finished() {
-            while let Ok(mut output) = lane.rx.try_recv() {
-                frames.append(&mut output.frames);
+        loop {
+            // Other owners keep processing while this one drains. Collect their
+            // ready output too, so a slow target cannot fill a healthy lane's FIFO.
+            for lane in self.lanes.values_mut() {
+                while let Ok(mut output) = lane.rx.try_recv() {
+                    frames.append(&mut output.frames);
+                }
             }
-            if started.elapsed() > Duration::from_millis(2) {
-                lane.shared.fail(
-                    "fine owner still retiring; retry after its native call returns",
-                    None,
-                );
-                return Err("fine owner still retiring; retry required".into());
+            let lane = &self.lanes[&slot];
+            let idle = {
+                let stats = lane.shared.stats.lock();
+                stats.accepted == stats.succeeded + stats.failed + stats.cancelled
+            };
+            if idle || lane.join.as_ref().unwrap().is_finished() {
+                break;
             }
-            thread::yield_now();
+            if started.elapsed() > Duration::from_millis(100) {
+                return Err("fine channel busy; retry configuration shortly".into());
+            }
+            thread::sleep(Duration::from_micros(100));
         }
+        // No native work remains. Closing the queue wakes the idle owner; joining
+        // now cannot wait for a filter call or cancel an accepted source block.
         let mut lane = self.lanes.remove(&slot).unwrap();
+        lane.tx.take();
         while let Ok(mut output) = lane.rx.try_recv() {
             frames.append(&mut output.frames);
         }
@@ -1069,14 +1079,116 @@ mod tests {
         assert!(worker
             .pause_channel(2, &mut frames)
             .unwrap_err()
-            .contains("retiring"));
+            .contains("busy"));
         assert!(
             worker.lanes.contains_key(&2),
             "do not replace a still executing native owner"
         );
+        assert!(worker.lanes[&2].tx.is_some());
+        assert!(worker.lanes[&2].shared.stats.lock().fault.is_none());
         drop(release);
+        wait_count(&mut worker, 2, 1, &mut frames);
+        worker.submit(packet(&worker.state, 1), &mut frames).unwrap();
+        for lane in worker.lanes.values_mut() { flush_lane(lane); }
+        wait_count(&mut worker, 2, 2, &mut frames);
+        assert!(worker.lanes[&2].shared.stats.lock().fault.is_none());
         let _ = worker.finish(&mut frames).unwrap();
     }
+
+    #[test]
+    fn mode_switch_drains_a_slow_owner_without_faulting_or_losing_samples() {
+        let mut ddc = plan(1);
+        let mut worker = FineWorker::start(ddc.fine.take().unwrap()).unwrap();
+        let gate = Gate::new();
+        *worker.lanes[&1].shared.gate.lock() = Some(gate.clone());
+        let mut frames = Vec::new();
+        worker.submit(packet(&worker.state, 0), &mut frames).unwrap();
+        flush_lane(worker.lanes.get_mut(&1).unwrap());
+        gate.entered();
+        let shared = worker.lanes[&1].shared.clone();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(15));
+            gate.release();
+        });
+        let paused = worker.pause_channel(1, &mut frames);
+        release.join().unwrap();
+        paused.unwrap();
+        let stats = shared.stats.lock();
+        assert_eq!(stats.succeeded, stats.accepted);
+        assert_eq!(stats.cancelled, 0);
+        assert!(stats.fault.is_none());
+        drop(stats);
+        worker.sync_lanes().unwrap();
+        worker.submit(packet(&worker.state, 1), &mut frames).unwrap();
+        worker.finish(&mut frames).unwrap();
+    }
+    #[test]
+    fn channel_deletion_drains_slow_owner_on_first_attempt_and_preserves_other_channel() {
+        for target in [1, 2] {
+            let mut serial = plan(2);
+            let mut parallel = plan(2);
+            parallel.resume_fine().unwrap();
+            let healthy = 3 - target;
+            let gate = Gate::new();
+            let release_on_failure = Release(gate.clone());
+            let worker = parallel.fine_worker.as_mut().unwrap();
+            *worker.lanes[&target].shared.gate.lock() = Some(gate.clone());
+            let shared = worker.lanes[&target].shared.clone();
+            let healthy_owner = worker.lanes[&healthy].join.as_ref().unwrap().thread().id();
+            let (mut expected, mut actual) = (Vec::new(), Vec::new());
+            for seq in 0..8 {
+                let raw: Vec<i16> = (0..SDR_PACKET_SAMPLES)
+                    .flat_map(|i| {
+                        let phase = (seq * SDR_PACKET_SAMPLES + i) as f64 * 0.001;
+                        [(phase.cos() * 10000.0) as i16, (phase.sin() * 10000.0) as i16]
+                    })
+                    .collect();
+                let stamp = (seq * SDR_PACKET_SAMPLES * 2) as u64;
+                expected.extend(serial.process_capture_packet(&raw, stamp).unwrap());
+                actual.extend(parallel.process_capture_packet(&raw, stamp).unwrap());
+                if seq == 3 {
+                    parallel.stream.flush_pending().unwrap();
+                    actual.extend(parallel.drain().unwrap());
+                    flush_lane(parallel.fine_worker.as_mut().unwrap().lanes.get_mut(&target).unwrap());
+                    gate.entered();
+                    let mut config = parallel.service_configs.as_ref().unwrap()[(target - 1) as usize].clone();
+                    config.enabled = false;
+                    expected.extend(serial.configure_service_channel(config.clone()).unwrap());
+                    // Deletion must tolerate a native call taking longer than
+                    // the old 2 ms retirement deadline, without a second command.
+                    let release_gate = gate.clone();
+                    let release = thread::spawn(move || {
+                        thread::sleep(Duration::from_millis(15));
+                        release_gate.release();
+                    });
+                    let deleted = parallel.configure_service_channel(config);
+                    release.join().unwrap();
+                    actual.extend(deleted.unwrap());
+                    assert!(!parallel.registry.iter().any(|row| row.channel == target));
+                    assert!(parallel.faults.is_empty());
+                    let worker = parallel.fine_worker.as_ref().unwrap();
+                    assert!(!worker.lanes.contains_key(&target));
+                    assert_eq!(worker.lanes[&healthy].join.as_ref().unwrap().thread().id(), healthy_owner);
+                    let stats = shared.stats.lock();
+                    assert!(stats.accepted > 0);
+                    assert_eq!(stats.succeeded, stats.accepted);
+                    assert_eq!(stats.cancelled, 0);
+                    assert!(stats.fault.is_none());
+                }
+            }
+            expected.extend(serial.suspend_fine().unwrap());
+            serial.finish_framers(&mut expected).unwrap();
+            actual.extend(parallel.suspend_fine().unwrap());
+            parallel.finish_framers(&mut actual).unwrap();
+            for id in [1, 2] {
+                let samples = sample_bits(&actual, id);
+                assert!(!samples.is_empty());
+                assert_eq!(samples, sample_bits(&expected, id), "delete C{target}, output C{id}");
+            }
+            drop(release_on_failure);
+        }
+    }
+
     #[test]
     fn source_recovery_with_unchanged_configuration_gets_new_iq_identity() {
         let mut ddc = plan(2);

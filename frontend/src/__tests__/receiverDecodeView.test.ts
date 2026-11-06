@@ -13,6 +13,23 @@ beforeEach(() => { setLang('en'); host = document.createElement('div'); document
 afterEach(() => { vi.restoreAllMocks(); forgetDecoderLog(uid); document.body.replaceChildren(); });
 
 describe('receiver Decode interaction and live results', () => {
+  it('does not reset result filters or export menus while new results arrive', () => {
+    const view = mountReceiverDecodeView(host);
+    view.update([message(1, 'CQ TEST')], uid, 'ft8', 0, '');
+    for (const [selector, value] of [['[data-result-mode]', 'all'], ['[data-export-format]', 'jsonl']]) {
+      const select = host.querySelector<HTMLSelectElement>(selector)!;
+      select.value = value; select.dispatchEvent(new Event('change', { bubbles: true }));
+      const setter = vi.spyOn(select, 'value', 'set');
+      for (const focused of [false, true]) {
+        if (focused) select.focus();
+        for (let i = 0; i < 5; i++) view.update([message(1, 'CQ TEST'), message(i + 2, 'NEW')], uid, 'ft8', 0, '');
+        expect(host.querySelector(selector)).toBe(select);
+        expect(select.value).toBe(value); expect(setter).not.toHaveBeenCalled();
+      }
+      select.blur();
+    }
+    view.dispose();
+  });
   it('presents RTTY as continuous text plus metrics without repeating snapshot text', () => {
     const view = mountReceiverDecodeView(host);
     const entries: DecoderLogEntry[] = [

@@ -1,3 +1,4 @@
+import { syncSelectValue } from '../selectControl';
 // Waterfall controls and the sweep-speed field.
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
@@ -200,7 +201,7 @@ function fillSweepEditor() {
   // Mode, time and visibility form one editor; never mix a report with a draft.
   if (!sweepElements().some(el => el && (document.activeElement === el || el.dataset.edited === '1'))) {
     const value = sweep.get();
-    if (select) select.value = String(value.mode);
+    syncSelectValue(select, String(value.mode));
     if (input) input.value = String(value.time);
   }
   syncSweepInput();

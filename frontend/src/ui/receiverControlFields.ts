@@ -1,4 +1,5 @@
 import './receiverControlFields.css';
+import { setDomProperty } from './domState';
 import { getLang } from '../core/i18n';
 import { copyModeControls, modeControlDefaults, modeControlKeys, type ModeControls } from '../core/receiverControls';
 import { sstvModeTable } from '../sdr/registry';
@@ -34,7 +35,7 @@ export function receiverControlFields(value?: ModeControls, mode = ''): string {
 }
 export function syncReceiverControlFields(form: HTMLFormElement, mode: string, values?: ModeControls): void {
   for (const key of modeControlKeys) {
-    const label = form.querySelector<HTMLElement>(`[data-mode-field=${key}]`); if (label) label.hidden = !groups[key].includes(mode);
+    const label = form.querySelector<HTMLElement>(`[data-mode-field=${key}]`); if (label) setDomProperty(label, 'hidden', !groups[key].includes(mode));
     const input = form.elements.namedItem(`mode-${key}`) as HTMLInputElement | HTMLSelectElement | null;
     if (input && values) {
       const value = values[key] ?? modeControlDefaults[key];
@@ -42,8 +43,8 @@ export function syncReceiverControlFields(form: HTMLFormElement, mode: string, v
       else input.value = value == null ? '' : String(value);
     }
   }
-  const fieldset = form.querySelector<HTMLElement>('[data-mode-controls]'); if (fieldset) fieldset.hidden = !Object.values(groups).some(modes => modes.includes(mode));
-  const actions = form.querySelector<HTMLElement>('[data-mode-actions]'); if (actions) actions.hidden = mode !== 'radiofax';
+  const fieldset = form.querySelector<HTMLElement>('[data-mode-controls]'); if (fieldset) setDomProperty(fieldset, 'hidden', !Object.values(groups).some(modes => modes.includes(mode)));
+  const actions = form.querySelector<HTMLElement>('[data-mode-actions]'); if (actions) setDomProperty(actions, 'hidden', mode !== 'radiofax');
 }
 export function readReceiverControlFields(form: HTMLFormElement): ModeControls {
   return Object.fromEntries(modeControlKeys.flatMap(key => {

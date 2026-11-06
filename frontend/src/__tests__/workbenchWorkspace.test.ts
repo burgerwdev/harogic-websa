@@ -144,6 +144,64 @@ describe('per-channel audio settings', () => {
 });
 
 describe('channel workspace workflows', () => {
+  it('keeps every workbench dropdown and its options stable across snapshot refreshes', () => {
+    click('follow-results');
+    element('[data-uid="fixture-c1"] [data-action=detail]').click();
+    session.notify();
+    const selects = [...document.querySelectorAll('select')];
+    expect(selects.length).toBeGreaterThan(10);
+    const observer = new MutationObserver(() => {});
+    const setters = selects.map(select => vi.spyOn(select, 'value', 'set'));
+    for (const select of selects) observer.observe(select, { attributes: true, subtree: true, childList: true, characterData: true });
+    for (const select of selects) { select.focus(); session.notify(); select.blur(); }
+    expect(selects.every(select => select.isConnected)).toBe(true);
+    expect(observer.takeRecords()).toEqual([]); observer.disconnect();
+    for (const setter of setters) expect(setter).not.toHaveBeenCalled();
+  });
+  it('updates the collapsed AM meter with programme audio while the carrier stays steady', async () => {
+    ui.dispose(); localStorage.clear();
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const receiver = session.snapshot.receivers[0];
+    receiver.confirmed.processors[0].mode = 'am';
+    receiver.confirmed.purpose = 'listen';
+    let rms = -48;
+    const results = () => ({ entries: [{ id: 1, at: Date.now(),
+      source: `${receiver.stream!.epoch}:${receiver.stream!.channel_id}`, provider: 'native', mode: 'am',
+      kind: 'status' as const, bytes: 100, data: { type: 'am-info', inputDbFs: -38, rmsDbFs: rms } }], evicted: 0 });
+    ui = mountWorkbench(session, document.body, { results, status: () => '', retry: () => {} });
+    overview = document.querySelector<HTMLElement>('[data-view-id="overview-follow"]')!;
+    element('[data-uid="fixture-c1"] [data-action=detail]').click();
+    const detail = document.querySelector<HTMLElement>('[data-view-id="detail-fixture-c1"]')!;
+    detail.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    const meter = detail.querySelector<HTMLElement>('.mc-strip-level')!;
+    expect(meter.style.getPropertyValue('--level')).toBe('20%');
+    expect(meter.getAttribute('aria-valuenow')).toBe('-48');
+    rms = -12; session.notifyResults(receiver.receiver_uid);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(detail.querySelector('.mc-strip-level')).toBe(meter);
+    expect(meter.style.getPropertyValue('--level')).toBe('80%');
+    expect(meter.getAttribute('aria-valuenow')).toBe('-12');
+    expect(meter.title).toContain('Audio');
+  });
+  it('keeps monitor and result-binding dropdown selections untouched by periodic refreshes', () => {
+    click('follow-results');
+    for (const [selector, value] of [['[data-monitor-mode]', 'follow'], ['[data-binding]', 'fixture-c2']]) {
+      const select = document.querySelector<HTMLSelectElement>(selector)!;
+      select.value = value; select.dispatchEvent(new Event('change', { bubbles: true }));
+      const setter = vi.spyOn(select, 'value', 'set');
+      const observer = new MutationObserver(() => {});
+      observer.observe(select, { attributes: true, subtree: true, childList: true, characterData: true });
+      for (const focused of [false, true]) {
+        if (focused) select.focus();
+        for (let i = 0; i < 5; i++) session.notify();
+        expect(select.isConnected).toBe(true); expect(select.value).toBe(value);
+        expect(setter).not.toHaveBeenCalled();
+        expect(observer.takeRecords()).toEqual([]);
+      }
+      observer.disconnect();
+      select.blur();
+    }
+  });
   it('closes fixed windows only after successful deletion and removes them from recall and saved views', async () => {
     element('[data-uid="fixture-c1"] [data-action=detail]').click();
     click('follow-results');

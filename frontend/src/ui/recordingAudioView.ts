@@ -3,6 +3,8 @@ import { getLang, onLangChange } from '../core/i18n';
 import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { recordingRange } from './recordingView';
 import { downloadResult } from './receiverExport';
+import { mountRecordingDelete } from './recordingDelete';
+import type { WorkbenchSession } from './workbenchSession';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const MAX_ARCHIVE = 16 * 1024 * 1024;
@@ -59,10 +61,11 @@ async function boundedAudioResponse(response: Response): Promise<ArrayBuffer> {
 }
 
 /** One original-PCM player per workbench, separate from the live monitoring bus. */
-export function mountRecordingAudioView(): { open(task: RecordingTask): void; recall(reset?: boolean): void; dispose(): void } {
+export function mountRecordingAudioView(session?: WorkbenchSession): { open(task: RecordingTask): void; recall(reset?: boolean): void; dispose(): void } {
   let current: { task: string; window: FloatingWindow; dispose(): void } | null = null;
   return {
     open(task) {
+      if (session && !session.snapshot.recordings.some(t => t.task_id === task.task_id)) return;
       if (current?.task === task.task_id) { current.window.show(); if (current.window.portal.isPoppedOut()) current.window.portal.popout(); return; }
       current?.dispose(); current = null;
       const window = createFloatingWindow('recorded-audio', () => l('Recorded audio', '已录音频'), { x: 140, y: 110, w: 620, h: 430 });
@@ -126,7 +129,9 @@ export function mountRecordingAudioView(): { open(task: RecordingTask): void; re
       const observer = new MutationObserver(() => { if (body.hidden || window.root.hidden) clear(); });
       observer.observe(body, { attributes: true, attributeFilter: ['hidden'] }); observer.observe(window.root, { attributes: true, attributeFilter: ['hidden'] });
       const unsubscribe = onLangChange(labels); defaults(); clear(); window.show();
-      current = { task: task.task_id, window, dispose: () => { disposed = true; clear(); observer.disconnect(); unsubscribe(); window.dispose(); } };
+      let disposeDelete: (() => void) | undefined;
+      current = { task: task.task_id, window, dispose: () => { disposed = true; disposeDelete?.(); clear(); observer.disconnect(); unsubscribe(); window.dispose(); } };
+      if (session) disposeDelete = mountRecordingDelete(body, session, task, () => { current?.dispose(); current = null; });
     },
     recall(reset) { current?.window.recall(reset); },
     dispose() { current?.dispose(); current = null; },

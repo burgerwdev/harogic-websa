@@ -1,3 +1,5 @@
+import { setDomProperty, setDomAttribute } from './domState';
+import { selectIsEditing, syncSelectValue } from './selectControl';
 import { cwLineFor } from './cwLine';
 // One Decode surface for native analysis, protocol text, tables and retained images.
 // The opener owns receiver state and subscriptions; a popup adopts the same DOM subtree.
@@ -170,7 +172,7 @@ function renderDecodeTiming(): void {
 	const errorText = error ? t('decode_error', { message: error }) : '';
 	const inline = document.getElementById('sdr-receiver-error');
 	if (inline) {
-		inline.hidden = !error;
+		setDomProperty(inline, 'hidden', !error);
 		inline.textContent = error ? t(channelErrorKinds[selectedChannel] === 'reconnecting' ? 'receiver_reconnecting'
       : channelErrorKinds[selectedChannel] === 'transport' ? 'receiver_connection_failed' : 'receiver_failed') : '';
 		inline.title = errorText;
@@ -723,7 +725,7 @@ function renderSstv(): void {
 	}
 	const anySelected = sstvStatus().history.some((e) => e.selected) || !!sstvStatus().current?.selected;
 	const save = button('btn-sstv-save');
-	if (save) save.disabled = !anySelected;
+	if (save) setDomProperty(save, 'disabled', !anySelected);
 	const selectAll = button('sstv-select-all');
 	if (selectAll) {
 		const total = sstvStatus().history.length + (sstvStatus().current ? 1 : 0);
@@ -731,13 +733,13 @@ function renderSstv(): void {
 			(sstvStatus().current?.selected ? 1 : 0);
 		// Highlight only when every stored picture is ticked; one unticked clears it.
 		selectAll.classList.toggle('active', total > 0 && selected === total);
-		selectAll.disabled = total === 0;
+		setDomProperty(selectAll, 'disabled', total === 0);
 	}
 	const del = button('btn-sstv-delete');
 	if (del) {
 		const anySelected = sstvStatus().history.some((entry) => entry.selected) ||
 			!!sstvStatus().current?.selected;
-		del.disabled = !anySelected;
+		setDomProperty(del, 'disabled', !anySelected);
 	}
 }
 
@@ -970,7 +972,7 @@ function radiofaxReceiptTime(at: number): string {
 
 function renderRadiofaxHistory(): void {
 	const select = element('radiofax-history') as HTMLSelectElement | null;
-	if (!select || radiofaxHistoryInteracting || select.ownerDocument.activeElement === select) return;
+	if (!select || radiofaxHistoryInteracting || selectIsEditing(select)) return;
 	const state = radiofaxStatus();
 	const choices = [{ id: '', label: t('radiofax_follow') }, ...state.pages.map((page) => ({
 		id: page.id,
@@ -983,14 +985,14 @@ function renderRadiofaxHistory(): void {
 		let option = Array.from(select.options).find((item) => item.value === choice.id);
 		if (!option) { option = select.ownerDocument.createElement('option'); option.value = choice.id; }
 		if (option.textContent !== choice.label) option.textContent = choice.label;
-		option.title = t('radiofax_received_tip');
+		setDomProperty(option, 'title', t('radiofax_received_tip'));
 		if (select.options[index] !== option) select.insertBefore(option, select.options[index] ?? null);
 	}
 	const desired = state.viewId ?? '';
 	if (select.value !== desired) select.value = desired;
-	select.disabled = state.pages.length === 0;
-	select.setAttribute('aria-label', t('radiofax_history_tip'));
-	select.title = t('radiofax_received_tip');
+	setDomProperty(select, 'disabled', state.pages.length === 0);
+	setDomAttribute(select, 'aria-label', t('radiofax_history_tip'));
+	setDomProperty(select, 'title', t('radiofax_received_tip'));
 }
 
 function closeRadiofaxMenus(except?: HTMLDetailsElement): void {
@@ -1025,18 +1027,18 @@ function renderRadiofaxPageDetails(page: RadiofaxPage | null, entry: RadiofaxEnt
 	const index = page?.segments.findIndex((segment) => segment.id === entry?.id) ?? -1;
 	const previous = button('radiofax-segment-prev');
 	const next = button('radiofax-segment-next');
-	if (previous) previous.disabled = index <= 0;
-	if (next) next.disabled = !page || index >= page.segments.length - 1;
+	if (previous) setDomProperty(previous, 'disabled', index <= 0);
+	if (next) setDomProperty(next, 'disabled', !page || index >= page.segments.length - 1);
 	const remove = button('radiofax-delete');
-	if (remove) remove.disabled = !page;
+	if (remove) setDomProperty(remove, 'disabled', !page);
 	const whole = button('radiofax-save-page');
-	if (whole) whole.disabled = !page || !radiofaxWholePageSafe(page);
+	if (whole) setDomProperty(whole, 'disabled', !page || !radiofaxWholePageSafe(page));
 	const segment = button('radiofax-save-segment');
-	if (segment) segment.disabled = !entry;
+	if (segment) setDomProperty(segment, 'disabled', !entry);
 	const save = element('radiofax-save');
 	if (save) { save.setAttribute('aria-disabled', String(!entry)); save.tabIndex = entry ? 0 : -1; }
 	const clear = button('radiofax-clear');
-	if (clear) clear.disabled = state.pages.length === 0;
+	if (clear) setDomProperty(clear, 'disabled', state.pages.length === 0);
 	put('radiofax-export-limit', page && !radiofaxWholePageSafe(page) ? t('radiofax_export_limit') : '');
 	const confirmation = element('radiofax-confirm');
 	if (confirmation) confirmation.style.display = radiofaxConfirmation?.channel === selectedChannel ? '' : 'none';
@@ -1063,7 +1065,7 @@ function renderRadiofax(): void {
 		if (control) {
 			control.classList.toggle('active', acquisition === value);
 			control.classList.toggle('pending', isPending && acquisition === value);
-			control.disabled = !active;
+			setDomProperty(control, 'disabled', !active);
 		}
 	}
 	for (const [id, param, isPending] of [
@@ -1075,9 +1077,9 @@ function renderRadiofax(): void {
 	] as const) {
 		const select = element(id) as HTMLSelectElement | null;
 		if (select) {
-			if (select.ownerDocument.activeElement !== select) select.value = String(param);
+			syncSelectValue(select, String(param));
 			select.classList.toggle('pending', isPending);
-			select.disabled = !active;
+			setDomProperty(select, 'disabled', !active);
 		}
 	}
 	for (const [id, value, isPending] of [
@@ -1088,7 +1090,7 @@ function renderRadiofax(): void {
 		if (input) {
 			if (input.ownerDocument.activeElement !== input) input.value = String(value);
 			input.classList.toggle('pending', isPending);
-			input.disabled = !active;
+			setDomProperty(input, 'disabled', !active);
 		}
 	}
 	const status = element('radiofax-state');
@@ -1112,18 +1114,18 @@ function renderRadiofax(): void {
 	renderRadiofaxHistory();
 	renderRadiofaxPageDetails(page, entry);
 	const zoom = element('radiofax-zoom') as HTMLSelectElement | null;
-	if (zoom && zoom.ownerDocument.activeElement !== zoom) zoom.value = radiofaxZoom;
+	syncSelectValue(zoom, radiofaxZoom);
 	const follow = button('radiofax-follow');
 	if (follow) {
-		follow.disabled = !page;
+		setDomProperty(follow, 'disabled', !page);
 		follow.classList.toggle('active', radiofaxFollow && state.viewId === null);
 		follow.setAttribute('aria-pressed', String(radiofaxFollow && state.viewId === null));
 	}
 	const newPage = button('radiofax-new-page');
-	if (newPage) newPage.disabled = !active;
+	if (newPage) setDomProperty(newPage, 'disabled', !active);
 	const reset = button('radiofax-reset-correction');
 	if (reset) {
-		reset.disabled = !active;
+		setDomProperty(reset, 'disabled', !active);
 		reset.classList.toggle('pending', pending.phase || pending.ppm);
 	}
 	const canvas = element('decode-radiofax-canvas') as HTMLCanvasElement | null;
@@ -1324,7 +1326,7 @@ function renderAm(): void {
 		toggle.setAttribute('aria-busy', String(pending));
 		toggle.classList.toggle('active', confirmed);
 		toggle.classList.toggle('pending', pending);
-		toggle.disabled = !canToggleAmSync();
+		setDomProperty(toggle, 'disabled', !canToggleAmSync());
 		toggle.title = t(pending ? 'am_sync_pending_tip' : confirmed ? 'am_sync_disable' : 'am_sync_enable');
 		toggle.setAttribute('aria-label', `${t('am_sync_detector')}. ${toggle.title}`);
 	}
@@ -1423,9 +1425,9 @@ function syncOpen(): void {
 	const toggle = document.getElementById('btn-decode-window') as HTMLButtonElement | null;
 	if (win) win.style.display = open ? 'flex' : 'none';
 	const amToggle = button('am-sync-toggle');
-	if (amToggle) amToggle.disabled = !canToggleAmSync();
+	if (amToggle) setDomProperty(amToggle, 'disabled', !canToggleAmSync());
 	if (toggle) {
-		toggle.disabled = !available;
+		setDomProperty(toggle, 'disabled', !available);
 		toggle.title = available ? t('decode_window_tip') : t('decode_window_needs_mode');
 		toggle.textContent = open ? t('on') : t('off');
 		toggle.classList.toggle('active', open);

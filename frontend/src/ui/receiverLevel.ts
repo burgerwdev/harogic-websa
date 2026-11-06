@@ -20,7 +20,11 @@ export function receiverLevel(receiver: ReceiverState, entries: readonly Decoder
     if (entry.mode !== mode || entry.kind !== 'status' || Date.now() - entry.at > 3000) continue;
     const data = entry.data as Record<string, unknown> | null;
     if (!data || typeof data !== 'object') continue;
-    for (const key of ['inputDbFs', 'rmsDbFs', 'peakDbFs'] as const) {
+    // A listening strip follows programme audio. AM input power includes the
+    // steady carrier, so it barely moves even while the demodulated audio varies.
+    const keys = receiver.confirmed.purpose === 'listen'
+      ? ['rmsDbFs', 'peakDbFs', 'inputDbFs'] as const : ['inputDbFs', 'rmsDbFs', 'peakDbFs'] as const;
+    for (const key of keys) {
       const value = data[key];
       if (value != null && value !== '' && Number.isFinite(Number(value))) return { db: Number(value), source: key === 'inputDbFs' ? 'input' : 'audio' };
     }
@@ -29,4 +33,11 @@ export function receiverLevel(receiver: ReceiverState, entries: readonly Decoder
   if (playback?.enabled && playback.playing && typeof playback.rms === 'number' && Number.isFinite(playback.rms))
     return { db: 20 * Math.log10(Math.max(1e-8, playback.rms)), source: 'audio' };
   return null;
+}
+
+/** Fixed scales preserve absolute level changes; never auto-normalize a quiet signal. */
+export function receiverLevelScale(level: ReturnType<typeof receiverLevel>): { min: number; value: number; percent: number } {
+  const min = level?.source === 'audio' ? -60 : -100;
+  const value = level ? Math.max(min, Math.min(0, level.db)) : min;
+  return { min, value, percent: (value - min) / -min * 100 };
 }

@@ -1,3 +1,5 @@
+import { setDomProperty } from './domState';
+import { syncSelectValue } from './selectControl';
 /**
  * SDR tuning state - the single owner of every SDR parameter.
  *
@@ -489,7 +491,7 @@ export function renderSdrState(): void {
 		listen.value = (sdrListenHz.get() / 1e6).toFixed(6);
 	}
 	const dec = select('select-sdr-decimate');
-	if (dec) dec.value = String(sdrDecimate.get());
+	syncSelectValue(dec, String(sdrDecimate.get()));
 	const squelch = input('input-sdr-squelch');
 	if (squelch && document.activeElement !== squelch) squelch.value = String(sdrSquelch.get());
 	const squelchLabel = document.getElementById('cur-sdr-squelch');
@@ -518,9 +520,9 @@ export function renderSdrState(): void {
 	}
 	const nrAlgo = select('select-sdr-nr-algo');
 	if (nrAlgo) {
-		nrAlgo.value = sdrNrAlgo.get();
-		nrAlgo.dataset.i18nTitle = `nr_algo_${sdrNrAlgo.get().replace('-', '_')}_tip`;
-		nrAlgo.title = t(nrAlgo.dataset.i18nTitle);
+		syncSelectValue(nrAlgo, sdrNrAlgo.get());
+		setDomProperty(nrAlgo.dataset, 'i18nTitle', `nr_algo_${sdrNrAlgo.get().replace('-', '_')}_tip`);
+		setDomProperty(nrAlgo, 'title', t(nrAlgo.dataset.i18nTitle!));
 	}
     const neuralSelected = sdrNrAlgo.get() !== 'wiener';
 	// All neural reducers use attenuation; Wiener has its own strength.
@@ -534,8 +536,8 @@ export function renderSdrState(): void {
 	}
 	const nrStrength = select('select-sdr-nr-strength');
 	if (nrStrength) {
-		nrStrength.hidden = neuralSelected;
-		nrStrength.disabled = neuralSelected || sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus';
+		setDomProperty(nrStrength, 'hidden', neuralSelected);
+		setDomProperty(nrStrength, 'disabled', neuralSelected || sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus');
 		// The nearest preset: the slot holds a number (a custom answer is possible via storage).
 		const value = sdrNrStrength.get();
 		let nearest = '0.6';
@@ -544,6 +546,6 @@ export function renderSdrState(): void {
 				nearest = option.value;
 			}
 		}
-		nrStrength.value = nearest;
+		syncSelectValue(nrStrength, nearest);
 	}
 }

@@ -13,6 +13,7 @@ import { t } from '../core/i18n';
 import { displayUnit, smoothBins } from './displayState';
 import { peakThr } from './measurePrefs';
 import { postRefNotice } from './refAutoScale';
+import { syncSelectValue } from './selectControl';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
 export function syncFreezeBtn() {
@@ -147,7 +148,7 @@ export function syncAvgUI(): void {
   if (row) row.style.display = t.mode === 'AVERAGE' ? '' : 'none';
   const sel = document.getElementById('select-trace-avg') as HTMLSelectElement | null;
   const depth = S.rtaMode ? (t.avgTargetRta ?? 16) : (t.avgTarget ?? 16);
-  if (sel && document.activeElement !== sel) sel.value = String(depth);
+  syncSelectValue(sel, String(depth));
   const st = document.getElementById('trace-avg-status');
   if (!st) return;
   if (t.mode !== 'AVERAGE') { st.textContent = ''; return; }

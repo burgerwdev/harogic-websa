@@ -230,7 +230,7 @@ pub(super) struct ReceiverFrames {
     pub retired:Vec<RetiredFrames>,
 }
 
-pub(super) struct RetiredFrames {pub identity:u64,pub channel:u32,pub decode_offset:usize,pub frames:ReceiverFrames}
+pub(super) struct RetiredFrames {pub identity:u64,pub channel:u32,pub decode_offset:usize,pub terminal:bool,pub frames:ReceiverFrames}
 
 impl ReceiverFrames {
     pub(super) fn append(&mut self, mut other: Self) {
@@ -301,13 +301,15 @@ struct Branch {
     state_generation:AtomicU64,
     preparing:AtomicBool,
     recovery_floor:AtomicU64,
+    // Completed events retain their source sequence across graceful capture changes.
+    retiring_through:AtomicU64,
     input_bytes:AtomicU64,
     input_media_ns:AtomicU64,
     controls:super::receiver_controls::Log,
 }
 impl Default for Branch {
     fn default()->Self {Self {lifecycle:AtomicUsize::new(0),failure:Mutex::new(None),notice:AtomicBool::new(false),binding:Mutex::new(None),
-        output_pending:AtomicUsize::new(0),output_bytes:AtomicU64::new(0),close:Mutex::new(None),mailbox:Mutex::new(None),state_generation:AtomicU64::new(0),preparing:AtomicBool::new(false),recovery_floor:AtomicU64::new(0),input_bytes:AtomicU64::new(0),input_media_ns:AtomicU64::new(0),controls:Default::default()}}
+        output_pending:AtomicUsize::new(0),output_bytes:AtomicU64::new(0),close:Mutex::new(None),mailbox:Mutex::new(None),state_generation:AtomicU64::new(0),preparing:AtomicBool::new(false),recovery_floor:AtomicU64::new(0),retiring_through:AtomicU64::new(0),input_bytes:AtomicU64::new(0),input_media_ns:AtomicU64::new(0),controls:Default::default()}}
 }
 struct InputPermit {shared:Arc<Shared>,slot:usize,bytes:u64,media:u64}
 impl InputPermit {
@@ -379,6 +381,13 @@ impl Shared {
             Some(error) => Err(error.clone()),
             None => Ok(()),
         }
+    }
+
+    fn retains_completed(&self, slot:usize, generation:u64)->bool {
+        let branch=&self.branches[slot];
+        !self.stopping.load(Ordering::Acquire)
+            && generation<=branch.retiring_through.load(Ordering::Acquire)
+            && generation>=branch.recovery_floor.load(Ordering::Acquire)
     }
 
     fn current(&self, slot: usize, generation: u64) -> bool {
@@ -1022,11 +1031,13 @@ impl ReceiverWorkers {
         self.shared.check()?;
         let mut frames = ReceiverFrames::default();
         for output in self.deferred.drain(..).chain(self.outputs.try_iter()) {
-            if self.shared.current(output.slot,output.generation) || output.retired && output.generation>=self.shared.branches[output.slot].recovery_floor.load(Ordering::Acquire) {
+            let current=self.shared.current(output.slot,output.generation);
+            if current || self.shared.retains_completed(output.slot,output.generation) {
                 if let Some(accounting)=output.accounting.as_ref() {accounting.consumed();}
-                if output.retired {
+                if output.retired || !current {
+                    // Preserve sequenced decode events, never stale playback or squelch.
                     let identity=output.stream.map(|(id,epoch)|super::service_stream::identity_key(id,epoch));
-                    if let Some(identity)=identity {frames.retired.push(RetiredFrames {identity,channel:output.slot as u32+1,decode_offset:frames.decode.len(),frames:output.frames});}
+                    if let Some(identity)=identity {frames.retired.push(RetiredFrames {identity,channel:output.slot as u32+1,decode_offset:frames.decode.len(),terminal:output.retired,frames:ReceiverFrames {decode:output.frames.decode,..ReceiverFrames::default()}});}
                 } else {
                     self.squelch[output.slot]=output.squelch;frames.append(output.frames);
                 }
@@ -1078,6 +1089,9 @@ impl ReceiverWorkers {
         let failure=self.shared.branches[slot].failure.lock().unwrap_or_else(|e|e.into_inner());
         let generation=self.shared.generations[slot].load(Ordering::Acquire);
         if failure.as_ref().is_some_and(|fault|fault.generation==generation) {return Ok(());}
+        // Publish before invalidating input so a finishing native call can retain
+        // events it has already numbered. Queued, unprocessed input stays fenced.
+        self.shared.branches[slot].retiring_through.store(generation,Ordering::Release);
         self.bump_generation_locked(slot)?;
         if close.is_none() {self.shared.pending.fetch_add(1,Ordering::AcqRel);}
         *close=Some((generation,true));
@@ -1395,7 +1409,7 @@ fn run_realtime(worker:usize,mut input: mpsc::Receiver<PendingWork>, output: mps
                     if let Some(state)=states[slot].as_mut() {
                         let mut frames=ReceiverFrames::default();
                         state.close(slot,&mut frames,live).map(|_|Some(Output {
-                            slot,generation,frames,squelch:None,accounting:None,permit:None,retired:false,stream:None,
+                            slot,generation,frames,squelch:None,accounting:None,permit:None,retired:false,stream:Some((state.channel_id,state.epoch)),
                         }))
                     } else {Ok(None)}
                 } else {Ok(None)}
@@ -1416,7 +1430,7 @@ fn run_realtime(worker:usize,mut input: mpsc::Receiver<PendingWork>, output: mps
         counters.max_ns.fetch_max(elapsed,Ordering::Relaxed);
         match result {
             Ok(Some(mut result)) => {
-                if !shared.current(slot,generation) {
+                if !shared.current(slot,generation) && !shared.retains_completed(slot,generation) {
                     if let Some(tracking)=pending.tracking.as_mut() {tracking.finish(Ok(false));}
                     continue;
                 }
@@ -1533,12 +1547,12 @@ fn process_packet_inner(packet:&mut Packet,states:&mut [Option<ChannelState>],se
             }
         }
     }
-    if !shared.current(packet.slot,packet.generation) {return Ok(None);}
+    if !shared.current(packet.slot,packet.generation) && !shared.retains_completed(packet.slot,packet.generation) {return Ok(None);}
     if let Some(lane)=packet.metrics.as_ref() {lane.observe_receiver(state.receiver.processing_status());}
     let squelch = (packet.seq > 0).then(|| state.receiver.squelch_status()).flatten()
         .map(|(open, gain)| SquelchState { channel_id:packet.channel_id, epoch:packet.epoch,
             generation:packet.generation, measured:Instant::now(), open, gain });
-    Ok(Some(Output {slot:packet.slot, generation:packet.generation, frames, squelch,accounting:None,permit:None,retired:false,stream:None}))
+    Ok(Some(Output {slot:packet.slot, generation:packet.generation, frames, squelch,accounting:None,permit:None,retired:false,stream:Some((packet.channel_id,packet.epoch))}))
 }
 
 fn process_search(completed: SearchResult, states: &mut [Option<ChannelState>], shared: &Shared)
@@ -1555,7 +1569,7 @@ fn process_search(completed: SearchResult, states: &mut [Option<ChannelState>], 
     let squelch = state.receiver.squelch_status().map(|(open, gain)| SquelchState {
         channel_id:completed.channel_id, epoch:completed.epoch, generation:completed.generation,
         measured:Instant::now(), open, gain });
-    Ok(Some(Output { slot:completed.slot, generation:completed.generation, frames, squelch,accounting:None,permit:None,retired:false,stream:None }))
+    Ok(Some(Output { slot:completed.slot, generation:completed.generation, frames, squelch,accounting:None,permit:None,retired:false,stream:Some((completed.channel_id,completed.epoch)) }))
 }
 
 fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSender<PendingWork>>, shared: Arc<Shared>, owner:Option<usize>) {
@@ -1616,6 +1630,78 @@ mod tests {
             clock:InputClock {first_sample_index:u64::from(seq.saturating_sub(1))*4096,input_rate:12_000.0,delay_input_samples:0.0},
             power_dbm:Some(-60.0),iq:IqSamples::new(vec![0.1,0.0].repeat(samples)).unwrap(),radiofax_new_page:false,
             prepared:None,metrics:None,input_permit:None,commands:Vec::new()}
+    }
+
+    #[test]
+    fn live_retirement_keeps_completed_decode_before_its_terminal_sequence() {
+        for delivery in ["queued", "deferred", "finishing"] {
+            completed_decode_retirement(delivery);
+        }
+    }
+
+    fn completed_decode_retirement(delivery:&str) {
+        let mut workers=ReceiverWorkers::new().unwrap();
+        let shared=workers.shared.clone();
+        let generation=shared.generations[0].load(Ordering::Acquire);
+        let (output,received)=mpsc::sync_channel(RESULT_CAPACITY);
+        workers.outputs=received;
+        let (search,_jobs)=mpsc::sync_channel(SEARCH_CAPACITY);
+        let mut states:Vec<_>=(0..MAX_CHANNELS).map(|_|None).collect();
+        let packet=|seq| {
+            let mut packet=retirement_packet(generation,7,seq);
+            packet.config=Arc::new(ChannelConfig {mode:"am".into(),if_bw:6000.0,squelch:-160.0,..ChannelConfig::default()});
+            packet
+        };
+        let start=process_packet(packet(0),&mut states,&search,&shared).unwrap().unwrap();
+        let mut subscriber=super::super::subscriber_stream::SubscriberStream::default();
+        for frame in start.frames.decode {subscriber.frames(super::super::Message::Binary(frame.into())).unwrap();}
+        // The worker has assigned source sequence numbers, but the control
+        // thread retires the generation before the next output poll.
+        let completed=process_packet(packet(1),&mut states,&search,&shared).unwrap().unwrap();
+        assert!(!completed.frames.decode.is_empty());
+        assert!(!completed.frames.audio.is_empty());
+        let mut completed=Some(completed);
+        if delivery=="queued" {shared.publish(&output,completed.take().unwrap()).unwrap();}
+        if delivery=="deferred" {workers.deferred.push(completed.take().unwrap());}
+        workers.request_live_retirement(0).unwrap();
+        assert!(shared.retains_completed(0,generation));
+        if let Some(completed)=completed {shared.publish(&output,completed).unwrap();}
+        // A poll between completion and close may deliver events, but must not
+        // close the subscription early or restore obsolete audio/telemetry.
+        let mut drained=workers.poll().unwrap();
+        assert!(drained.audio.is_empty());assert!(workers.squelch[0].is_none());
+        assert_eq!(drained.retired.len(),1);assert!(!drained.retired[0].terminal);
+        close_retired_state(0,&mut states,&output,&shared);
+        drained.append(workers.poll().unwrap());
+        assert!(drained.retired.last().unwrap().terminal);
+        let tails=std::mem::take(&mut drained.retired);
+        let mut decoded=drained.decode.into_iter();let mut cursor=0;let mut ordered=Vec::new();
+        for tail in tails {
+            ordered.extend(decoded.by_ref().take(tail.decode_offset-cursor));
+            cursor=tail.decode_offset;ordered.extend(tail.frames.decode);
+        }
+        ordered.extend(decoded);
+        assert!(ordered.len()>=2,"completed event and terminal marker must both survive retirement");
+        for frame in ordered {subscriber.frames(super::super::Message::Binary(frame.into())).expect("retune must not create a source sequence gap");}
+    }
+
+    #[test]
+    fn explicit_recovery_discards_completed_and_terminal_output_from_retired_generation() {
+        let mut workers=ReceiverWorkers::new().unwrap();
+        let shared=workers.shared.clone();
+        let generation=shared.generations[0].load(Ordering::Acquire);
+        let (output,received)=mpsc::sync_channel(RESULT_CAPACITY);workers.outputs=received;
+        let (search,_jobs)=mpsc::sync_channel(SEARCH_CAPACITY);
+        let mut states:Vec<_>=(0..MAX_CHANNELS).map(|_|None).collect();
+        let completed=process_packet(retirement_packet(generation,7,0),&mut states,&search,&shared).unwrap().unwrap();
+        shared.publish(&output,completed).unwrap();
+        workers.request_live_retirement(0).unwrap();
+        close_retired_state(0,&mut states,&output,&shared);
+        workers.configs[0]=Arc::new(ChannelConfig {enabled:false,..ChannelConfig::default()});
+        workers.restart_channel(1).unwrap();
+        let drained=workers.poll().unwrap();
+        assert!(drained.decode.is_empty()&&drained.retired.is_empty()&&drained.audio.is_empty());
+        assert!(!shared.retains_completed(0,generation));
     }
 
     #[test]

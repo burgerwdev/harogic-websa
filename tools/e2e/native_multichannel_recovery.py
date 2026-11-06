@@ -228,10 +228,12 @@ def browser_gate(proxy, snapshot, artifacts):
         expect(page.locator(f'[data-view-id="results-{second}"]')).to_have_count(0)
         results = result_child.locator(f'[data-view-id="results-{second}"]')
         healthy = api(origin)['receivers'][0]
-        overview.locator('.mc-channel-actions [data-action=retire]').click()
+        # Retirement disposes fixed receiver windows, including their popouts.
+        # A tombstone view must not survive and bind to the reused channel slot.
+        with result_child.expect_event('close'):
+            overview.locator('.mc-channel-actions [data-action=retire]').click()
         expect(row(second)).to_have_count(0)
-        expect(results.locator('.mc-head strong')).to_contain_text(re.compile('retired|已删除'))
-        expect(results.locator('[data-decode-view] .decoder-result, .mc-message-table tbody tr')).to_have_count(0)
+        expect(page.locator(f'[data-view-id="results-{second}"]')).to_have_count(0)
         page.wait_for_function('(uid)=>!window.websaAudioStatus().some(r=>r.channel===uid)', arg=second)
         overview.locator('[data-action=create]').click()
         create = overview.locator('[data-create-channel]')
@@ -243,7 +245,6 @@ def browser_gate(proxy, snapshot, artifacts):
         replacement = next(r for r in after['receivers'] if r['receiver_uid'] not in {old['receiver_uid'] for old in before['receivers']})
         assert replacement['receiver_uid'] != second and replacement['confirmed']['processors'] == []
         assert_receivers_continue([healthy], [after['receivers'][0]])
-        result_child.close()
         page.wait_for_function('(uid)=>window.websaAudioStatus().some(r=>r.channel===uid&&r.playing&&!r.error)', arg=first)
         assert not errors, errors
         report = {'source': 'isolated native synthetic AM/baseband and FT8 replay; no RF hardware',

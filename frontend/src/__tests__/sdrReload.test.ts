@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import { receiverPlugin } from './pluginFixtures';
 
@@ -66,6 +67,55 @@ function status(mode: string, response: Record<string, unknown> = {}) {
 function receive(payload: Record<string, unknown>) {
 	socket.onmessage!({ data: JSON.stringify(payload) } as MessageEvent);
 }
+
+it.each(['std', 'rta', 'sdr', 'harmonic', 'pnm'].flatMap(mode => [-1, 5].map(atten => ({ mode, atten }))))(
+  'does not mutate any real-page select or option during unchanged $mode status (atten=$atten)', async ({ mode, atten }) => {
+  const html = readFileSync('index.html', 'utf8');
+  document.body.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.innerHTML;
+  await load();
+  const report = status(mode, { ref_clock: 'external', has_premium_ref_clock: true,
+    actual: { refclk_src: 0 }, amp: { atten, preamp: 0, ifgain: 2, gain_strategy: 0 } });
+  report.sdr.actual = { ...report.sdr.actual, display_fft: { available: true, size: 32768 } } as typeof report.sdr.actual;
+  receive(report); receive(report);
+  const selects = [...document.querySelectorAll('select')];
+  expect(selects.length).toBeGreaterThan(40);
+  const observer = new MutationObserver(() => {});
+  const setters = selects.map(select => vi.spyOn(select, 'value', 'set'));
+  for (const select of selects) observer.observe(select, { attributes: true, subtree: true, childList: true, characterData: true });
+  for (let i = 0; i < 3; i++) receive(report);
+  for (const select of selects) { select.focus(); receive(report); select.blur(); }
+  const changes = observer.takeRecords().map(record => ({
+    select: (record.target as Element).closest?.('select')?.id,
+    attribute: record.attributeName, type: record.type,
+  }));
+  observer.disconnect();
+  for (const [index, setter] of setters.entries()) {
+    expect(setter, selects[index].id).not.toHaveBeenCalled(); setter.mockRestore();
+  }
+  expect(changes).toEqual([]);
+}, 20000);
+
+it('keeps all main-panel native menus unchanged across identical STATUS messages', async () => {
+	document.body.insertAdjacentHTML('beforeend', `
+    <select id="select-refclk"><option value="internal">Internal</option><option value="external">External</option></select>
+    <select id="select-sdr-decimate"><option>16</option><option>32</option></select>
+    <select id="select-sdr-nr-algo"><option>wiener</option><option>dfn</option></select>
+    <select id="select-sdr-nr-strength"><option>0.3</option><option>0.6</option><option>0.9</option></select>
+    <select id="select-wf-range"><option value="auto">Auto</option><option value="fixed">Fixed</option></select>
+    <select id="select-wf-floor-source"><option value="capture">Capture</option><option value="view">View</option></select>
+    <select id="select-wf-palette"><option value="classic">Classic</option><option value="blue">Blue</option></select>`);
+	await load();
+	const report = status('sdr', { ref_clock: 'internal', has_premium_ref_clock: true });
+	receive(report);
+	const selects = [...document.querySelectorAll('select')];
+	const setters = selects.map(select => vi.spyOn(select, 'value', 'set'));
+	const observer = new MutationObserver(() => {});
+	for (const select of selects) observer.observe(select, { childList: true, subtree: true, characterData: true });
+	for (let i = 0; i < 5; i++) receive(report);
+	for (const select of selects) { select.focus(); receive(report); select.blur(); }
+	for (const [index, setter] of setters.entries()) { expect(setter, selects[index].id).not.toHaveBeenCalled(); setter.mockRestore(); }
+	expect(observer.takeRecords()).toEqual([]); observer.disconnect();
+});
 
 function spectrumFrame(center: number, version: number): void {
 	const points = 64, span = 3.125e6;

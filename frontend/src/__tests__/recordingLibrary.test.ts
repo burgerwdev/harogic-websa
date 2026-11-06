@@ -174,3 +174,26 @@ it('keeps delete controls visible with an explanation when the connected service
   expect(library().querySelector('[data-key=delete-unavailable]')!.textContent).toContain('Update and restart');
   expect(checkbox('[data-file-select-all]').disabled).toBe(true);
 });
+
+it.each(['audio', 'iq', 'results'] as const)('deletes %s from channel recording history through the file confirmation', async kind => {
+  const uid = kind === 'audio' ? 'fixture-c1' : kind === 'iq' ? 'fixture-c3' : 'fixture-c2';
+  const id = await completed(uid, kind, kind); session.select(uid);
+  click(overview(), '[data-action=tab-recording]');
+  const dispatch = vi.spyOn(adapter, 'dispatch');
+  click(overview(), `[data-task-id="${id}"] [data-action=delete-recording]`);
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(library().querySelector(`[data-task-id="${id}"] .mc-file-confirm`)).not.toBeNull();
+  click(library(), '[data-file-action=confirm-delete]'); await settle();
+  expect(overview().querySelector(`[data-task-id="${id}"]`)).toBeNull();
+});
+
+it.each(['iq', 'results'] as const)('offers deletion of %s recordings in the decode window', async kind => {
+  const uid = kind === 'iq' ? 'fixture-c3' : 'fixture-c2';
+  const id = await completed(uid, kind, kind); session.select(uid);
+  click(overview(), '[data-action=follow-results]');
+  const results = document.querySelector<HTMLElement>('[data-view-id=results-follow]')!;
+  expect(results.querySelector('[data-action=recording-files]')).not.toBeNull();
+  click(results, `[data-task-id="${id}"] [data-action=delete-recording]`);
+  click(library(), '[data-file-action=confirm-delete]'); await settle();
+  expect(results.querySelector(`[data-task-id="${id}"]`)).toBeNull();
+});

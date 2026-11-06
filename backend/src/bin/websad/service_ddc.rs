@@ -406,6 +406,26 @@ mod source_plan_tests {
     use super::*;
 
     #[test]
+    fn remembered_mode_basebands_validate_at_every_capture_rate() {
+        for mode in ["am", "dsb", "usb", "lsb", "cw", "nfm", "wfm", "pm", "ft8", "sstv", "drm", "drmplus", "radiofax"] {
+            let descriptor = websa_channelizer::catalog::mode(mode).unwrap();
+            for width in descriptor.bandwidth_presets_hz {
+                let mut config = ChannelConfig { mode: mode.into(), if_bw: width, ..ChannelConfig::default() };
+                let original = channel_plan(COARSE_RATE, &config).unwrap();
+                config.baseband = Some(receiver_workers::BasebandConfig {
+                    passband_hz: original.occupied_bandwidth_hz,
+                    transition_hz: original.transition_hz,
+                    minimum_rate_hz: 1.0,
+                });
+                config.validate().unwrap_or_else(|e| panic!("{mode} {width}: {e}"));
+                for fs in [976_562.5, 3_906_250.0, 62_500_000.0] {
+                    source_plan(fs, &config).unwrap_or_else(|e| panic!("{mode} {width} at {fs}: {e}"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn rtty_upper_sideband_plan_retains_both_protocol_tones() {
         use websa_channelizer::{channel_open_planned,channel_process_float,channel_close};
         for mode in ["rtty","rtty-reverse"] {

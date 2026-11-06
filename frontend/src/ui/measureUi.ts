@@ -11,6 +11,7 @@ import { waterfallOn } from './waterfallState';
 import { syncSpectrumZoomUi } from './spectrumZoomUi';
 import { measurementsAvailable } from './measurementAvailability';
 import { peakListVisible } from './measurePrefs';
+import { setDomProperty } from './domState';
 
 //: Waterfall state before the measurement took it over (null = not measuring).
 let waterfallBeforeMeasure: boolean | null = null;
@@ -43,7 +44,7 @@ export function setMeasButtons(en: boolean) {
   const available = measurementsAvailable();
   document.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
     '#meas-panel button, #meas-panel input, #meas-panel select',
-  ).forEach(control => { control.disabled = !available; });
+  ).forEach(control => { setDomProperty(control, 'disabled', !available); });
   const acts = ['meas-amp', 'clear-amp', 'meas-harm', 'meas-pnm', 'meas-chan', 'clear-chan', 'harm-mode'];
   acts.forEach(action => {
     document.querySelectorAll<HTMLButtonElement>(`[data-action="${action}"]`).forEach(button => {

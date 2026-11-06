@@ -31,7 +31,7 @@ interface LibraryActions {
   chooseFormat(task: string, format: AudioRecordingFormat): void;
 }
 
-export function mountRecordingLibrary(session: WorkbenchSession, actions: LibraryActions): { open(): void; recall(reset?: boolean): void; dispose(): void } {
+export function mountRecordingLibrary(session: WorkbenchSession, actions: LibraryActions): { open(): void; confirmDelete(task: RecordingTask): void; recall(reset?: boolean): void; dispose(): void } {
   let surface: FloatingWindow | null = null, query = '', kind = 'all', state = 'all', editing: string | null = null, deleting: string | null = null;
   let draft = '', error = '', disposed = false, interacting = false;
   let notice = '', selectionService = session.snapshot.service_id, batchDeleting = false, batchProgress = 0;
@@ -234,5 +234,10 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
     render(); surface.show();
   };
   const unsubscribe = session.subscribe(render), stopLang = onLangChange(render);
-  return { open, recall: reset => surface?.recall(reset), dispose: () => { disposed = true; clearGesture(); clearTimeout(releaseTimer); unwireFormats?.(); unsubscribe(); stopLang(); surface?.dispose(); } };
+  return { open, confirmDelete: task => {
+    if (batchDeleting || pending.has(task.task_id) || deleteUnavailable(task)) return;
+    selectionService = session.snapshot.service_id; clearSelection(); editing = null; deleting = task.task_id;
+    query = task.task_id; kind = state = 'all'; error = ''; open();
+    surface?.body.querySelector<HTMLButtonElement>('[data-file-action=cancel-delete]')?.focus();
+  }, recall: reset => surface?.recall(reset), dispose: () => { disposed = true; clearGesture(); clearTimeout(releaseTimer); unwireFormats?.(); unsubscribe(); stopLang(); surface?.dispose(); } };
 }

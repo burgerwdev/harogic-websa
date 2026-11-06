@@ -1,6 +1,7 @@
+import { setDomProperty } from './domState';
 import { sharedReceiverModeMemory, type ReceiverModeSettings } from './receiverModeMemory';
 import { copyModeControls } from '../core/receiverControls';
-import { syncMainReceiverControls } from './mainReceiverControls';
+import { clearMainReceiverControls, syncMainReceiverControls } from './mainReceiverControls';
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send as sendRaw } from '../core/wsSend';
@@ -128,7 +129,7 @@ export function applyCommandPolicy(mode: string): void {
       || (flags.session_exclusive && owns);
     const el = document.getElementById(id);
     if (el instanceof HTMLSelectElement || el instanceof HTMLInputElement
-        || el instanceof HTMLButtonElement) el.disabled = off;
+        || el instanceof HTMLButtonElement) setDomProperty(el, 'disabled', off);
   }
 }
 
@@ -276,6 +277,7 @@ export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string |
 
 /** A lost control/device connection ends the receiver session and all unconfirmed detector intent. */
 export function disconnectSdrSession(): void {
+  clearMainReceiverControls();
   lastSdrPanelReport = null;
   confirmSdrChannels([]);
   setCurrentSdrChannel(1);
@@ -377,7 +379,7 @@ function syncModeButtons(): void {
     const b = document.getElementById(id) as HTMLButtonElement | null;
     if (!b) continue;
     b.classList.toggle('pending', busy);
-    b.disabled = false;
+    setDomProperty(b, 'disabled', false);
   }
   setHint('mode-hint', busy ? t('mode_switching', { mode: want!.toUpperCase() }) : '');
 }
@@ -571,10 +573,10 @@ export function syncGraphModeStatus(mode: string) {
     if (!el) return;
     if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement
         || el instanceof HTMLButtonElement) {
-      el.disabled = off;
+      setDomProperty(el, 'disabled', off);
     }
     el.querySelectorAll('input,select,button').forEach((c) => {
-      (c as HTMLInputElement).disabled = off;
+      setDomProperty((c as HTMLInputElement), 'disabled', off);
     });
   };
   ['select-rbw-mode', 'input-rbw', 'unit-rbw-group',
@@ -584,12 +586,12 @@ export function syncGraphModeStatus(mode: string) {
   ].forEach((id) => setDisabled(id, isSdr));
   rtaDisable.forEach((id) => {
     const element = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
-    if (element) element.disabled = isRtaLike;
+    if (element) setDomProperty(element, 'disabled', isRtaLike);
   });
   const rbwSelect = document.getElementById('select-rbw-mode') as HTMLSelectElement | null;
   if (rbwSelect) {
     for (const option of rbwSelect.options) {
-      option.disabled = mode !== 'std' && option.value !== 'auto' && option.value !== 'manual';
+      setDomProperty(option, 'disabled', mode !== 'std' && option.value !== 'auto' && option.value !== 'manual');
     }
   }
   // The schema's own verdict for the mapped controls, applied after the hand lists: in RTA
@@ -598,16 +600,16 @@ export function syncGraphModeStatus(mode: string) {
   syncResolutionAvailability(mode);
   const resetButton = document.querySelector(
     '[data-action="reset-norm"]') as HTMLButtonElement | null;
-  if (resetButton) resetButton.disabled = isRtaLike;
+  if (resetButton) setDomProperty(resetButton, 'disabled', isRtaLike);
   for (const id of ['select-rta-fade', 'select-rta-dens-source',
     'select-rta-dens-layers', 'select-rta-dens-contrast', 'select-rta-dens-width']) {
     setDisabled(id, mode === 'std');
   }
   const grain = document.getElementById('select-rta-bins') as HTMLSelectElement | null;
   if (grain) {
-    grain.disabled = mode === 'std';
-    grain.dataset.i18n = 'tip_select-rta-bins';
-    grain.title = t(grain.dataset.i18n);
+    setDomProperty(grain, 'disabled', mode === 'std');
+    setDomProperty(grain.dataset, 'i18n', 'tip_select-rta-bins');
+    setDomProperty(grain, 'title', t(grain.dataset.i18n!));
   }
   const rtaFrequency = document.getElementById('rta-freq-settings');
   const swpFrequency = document.getElementById('swp-freq-settings');
@@ -829,9 +831,12 @@ export function applySdrDemod(restoringMode = false, filterOnly = false, remembe
     prepareSdrAudioTransition();
   }
   const context = channelControlContext();
+  // The main panel restores demodulator controls, then derives IQ geometry from
+  // that mode and filter. Workbench IQ constraints may belong to an older capture
+  // or processor and must not be replayed as part of a main-panel mode switch.
   const restored = remembered ? {...copyModeControls(remembered),volume:remembered.pcm_gain,agc:remembered.agc,squelch:remembered.squelch_dbm,
     nr:remembered.nr,nr_algorithm:remembered.nr_algorithm,nr_strength:remembered.nr_strength,nr_atten_db:remembered.nr_atten_db,
-    processing_enabled:true,baseband:{passband_hz:remembered.passband_hz,transition_hz:remembered.transition_hz,minimum_rate_hz:remembered.minimum_rate_hz}} : {};
+    processing_enabled:true,baseband:null} : {};
   const payload = filterOnly ? { ...context, ...restored, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw } : { ...context, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw, volume, squelch,
     agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
     nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
@@ -974,12 +979,12 @@ function syncSdrButtons() {
   for (const id of ['btn-sdr-agc', 'input-sdr-squelch', 'btn-sdr-nr',
     'select-sdr-nr-algo', 'select-sdr-nr-strength', 'input-sdr-nr-atten']) {
     const control = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | HTMLButtonElement | null;
-    if (control) control.disabled = drm || (id === 'select-sdr-nr-strength' && sdrNrAlgo.get() !== 'wiener');
+    if (control) setDomProperty(control, 'disabled', drm || (id === 'select-sdr-nr-strength' && sdrNrAlgo.get() !== 'wiener'));
   }
   renderSdrFilter();
   const dv = sdrDeemph.get();
   document.querySelectorAll<HTMLButtonElement>('[data-sdr-deemph]').forEach((el) => {
-    el.disabled = drm;
+    setDomProperty(el, 'disabled', drm);
     el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrDeemph) === dv);
   });
 }
@@ -1046,11 +1051,13 @@ export function rejectSdrFilterRequest(responseTo?: string, requestId?: string |
   }
   if (responseTo !== 'SET_SDR_CHANNEL' || !rejected || rejected.requestId !== requestId) return;
   if (receiverFailed) { receiverQueued = null; finishReceiverEdit(false); return; }
-  if (!receiverQueued && rejected.restoringMode && rejected.ifbw !== filterSpec(rejected.mode).defaultHz) {
+  if (!receiverQueued && rejected.restoringMode
+      && (rejected.ifbw !== filterSpec(rejected.mode).defaultHz || rejected.payload.baseband != null)) {
     sdrDemod.set(rejected.mode);
     sdrIfbw.set(filterSpec(rejected.mode).defaultHz);
     receiverQueued = { mode: rejected.mode, ifbw: filterSpec(rejected.mode).defaultHz, restoringMode: false,
-      payload: { ...rejected.payload, ifbw: filterSpec(rejected.mode).defaultHz } };
+      payload: { ...rejected.payload, baseband: null, processing_enabled: true,
+        ifbw: filterSpec(rejected.mode).defaultHz } };
   }
   finishReceiverEdit(false);
 }
@@ -1116,7 +1123,7 @@ export function toggleSdrAudio() {
 // SDR status -> panel readouts (called on every STATUS)
 function sdrSet(id: string, value: string) {
   const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
-  if (el && document.activeElement !== el) el.value = value;
+  if (el && el.value !== value && !el.contains(el.ownerDocument.activeElement)) el.value = value;
 }
 
 // Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
@@ -1126,7 +1133,7 @@ function syncSdrChannelButtons(): void {
   const definitions = sdrChannelMarks();
   const multiple = definitions.length > 1 || definitions.length === 1 && definitions[0].channel !== currentSdrChannel();
   document.querySelectorAll<HTMLButtonElement>('.sdr-channel-nav').forEach(button => {
-    button.hidden = !multiple;
+    setDomProperty(button, 'hidden', !multiple);
     button.setAttribute('aria-label', t(button.dataset.action === 'sdr-channel-prev' ? 'sdr_channel_prev' : 'sdr_channel_next'));
   });
   const label = document.getElementById('sdr-current-channel');
@@ -1193,6 +1200,7 @@ export function syncSdrPanel(s: any) {
   }
   setDecodeActive(active);
   if (!active) {
+    clearMainReceiverControls();
     if (canvasGesture?.sdr) cancelSdrCanvasGesture();
     cancelSdrTuningEdit();
     clearPassbandView();
@@ -1226,25 +1234,28 @@ export function syncSdrPanel(s: any) {
   if (currentReport) {
     // Retiring the selected receiver leaves this tuning slot vacant. It must never
     // transfer edits to a saved receiver, nor replay queued input onto a new UID.
-    if (previous && (previous.control?.receiver_uid !== primary?.control?.receiver_uid
+    if (previous && (serviceChanged || previous.control?.receiver_uid !== primary?.control?.receiver_uid
       || previous.enabled && primary?.enabled === false)) resetMainReceiverInteraction();
     confirmSdrChannels(channels);
     lastSdrPanelReport = s;
   }
   const descriptors = sdrModeIds().map(modeDescriptor).filter((mode): mode is NonNullable<typeof mode> => mode!==undefined);
-  if (descriptors.length && channels.some((row:any)=>row.control?.receiver_uid)) {
+  if (currentReport && descriptors.length && channels.some((row:any)=>row.control?.receiver_uid)) {
     sharedReceiverModeMemory.observe({service_id:channels.find((row:any)=>row.control?.receiver_uid)?.control.service_id,
       capabilities:{mode_descriptors:descriptors},receivers:channels.filter((row:any)=>row.control?.receiver_uid&&row.confirmed)
         .map((row:any)=>({receiver_uid:row.control.receiver_uid,revision:row.control.revision,confirmed:row.confirmed}))});
   }
   syncSdrChannelButtons();
   const receiver = primary || sdr;
-  if (primary) syncMainReceiverControls(primary, send);
+  if (currentReport) {
+    if (primary) syncMainReceiverControls(primary, send);
+    else clearMainReceiverControls();
+  }
   const ownReply = typeof s.request_id === 'string' && s.request_id.startsWith('sdr-filter-');
   const version = Number(s.config_version);
   const receiverAck = receiverInFlight !== null && s.response_to === 'SET_SDR_CHANNEL'
     && s.request_id === receiverInFlight.requestId;
-  const acceptSnapshot = (!ownReply || s.request_id === receiverInFlight?.requestId || version > receiverConfigVersion)
+  const acceptSnapshot = currentReport && (!ownReply || s.request_id === receiverInFlight?.requestId || version > receiverConfigVersion)
     && !(Number.isFinite(version) && version < receiverConfigVersion);
   const reportedCenter = Number(sdr.center) || 0;
   const focusCaptureCenter = sdrCenterHz.pending()
@@ -1688,11 +1699,11 @@ export function bindActions() {
     'sdr-workbench': () => { void import('./nativeWorkbench').then(module => module.openNativeWorkbench())
       .catch(error => postRefNotice(String(error), 4000)); },
     'sdr-channel-add': (el) => {
-      (el as HTMLButtonElement).disabled = true;
+      setDomProperty((el as HTMLButtonElement), 'disabled', true);
       void import('./nativeWorkbench').then(module => module.addCurrentSdrChannel())
         .then(message => { if (message) postRefNotice(message, 3000); })
         .catch(error => postRefNotice(String(error.message ?? error), 5000))
-        .finally(() => { (el as HTMLButtonElement).disabled = false; });
+        .finally(() => { setDomProperty((el as HTMLButtonElement), 'disabled', false); });
     },
     'sdr-channel-prev': () => cycleSdrChannel(-1),
     'sdr-channel-next': () => cycleSdrChannel(1),

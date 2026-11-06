@@ -3,6 +3,8 @@ import { getLang, onLangChange } from '../core/i18n';
 import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { downloadResult } from './receiverExport';
 import { mountRecordingDemod } from './recordingDemod';
+import { mountRecordingDelete } from './recordingDelete';
+import type { WorkbenchSession } from './workbenchSession';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const MAX_SAMPLES = 1_048_576n;
@@ -18,10 +20,11 @@ export function recordingRange(total: string, start: string, count: string, limi
 }
 
 /** One bounded archive buffer for the whole workbench, independent of live consumers. */
-export function mountRecordingView(options: { demodulateOffset?: () => boolean; demodulateModes?: () => string[]; collection?: () => boolean; streaming?: () => boolean; exportLimit?: () => string } = {}): { open(task: RecordingTask): void; recall(reset?: boolean): void; dispose(): void } {
+export function mountRecordingView(options: { session?: WorkbenchSession; demodulateOffset?: () => boolean; demodulateModes?: () => string[]; collection?: () => boolean; streaming?: () => boolean; exportLimit?: () => string } = {}): { open(task: RecordingTask): void; recall(reset?: boolean): void; dispose(): void } {
   let current: { task: string; window: FloatingWindow; dispose(): void } | null = null;
   return {
     open(task) {
+      if (options.session && !options.session.snapshot.recordings.some(t => t.task_id === task.task_id)) return;
       if (current?.task === task.task_id) { current.window.show(); if (current.window.portal.isPoppedOut()) current.window.portal.popout(); return; }
       current?.dispose();
       const surface = createFloatingWindow('iq-recording', () => l('Recorded IQ · waveform / export', '已录 IQ · 波形回放与导出'), { x: 140, y: 170, w: 680, h: 540 });
@@ -185,8 +188,10 @@ export function mountRecordingView(options: { demodulateOffset?: () => boolean; 
         return { query, segment };
       } });
       const unsubscribe = onLangChange(labels);
-      current = { task: task.task_id, window: surface, dispose: () => { disposed = true; abort?.abort(); pause(); samples = null; disposeDemod(); unsubscribe(); surface.dispose(); } };
+      let disposeDelete: (() => void) | undefined;
+      current = { task: task.task_id, window: surface, dispose: () => { disposed = true; disposeDelete?.(); abort?.abort(); pause(); samples = null; disposeDemod(); unsubscribe(); surface.dispose(); } };
       surface.show();
+      if (options.session) disposeDelete = mountRecordingDelete(body, options.session, task, () => { current?.dispose(); current = null; });
     },
     recall: (reset = false) => current?.window.recall(reset),
     dispose: () => { current?.dispose(); current = null; },

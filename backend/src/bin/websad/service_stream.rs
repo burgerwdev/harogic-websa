@@ -326,8 +326,9 @@ pub(super) fn deliver_receiver(state:&DevState,app:&App,mut output:receiver_work
     }
     let retired=std::mem::take(&mut output.retired);
     let tails:Vec<_>=retired.iter().map(|tail|(tail.identity,tail.channel)).collect();
+    let terminals:Vec<_>=retired.iter().filter(|tail|tail.terminal).map(|tail|(tail.identity,tail.channel)).collect();
     if !retired.is_empty() {
-        // Offsets count normal results. Splice each terminal batch in its original
+        // Offsets count normal results. Splice completed events and terminal batches in their original
         // FIFO position before publishing, rather than moving every tail first.
         let mut normal=std::mem::take(&mut output.decode).into_iter();let mut cursor=0;
         for tail in retired {
@@ -337,7 +338,7 @@ pub(super) fn deliver_receiver(state:&DevState,app:&App,mut output:receiver_work
         output.decode.extend(normal);
     }
     deliver_receiver_inner(state,app,output,retiring,&tails);
-    for &(identity,channel) in &tails {
+    for &(identity,channel) in &terminals {
         let uid=state.receiver_uid_for_processing(identity);
         let still_active=state.channel_configs().iter().any(|config|config.channel==channel&&config.enabled&&config.processing_enabled)
             && state.receiver_uid_for_slot(channel)==uid;
@@ -811,7 +812,7 @@ mod tests {
         let mut mixed=receiver_workers::ReceiverFrames::default();
         mixed.decode.extend(output(12,2).decode);mixed.decode.extend(output(13,0).decode);
         let mut tail=output(12,3);tail.audio.clear();tail.audio_configs.clear();
-        mixed.retired.push(receiver_workers::RetiredFrames {identity:identity_key(12,7),channel:1,decode_offset:1,frames:tail});
+        mixed.retired.push(receiver_workers::RetiredFrames {identity:identity_key(12,7),channel:1,decode_offset:1,terminal:true,frames:tail});
         deliver_receiver(&app.state.lock().unwrap(),&app,mixed,false);
         for (audio,mut rx,mut subscriber) in receivers {
             let mut pcm=Vec::new();

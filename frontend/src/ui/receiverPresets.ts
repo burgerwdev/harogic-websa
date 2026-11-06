@@ -1,6 +1,8 @@
+import { setDomProperty } from './domState';
 import { clone, type ReceiverConfig } from '../core/multichannel';
 import { getLang, onLangChange } from '../core/i18n';
 import type { WorkbenchSession } from './workbenchSession';
+import { syncSelectOptions, syncSelectValue } from './selectControl';
 
 type Settings = Pick<ReceiverConfig, 'purpose' | 'baseband' | 'processors'>;
 interface Presets { revision: string; presets: { name: string; settings: Settings }[] }
@@ -25,10 +27,10 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
   name.value = session.snapshot.receivers.find(r => r.receiver_uid === uid)?.confirmed.name ?? '';
   const receiver = () => service === session.snapshot.service_id ? session.snapshot.receivers.find(r => r.receiver_uid === uid) : undefined;
   const controls = (): void => {
-    save.disabled = !!abort || !data || !name.value.trim() || !!session.edits.get(uid)?.pending;
-    load.disabled = !!abort || !data || !list.value || !!session.edits.get(uid)?.pending || session.retiring(uid);
-    remove.disabled = !!abort || !data || !list.value;
-    refresh.disabled = !!abort;
+    setDomProperty(save, 'disabled', !!abort || !data || !name.value.trim() || !!session.edits.get(uid)?.pending);
+    setDomProperty(load, 'disabled', !!abort || !data || !list.value || !!session.edits.get(uid)?.pending || session.retiring(uid));
+    setDomProperty(remove, 'disabled', !!abort || !data || !list.value);
+    setDomProperty(refresh, 'disabled', !!abort);
   };
   const labels = (): void => {
     get('summary').textContent = l('Presets', '频点预设');
@@ -40,15 +42,12 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
     load.title = l('Preview on this channel, keeping its name and reception state; apply explicitly', '在此信道预览，保留名称及接收启停状态；确认后应用');
     remove.title = l('Delete the saved preset; reception continues', '删除保存的预设；接收继续');
     refresh.title = l('Reload presets from this server', '重新读取此服务器的预设');
-    if (list.options[0]) list.options[0].textContent = l('Select preset', '选择预设');
   };
   const showList = (): void => {
     const selected = list.value;
-    list.replaceChildren();
-    for (const entry of [{ name: '' }, ...(data?.presets ?? [])]) {
-      const option = root.ownerDocument.createElement('option'); option.value = entry.name; option.textContent = entry.name; list.append(option);
-    }
-    list.value = selected; labels(); controls();
+    syncSelectOptions(list, [{ value: '', label: l('Select preset', '选择预设') },
+      ...(data?.presets ?? []).map(entry => ({ value: entry.name, label: entry.name }))], selected);
+    labels(); controls();
   };
   const request = async (payload?: Record<string, unknown>): Promise<void> => {
     if (abort || !receiver()) return;
@@ -67,7 +66,7 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
       const result = await response.json() as Presets;
       if (disposed || controller.signal.aborted || !receiver()) return;
       data = result; showList();
-      if (payload?.type === 'save') list.value = String(payload.name);
+      if (payload?.type === 'save') syncSelectValue(list, String(payload.name));
       status.textContent = payload?.type === 'delete' ? l('Deleted', '已删除') : payload ? l('Saved', '已保存') : '';
     } catch (error) {
       if (!disposed && !controller.signal.aborted && receiver()) status.textContent = error instanceof Error ? error.message : String(error);
@@ -77,6 +76,7 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
   root.addEventListener('toggle', onToggle);
   name.addEventListener('input', controls);
   list.addEventListener('change', () => { if (list.value) name.value = list.value; controls(); });
+  list.addEventListener('blur', showList);
   refresh.addEventListener('click', () => { void request(); });
   save.addEventListener('click', () => {
     const r = receiver(); if (!r || !data || session.edits.get(uid)?.pending) return;
@@ -93,7 +93,7 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
     if (list.value && root.ownerDocument.defaultView?.confirm(l(`Delete preset “${list.value}”?`, `删除预设“${list.value}”？`)))
       void request({ type: 'delete', name: list.value });
   });
-  const stopLang = onLangChange(labels), stopState = session.subscribe(controls); showList();
+  const stopLang = onLangChange(showList), stopState = session.subscribe(controls); showList();
   if ((root as HTMLDetailsElement).open) void request();
   return () => { disposed = true; abort?.abort(); stopLang(); stopState(); root.removeEventListener('toggle', onToggle); };
 }

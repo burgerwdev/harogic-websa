@@ -14,6 +14,48 @@ from rust_iq_browser import free_port, start_service, stop
 from viewport_baseline import wait_ui_ready
 
 
+def bandwidth_gate(page, origin, uid):
+    """Independent IQ widths and confirmed mode memory must not cap main-panel edits."""
+    modes = [('am', 3000, 12000), ('dsb', 3000, 12000), ('usb', 1800, 6000),
+             ('lsb', 1800, 6000), ('cw', 100, 2000), ('nfm', 9000, 25000),
+             ('wfm', 100000, 250000), ('pm', 6000, 25000)]
+    results = []
+    for mode, narrow, wide in modes:
+        api(origin, '/api/config', {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'mode': mode, 'ifbw': narrow})
+        row = next(row for row in api(origin)['receivers'] if row['receiver_uid'] == uid)
+        candidate = row['confirmed']
+        candidate['name'] = f'{mode.upper()} narrow IQ'
+        reply = api(origin, payload={'type': 'configure', 'request_id': f'narrow-{mode}',
+                    'receiver_uid': uid, 'expected_revision': row['revision'], 'config': candidate})
+        assert reply['fault'] is None, reply
+        group = page.locator(f'#sdr-ifbw-group[data-mode="{mode}"]')
+        expect(group.locator(f'[data-sdr-ifbw="{narrow}"]')).to_have_attribute('aria-pressed', 'true')
+        wider = group.locator(f'[data-sdr-ifbw="{wide}"]')
+        expect(wider).to_be_enabled()
+        wider.click()
+        page.wait_for_function('''async ({uid, mode, wide}) => {
+          const s = await (await fetch('/api/sdr/receivers')).json();
+          const p = s.receivers.find(r=>r.receiver_uid===uid)?.confirmed.processors[0];
+          return p?.mode===mode && p.bandwidth_hz===wide;
+        }''', arg={'uid': uid, 'mode': mode, 'wide': wide})
+        results.append({'mode': mode, 'narrow': narrow, 'wide': wide})
+    # A real mode switch restores the saved independent baseband as well.
+    page.locator('.sdr-mode-common [data-sdr-demod=am]').click()
+    group = page.locator('#sdr-ifbw-group[data-mode=am]')
+    expect(group.locator('[data-sdr-ifbw="12000"]')).to_have_attribute('aria-pressed', 'true')
+    group.locator('[data-sdr-ifbw="3000"]').click()
+    expect(group.locator('[data-sdr-ifbw="3000"]')).to_have_attribute('aria-pressed', 'true')
+    page.wait_for_function('''async () => (await (await fetch('/api/state')).json()).sdr.if_bw===3000''')
+    page.locator('.sdr-mode-common [data-sdr-demod=usb]').click()
+    expect(page.locator('#sdr-ifbw-group')).to_have_attribute('data-mode', 'usb')
+    page.locator('.sdr-mode-common [data-sdr-demod=am]').click()
+    expect(group.locator('[data-sdr-ifbw="3000"]')).to_have_attribute('aria-pressed', 'true')
+    expect(group.locator('[data-sdr-ifbw="12000"]')).to_be_enabled()
+    group.locator('[data-sdr-ifbw="12000"]').click()
+    page.wait_for_function('''async () => (await (await fetch('/api/state')).json()).sdr.if_bw===12000''')
+    return results
+
+
 def browser_gate(origin, snapshot, artifacts):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -21,6 +63,7 @@ def browser_gate(origin, snapshot, artifacts):
         page.add_init_script("localStorage.setItem('web-sa-sdr-audio','1');localStorage.setItem('web-sa-lang','zh')")
         errors, retirements = [], []
         page.on('pageerror', lambda error: errors.append(str(error)))
+        page.on('console', lambda message: errors.append(message.text) if message.type == 'error' else None)
         page.on('request', lambda request: retirements.append(json.loads(request.post_data)['receiver_uid'])
                 if request.method == 'POST' and request.url.endswith('/api/sdr/receivers')
                 and json.loads(request.post_data).get('type') == 'retire' else None)
@@ -90,6 +133,9 @@ def browser_gate(origin, snapshot, artifacts):
         expect(overview.locator('[name=nr-algorithm]')).to_have_value('dfn')
         expect(overview.locator('[name=nr-atten]')).to_have_value('14')
 
+        overview.locator('[data-close]').click()
+        bandwidths = bandwidth_gate(page, origin, uid)
+
         def delete_all():
             if not overview.is_visible():
                 page.locator('[data-action=sdr-workbench]').click()
@@ -136,7 +182,7 @@ def browser_gate(origin, snapshot, artifacts):
         assert len(retirements) == len(set(retirements)), retirements
         assert not errors, errors
         browser.close()
-        return {'recoveries': recoveries, 'retirements': retirements, 'compact_layout': compact_layout, 'errors': errors}
+        return {'recoveries': recoveries, 'retirements': retirements, 'compact_layout': compact_layout, 'bandwidths': bandwidths, 'errors': errors}
 
 
 def main():
@@ -150,7 +196,7 @@ def main():
         try:
             report = browser_gate(origin, setup(origin), args.artifacts)
             (args.artifacts / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
-            print('PASS: independent audio controls and playback after retiring all channels (spectrum/listen/centre)')
+            print('PASS: audio controls, all eight editable bandwidth modes, mode memory, and playback after retiring all channels')
         finally:
             stop(proc)
 

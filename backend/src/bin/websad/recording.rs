@@ -4,7 +4,7 @@ use super::*;
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path as FsPath, PathBuf},
     sync::{Condvar, Mutex},
     thread::JoinHandle,
@@ -272,9 +272,14 @@ impl Manager {
                     manifest.display()
                 )));
             }
-            let recovered = match task["tracks"][0]["kind"].as_str() { Some("results") => results::recover(&path, &mut task), Some("audio") => audio::recover(&path, &mut task), _ => recover(&path, &mut task) };
-            if let Err(error) = recovered {
-                set_fault(&mut task, "RECORDING_RECOVERY", &error.to_string());
+            // Completion is committed only after archive footers and IQ indexes
+            // have been synced. Reuse them without reading payloads or rewriting
+            // sidecars. Range readers / exporters validate content on demand.
+            if !completed_metadata_intact(&path, &task) {
+                let recovered = match task["tracks"][0]["kind"].as_str() { Some("results") => results::recover(&path, &mut task), Some("audio") => audio::recover(&path, &mut task), _ => recover(&path, &mut task) };
+                if let Err(error) = recovered {
+                    set_fault(&mut task, "RECORDING_RECOVERY", &error.to_string());
+                }
             }
             history.push(task);
         }
@@ -830,6 +835,44 @@ fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
     Ok(())
 }
 
+/// O(volumes) metadata checks, independent of sample count and compressed size.
+/// Existing IQ indexes are opened lazily by readers, never rebuilt on a clean boot.
+fn completed_metadata_intact(path: &FsPath, task: &Value) -> bool {
+    let track = &task["tracks"][0];
+    if task["state"] != "completed" || track["state"] != "completed" {
+        return false;
+    }
+    let (prefix, extension) = match track["kind"].as_str() {
+        Some("iq") => ("iq", "wbiq"),
+        Some("audio") => ("audio", "wba"),
+        Some("results") => ("results", "wbr"),
+        _ => return false,
+    };
+    let Some(volumes) = track["volumes"].as_array().filter(|v| !v.is_empty()) else {
+        return false;
+    };
+    let mut stored = 0u64;
+    for (ordinal, volume) in volumes.iter().enumerate() {
+        let name = format!("{prefix}-{ordinal:06}.{extension}");
+        if volume["file"] != name || volume["complete"] != true {
+            return false;
+        }
+        let Ok(metadata) = fs::metadata(path.join(&name)) else { return false };
+        if !metadata.is_file() || metadata.len() < 8 || number(&volume["valid_bytes"]) != metadata.len() {
+            return false;
+        }
+        let Some(total) = stored.checked_add(metadata.len()) else { return false };
+        stored = total;
+        if prefix == "iq" {
+            let index = format!("iq-{ordinal:06}.jsonl");
+            if volume["index"] != index || !fs::metadata(path.join(index)).is_ok_and(|m| m.is_file()) {
+                return false;
+            }
+        }
+    }
+    stored == number(&track["stored_bytes"])
+}
+
 /// Rebuild indexes and counters from verified blocks, never from a reused receiver slot.
 fn recover(path: &FsPath, task: &mut Value) -> io::Result<()> {
     let interrupted = active(task["state"].as_str().unwrap_or(""));
@@ -928,23 +971,40 @@ pub(super) async fn index(
         .get("offset")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    // Clone only the root and validated task name under state, then perform the read outside it.
-    let root = {
+    // Reserve the same lease as deletion while looking up the live task. No
+    // cached sidecar may outlive a management tombstone or be read across deletion.
+    let (path, permit) = {
         let state = app.state.lock().unwrap();
         let Some(manager) = &state.recordings else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        if !manager.snapshots().iter().any(|t| t["task_id"] == task) {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        manager.root.clone()
+        let (path, _) = match manager.readable_task(&task) {
+            Ok(task) => task,
+            Err("recording task not found") => return StatusCode::NOT_FOUND.into_response(),
+            Err(message) => return (StatusCode::CONFLICT, Json(json!({"error":message}))).into_response(),
+        };
+        let permit = match super::recording_read::READER.try_acquire() {
+            Ok(permit) => permit,
+            Err(_) => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+        };
+        (path, permit)
     };
     match tokio::task::spawn_blocking(move|| {
+        let _permit = permit;
         if volume.contains('/')||volume.contains('\\')||volume.contains("..")||!volume.ends_with(".jsonl")||offset>10_000_000 {return Err("invalid index request".to_string());}
-        let reader=BufReader::new(File::open(root.join(task).join(volume)).map_err(|e|e.to_string())?);
-        let entries:Result<Vec<Value>,_>=reader.lines().skip(offset).take(128).map(|line|line.and_then(|s|serde_json::from_str(&s).map_err(io_error))).collect();
-        entries.map(|entries|json!({"offset":offset.to_string(),"next_offset":(offset+entries.len()).to_string(),"entries":entries})).map_err(|e|e.to_string())
-    }).await {Ok(Ok(value))=>Json(value).into_response(),Ok(Err(error))=>(StatusCode::BAD_REQUEST,Json(json!({"error":error}))).into_response(),Err(error)=>state_worker_failed(error).into_response()}
+        let mut reader=BufReader::new(File::open(path.join(volume)).map_err(|e|e.to_string())?);
+        let mut entries=Vec::<Value>::new();
+        // A sidecar can be damaged after completion. Bound each read just like
+        // IQ range reads instead of trusting newline placement at startup.
+        for position in 0..offset+128 {
+            let mut line=Vec::new();
+            let length=(&mut reader).take(256*1024+1).read_until(b'\n',&mut line).map_err(|e|e.to_string())?;
+            if length==0 {break;}
+            if length>256*1024 {return Err("index entry exceeds bounds".into());}
+            if position>=offset {entries.push(serde_json::from_slice(&line).map_err(|e|e.to_string())?);}
+        }
+        Ok(json!({"offset":offset.to_string(),"next_offset":(offset+entries.len()).to_string(),"entries":entries}))
+    }).await {Ok(Ok(value))=>([(header::CACHE_CONTROL,"no-store")],Json(value)).into_response(),Ok(Err(error))=>(StatusCode::BAD_REQUEST,Json(json!({"error":error}))).into_response(),Err(error)=>state_worker_failed(error).into_response()}
 }
 
 #[cfg(test)]
@@ -1101,8 +1161,16 @@ mod tests {
             b"damaged completed index",
         )
         .unwrap();
+        let manifest = root.join(&id).join("task.json");
+        let modified = manifest.metadata().unwrap().modified().unwrap();
         let mut restarted = Manager::open(root.clone()).unwrap();
         assert_eq!(restarted.snapshots(), vec![saved]);
+        assert_eq!(manifest.metadata().unwrap().modified().unwrap(), modified);
+        assert_eq!(fs::read(root.join(&id).join("iq-000000.jsonl")).unwrap(), b"damaged completed index");
+        // Existing indexes are validated on use, without a startup rewrite.
+        assert!(super::super::recording_read::visit_range(&root.join(&id), &restarted.snapshots()[0],
+            &super::super::recording_read::Selection { segment: "7".into(), start: 0, count: 8 },
+            &AtomicBool::new(false), |_, _| Ok(())).is_err());
         assert!(!restarted.has_active());
         restarted
             .start("new-uid-same-slot", "service-B", "new")
@@ -1115,6 +1183,32 @@ mod tests {
         );
         restarted.shutdown();
         drop(restarted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_completed_index_is_rebuilt_once_then_loaded_without_writes() {
+        let root = directory();
+        let mut manager = Manager::open(root.clone()).unwrap();
+        manager.start("uid-A", "service-A", "index-test").unwrap().wait().unwrap();
+        manager.admit("uid-A", input(0, 7));
+        let id = manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        manager.stop(&id).unwrap();
+        wait(&mut manager);
+        let saved = manager.snapshots()[0].clone();
+        drop(manager);
+        let index = root.join(&id).join("iq-000000.jsonl");
+        fs::remove_file(&index).unwrap();
+        let manager = Manager::open(root.clone()).unwrap();
+        assert_eq!(manager.snapshots()[0], saved);
+        let bytes = fs::read(&index).unwrap();
+        let modified = index.metadata().unwrap().modified().unwrap();
+        drop(manager);
+        let manager = Manager::open(root.clone()).unwrap();
+        assert_eq!(manager.snapshots()[0], saved);
+        assert_eq!(fs::read(&index).unwrap(), bytes);
+        assert_eq!(index.metadata().unwrap().modified().unwrap(), modified);
+        drop(manager);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

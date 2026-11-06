@@ -718,7 +718,7 @@ mod tests {
         drop(m); fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn corrupt_tail_exports_only_verified_original_prefix_after_restart() {
+    fn completed_content_is_checked_on_read_and_interrupted_content_is_recovered() {
         let root = directory();
         let mut m = Manager::open(root.clone()).unwrap();
         m.start_kind("uid", "service", "a", "audio")
@@ -737,8 +737,16 @@ mod tests {
         assert!(visit(&path, &t, &AtomicBool::new(false), |_, _, _, _, _| Ok(())).is_err());
         drop(m);
         let m = Manager::open(root.clone()).unwrap();
+        assert_eq!(m.snapshots()[0], t);
+        assert!(visit(&path, &m.snapshots()[0], &AtomicBool::new(false), |_, _, _, _, _| Ok(())).is_err());
+        drop(m);
+        let mut interrupted = t;
+        interrupted["state"] = json!("finalizing");
+        persist(&path, &interrupted).unwrap();
+        let m = Manager::open(root.clone()).unwrap();
         let recovered = m.snapshots()[0].clone();
         assert_eq!(recovered["state"], "failed");
+        assert_eq!(recovered["fault"]["code"], "SERVICE_INTERRUPTED");
         assert_eq!(recovered["tracks"][0]["blocks"], "1");
         assert_eq!(recovered["service_id"], "service");
         visit(
