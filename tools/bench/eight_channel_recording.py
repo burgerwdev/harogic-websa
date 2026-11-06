@@ -16,7 +16,7 @@ from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
-from eight_channel_bench import resources
+from eight_channel_bench import fine_busy_fraction, resources
 from eight_channel_hardware_ui import calibrate_tones, verify_tones, wait_stable_carrier
 from eight_channel_rf import (
     CENTER,
@@ -49,7 +49,7 @@ def performance_summary(artifacts):
     before, after = first['actual'], last['actual']
     def stage(name):
         return (after[name]['total_ns'] - before[name]['total_ns']) / 1e9 / seconds
-    stages = {'fine_and_framing': stage('fine') + stage('framer'),
+    stages = {'fine_and_framing': fine_busy_fraction(before, after, seconds),
         'capture_producer': stage('pfb_submit') + stage('fine_handoff')}
     threads = {row['tid']: row for row in usage[0]['threads']}
     duration = usage[-1]['elapsed'] - usage[0]['elapsed']
@@ -76,7 +76,7 @@ def performance_summary(artifacts):
                 stage_span = end['elapsed'] - begin['elapsed']
                 delta = {name: (end['actual'][name]['total_ns'] - begin['actual'][name]['total_ns']) / 1e9 / stage_span
                     for name in ['fine', 'framer', 'pfb_submit', 'fine_handoff']}
-                window_stages = {'fine_and_framing': delta['fine'] + delta['framer'],
+                window_stages = {'fine_and_framing': fine_busy_fraction(begin['actual'], end['actual'], stage_span),
                     'capture_producer': delta['pfb_submit'] + delta['fine_handoff']}
                 window.update(threads=fractions, stage_busy_fraction=window_stages,
                     twenty_percent_margin=all(row['busy_fraction'] <= .8 for row in fractions)

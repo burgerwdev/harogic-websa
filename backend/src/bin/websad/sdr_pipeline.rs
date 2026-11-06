@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::VecDeque;
 use std::sync::mpsc::{self as sync, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -161,7 +162,7 @@ pub(super) struct DirectChannel {
 }
 unsafe impl Send for DirectChannel {}
 impl Drop for DirectChannel {
-    fn drop(&mut self) { unsafe { websa_channelizer::channel_close(self.handle); } }
+    fn drop(&mut self) { if !self.handle.is_null() {unsafe { websa_channelizer::channel_close(self.handle); }} }
 }
 impl DirectChannel {
     pub fn new(slot:u32,id:u64,epoch:u64,fs:f64,center:f64,frequency:f64,
@@ -176,8 +177,17 @@ impl DirectChannel {
             epoch,origin,next_seq:seq,input:0,output:0,
             scratch:vec![0.0;2*(16240/plan.decimate as usize+2)],framer})
     }
+    pub(super) fn detach(&mut self,slot:u32)->Result<Self,String> {
+        let framer=if slot==1 {BasebandFramer::new(self.id,self.epoch,0.0,self.rate)}
+            else {BasebandFramer::new_aux(self.id,self.epoch,0.0,self.rate)}.ok_or("direct placeholder rejected")?;
+        Ok(std::mem::replace(self,Self {handle:std::ptr::null_mut(),id:self.id,rate:self.rate,delay:self.delay,
+            decimate:self.decimate,epoch:self.epoch,origin:self.origin,next_seq:self.next_seq,input:self.input,
+            output:self.output,scratch:Vec::new(),framer}))
+    }
+    pub(super) fn detached(&self)->bool {self.handle.is_null()}
+    pub(super) fn clock(&self)->(u64,u64) {(self.input,self.output)}
     pub fn process(&mut self,seq:u64,stamp:u64,input_index:u64,raw:&[i16])->Result<IqFrames,String> {
-        if seq!=self.next_seq || input_index!=self.origin+self.input || raw.len()!=2*16240 {
+        if self.handle.is_null() || seq!=self.next_seq || input_index!=self.origin+self.input || raw.len()!=2*16240 {
             return Err("direct source sequence/clock mismatch".into());
         }
         let first=self.origin.checked_add((self.output+1).checked_mul(self.decimate)
@@ -204,8 +214,9 @@ pub(super) struct FineState {
     pub aux: BTreeMap<u32, (u64, f64, BasebandFramer)>,
     pub channel_id: u64,
     pub next_id: u64,
-    fine_timing: Timing,
-    framer_timing: Timing,
+    pub faults:BTreeMap<u32,super::fine_workers::FineFault>,
+    pub(super) fine_timing: Timing,
+    pub(super) framer_timing: Timing,
     /// Kernel counters mapped to product slots at the last worker or control boundary.
     pub clocks: Arc<[(u64, u64, u64)]>,
     pub registry: Arc<[ChannelRegistryEntry]>,
@@ -226,7 +237,7 @@ impl FineState {
     }
     pub fn new_service(bank: FineBank, framer: BasebandFramer, input_rate: f64,
         registry: Arc<[ChannelRegistryEntry]>) -> Self {
-        Self { bank, framer, aux: BTreeMap::new(), channel_id: 1, next_id: 1, registry,
+        Self { bank, framer, aux: BTreeMap::new(), channel_id: 1, next_id: 1, registry, faults:BTreeMap::new(),
             fine_timing: Timing::default(), framer_timing: Timing::default(),
             clocks:Arc::from([]),
             output_send:Timing::default(), snapshot_publish:Timing::default(), slow_io:SlowPipeline::default(),
@@ -268,7 +279,7 @@ impl FineState {
 }
 
 #[derive(Clone, Default)]
-struct FineMetrics {
+pub(super) struct FineMetrics {
     fine: TimingSnapshot,
     framer: TimingSnapshot,
     output_send: TimingSnapshot,
@@ -280,146 +291,25 @@ struct FineMetrics {
 }
 
 impl FineState {
-    fn metrics(&mut self) -> Result<FineMetrics, String> {
-        self.sample_clocks()?;
-        Ok(self.metrics_ref())
-    }
-    fn metrics_ref(&self) -> FineMetrics {
+    pub(super) fn metrics_ref(&self) -> FineMetrics {
         FineMetrics { fine:self.fine_timing.snapshot(), framer:self.framer_timing.snapshot(),
             output_send:self.output_send.snapshot(), snapshot_publish:self.snapshot_publish.snapshot(),
             slow:self.slow, slow_io:self.slow_io,
             packets:self.bank.next_sequence(), clocks:self.clocks.clone() }
     }
-    fn sample_clocks(&mut self) -> Result<(), String> {
+    pub(super) fn sample_clocks(&mut self) -> Result<(), String> {
         let primary = self.channel_id;
-        let aux = &self.aux;
+        let slots:BTreeMap<_,_>=self.aux.iter().map(|(&slot,(id,_,_))|(*id,slot)).collect();
         let clocks = self.bank.clocks().map_err(|error| format!("fine clocks: {error}"))?;
         self.clocks = map_clocks(clocks, |id| if id == primary { Some(1) } else {
-            aux.iter().find(|(_, (channel_id, _, _))| *channel_id == id)
-                .map(|(&slot, _)| slot)
+            slots.get(&id).copied()
         })?.into();
         Ok(())
     }
-    fn observe_io(&mut self, stage: &'static str, seq:u64, stamp:u64, input_index:u64, elapsed:Duration) {
-        if elapsed > self.period * 4 {
-            self.slow_io = SlowPipeline { stage, seq, stamp, input_index,
-                period_ns:self.period.as_nanos().min(u64::MAX as u128) as u64,
-                elapsed_ns:elapsed.as_nanos().min(u64::MAX as u128) as u64 };
-        }
-    }
+
 }
 
-pub(super) struct FineWorker {
-    tx: Option<SyncSender<PfbOutput>>,
-    rx: Receiver<Result<IqFrames, String>>,
-    join: Option<JoinHandle<FineState>>,
-    timing: Arc<PLMutex<FineMetrics>>,
-    waiter: Arc<PLMutex<Option<thread::Thread>>>,
-    /// Caller-side time blocked because the fine input queue is full.
-    full_wait: Timing,
-    /// Caller-side time spent collecting worker results.
-    collect_timing: Timing,
-}
-impl FineWorker {
-    fn start(mut state: FineState) -> Result<Self, String> {
-        let (tx, input) = sync::sync_channel::<PfbOutput>(2);
-        let (output, rx) = sync::sync_channel(2);
-        let timing = Arc::new(PLMutex::new(state.metrics()?));
-        let published = timing.clone();
-        let waiter = Arc::new(PLMutex::new(None::<thread::Thread>));
-        let producer = waiter.clone();
-        let join = thread::Builder::new().name("sdr-fine-framer".into()).spawn(move || {
-            let mut refreshed = Instant::now();
-            let wake = || { if let Some(thread) = producer.lock().as_ref() { thread.unpark(); } };
-            while let Ok(packet) = input.recv() {
-                wake();
-                let (seq, stamp, input_index) = (packet.seq, packet.stamp, packet.input_index);
-                let mut result = state.deliver(packet);
-                if refreshed.elapsed() >= Duration::from_millis(50) {
-                    let started = Instant::now();
-                    match state.metrics() {
-                        Ok(snapshot) => *published.lock() = snapshot,
-                        Err(error) => if result.is_ok() { result = Err(error); },
-                    }
-                    let elapsed = started.elapsed();
-                    state.observe_io("fine_snapshot_publish", seq, stamp, input_index, elapsed);
-                    refreshed = Instant::now();
-                }
-                let failed = result.is_err();
-                let has_output = result.as_ref().is_ok_and(|frames| !frames.is_empty());
-                if failed || has_output {
-                    let started = Instant::now();
-                    // The producer must drain output even when our input is full.
-                    wake();
-                    let sent = output.send(result);
-                    wake();
-                    if has_output {
-                        let elapsed = started.elapsed();
-                        state.output_send.observe(elapsed);
-                        state.observe_io("fine_output_send", seq, stamp, input_index, elapsed);
-                    }
-                    if sent.is_err() || failed { break; }
-                }
-            }
-            state
-        }).map_err(|e| e.to_string())?;
-        Ok(Self { tx: Some(tx), rx, join: Some(join), timing, waiter, full_wait:Timing::default(),
-            collect_timing:Timing::default() })
-    }
-    pub fn collect(&mut self, frames: &mut IqFrames) -> Result<(), String> {
-        let started = Instant::now();
-        let result = (|| {
-            while let Ok(result) = self.rx.try_recv() { frames.extend(result?); }
-            Ok(())
-        })();
-        self.collect_timing.observe(started.elapsed());
-        result
-    }
-    pub fn submit(&mut self, mut packet: PfbOutput, frames: &mut IqFrames) -> Result<(), String> {
-        let mut blocked: Option<Instant> = None;
-        loop {
-            self.collect(frames)?;
-            match self.tx.as_ref().unwrap().try_send(packet) {
-                Ok(()) => {
-                    if let Some(started) = blocked { self.full_wait.observe(started.elapsed()); }
-                    return Ok(());
-                }
-                Err(TrySendError::Full(value)) => {
-                    packet = value;
-                    if blocked.is_none() {
-                        blocked = Some(Instant::now());
-                        *self.waiter.lock() = Some(thread::current());
-                        // Retry after registration so a freed slot cannot leave
-                        // us waiting for a notification that already happened.
-                        continue;
-                    }
-                    thread::park_timeout(Duration::from_millis(1));
-                }
-                Err(TrySendError::Disconnected(_)) => return Err("fine consumer disconnected".into()),
-            }
-        }
-    }
-    fn full_wait(&self) -> TimingSnapshot { self.full_wait.snapshot() }
-    fn collect_snapshot(&self) -> TimingSnapshot { self.collect_timing.snapshot() }
-    fn finish(mut self, frames: &mut IqFrames) -> Result<FineState, String> {
-        self.tx.take();
-        let mut failure = None;
-        while let Ok(result) = self.rx.recv() {
-            match result { Ok(output) => frames.extend(output), Err(e) => failure = Some(e) }
-        }
-        let state = self.join.take().unwrap().join().map_err(|_| "fine consumer panicked")?;
-        if let Some(error) = failure { return Err(error); }
-        Ok(state)
-    }
-}
-impl Drop for FineWorker {
-    fn drop(&mut self) {
-        self.tx.take();
-        while self.rx.recv().is_ok() {}
-        if let Some(join) = self.join.take() { let _ = join.join(); }
-    }
-}
-
+pub(super) use super::fine_workers::FineWorker;
 
 pub(super) struct PipelineConfig {
     pub center: f64, pub listen: f64, pub fine: i32, pub display_decimate: i32,
@@ -445,6 +335,8 @@ pub(super) struct Snapshot {
     framer: TimingSnapshot,
     clocks: Arc<[(u64, u64, u64)]>,
     fine_packets: u64, slow: SlowStage,
+    fine_lanes:Arc<[super::fine_workers::FineLaneSnapshot]>,
+    pub fine_faults:Arc<[super::fine_workers::FineFault]>,
     pfb_submit: TimingSnapshot,
     fine_handoff: TimingSnapshot,
     output_send: TimingSnapshot,
@@ -490,6 +382,7 @@ pub(super) struct PipelineOutput {
     pub frames: IqFrames, pub pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
 }
 impl PipelineOutput {
+    #[cfg(test)]
     fn collect(mut self, rx: &Receiver<Result<Self, String>>, failure: &mut Option<String>) -> Result<Self, String> {
         if failure.is_none() {
             for _ in 0..2 {
@@ -517,15 +410,56 @@ impl PipelineOutput {
         }
     }
 }
+/// Publisher stalls retain bounded per-identity FIFOs, never the capture thread.
+struct DeliveryQueue {
+    lanes:BTreeMap<(u32,u32),(usize,VecDeque<IqFrame>)>,
+    pan:Vec<(Vec<f64>,Vec<f32>,i32,u64,u64,usize)>,
+    failure:Option<String>,closed:bool,identities:usize,failed:std::collections::BTreeSet<(u32,u32)>,
+}
+impl DeliveryQueue {
+    fn new(channels:usize)->Self {Self {lanes:BTreeMap::new(),pan:Vec::new(),failure:None,closed:false,identities:channels.saturating_mul(2),failed:Default::default()}}
+    fn push(&mut self,result:Result<PipelineOutput,String>)->Vec<((u32,u32),u64)> {
+        let mut rejected=Vec::new();
+        let output=match result {Ok(output)=>output,Err(error)=>{self.failure=Some(error);return rejected;}};
+        for frame in output.frames {
+            let header=frame.header();
+            let key=(u32::from_le_bytes(header[32..36].try_into().unwrap()),u32::from_le_bytes(header[36..40].try_into().unwrap()));
+            if self.failed.contains(&key) {continue;}
+            let index=u64::from_le_bytes(header[40..48].try_into().unwrap());
+            let bytes=frame.native_iq().map_or_else(||frame.len(),|iq|iq.samples.len()*4+96);
+            if !self.lanes.contains_key(&key) && self.lanes.len()>=self.identities {self.failed.insert(key);rejected.push((key,index));continue;}
+            let lane=self.lanes.entry(key).or_default();
+            if lane.1.len()>=32 || lane.0+bytes>8*1024*1024 {self.failed.insert(key);rejected.push((key,index));continue;}
+            lane.0+=bytes;lane.1.push_back(frame);
+        }
+        // Display frames are replaceable, unlike IQ. Keep the newest per FFT kind.
+        for pan in output.pan {
+            if let Some(old)=self.pan.iter_mut().find(|old|old.5==pan.5) {*old=pan;}
+            else {self.pan.push(pan);}
+        }
+        rejected
+    }
+    fn take(&mut self)->PipelineOutput {
+        PipelineOutput {frames:std::mem::take(&mut self.lanes).into_values().flat_map(|(_,frames)|frames).collect(),
+            pan:std::mem::take(&mut self.pan)}
+    }
+    fn collect(&mut self,mut pending:PipelineOutput,failure:&mut Option<String>)->Result<PipelineOutput,String> {
+        let output=self.take();pending.frames.extend(output.frames);pending.pan.extend(output.pan);
+        if failure.is_none() {*failure=self.failure.clone().or_else(||self.closed.then(||"pipeline output disconnected".into()));}
+        if pending.frames.is_empty() && pending.pan.is_empty() {if let Some(error)=failure {return Err(error.clone());}}
+        Ok(pending)
+    }
+}
 type Change = Box<dyn FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send>;
 struct Command {
+    local:bool,
     change: Option<Change>,
     reply: SyncSender<Result<(Snapshot, PipelineOutput), (String, PipelineOutput)>>,
     resume: Receiver<()>,
 }
 pub(super) struct Pipeline {
     tx: SyncSender<Command>,
-    rx: Receiver<Result<PipelineOutput, String>>,
+    rx: Arc<PLMutex<DeliveryQueue>>,
     shared: Arc<PLMutex<Snapshot>>,
     pub snapshot: Snapshot,
     pub device_info: Option<hardware_swp::DeviceInfo>,
@@ -557,14 +491,20 @@ impl Ddc {
         }
         Ok(())
     }
-    fn suspend_fine(&mut self) -> Result<IqFrames, String> {
+    pub(super) fn suspend_fine(&mut self) -> Result<IqFrames, String> {
         self.stream.flush_pending().map_err(str::to_owned)?;
         let mut frames = self.drain()?;
-        if let Some(worker) = self.fine_worker.take() { self.fine = Some(worker.finish(&mut frames)?); }
+        if let Some(worker) = self.fine_worker.take() {
+            let (state,direct)=worker.finish_with_direct(&mut frames)?;self.fine=Some(state);self.direct.extend(direct);
+        }
         Ok(frames)
     }
-    fn resume_fine(&mut self) -> Result<(), String> {
-        self.fine_worker = Some(FineWorker::start(self.fine.take().ok_or("fine stage absent")?)?);
+    pub(super) fn resume_fine(&mut self) -> Result<(), String> {
+        if let Some(worker)=&mut self.fine_worker {worker.sync_lanes()?;return worker.sync_directs(&mut self.direct);}
+        let mut state=self.fine.take().ok_or("fine stage absent")?;
+        state.registry=self.registry.clone();
+        let mut worker=FineWorker::start(state)?;worker.sync_directs(&mut self.direct)?;
+        self.fine_worker = Some(worker);
         Ok(())
     }
     pub(super) fn channel_registry(&self) -> Arc<[ChannelRegistryEntry]> {
@@ -587,7 +527,8 @@ impl Ddc {
             else if let Some(worker) = &self.fine_worker { worker.timing.lock().clone() }
             else { FineMetrics::default() };
         let mut clocks=metrics.clocks.to_vec();
-        clocks.extend(self.direct.iter().map(|(&slot,route)| (u64::from(slot),route.input,route.output)));
+        if let Some(worker)=&self.fine_worker {clocks.extend(worker.direct_clocks());}
+        else {clocks.extend(self.direct.iter().map(|(&slot,route)| (u64::from(slot),route.input,route.output)));}
         Snapshot { capture_center:self.capture_center, usable_bandwidth:self.usable_bandwidth,
             input_rate:self.stream.input_sample_rate(), epoch:self.stream.epoch(),
             generation:self.generation,
@@ -601,6 +542,8 @@ impl Ddc {
             pool_timing:self.stream.timings(),
             stamp_gaps:self.stamp_gaps, fine:metrics.fine, framer:metrics.framer, clocks:clocks.into(),
             fine_packets:metrics.packets, slow:metrics.slow,
+            fine_lanes:self.fine_worker.as_ref().map_or_else(||Arc::from([]),|worker|worker.snapshots()),
+            fine_faults:self.faults.values().cloned().collect::<Vec<_>>().into(),
             consumer_gap:self.pipeline_timing.consumer_gap.snapshot(),
             snapshot_total:self.pipeline_timing.snapshot_total.snapshot(),
             fine_output_send:metrics.output_send, fine_snapshot_publish:metrics.snapshot_publish,
@@ -671,6 +614,10 @@ impl PipelinePresentation {
             "pool_timing":snapshot.pool_timing,
             "iqs_events":self.diagnostics.events(),
         });
+        actual["fine_owners"] = json!({"input_jobs_per_channel":64,"input_bytes_per_channel":4194304,
+            "output_jobs_per_channel":32,"output_bytes_per_channel":8388608,
+            "shared_coarse_columns":true,"channels":&*snapshot.fine_lanes});
+        actual["fine_faults"] = json!(&*snapshot.fine_faults);
         actual["consumer_gap"] = json!(snapshot.consumer_gap);
         snapshot.write_channel_status(&mut actual);
         actual["producer_snapshot_total"] = json!(snapshot.snapshot_total);
@@ -714,7 +661,8 @@ impl Pipeline {
             check_plan_geometry(config.fine,config.aux.len()+1,config.channel_budget)?;
         }
         let (tx, commands) = sync::sync_channel::<Command>(1);
-        let (output, rx) = sync::sync_channel(2);
+        let rx=Arc::new(PLMutex::new(DeliveryQueue::new(config.channel_budget)));
+        let output=rx.clone();
         let (ready, init) = sync::sync_channel(1);
         let terminal = Arc::new(PLMutex::new(None));
         let failed_capture = terminal.clone();
@@ -769,7 +717,7 @@ impl Pipeline {
                 match commands.try_recv() {
                     Ok(command) => {
                         let stop = command.change.is_none();
-                        let mut frames = match ddc.suspend_fine() { Ok(frames) => frames, Err(e) => {
+                        let mut frames = match if command.local {ddc.stream.flush_pending().map_err(str::to_owned).and_then(|_|ddc.drain())} else {ddc.suspend_fine()} { Ok(frames) => frames, Err(e) => {
                             let _ = command.reply.send(Err((e, PipelineOutput::default())));
                             let _ = command.resume.recv();
                             break;
@@ -781,6 +729,7 @@ impl Pipeline {
                         let clocks = ddc.sample_clocks();
                         aux = ddc.registry.iter().filter(|r|r.channel!=1)
                             .map(|r|(r.channel,r.frequency_hz)).collect::<Vec<_>>().into();
+                        output.lock().failed.retain(|&(id,epoch)|ddc.registry.iter().any(|row|row.channel_id==id&&row.epoch==epoch));
                         let snapshot = ddc.pipeline_snapshot(aux.clone());
                         *shared.lock() = snapshot.clone();
                         let tail = PipelineOutput { frames, pan:std::mem::take(&mut ddc.pan) };
@@ -788,11 +737,11 @@ impl Pipeline {
                             Ok(()) => Ok((snapshot, tail)),
                             Err(error) => Err((error, tail)),
                         };
-                        let failed = ddc.capture_failed || ddc.fine.is_none();
+                        let failed = ddc.capture_failed || (ddc.fine.is_none() && ddc.fine_worker.is_none());
                         let _ = command.reply.send(reply);
                         if command.resume.recv().is_err() { break; }
                         if stop || failed { break; }
-                        if let Err(e) = ddc.resume_fine() { let _ = output.send(Err(e)); break; }
+                        if let Err(e) = ddc.resume_fine() { output.lock().push(Err(e)); break; }
                     }
                     Err(sync::TryRecvError::Disconnected) => break,
                     Err(sync::TryRecvError::Empty) => (),
@@ -816,8 +765,11 @@ impl Pipeline {
                 let batch_frames = result.as_ref().map_or(0, |o| o.frames.len());
                 if failed || has_output {
                     let started = Instant::now();
-                    let sent = output.send(result);
-                    if sent.is_ok() && has_output {
+                    let rejected=output.lock().push(result);
+                    if let Some(worker)=ddc.fine_worker.as_mut() {
+                        for (identity,index) in rejected {worker.fail_delivery(identity,index);}
+                    }
+                    if has_output {
                         let completed_at = Instant::now();
                         let elapsed = completed_at.duration_since(started);
                         ddc.pipeline_timing.output_send.observe(elapsed);
@@ -829,7 +781,6 @@ impl Pipeline {
                             capture.note_output(seq, input_index, batch_frames, completed_at);
                         }
                     }
-                    if sent.is_err() { break; }
                 }
                 if failed { break; }
                 if refreshed.elapsed() >= Duration::from_millis(50) {
@@ -843,6 +794,7 @@ impl Pipeline {
                     refreshed = Instant::now();
                 }
             }
+            output.lock().closed=true;
         }).map_err(|e| e.to_string())?;
         match init.recv().map_err(|_| "pipeline setup disconnected")? {
             Ok((shared, diagnostics, device_info, gnss)) => {
@@ -853,29 +805,30 @@ impl Pipeline {
         }
     }
     pub fn poll(&mut self) -> Result<PipelineOutput, String> {
-        let result = PipelineOutput {
+        let pending = PipelineOutput {
             pan:std::mem::take(&mut self.pending_pan), frames:std::mem::take(&mut self.pending_frames),
-        }.collect(&self.rx, &mut self.failure)?;
+        };
+        let result=self.rx.lock().collect(pending,&mut self.failure)?;
         if self.refreshed.elapsed() >= Duration::from_millis(50) {
             self.snapshot = self.shared.lock().clone();
             self.refreshed = Instant::now();
         }
         Ok(result)
     }
-    fn boundary(&mut self, change: Option<Change>) -> Result<PipelineOutput, String> {
+    fn boundary(&mut self, change: Option<Change>, local:bool) -> Result<PipelineOutput, String> {
         let mut output = PipelineOutput::default();
-        if let Err(error) = self.run_boundary(change, &mut output) {
+        if let Err(error) = self.run_boundary(change, &mut output, local) {
             self.pending_frames.extend(output.frames);
             self.pending_pan.extend(output.pan);
             return Err(error);
         }
         Ok(output)
     }
-    fn run_boundary(&mut self, change: Option<Change>, output: &mut PipelineOutput) -> Result<(), String> {
+    fn run_boundary(&mut self, change: Option<Change>, output: &mut PipelineOutput, local:bool) -> Result<(), String> {
         let previous_capture = (self.snapshot.capture_center, self.snapshot.device_decimate, self.snapshot.generation);
         let (reply, rx) = sync::sync_channel(1);
         let (resume, resumed) = sync::sync_channel(0);
-        let mut command = Command { change, reply, resume:resumed };
+        let mut command = Command { local, change, reply, resume:resumed };
         loop {
             match self.tx.try_send(command) {
                 Ok(()) => break,
@@ -893,10 +846,8 @@ impl Pipeline {
                 Ok(result) => {
                     // Everything already emitted precedes the boundary tail, even if it
                     // arrived between the last poll and the command acknowledgement.
-                    while let Ok(queued) = self.rx.try_recv() {
-                        let queued = queued?;
-                        output.frames.extend(queued.frames); output.pan.extend(queued.pan);
-                    }
+                    let queued=self.rx.lock().take();
+                    output.frames.extend(queued.frames);output.pan.extend(queued.pan);
                     let (snapshot, tail) = match result {
                         Ok(value) => value,
                         Err((error, tail)) => {
@@ -917,22 +868,23 @@ impl Pipeline {
         }
     }
     pub fn command(&mut self, change: impl FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send + 'static) -> Result<IqFrames, String> {
-        let output = self.boundary(Some(Box::new(change)))?;
+        let output = self.boundary(Some(Box::new(change)),false)?;
         self.pending_pan.extend(output.pan);
         Ok(output.frames)
     }
+    pub fn command_channel(&mut self, change: impl FnOnce(&mut Ddc)->Result<IqFrames,String>+Send+'static)->Result<IqFrames,String> {
+        let output=self.boundary(Some(Box::new(change)),true)?;
+        self.pending_pan.extend(output.pan);Ok(output.frames)
+    }
     pub fn stop(&mut self) -> Result<PipelineOutput, String> {
         if self.join.is_none() { return Ok(PipelineOutput::default()); }
-        let mut result = self.boundary(None);
-        while let Ok(queued) = self.rx.recv() {
-            match (&mut result, queued) {
-                (Ok(output), Ok(queued)) => { output.frames.extend(queued.frames); output.pan.extend(queued.pan); }
-                (_, Err(error)) => result = Err(error),
-                _ => (),
-            }
-        }
+        let mut result = self.boundary(None,false);
         let joined = self.join.take().unwrap().join().map_err(|_| "pipeline panicked".to_string());
         joined?;
+        let mut queue=self.rx.lock();
+        let queued=queue.take();
+        if let Ok(output)=&mut result {output.frames.extend(queued.frames);output.pan.extend(queued.pan);}
+        if let Some(error)=queue.failure.take() {result=Err(error);}
         result
     }
 }
@@ -941,6 +893,23 @@ impl Drop for Pipeline { fn drop(&mut self) { let _ = self.stop(); } }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publisher_fifo_overflow_keeps_other_identities_and_reports_terminal_after_prefix() {
+        let frame=|id:u64,seq:u32|websa_channelizer::IqFrame::native(websa_channelizer::BasebandMagic::Aux,
+            seq+1,48000.0,100e6,id,9,seq as u64*10,0.0,62500000.0,vec![0.25,0.5]).unwrap();
+        let mut queue=DeliveryQueue::new(2);
+        for seq in 0..32 {assert!(queue.push(Ok(PipelineOutput {frames:vec![frame(1,seq)],pan:vec![]})).is_empty());}
+        let rejected=queue.push(Ok(PipelineOutput {frames:vec![frame(1,32),frame(2,0)],pan:vec![]}));
+        assert_eq!(rejected,vec![((1,9),320)]);
+        queue.push(Err("actual capture failure".into()));let mut failure=None;
+        let prefix=queue.collect(PipelineOutput::default(),&mut failure).unwrap();
+        assert_eq!(prefix.frames.len(),33);
+        assert_eq!(prefix.frames.last().unwrap().header()[32],2);
+        assert!(queue.push(Ok(PipelineOutput {frames:vec![frame(1,33)],pan:vec![]})).is_empty());
+        assert!(queue.take().frames.is_empty(),"never resume a failed identity after a gap");
+        assert_eq!(queue.collect(PipelineOutput::default(),&mut failure).err().as_deref(),Some("actual capture failure"));
+    }
 
     fn plan() -> Ddc {
         Ddc::configured(100e6, 100e6, 3, 50e6, &mut None, &[], 16).unwrap()

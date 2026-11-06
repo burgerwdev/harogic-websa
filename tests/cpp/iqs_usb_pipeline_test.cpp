@@ -95,6 +95,7 @@ int main() {
             {LIBUSB_TRANSFER_OVERFLOW,LIBUSB_ERROR_OVERFLOW},{LIBUSB_TRANSFER_ERROR,LIBUSB_ERROR_IO}}) {
         reset();fake.bad_sequence=0;fake.bad_status=status;Pipeline pipeline(api());pipeline.context(nullptr);assert(pipeline.start(true));int actual=99;
         assert(read(pipeline,&actual)==expected && actual==0);released();
+        assert(!pipeline.handoff_overflow());
         assert(!pipeline.enabled() && pipeline.stats().delivered==0 && pipeline.stats().failed==1);
         // Do not busy-loop over a cached failed transfer on the next vendor call.
         assert(read(pipeline,&actual)==0 && fake.bulk_calls==1);
@@ -141,9 +142,12 @@ int main() {
         while (!pipeline.stats().failed && std::chrono::steady_clock::now()<deadline)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         assert(Pipeline::handoff_capacity()==1024);
+        assert(pipeline.handoff_overflow());
         assert(pipeline.stats().failed==1 && pipeline.stats().peak_queued_packets==1024);
         for (unsigned i=1;i<=1024;++i) assert(read(pipeline,&actual)==0 && sequence()==i);
         assert(read(pipeline,&actual)==LIBUSB_ERROR_OVERFLOW && actual==0);released();
+        assert(pipeline.handoff_overflow());
+        assert(pipeline.start(true));assert(!pipeline.handoff_overflow());pipeline.stop();
     }
     std::puts("PASS: bounded USB ordering, byte integrity, cancellation, source restart, fallback, partial reads and failures");
 }

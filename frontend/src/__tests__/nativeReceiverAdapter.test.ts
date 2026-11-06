@@ -309,7 +309,11 @@ describe('native receiver control and shared IQ', () => {
     const next = clone(snapshot); next.revision = '11'; next.receivers[0].fault = { scope: 'receiver', code: 'INPUT_LOST', message: 'Input interrupted', retryable: false };
     fetchMock.mockResolvedValue(response(next)); await adapter.refresh();
     expect(overview.querySelector('[name=frequency]')).toBe(input); expect(input.value).toBe('7.123456');
-    expect(overview.querySelector('[data-key=receiver-fault]')?.textContent).toContain('Input interrupted');
+    const live = overview.querySelector('.mc-live-status')!;
+    expect(live.getAttribute('data-live-state')).toBe('fault');
+    const diagnostics = live.querySelector<HTMLDetailsElement>('[data-section=live-diagnostics]')!;
+    expect(diagnostics.open).toBe(false);
+    expect(diagnostics.textContent).toContain('Input interrupted');
     ui.dispose(); session.dispose();
   });
   it('rejects a delayed task snapshot even when receiver configuration revision is unchanged', async () => {

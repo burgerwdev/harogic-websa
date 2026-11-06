@@ -1,3 +1,4 @@
+pub(super) use metrics::cpu_now;
 use super::{sdr_pipeline::ChannelRegistryEntry, MAX_CHANNELS};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
@@ -28,6 +29,9 @@ const OUTPUT_BYTES_PER_CHANNEL:u64=8*1024*1024;
 pub(super) struct ChannelConfig {
     pub channel: u32,
     pub enabled: bool,
+    #[serde(skip)]
+    pub recovery_settle:bool,
+    pub continuity: super::reception_recovery::Policy,
     /// Independent baseband; None retains the legacy mode-derived plan.
     pub baseband: Option<BasebandConfig>,
     pub processing_enabled: bool,
@@ -69,7 +73,7 @@ pub(super) struct BasebandConfig {
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
-            channel: 1, enabled: true, baseband: None, processing_enabled: true,
+            channel: 1, enabled: true, recovery_settle:false, continuity: Default::default(), baseband: None, processing_enabled: true,
             freq: 0.0, mode: "am".into(), if_bw: 6000.0,
             am_sync: false,
             am_sync_generation: 0,
@@ -283,8 +287,8 @@ struct Shared {
     branches:Vec<Branch>,
 }
 #[derive(Clone,Debug,Serialize)]
-pub(super) struct BranchFault {pub channel:u32,pub generation:u64,pub error:String,pub receiver_uid:Option<String>,pub service_id:Option<String>,
-    pub last_success:serde_json::Value,pub first_unavailable:serde_json::Value,pub gap_end:Option<u64>}
+pub(super) struct BranchFault {pub channel:u32,pub generation:u64,pub error:String,pub kind:super::reception_recovery::FaultKind,pub receiver_uid:Option<String>,pub service_id:Option<String>,
+    pub last_success:serde_json::Value,pub last_delivered:serde_json::Value,pub first_unavailable:serde_json::Value,pub gap_end:Option<u64>}
 struct Branch {
     lifecycle:AtomicUsize, // 0 absent, 1 active, 2 retiring; only its owner can finish.
     failure:Mutex<Option<BranchFault>>,
@@ -296,13 +300,14 @@ struct Branch {
     mailbox:Mutex<Option<mpsc::Receiver<PendingWork>>>,
     state_generation:AtomicU64,
     preparing:AtomicBool,
+    recovery_floor:AtomicU64,
     input_bytes:AtomicU64,
     input_media_ns:AtomicU64,
     controls:super::receiver_controls::Log,
 }
 impl Default for Branch {
     fn default()->Self {Self {lifecycle:AtomicUsize::new(0),failure:Mutex::new(None),notice:AtomicBool::new(false),binding:Mutex::new(None),
-        output_pending:AtomicUsize::new(0),output_bytes:AtomicU64::new(0),close:Mutex::new(None),mailbox:Mutex::new(None),state_generation:AtomicU64::new(0),preparing:AtomicBool::new(false),input_bytes:AtomicU64::new(0),input_media_ns:AtomicU64::new(0),controls:Default::default()}}
+        output_pending:AtomicUsize::new(0),output_bytes:AtomicU64::new(0),close:Mutex::new(None),mailbox:Mutex::new(None),state_generation:AtomicU64::new(0),preparing:AtomicBool::new(false),recovery_floor:AtomicU64::new(0),input_bytes:AtomicU64::new(0),input_media_ns:AtomicU64::new(0),controls:Default::default()}}
 }
 struct InputPermit {shared:Arc<Shared>,slot:usize,bytes:u64,media:u64}
 impl InputPermit {
@@ -340,8 +345,9 @@ impl Shared {
             let rows=self.metrics.snapshot();
             let row=rows.as_array().and_then(|rows|rows.iter().rev().find(|row|row["channel"]==slot+1
                 && row["processing_generation"]==generation.to_string()));
-            *failure=Some(BranchFault {channel:slot as u32+1,generation,error,
+            *failure=Some(BranchFault {channel:slot as u32+1,generation,kind:super::reception_recovery::FaultKind::processing(&error),error,
                 receiver_uid:binding.as_ref().map(|b|b.0.clone()),service_id:binding.as_ref().map(|b|b.1.clone()),
+                last_delivered:row.map_or(serde_json::Value::Null,|row|row["watermarks"]["consumed"].clone()),
                 last_success:row.map_or(serde_json::Value::Null,|row|row["watermarks"]["succeeded"].clone()),
                 first_unavailable:row.map_or(serde_json::Value::Null,|row| {
                     if !row["first_rejected"].is_null() {row["first_rejected"].clone()} else {row["gap"]["first_failed"].clone()}
@@ -611,6 +617,11 @@ impl ReceiverWorkers {
         Ok(())
     }
 
+    pub(super) fn fail_source(&mut self,channel:u32,error:&str) {
+        if let Some(slot)=channel.checked_sub(1).filter(|slot|(*slot as usize)<MAX_CHANNELS) {
+            if self.shared.branch_failure(slot as usize).is_none() {self.shared.fail_branch(slot as usize,format!("fine source failed: {error}"));}
+        }
+    }
     pub(super) fn channel_failure(&self,channel:u32)->Option<BranchFault> {
         channel.checked_sub(1).filter(|&slot|(slot as usize)<MAX_CHANNELS)
             .and_then(|slot|self.shared.branch_failure(slot as usize))
@@ -620,13 +631,21 @@ impl ReceiverWorkers {
             .is_some_and(|branch|branch.preparing.load(Ordering::Acquire))
     }
 
+    pub(super) fn restart_ready(&self,channel:u32)->bool {
+        let slot=channel as usize-1;
+        [slot,WORKERS+slot].iter().all(|&i|self.threads[i].as_ref().is_none_or(|h|h.is_finished()))
+    }
+    pub(super) fn recovery_progress(&self,channel:u32)->Option<(u64,Option<super::reception_recovery::Position>)> {
+        self.shared.metrics.progress(channel,self.shared.generations[channel as usize-1].load(Ordering::Acquire))
+    }
     pub(super) fn restart_channel(&mut self,channel:u32)->Result<(),String> {
         let slot=channel.checked_sub(1).filter(|&slot|(slot as usize)<MAX_CHANNELS).ok_or("invalid receiver channel")? as usize;
         if [slot,WORKERS+slot].iter().any(|&index|self.threads[index].as_ref().is_some_and(|h|!h.is_finished())) {
             return Err(format!("channel {channel} is still retiring; its native call has not completed"));
         }
-        self.ensure_owner(slot,self.configs[slot].mode=="ft8")?;
+        if self.configs[slot].enabled && self.configs[slot].processing_enabled {self.ensure_owner(slot,self.configs[slot].mode=="ft8")?;}
         self.bump_generation(slot)?;
+        self.shared.branches[slot].recovery_floor.store(self.shared.generations[slot].load(Ordering::Acquire),Ordering::Release);
         *self.shared.branches[slot].failure.lock().unwrap_or_else(|e|e.into_inner())=None;
         self.shared.branches[slot].notice.store(false,Ordering::Release);
         self.active[slot]=None;self.levels[slot]=None;self.squelch[slot]=None;
@@ -995,7 +1014,7 @@ impl ReceiverWorkers {
         self.shared.check()?;
         let mut frames = ReceiverFrames::default();
         for output in self.deferred.drain(..).chain(self.outputs.try_iter()) {
-            if self.shared.current(output.slot,output.generation) || output.retired {
+            if self.shared.current(output.slot,output.generation) || output.retired && output.generation>=self.shared.branches[output.slot].recovery_floor.load(Ordering::Acquire) {
                 if let Some(accounting)=output.accounting.as_ref() {accounting.consumed();}
                 if output.retired {
                     let identity=output.stream.map(|(id,epoch)|super::service_stream::identity_key(id,epoch));

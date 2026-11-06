@@ -84,12 +84,12 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
     for (const [uid, decoder] of decoders) if (decoder.service !== snapshot.service_id) stopDecoder(uid);
     for (const receiver of snapshot.receivers) {
       const uid = receiver.receiver_uid, config = receiver.confirmed;
-      const key = `${snapshot.service_id}:${receiver.stream?.epoch}:${receiver.stream?.channel_id}:${config.processors[0]?.mode}`;
+      const key = `${snapshot.service_id}:${receiver.stream?.epoch}:${receiver.stream?.channel_id}:${receiver.processing_runtime?.processing_generation}:${config.processors[0]?.mode}`;
       const restart = audioKeys.has(uid) && audioKeys.get(uid) !== key;
-      if (restart) errors.delete(uid);
+      if (restart) {errors.delete(uid);stopDecoder(uid);endDecoderRasters(uid);}
       setNativeAudioRoute(uid, config.processors[0]?.mode ?? '', !receiver.fault && session.audible(uid), session.route(uid).gain, session.route(uid).pan, restart);
       audioKeys.set(uid, key);
-      if (receiver.processing_state === 'failed') {stopDecoder(uid);continue;}
+      if (receiver.processing_state === 'failed' || receiver.reception && receiver.reception.state!=='receiving') {stopDecoder(uid);continue;}
       if (receiver.state !== 'running' || !config.processors.length || receiver.fault || decoders.has(uid) || errors.has(uid)) continue;
       const worker = new Worker(new URL('../sdr/decodeWorker.ts', import.meta.url), { type: 'module' });
       const owner = { worker, service: snapshot.service_id }; decoders.set(uid, owner);

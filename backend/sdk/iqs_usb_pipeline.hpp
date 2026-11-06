@@ -83,6 +83,7 @@ class Pipeline {
     mutable std::mutex mutex_;
     std::condition_variable available_;
     int terminal_error_=0;
+    std::atomic<bool> handoff_overflow_{false};
     Stats stats_;
     Clock::time_point next_report_{};
     Clock::time_point last_read_{};
@@ -202,6 +203,7 @@ class Pipeline {
                         static_cast<unsigned long long>(row.submitted),static_cast<unsigned long long>(row.delivered),
                         static_cast<unsigned>(row.phase));
                 }
+                handoff_overflow_.store(true,std::memory_order_release);
                 fail(LIBUSB_ERROR_OVERFLOW);break;
             }
             job.submitted=false;
@@ -242,10 +244,11 @@ public:
     void context(libusb_context* value) {context_=value;context_known_=true;}
     const Api& api() const {return api_;}
     bool start(bool full_rate) {
-        stop();enabled_=full_rate && context_known_ && api_.valid();
+        stop();handoff_overflow_.store(false,std::memory_order_release);enabled_=full_rate && context_known_ && api_.valid();
         next_report_=Clock::now()+std::chrono::seconds(5);return enabled_;
     }
     Stats stats() const {std::lock_guard<std::mutex> lock(mutex_);return stats_;}
+    bool handoff_overflow() const {return handoff_overflow_.load(std::memory_order_acquire);}
     bool enabled() const {return enabled_;}
     void stop() {
         enabled_=false;stopping_.store(true,std::memory_order_release);

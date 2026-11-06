@@ -10,6 +10,10 @@ mod hardware_rta;
 mod hardware_swp;
 #[path = "websad/sdr_pipeline.rs"]
 mod sdr_pipeline;
+#[path = "websad/fine_workers.rs"]
+mod fine_workers;
+#[path = "websad/reception_recovery.rs"]
+mod reception_recovery;
 #[path = "websad/display_fft.rs"]
 mod display_fft;
 #[path = "websad/sdr_hardware.rs"]
@@ -383,6 +387,7 @@ struct DevState {
     decode_snapshots: service_stream::DecodeSnapshots,
     processing_branches: multichannel::ProcessingBranches,
     consumed_receiver_iq: std::collections::BTreeSet<(u32,u32,u32)>,
+    reception: reception_recovery::Supervisor,
     ddc_error: Option<String>,
     ddc_error_count: u64,
     ddc_error_last: Option<String>,
@@ -601,6 +606,7 @@ impl DevState {
             decode_snapshots: service_stream::DecodeSnapshots::default(),
             processing_branches: multichannel::ProcessingBranches::default(),
             consumed_receiver_iq: std::collections::BTreeSet::new(),
+            reception: Default::default(),
             ddc_error: None,
             ddc_error_count: 0,
             ddc_error_last: None,
@@ -2907,9 +2913,8 @@ impl Ddc {
         self.input_pos += count as u64;
         let seq = self.next_seq;
         let mut frames = Vec::new();
-        for route in self.direct.values_mut() {
-            frames.extend(route.process(seq,stamp,self.input_pos-count as u64,raw)?);
-        }
+        if let Some(worker)=self.fine_worker.as_mut() {worker.submit_raw(seq,stamp,self.input_pos-count as u64,raw)?;}
+        else {for route in self.direct.values_mut() {frames.extend(route.process(seq,stamp,self.input_pos-count as u64,raw)?);}}
         let mut retries = 0;
         loop {
             let started = std::time::Instant::now();
@@ -2955,10 +2960,10 @@ impl Ddc {
 
 impl std::ops::Deref for Ddc {
     type Target = sdr_pipeline::FineState;
-    fn deref(&self) -> &Self::Target { self.fine.as_ref().expect("fine stage must be drained before control") }
+    fn deref(&self) -> &Self::Target { self.fine.as_ref().or_else(||self.fine_worker.as_ref().map(|worker|&worker.state)).expect("fine stage absent") }
 }
 impl std::ops::DerefMut for Ddc {
-    fn deref_mut(&mut self) -> &mut Self::Target { self.fine.as_mut().expect("fine stage must be drained before control") }
+    fn deref_mut(&mut self) -> &mut Self::Target { if let Some(state)=self.fine.as_mut() {state} else {&mut self.fine_worker.as_mut().expect("fine stage absent").state} }
 }
 
 fn hardware_pan(
@@ -4210,6 +4215,8 @@ async fn publisher(app: Arc<App>) {
                         }
                     }
                 }
+                service_stream::publish_fine_failures(&mut state,&compute);
+                state.advance_reception_recovery();
                 state.reap_failed_receivers();
                 if let Some(message)=service_stream::publish_receiver_failure(&mut state,&compute) {msgs.push(message);}
             }

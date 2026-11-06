@@ -17,6 +17,8 @@ export class WorkbenchSession {
   private sequence = 0;
   private commandSequence = 0;
   private faultSequence = 0;
+  private recoveries = new Map<string, Promise<CommandReply>>();
+  recovering(uid:string):boolean {return this.recoveries.has(uid);}
   private retirements = new Map<string, Promise<CommandReply>>();
   private mutationTail: Promise<void> = Promise.resolve();
   private generation = 0;
@@ -41,7 +43,7 @@ export class WorkbenchSession {
     const serviceChanged = snapshot.service_id !== this.snapshot.service_id;
     if (serviceChanged) {
       this.retiredServices.add(this.snapshot.service_id); this.generation++;
-      this.routes.clear(); this.edits.clear(); this.retirements.clear(); this.mutationTail = Promise.resolve();
+      this.recoveries.clear(); this.routes.clear(); this.edits.clear(); this.retirements.clear(); this.mutationTail = Promise.resolve();
     }
     this.snapshot = snapshot;
     this.modeMemory.observe(snapshot);
@@ -69,7 +71,7 @@ export class WorkbenchSession {
   private monitorEligible(uid: string): boolean {
     if (this.retiring(uid)) return false;
     const r = this.snapshot.receivers.find(r => r.receiver_uid === uid);
-    if (!r || r.fault || r.processing_state === 'failed' || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
+    if (!r || r.reception && r.reception.state!=='receiving' || r.fault || r.processing_state === 'failed' || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
     const route = this.route(uid);
     if (this.monitorMode === 'follow') return uid === this.selected && this.masterGain > 0 && route.gain > 0;
     const solo = this.snapshot.receivers.some(r => r.state === 'running' && receiverHasAudio(this.snapshot, r.confirmed) && this.route(r.receiver_uid).enabled && this.route(r.receiver_uid).solo);
@@ -107,10 +109,12 @@ export class WorkbenchSession {
     return operation;
   }
   async recover(uid:string):Promise<CommandReply> {
+    const existing=this.recoveries.get(uid);if(existing) return existing;
     const receiver=this.snapshot.receivers.find(row=>row.receiver_uid===uid);
     if (!receiver) return this.invalidated({type:'retire',receiver_uid:uid,request_id:this.requestId()});
-    return this.send({type:'configure',receiver_uid:uid,request_id:this.requestId(),expected_revision:receiver.revision,
-      config:clone(receiver.confirmed),recover:true});
+    const operation=this.send({type:'configure',receiver_uid:uid,request_id:this.requestId(),expected_revision:receiver.revision,
+      config:clone(receiver.confirmed),recover:true}).finally(()=>{if(this.recoveries.get(uid)===operation)this.recoveries.delete(uid);this.notify();});
+    this.recoveries.set(uid,operation);this.notify();return operation;
   }
   async send(command: ServiceCommand): Promise<CommandReply> {
     if (this.disposed) return this.invalidated(command);

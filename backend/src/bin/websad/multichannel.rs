@@ -194,6 +194,7 @@ pub(super) fn config_value(channel: &ChannelConfig, previous: Option<&Value>) ->
         "name":format!("C{}",channel.channel),"color":"#4cc99b","tags":[],
     }));
     config["enabled"]=json!(channel.enabled);
+    config["continuity"]=json!(channel.continuity);
     config["purpose"]=json!(if !channel.processing_enabled {"iq"}
         else if matches!(channel.mode.as_str(),"ft8"|"sstv"|"radiofax"|"drm"|"drmplus")
             || websa_channelizer::catalog::is_external(&channel.mode) {"digital"} else {"listen"});
@@ -232,6 +233,7 @@ impl DevState {
                 });
             }
             let receiver=self.receivers.receivers.get_mut(&channel.channel).unwrap();
+            self.reception.bind(channel.channel,&receiver.uid);
             if receiver.channel!=channel {
                 receiver.revision=self.config_version;
                 receiver.config=config_value(&channel,Some(&receiver.config));
@@ -258,24 +260,28 @@ impl DevState {
         self.remember_receiver_streams();
         let registry=self.stream_registry();
         let capture_fault=self.ddc_error.as_deref().or_else(||(!self.link_up).then_some("capture disconnected"));
+        let fine_faults=self.fine_faults();
         let receivers:Vec<_>=self.receivers.receivers.values().map(|receiver| {
             let entry=registry.iter().find(|entry|entry.channel==receiver.channel.channel);
+            let fine_fault=fine_faults.iter().find(|fault|entry.is_some_and(|entry|entry.channel_id==fault.channel_id && entry.epoch==fault.epoch));
+            let runtime=self.receiver_workers.as_ref().map(|w|w.runtime_status(receiver.channel.channel,&receiver.uid));
             json!({"receiver_uid":receiver.uid,"source_id":SOURCE,"display_number":receiver.channel.channel,
                 "revision":receiver.revision.to_string(),"confirmed":receiver.config,
                 "control_receipts":self.receiver_workers.as_ref().map(|w|w.control_receipts(receiver.channel.channel,&receiver.uid))
                     .unwrap_or_else(||json!(self.receivers.idle_receipts.iter().filter(|r|r["receiver_uid"]==receiver.uid).collect::<Vec<_>>())),
                 "audio_signature":audio_signature(&receiver.channel),
                 "processing_statistics":self.receiver_workers.as_ref().map(|workers|workers.uid_stats(receiver.channel.channel,&receiver.uid)),
-                "processing_state":self.receiver_workers.as_ref().map(|workers|workers.runtime_status(receiver.channel.channel,&receiver.uid)["state"].clone())
+                "processing_state":runtime.as_ref().map(|r|r["state"].clone())
                     .unwrap_or_else(||json!(if !receiver.channel.enabled||!receiver.channel.processing_enabled {"disabled"} else {"waiting"})),
-                "processing_runtime":self.receiver_workers.as_ref().map(|workers|workers.runtime_status(receiver.channel.channel,&receiver.uid)),
+                "reception":self.reception.snapshot(receiver.channel.channel),
+                "processing_runtime":runtime,
                 "processing_fault":self.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(receiver.channel.channel)),
-                "state":if !receiver.channel.enabled {"stopped"} else if capture_fault.is_some() {"failed"}
+                "state":if !receiver.channel.enabled {"stopped"} else if capture_fault.is_some() || fine_fault.is_some() {"failed"}
                     else if entry.is_some() {"running"} else {"interrupted"},
                 "stream":entry.map(|e|json!({"source_id":SOURCE,"epoch":e.epoch.to_string(),"channel_id":e.channel_id.to_string()})),
                 "clock":entry.and_then(|e|self.receivers.history.iter().find(|known|
                     known.entry.channel_id==e.channel_id&&known.entry.epoch==e.epoch)).and_then(|known|known.clock.clone()),
-                "fault":capture_fault.map(|error|fault("capture","CAPTURE_FAILED",error)).or_else(||
+                "fault":capture_fault.map(|error|fault("capture","CAPTURE_FAILED",error)).or_else(||fine_fault.map(|error|json!({"scope":"receiver_iq","code":"FINE_FAILED","message":error.error,"detail":error}))).or_else(||
                     receiver.channel.processing_enabled.then_some(self.receiver_failure.as_deref()).flatten()
                         .map(|error|fault("receiver","PROCESSING_FAILED",error)))})
         }).collect();
@@ -381,8 +387,9 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         return Err("invalid receiver name, color or tags".into());
     }
     let enabled=config["enabled"].as_bool().ok_or("enabled must be boolean")?;
-    if enabled && state.hardware_shim.is_some()
-        && (state.ddc_error.is_some() || state.live_capture_parameters().is_none()) {
+    if enabled && request["recover"]!=true && state.hardware_shim.is_some()
+        && (state.ddc_error.is_some() || state.live_capture_parameters().is_none())
+        && !previous.is_some_and(|old|old.channel.enabled && config["baseband"]==old.config["baseband"] && config["processors"]==old.config["processors"]) {
         return Err("Start or recover the shared capture before enabling receivers".into());
     }
     let purpose=config["purpose"].as_str().ok_or("purpose missing")?;
@@ -397,6 +404,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         return Err("Each receiver supports zero or one primary processor; IQ-only receivers must use an empty set".into());
     }
     let mut channel=if kind=="create" {ChannelConfig::for_slot(slot)} else {state.channel_config(slot).ok_or("channel not found")?};
+    channel.continuity=serde_json::from_value(config.get("continuity").cloned().unwrap_or_else(||json!("continuous"))).map_err(|_|"continuity must be continuous or strict")?;
     channel.freq=frequency;channel.enabled=enabled;channel.processing_enabled=!processors.is_empty();
     channel.baseband=Some(baseband);
     if let Some(processor)=processors.first() {
@@ -422,6 +430,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         channel.baseband.as_mut().unwrap().minimum_rate_hz=channel.baseband.as_ref().unwrap().minimum_rate_hz.max(floor);
     }
     channel.validate()?;
+    config["continuity"]=json!(channel.continuity);
     if let Some(processor)=config["processors"].as_array_mut().and_then(|p|p.first_mut()) {
         processor["bandwidth_hz"]=json!(channel.if_bw);processor["pcm_gain"]=json!(channel.volume);
         processor["agc"]=json!(channel.agc);processor["squelch_dbm"]=json!(channel.squelch);
@@ -444,7 +453,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     }
     let mut data=json!({"cmd":"SET_SDR_CHANNEL","channel":slot,"enabled":enabled,"freq":frequency,
         "mode":channel.mode,"if_bw":channel.if_bw,"baseband":channel.baseband,
-        "processing_enabled":channel.processing_enabled,"volume":channel.volume,"agc":channel.agc,"squelch":channel.squelch,
+        "continuity":channel.continuity,"processing_enabled":channel.processing_enabled,"volume":channel.volume,"agc":channel.agc,"squelch":channel.squelch,
         "nr":channel.nr,"nr_algorithm":channel.nr_algorithm,"nr_strength":channel.nr_strength,"nr_atten_db":channel.nr_atten_db,
         "request_id":request["request_id"],"defer_receipt":true});
     copy_mode_controls(&channel,&mut data);
@@ -745,6 +754,8 @@ pub(super) fn tag_iq_selected(state:&mut DevState,frames:IqFrames,all:bool,wante
                     let rate=f64::from_le_bytes(frame[16..24].try_into().unwrap());
                     let delay=f64::from_le_bytes(frame[48..56].try_into().unwrap());
                     let step=(known.entry.input_rate/rate).round() as u64;
+                    let samples=u32::from_le_bytes(frame[12..16].try_into().unwrap()) as u64;
+                    if samples>0 {state.reception.observe_iq(known.entry.channel,id,epoch,input,input.saturating_add(samples.saturating_mul(step)));}
                     known.clock=Some(json!({"input_index":input.to_string(),
                         "output_index":(input.saturating_sub(known.origin)/step.max(1)).to_string(),
                         "fraction_num":"0","fraction_den":"1","input_rate_hz":known.entry.input_rate,

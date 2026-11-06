@@ -158,10 +158,16 @@ impl DevState {
             .or_else(|| self.ddc.as_ref().map(|d| d.0.capture_center))
             .or(self.last_capture.map(|p|p.center)).unwrap_or(self.sdr_center)
     }
+    pub(super) fn ddc_channel_command(&mut self, command: impl FnOnce(&mut Ddc)->Result<IqFrames,String>+Send+'static)->Result<(),String> {
+        self.ddc_command_inner(command,true)
+    }
     pub(super) fn ddc_command(&mut self, command: impl FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send + 'static) -> Result<(), String> {
+        self.ddc_command_inner(command,false)
+    }
+    fn ddc_command_inner(&mut self, command:impl FnOnce(&mut Ddc)->Result<IqFrames,String>+Send+'static,local:bool)->Result<(),String> {
         let registry = self.stream_registry();
         let frames = if let Some(pipeline) = self.pipeline.as_mut() {
-            match pipeline.command(command) {
+            match if local {pipeline.command_channel(command)} else {pipeline.command(command)} {
                 Ok(frames) => frames,
                 // boundary already retained drained frames and spectra; the next poll
                 // delivers them, and a fatal pipeline reports itself there.
@@ -219,7 +225,7 @@ impl DevState {
         Ok(output)
     }
     pub(super) fn take_hardware_presentation(&mut self, listeners: usize) -> Result<Option<HardwarePresentation>, String> {
-        let blocked = self.ddc_error.is_some() && !Self::retry_due(&self.ddc_retry_at);
+        let blocked = self.ddc_error.is_some() && (!self.reception.capture_allowed() || !Self::retry_due(&self.ddc_retry_at));
         if self.pipeline.is_none() && listeners > 0 && !blocked {
             // Compile receiver models before arming capture; startup must not
             // stall the consumer while the hardware IQ queue is filling.
@@ -230,8 +236,10 @@ impl DevState {
                     Err(error)=>self.latch_receiver_failure(error),
                 }
             }
-            let configs=self.channel_configs();
+            let mut configs=self.channel_configs();
+            for config in &mut configs {config.recovery_settle=self.ddc_error.is_some();if self.reception.source_stopped(config.channel) {config.enabled=false;}}
             let aux=configs.iter().filter(|c|c.channel>1 && c.enabled).map(|c|(c.channel,c.freq)).collect();
+            if self.ddc_error.is_some() {self.reception.begin_capture();}
             self.pipeline = Some(Pipeline::start_service(PipelineConfig {
                 center:self.sdr_center, listen:self.sdr_listen, fine:2, display_decimate:self.sdr_decimate as i32,
                 front_end:self.front_end(self.sdr_ref), shim:self.hardware_shim.clone().unwrap(),
@@ -297,8 +305,13 @@ impl DevState {
         }
     }
     pub(super) fn hardware_presentation_failed(&mut self, error: String) {
+        self.reception_capture_failed(&error);
         self.remember_capture_parameters();
-        if let Err(failure)=self.finish_radiofax() {self.latch_receiver_failure(failure);}
+        // The source ended with a gap. Failed owners must discard their old
+        // windows, not receive normal finish commands after their mailbox exits.
+        self.pending_receiver=receiver_workers::ReceiverFrames::default();
+        self.pending_iq.clear();
+        self.consumed_receiver_iq.clear();
         self.note_auto_acquisition(i32::MIN);
         if let Some(pipeline) = &self.pipeline {
             let mut diagnostics = pipeline.failure_diagnostics();

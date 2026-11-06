@@ -32,6 +32,7 @@ struct Held { stage: &'static str, since: Instant, samples: u64, bytes: u64 }
 struct State {
     packet: Totals, search: Totals, next: u64, held: BTreeMap<u64, Held>,
     accepted: Option<Value>, started: Option<Value>, succeeded: Option<Value>,
+    first_succeeded: Option<Value>,
     published: Option<Value>, consumed: Option<Value>, first_rejected: Option<Value>,
     receiver: Value,
     first_failed:Option<Value>,first_cancelled:Option<Value>,
@@ -42,7 +43,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> { m.lock().unwrap_or_el
 
 // CLOCK_THREAD_CPUTIME_ID measures CPU, excluding queueing and preemption.
 #[cfg(target_os = "linux")]
-fn cpu_now() -> Option<u64> {
+pub(crate) fn cpu_now() -> Option<u64> {
     #[repr(C)] struct Timespec { seconds: std::ffi::c_long, nanos: std::ffi::c_long }
     unsafe extern "C" { fn clock_gettime(clock: std::ffi::c_int, time: *mut Timespec) -> std::ffi::c_int; }
     let mut time = Timespec { seconds: 0, nanos: 0 };
@@ -50,7 +51,7 @@ fn cpu_now() -> Option<u64> {
         (time.seconds as u64).saturating_mul(1_000_000_000).saturating_add(time.nanos as u64))
 }
 #[cfg(not(target_os = "linux"))]
-fn cpu_now() -> Option<u64> { None }
+pub(crate) fn cpu_now() -> Option<u64> { None }
 
 impl Directory {
     pub fn lane(&self, identity: Identity) -> Arc<Lane> {
@@ -77,6 +78,14 @@ impl Directory {
             && lane.identity.receiver_uid.as_deref()==Some(uid)).any(|lane|
                 retiring_generation==Some(lane.identity.generation)
                 || lock(&lane.state).held.values().any(|held|matches!(held.stage,"output_pending"|"tail")))
+    }
+    pub fn progress(&self,channel:u32,generation:u64)->Option<(u64,Option<super::super::reception_recovery::Position>)> {
+        let lanes=lock(&self.0);
+        let lane=lanes.iter().rev().find(|l|l.identity.channel==channel && l.identity.generation==generation)?;
+        let state=lock(&lane.state);
+        let position=state.first_succeeded.as_ref().and_then(|c|Some(super::super::reception_recovery::Position {
+            channel_id:lane.identity.channel_id,epoch:lane.identity.epoch,input_index:c["input_index"].as_str()?.parse().ok()?}));
+        Some((state.packet.successful_samples,position))
     }
     pub fn snapshot(&self) -> Value {
         let lanes: Vec<_> = lock(&self.0).iter().cloned().collect();
@@ -177,7 +186,7 @@ impl Job {
             Ok(false)=>{totals.cancelled+=1;totals.cancelled_after_start+=u64::from(self.started.is_some());},
             Err(_)=>totals.failed+=1,
         }
-        if matches!(result,Ok(true)) && !self.search {state.succeeded=Some(self.clock.clone());}
+        if matches!(result,Ok(true)) && !self.search {if self.samples>0 && state.first_succeeded.is_none() {state.first_succeeded=Some(self.clock.clone());} state.succeeded=Some(self.clock.clone());}
         if let Err(error)=result {
             state.fault=Some(error.into());
             if state.first_failed.is_none() {state.first_failed=Some(self.clock.clone());}

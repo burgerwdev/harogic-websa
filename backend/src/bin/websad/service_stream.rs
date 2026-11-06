@@ -291,6 +291,28 @@ pub(super) fn deliver_retiring(state:&mut DevState,app:&App) {
 
 // The caller holds state from receiver drain through enqueue. Commands finish
 // newer output under that same lock, so their retiring tail cannot overtake it.
+/// Fine-source failures include IQ, unlike decoder-only failures. Identity checks
+/// keep a delayed failure from closing a newly tuned/reused receiver slot.
+pub(super) fn publish_fine_failures(state:&mut DevState,app:&App) {
+    if state.ddc_error.is_some() {
+        for client in app.clients.lock().iter().filter(|c|c.iq||c.aux||c.audio||c.decode) {
+            client.receiver_failed.store(true,Ordering::Release);client.wake.notify_one();
+        }
+    }
+    for failure in state.fine_faults().iter() {
+        let registry=state.stream_registry();
+        if !registry.iter().any(|row|row.channel==failure.channel && row.channel_id==failure.channel_id && row.epoch==failure.epoch) {continue;}
+        let uid=state.receiver_uid_for_slot(failure.channel).map(str::to_owned);
+        if let (Some(manager),Some(uid))=(state.recordings.as_ref(),uid.as_deref()) {manager.source_failed(uid,&failure.error);}
+        if let Some(workers)=state.receiver_workers.as_mut() {workers.fail_source(failure.channel,&failure.error);}
+        for client in app.clients.lock().iter() {
+            if (client.iq||client.aux||client.audio||client.decode) && client.channel.unwrap_or(1)==failure.channel && client.receiver_uid.as_deref().is_none_or(|known|Some(known)==uid.as_deref()) {
+                client.receiver_failed.store(true,Ordering::Release);client.wake.notify_one();
+            }
+        }
+    }
+}
+
 pub(super) fn deliver_receiver(state:&DevState,app:&App,mut output:receiver_workers::ReceiverFrames,retiring:bool) {
     for fault in std::mem::take(&mut output.faults) {
         let uid=fault.receiver_uid.as_deref().or_else(||state.receiver_uid_for_slot(fault.channel));
@@ -499,6 +521,10 @@ impl DevState {
         Ok(())
     }
 
+    pub(super) fn fine_faults(&self)->Arc<[fine_workers::FineFault]> {
+        if let Some(pipeline)=&self.pipeline {pipeline.snapshot.fine_faults.clone()}
+        else {self.ddc.as_ref().map_or_else(||Arc::from([]),|ddc|ddc.0.faults.values().cloned().collect::<Vec<_>>().into())}
+    }
     pub(super) fn stream_registry(&self)->Arc<[sdr_pipeline::ChannelRegistryEntry]> {
         if self.swp.mode!="sdr" {Arc::from([])}
         else if let Some(pipeline)=&self.pipeline {pipeline.snapshot.registry.clone()}

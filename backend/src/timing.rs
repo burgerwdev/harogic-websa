@@ -37,6 +37,14 @@ impl Timing {
         self.max_ns = self.max_ns.max(ns);
     }
 
+    /// Merge fixed histograms without reconstructing samples or allocating.
+    pub fn merge(&mut self, other:&Self) {
+        for (a,b) in self.bins.iter_mut().zip(other.bins) {*a=a.saturating_add(b);}
+        self.count=self.count.saturating_add(other.count);
+        self.total_ns=self.total_ns.saturating_add(other.total_ns);
+        self.max_ns=self.max_ns.max(other.max_ns);
+    }
+
     pub fn snapshot(&self) -> TimingSnapshot {
         let quantile = |percent: u64| {
             if self.count == 0 { return 0; }

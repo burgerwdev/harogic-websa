@@ -552,3 +552,16 @@ body:has(#workbench-app) { display:block; }
 
 .mc-format-options[popover] { position:fixed; inset:auto; margin:0; color:var(--text); }
 .mc-record-controls>.mc-format-menu .mc-format-options[popover] { right:auto; }
+
+.mc-live-status { padding:8px 0 14px; min-width:0; }
+.mc-live-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:32px; }
+.mc-live-heading strong { font-size:15px; font-weight:600; }
+.mc-live-status[data-live-state=fault] .mc-live-heading strong { color:var(--sa-warning); }
+.mc-live-facts { display:flex; flex-wrap:wrap; gap:8px; font-variant-numeric:tabular-nums; font-size:12px; }
+.mc-live-hint, .mc-live-interruption { font-size:12px; line-height:1.6; color:var(--label); margin:6px 0; }
+.mc-live-interruption { color:var(--text); }
+.mc-reception-policy { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px; margin-top:12px; }
+.mc-live-status details { margin-top:12px; border-top:1px solid var(--inner-border); padding-top:8px; }
+.mc-live-status summary { cursor:pointer; font-size:12px; }
+.mc-live-status pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; max-height:320px; overflow:auto; }
+@media (max-width:540px) { .mc-live-heading { flex-wrap:wrap; } .mc-live-facts { gap:5px; } .mc-live-status select { max-width:100%; } }

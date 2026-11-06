@@ -8,6 +8,7 @@ use websa_channelizer::timing::{Timing, TimingSnapshot};
 use parking_lot::Mutex;
 
 use std::{
+    collections::VecDeque,
     ffi::{c_char, c_int, c_void, CStr, CString},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -95,6 +96,16 @@ type Next = unsafe extern "C" fn(
     *mut SdkTiming,
     *mut c_int,
 ) -> i32;
+type NextBatch = unsafe extern "C" fn(*mut c_void, *mut BatchSlot, u32, *mut u32) -> i32;
+#[repr(C)]
+struct BatchSlot {
+    iq: *mut i16,
+    capacity: u32,
+    info: PacketInfo,
+    timing: SdkTiming,
+    warning: i32,
+    status: i32,
+}
 type Close = unsafe extern "C" fn(*mut c_void) -> i32;
 type Arm = unsafe extern "C" fn(*mut c_void) -> i32;
 type IqsClock = unsafe extern "C" fn(*mut c_void, *mut f64, *mut c_int) -> i32;
@@ -550,6 +561,8 @@ struct Device {
     handle: *mut c_void,
     arm: Arm,
     next: Next,
+    next_batch: Option<NextBatch>,
+    pending: VecDeque<(Result<Packet, NextFailure>, SdkTiming)>,
     last_timing: SdkTiming,
     reconfig: ReconfigV2,
     close: Close,
@@ -604,6 +617,10 @@ impl Device {
                     .ok_or_else(|| format!("SDK shim missing {}", String::from_utf8_lossy(name)))
             };
             let next: Next = unsafe { std::mem::transmute(symbol(b"san90_next_v3\0")?) };
+            let batch_ptr = unsafe { dlsym(library, b"san90_next_batch_v1\0".as_ptr().cast()) };
+            let next_batch = (!batch_ptr.is_null()).then(|| unsafe {
+                std::mem::transmute::<*mut c_void, NextBatch>(batch_ptr)
+            });
             let close: Close = unsafe { std::mem::transmute(symbol(b"san90_close\0")?) };
             let (mut handle, mut bandwidth, mut configured) = (std::ptr::null_mut(), 0.0, 0.0);
             // v8 guarantees that metadata and consumer DSP setup precede acquisition.
@@ -637,7 +654,7 @@ impl Device {
                     library,
                     handle,
                     arm,
-                    next,
+                    next, next_batch, pending: VecDeque::new(),
                     last_timing: SdkTiming::default(),
                     reconfig,
                     close,
@@ -692,6 +709,7 @@ impl Device {
         if status != 0 || !geometry_ok(bandwidth, configured, center) {
             return Err(format!("SDK IQS reconfigure rejected status={status}"));
         }
+        self.pending.clear();
         let (refclk_hz, refclk_src) = read_clock(self.clock, self.handle);
         Ok(CaptureGeometry {
             center: configured,
@@ -707,7 +725,54 @@ impl Device {
         (self.last_timing.measured != 0).then_some(self.last_timing)
     }
 
-    fn next(&mut self, with_spectrum: bool) -> Result<Packet, NextFailure> {
+    fn next(&mut self, with_spectrum: bool, batch_limit: usize) -> Result<Packet, NextFailure> {
+        if let Some((packet, timing)) = self.pending.pop_front() {
+            self.last_timing = timing;
+            return packet;
+        }
+        if !with_spectrum && batch_limit > 1 {
+            if let Some(next_batch) = self.next_batch {
+                return self.fetch_batch(next_batch, batch_limit.min(4));
+            }
+        }
+        self.next_single(with_spectrum)
+    }
+
+    fn fetch_batch(&mut self, next: NextBatch, count: usize) -> Result<Packet, NextFailure> {
+        let mut buffers: Vec<_> = (0..count).map(|_|vec![0i16; N*2]).collect();
+        let mut slots: Vec<_> = buffers.iter_mut().map(|iq| BatchSlot {
+            iq: iq.as_mut_ptr(), capacity: N as u32, info: PacketInfo::default(),
+            timing: SdkTiming::default(), warning: 0, status: 0,
+        }).collect();
+        let mut attempted = 0;
+        let status = unsafe { next(self.handle, slots.as_mut_ptr(), count as u32, &mut attempted) };
+        if status == -8 || status == -9 { self.abandoned = true; }
+        if attempted == 0 || attempted as usize > count
+            || (status == 0 && attempted as usize != count)
+            || slots[attempted.saturating_sub(1) as usize].status != status {
+            return Err(NextFailure {status: (status != 0).then_some(status),
+                message: format!("SDK IQS malformed batch status={status} attempted={attempted}")});
+        }
+        for (slot, iq) in slots.into_iter().zip(buffers).take(attempted as usize) {
+            let packet = if slot.status != 0 || slot.info.samples as usize != N {
+                Err(NextFailure {status: (slot.status != 0).then_some(slot.status),
+                    message: format!("SDK IQS batch status={} samples={}",slot.status,slot.info.samples)})
+            } else if !slot.info.scale_to_v.is_finite() {
+                Err(NextFailure {status:None,message:"SDK IQS nonfinite scale".into()})
+            } else {
+                Ok(Packet {seq:0,stamp:slot.info.stamp,warning:slot.warning,scale_to_v:slot.info.scale_to_v,
+                    iq,spectrum:None,generation:0})
+            };
+            let failed=packet.is_err();
+            self.pending.push_back((packet,slot.timing));
+            if failed {break;}
+        }
+        let (packet,timing)=self.pending.pop_front().expect("validated nonempty SDK batch");
+        self.last_timing=timing;
+        packet
+    }
+
+    fn next_single(&mut self, with_spectrum: bool) -> Result<Packet, NextFailure> {
         let mut iq = vec![0i16; N * 2];
         let mut info = PacketInfo::default();
         let (mut freq, mut power) = if with_spectrum {
@@ -997,7 +1062,12 @@ impl HardwareCapture {
                     let with_spectrum = spectrum_schedule.due();
                     let fetched_at = Instant::now();
                     attempt += 1;
-                    let result = device.next(with_spectrum);
+                    // Stop the batch before the next display frame; narrow input rates
+                    // keep single-packet dispatch and original control latency.
+                    let batch_limit = if settings.device_decimate == 1 && !with_spectrum {
+                        ((spectrum_schedule.next - spectrum_schedule.ticks).div_ceil(N as u64) as usize).min(4)
+                    } else {1};
+                    let result = device.next(with_spectrum, batch_limit);
                     let fetched = fetched_at.elapsed();
                     let sdk_timing = device.timing();
                     let sdk = sdk_timing.unwrap_or_default();
@@ -1769,6 +1839,62 @@ extern "C" int san90_close(void* handle) {
     return 0;
 }
 "#;
+
+    #[test]
+    fn batch_dispatch_preserves_packets_display_boundaries_and_reconfigure() {
+        let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::remove_file(FAKE_IQS_FAIL).ok();
+        let production = include_str!("../sdk/san90_sdk.cpp");
+        let batch = production.split("struct San90IqsBatchSlot {").nth(1).unwrap()
+            .split("// Versioned, fixed-width trigger readback").next().unwrap();
+        let source = format!("{FAKE_IQS_SHIM}\nusing San90Device=void; using San90PacketInfo=PacketInfo; using San90IqsTiming=Timing;\n#define SAN90_DISPATCH(...)\nstruct San90IqsBatchSlot {{{batch}");
+        let path = compile_fake_iqs_source("batch", &source);
+        let (mut device, _) = Device::open(&path, 100e6, FRONT_END, 1).unwrap();
+        assert!(device.next_batch.is_some());
+        device.arm().unwrap();
+        let mut schedule=SpectrumSchedule::default();
+        let mut displays=0;
+        for seq in 0..400 {
+            let display=schedule.due();
+            let count=if display {1} else {((schedule.next-schedule.ticks).div_ceil(N as u64) as usize).min(4)};
+            let packet=device.next(display,count).unwrap_or_else(|error|panic!("{}",error.message));
+            assert_eq!(packet.stamp,seq*2*N as u64);
+            assert_eq!(packet.spectrum.is_some(),display);
+            assert_eq!(packet.iq[251],251);
+            displays+=usize::from(display);
+            schedule.received(1);
+        }
+        assert_eq!(displays,3);
+        while device.pending.is_empty() {device.next(false,4).unwrap_or_else(|e|panic!("{}",e.message));}
+        let next_stamp=device.pending.back().unwrap().0.as_ref().ok().unwrap().stamp+2*N as u64;
+        device.reconfigure(101e6,FRONT_END,16).unwrap();
+        assert!(device.pending.is_empty());
+        let first=device.next(true,1).unwrap_or_else(|e|panic!("{}",e.message));
+        assert_eq!(first.stamp,next_stamp);
+        drop(device);
+
+        // A vendor failure in the middle must deliver the valid prefix once,
+        // then its original error, without manufacturing or retrying a packet.
+        let injected=source.replace("extern \"C\" int san90_next_v3(","extern \"C\" int single_next(");
+        let at=injected.find("struct San90IqsBatchSlot {").unwrap();
+        let wrapper=r#"
+static unsigned batch_calls=0;
+extern "C" int san90_next_v3(void* h, short* iq, unsigned cap, PacketInfo* info,
+ double* f,float* p,unsigned sc,unsigned* points,Timing* timing,int* warning) {
+ if (++batch_calls==3) return -10;
+ return single_next(h,iq,cap,info,f,p,sc,points,timing,warning);
+}
+"#;
+        let injected=format!("{}{}{}",&injected[..at],wrapper,&injected[at..]);
+        let path=compile_fake_iqs_source("batch_failure",&injected);
+        let (mut device,_)=Device::open(&path,100e6,FRONT_END,1).unwrap();device.arm().unwrap();
+        for seq in 0..2 {
+            let packet=device.next(false,4).unwrap_or_else(|e|panic!("{}",e.message));
+            assert_eq!(packet.stamp,seq*2*N as u64);
+        }
+        assert_eq!(device.next(false,4).err().unwrap().status,Some(-10));
+        assert!(device.pending.is_empty());
+    }
 
     pub(crate) fn compile_fake_iqs_shim() -> String {
         compile_fake_iqs_source("shim", FAKE_IQS_SHIM)

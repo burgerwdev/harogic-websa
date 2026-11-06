@@ -161,8 +161,9 @@ impl Ddc {
             let source = source_plan(fs,config)?;
             let id = u64::from(config.channel);
             let (rate,delay) = if source.is_direct() {
-                let route=sdr_pipeline::DirectChannel::new(config.channel,id,epoch as u64,fs,
+                let mut route=sdr_pipeline::DirectChannel::new(config.channel,id,epoch as u64,fs,
                     center,config.freq,source.plan(),0,0)?;
+                route.framer.settle_startup(config.recovery_settle);
                 let metadata=(route.rate,route.delay);
                 direct.insert(config.channel,route);
                 metadata
@@ -172,9 +173,10 @@ impl Ddc {
                 let offset = signed as f64 * BIN_SPACING - (config.freq - center);
                 bank.subscribe_planned(id, bin, offset, source.plan().clone()).map_err(str::to_owned)?;
                 let (rate, delay) = bank.channel_metadata(id).ok_or("service channel metadata absent")?;
-                let framer = if config.channel == 1 { BasebandFramer::new(id, epoch as u64, config.freq, rate) }
+                let mut framer = if config.channel == 1 { BasebandFramer::new(id, epoch as u64, config.freq, rate) }
                     else { BasebandFramer::new_aux(id, epoch as u64, config.freq, rate) }
                     .and_then(|framer|framer.with_source_rate(fs)).ok_or("service framer rejected")?;
+                framer.settle_startup(config.recovery_settle);
                 framers.insert(config.channel, (id, config.freq, framer));
                 (rate,delay)
             };
@@ -264,6 +266,11 @@ impl Ddc {
         self.configure_service_channel_inner(config,false)
     }
 
+    pub(super) fn recover_service_channel(&mut self,mut config:ChannelConfig)->Result<IqFrames,String> {
+        config.recovery_settle=true;
+        self.configure_service_channel_inner(config,true)
+    }
+
     pub(super) fn restart_service_receivers(&mut self)->Result<IqFrames,String> {
         let configs=self.service_configs.clone().ok_or("not a service channel plan")?;
         let mut frames=Vec::new();
@@ -314,6 +321,12 @@ impl Ddc {
         self.stream.flush_pending().map_err(str::to_owned)?;
         let mut frames = std::mem::take(&mut self.carry);
         frames.extend(self.drain()?);
+        if let Some(worker)=self.fine_worker.as_mut() {
+            if let Err(error)=worker.pause_channel(config.channel,&mut frames) {
+                self.carry.extend(frames);return Err(error);
+            }
+        }
+        if let Some(worker)=self.fine_worker.as_mut() {self.direct.extend(worker.take_direct());}
         if config.enabled && !source.is_direct() {
             let signed = signed_bin(config.freq,self.capture_center);
             let bin = signed.rem_euclid(self.stream.bin_count() as i64) as u32;
@@ -353,11 +366,18 @@ impl Ddc {
                 self.aux.insert(config.channel,(next_id,config.freq,framer));
             }
         }
-        if let Some(route)=next_direct {self.direct.insert(config.channel,route);}
+        if config.recovery_settle {
+            if config.channel==1 {self.framer.settle_startup(true);}
+            else if let Some((_,_,framer))=self.aux.get_mut(&config.channel) {framer.settle_startup(true);}
+        }
+        if let Some(mut route)=next_direct {route.framer.settle_startup(config.recovery_settle);self.direct.insert(config.channel,route);}
         self.next_id=next_id;
         configs[slot]=config;
         self.service_configs=Some(configs);
         self.refresh_service_registry()?;
+        let registry=self.registry.clone();
+        self.faults.remove(&(slot as u32+1));
+        if let Some(worker)=self.fine_worker.as_mut() {worker.state.registry=registry;worker.sync_lanes()?;worker.sync_directs(&mut self.direct)?;}
         Ok(frames)
     }
 

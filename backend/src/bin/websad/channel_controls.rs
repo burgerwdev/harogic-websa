@@ -247,6 +247,7 @@ impl DevState {
                     .ok_or("sstv_mode must be null or a supported mode index")?)
             };
         }
+        if let Some(value)=data.get("continuity") {config.continuity=serde_json::from_value(value.clone()).map_err(|_|"continuity must be continuous or strict")?;}
         config.radiofax_acquisition = text(data, &["radiofax_acquisition"], &config.radiofax_acquisition)?;
         config.radiofax_ioc = text(data, &["radiofax_ioc"], &config.radiofax_ioc)?;
         config.radiofax_lpm = text(data, &["radiofax_lpm"], &config.radiofax_lpm)?;
@@ -344,19 +345,28 @@ impl DevState {
             && (!config.enabled||!config.processing_enabled||config.mode!="radiofax") {return Err("Radiofax action requires a running Radiofax receiver".into());}
         let mut configs = self.channel_configs();
         let old = configs.iter().find(|old|old.channel==channel).ok_or("channel not found")?.clone();
+        if data["recover"]==true && self.reception.known(channel) {
+            if config!=old {return Err("apply settings before recovering reception".into());}
+            self.reception.manual(channel)?;
+            self.config_version+=1;
+            if data["defer_receipt"]!=true {self.track_receiver_control(channel,data)?;}
+            return Ok(());
+        }
+        let source_recovery=data["recover"]==true && self.fine_faults().iter().any(|fault|fault.channel==channel);
         if data["recover"]==true {
-            self.receiver_workers.as_mut().ok_or("receiver owner unavailable")?.restart_channel(channel)?;
+            if let Some(workers)=self.receiver_workers.as_mut() {workers.restart_channel(channel)?;}
+            else if !source_recovery {return Err("receiver owner unavailable".into());}
             self.processing_branches.restart_channel(channel);
             self.decode_snapshots.clear_channel(channel);
             self.config_version+=1;
         }
-        if config == old {
+        if config == old && !source_recovery {
             if data["defer_receipt"]!=true {self.track_receiver_control(channel,data)?;}
             return Ok(());
         }
         self.remember_receiver_streams();
         let retiring_iq = self.stream_registry().iter().find(|entry|entry.channel==channel).cloned();
-        let geometry_changed=old.enabled!=config.enabled || old.freq!=config.freq || old.mode!=config.mode
+        let geometry_changed=source_recovery || old.enabled!=config.enabled || old.freq!=config.freq || old.mode!=config.mode
             || old.baseband!=config.baseband || old.processing_enabled!=config.processing_enabled
             || old.if_bw!=config.if_bw || old.pitch!=config.pitch || old.audio_rate!=config.audio_rate
             || old.stereo!=config.stereo || old.sstv_mode!=config.sstv_mode
@@ -405,7 +415,7 @@ impl DevState {
                 let front_end = self.front_end(self.sdr_ref);
                 self.ddc_command(move |ddc| ddc.recapture_service_configs(center, display, front_end, taps, &next))?;
             } else {
-                self.ddc_command(move |ddc| ddc.configure_service_channel(next))?;
+                self.ddc_channel_command(move |ddc| if source_recovery {ddc.recover_service_channel(next)} else {ddc.configure_service_channel(next)})?;
             }
             // The DDC boundary first consumes all old queued IQ with its old
             // processor. Close that branch only after this drain completes.
@@ -426,7 +436,11 @@ impl DevState {
             for slot in 1..=MAX_CHANNELS as u32 { self.decode_snapshots.clear_channel(slot); }
             self.freq_version += 1;
         }
-        if geometry_changed { self.channel_power[(channel-1) as usize]=None; }
+        if geometry_changed {
+            self.channel_power[(channel-1) as usize]=None;
+            if config.enabled && !self.fine_faults().iter().any(|f|f.channel==channel)
+                && !self.receiver_workers.as_ref().is_some_and(|w|w.channel_failure(channel).is_some()) {self.reception.configured(channel);}
+        }
         *configs.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = config.clone();
         if channel == 1 {
             self.sdr_listen = config.freq;

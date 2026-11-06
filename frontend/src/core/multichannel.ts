@@ -18,6 +18,7 @@ export interface BasebandConfig {
   minimum_rate_hz: number;
 }
 export interface ReceiverConfig {
+  continuity?: 'continuous'|'strict';
   name: string; color: string; tags: string[]; enabled: boolean; purpose: Purpose;
   baseband: BasebandConfig;
   processors: (ModeControls & { id: string; kind: 'demodulator' | 'decoder'; mode: string; minimum_rate_hz: number;
@@ -25,17 +26,24 @@ export interface ReceiverConfig {
     nr?: boolean; nr_algorithm?: NoiseReductionAlgorithm; nr_strength?: number; nr_atten_db?: number })[];
 }
 export interface Fault {
-  scope: 'request' | 'consumer' | 'recording' | 'receiver' | 'capture';
+  scope: 'request' | 'consumer' | 'recording' | 'receiver' | 'receiver_iq' | 'capture';
   code: string; message: string; receiver_uid?: ReceiverUid; task_id?: string;
   request_id?: string; retryable: boolean;
 }
+export interface ReceptionState {
+  policy:'continuous'|'strict'; state:'recovering'|'preparing'|'receiving'|'stopped';
+  interruptions:number; attempts:number; retry_limit:number; retry_in_ms:number|null;
+  manual_recovery_allowed:boolean; last_error:string|null;
+  last_interruption:{kind:'overload'|'source_gap'|'device'|'internal';scope:string;reason:string;at_ms:number;recovered_at_ms:number|null;before:unknown;after:unknown;missing_input_samples:string|null};
+}
 export interface ReceiverState {
+  reception?:ReceptionState|null;
   /** Confirmed audio settings, excluding logical identity and independent IQ planning. */
   audio_signature?: string;
   processing_state?: 'disabled'|'waiting'|'preparing'|'active'|'backlogged'|'retiring'|'failed';
   processing_fault?: {error:string;generation:number;receiver_uid:string;service_id:string}|null;
   processing_runtime?: {state:string;processing_generation:string;oldest_input_wait_ns:number;input_held_bytes:number;input_held_media_ns:number;
-    observed_receiver?: {nr_requested:string;nr_effective:string|null;nr_state:string;nr_reason?:string|null;protocol_waiting?:boolean;model_sessions?:unknown}|null;
+    observed_receiver?: {nr_requested:string;nr_effective:string|null;nr_state:string;nr_reason?:string|null;protocol_waiting?:boolean;squelch?:{open:boolean;gain:number}|null;model_sessions?:unknown}|null;
     fault?: {error:string}|null}|null;
   control_receipts?: {receiver_uid:string;service_id:string;revision:string;request_id:string;processing_generation:string|null;status:string;reason:string|null;boundary: Record<string,unknown>|null}[];
   receiver_uid: ReceiverUid; source_id: string; display_number: number; revision: U64;

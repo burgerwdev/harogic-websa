@@ -1,3 +1,4 @@
+import { receiverLive } from './receiverLive';
 import { processingLabel, receiverRuntime } from './receiverRuntime';
 import { analogEnhancementsApplicable } from '../core/receiverControls';
 import { receiverControlFields, readReceiverControlFields, syncReceiverControlFields } from './receiverControlFields';
@@ -280,7 +281,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     let content = '';
     const expanded = (key: string): string => pane.expanded.has(key) ? 'open' : '';
     if (!fixture && pane.tab === 'recording' && !available('record_start')) pane.tab = 'receive';
-    if (pane.tab === 'receive') content = `<form id="${esc(formId)}" data-key="config-${r.receiver_uid}-receive" data-config data-revision="${r.revision}">
+    if (pane.tab === 'receive') content = `<section class="mc-live-section" data-key="reception-${esc(r.receiver_uid)}">${receiverLive(r,session.snapshot.recordings,session.recovering(r.receiver_uid)||!!edit?.pending,pane.expanded.has('live-diagnostics'))}</section><form id="${esc(formId)}" data-key="config-${r.receiver_uid}-receive" data-config data-revision="${r.revision}">
       <div class="mc-tuning-grid"><label class="mc-frequency-field"><span>${l('Receive frequency', '接收频率')}</span>${frequencyInput(c.baseband.frequency_hz)}</label>
       <label class="mc-mode-field"><span>${l('Demodulate / decode', '解调 / 解码')}</span>${fixture ? `<select name="purpose">${Object.entries(labels()).map(([v, label]) => `<option value="${v}" ${c.purpose === v ? 'selected' : ''}>${label}</option>`).join('')}</select>` : `<select name="mode" title="${l('Choose a mode; bandwidth and rate are adjusted automatically', '选择模式后自动匹配带宽与速率')}">${modeOptions(c)}</select>`}</label></div>
       ${!fixture ? audioSettings(c, receiverHasAudio(session.snapshot, c)) + receiverControlFields(c.processors[0], c.processors[0]?.mode) : ''}
@@ -321,8 +322,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         ${track.segments.map(segment => `<p class="mc-clock">${esc(segment.stream.epoch)} / ${esc(segment.stream.channel_id)} · ${segment.actual_rate_hz} S/s · ${segment.events !== undefined ? `${segment.events} ${l('events', '事件')}` : `${segment.samples} samples`}<br>${l('Source position', '源位置')} ${segment.first_input_index} · ${esc(segment.end_reason ?? '…')}</p>`).join('')}`).join('')}</details></article>`).join('')}`;
     return `<header data-key="channel-heading" class="mc-channel-heading" style="--channel:${esc(c.color)}"><div class="mc-channel-title"><span class="mc-channel-avatar">${r.display_number.toString().padStart(2, '0')}</span><div><p class="mc-eyebrow">${l('Channel name', '信道名称')}</p><label class="mc-name-editor"><input data-channel-name name="name" form="${esc(formId)}" value="${esc(c.name)}" maxlength="128" required aria-label="${l('Channel name', '信道名称')}" title="${l('Edit the channel name; press Enter or Apply settings to save', '修改信道名称，按 Enter 或应用设置保存')}" ${session.retiring(r.receiver_uid) ? 'disabled' : ''}>${icon('edit')}</label></div></div><div data-key="channel-actions" class="mc-channel-actions"><button type="button" data-action="toggle-receiver" role="switch" aria-checked="${c.enabled}" title="${c.enabled ? l('Stop receiving this channel', '停止此信道的接收') : l('Start receiving this channel', '开始此信道的接收')}" ${edit?.pending || session.retiring(r.receiver_uid) ? 'disabled' : ''}><span>${receiverLabel(r.state)}</span><span class="mc-receiver-switch" aria-hidden="true"></span></button>${managementButtons(r.receiver_uid)}</div></header>
       ${pane.tab === 'output' ? `<details data-section="clock" ${expanded('clock')}><summary>${l('Stream details', '数据流详情')}</summary><p class="mc-clock">${l('Revision', '修订')} ${r.revision}<br>${esc(r.stream ? `${r.stream.source_id} / epoch ${r.stream.epoch} / channel ${r.stream.channel_id}` : l('No continuous stream', '当前无连续流'))}<br>${r.clock?.actual_rate_hz ?? '—'} S/s</p></details>` : ''}
-      ${r.fault ? `<p data-key="receiver-fault" class="mc-error" role="alert">${esc(r.fault.scope)}: ${esc(r.fault.message)}</p>` : ''}
-      ${receiverRuntime(r)}
+      ${r.fault && pane.tab!=='receive' ? `<p data-key="receiver-fault" class="mc-error" role="alert">${esc(r.fault.scope)}: ${esc(r.fault.message)}</p>` : ''}
+      ${pane.tab!=='receive'?receiverRuntime(r):''}
       ${native?.status(r.receiver_uid) ? `<p data-key="consumer-fault" class="mc-error" role="alert">${esc(native.status(r.receiver_uid))} ${button('retry-stream', l('Retry local consumer', '重试本地消费'))}</p>` : ''}
       ${edit?.pending && pane.tab !== 'receive' ? `<p data-key="pending" role="status">${l('Applying settings…', '正在应用设置…')}</p>` : ''}
       ${edit?.fault ? `<p data-key="edit-fault" class="mc-error" role="alert">${esc(edit.fault.code)}: ${esc(faultText(edit.fault, edit.attempted))} ${button('retry', l('Retry', '重试'))}</p>` : ''}
@@ -552,7 +553,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         if (token) send({type:'action',request_id:session.requestId(),receiver_uid:uid,expected_revision:r.revision,
           action_id:crypto.randomUUID(),action_token:token,action});
       }
-      else if (action === 'recover-processing' && r) void session.recover(uid).then(reply => {if (!reply.fault) native?.retry(uid);});
+      else if (action === 'recover-processing' && r) void session.recover(uid);
       else if (action === 'retry' && r) void session.configure(uid, clone(session.edits.get(uid)?.attempted ?? r.confirmed));
       else if (action === 'scene') {
         scene = { type: 'scene', request_id: session.requestId(), expected_revision: session.snapshot.revision,
@@ -562,6 +563,12 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         showScene(pane);
       } else if (action === 'scene-apply' && scene) { send(scene); scene = null; }
       else if (action === 'scene-cancel') { scene = null; renderPane(pane); }
+    });
+    surface.body.addEventListener('change', event => {
+      const target=event.target as HTMLSelectElement;
+      if (!target.matches('[data-continuity]')) return;
+      const uid=session.resolve(pane.binding), row=receiver(uid);
+      if (row) void session.configure(uid,{...clone(row.confirmed),continuity:target.value as 'continuous'|'strict'});
     });
     surface.body.addEventListener('submit', event => {
       event.preventDefault(); const form = event.target as HTMLFormElement, uid = session.resolve(pane.binding), r = receiver(uid); if (!r || session.retiring(uid)) return;

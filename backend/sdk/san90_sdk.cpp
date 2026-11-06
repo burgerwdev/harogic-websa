@@ -520,6 +520,11 @@ extern "C" int san90_next(San90Device* state, int16_t* dest, uint32_t capacity,
     if (!state || !state->triggered || !dest || !info || capacity < 16240) return -100;
     IQStream_TypeDef stream{};
     websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fetch);
+    // Stop before the vendor sees a synthetic USB overflow: the physical
+    // device remains valid. A full ring cannot empty during one vendor read.
+    if (websa_iqs_usb::current().handoff_overflow()) {
+        websa_iqs_usb::current().stop();return -130;
+    }
     int status = IQS_GetIQStream_PM1(&state->handle, &stream);
     if (status && status != APIRETVAL_WARNING_IFOverflow) return status;
     auto n = stream.IQS_StreamInfo.PacketSamples;
@@ -563,6 +568,11 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
     IQStream_TypeDef stream{};
     const auto fetch_started = San90Clock::now();
     websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fetch);
+    // Stop before the vendor sees a synthetic USB overflow: the physical
+    // device remains valid. A full ring cannot empty during one vendor read.
+    if (websa_iqs_usb::current().handoff_overflow()) {
+        websa_iqs_usb::current().stop();return -130;
+    }
     int status = IQS_GetIQStream_PM1(&state->handle, &stream);
     state->timing.fetch_ns = san90_elapsed_ns(fetch_started);
     state->timing.fetch_status = status;
@@ -669,6 +679,37 @@ extern "C" int san90_next_v3(San90Device* state, int16_t* dest, uint32_t capacit
     *timing = state->timing;
     if (!status) *warning = state->warning;
     return status;
+}
+
+// At most four physical packets per owner dispatch. This removes repeated
+// caller/SDK-owner rendezvous without enlarging the USB handoff or changing
+// packet validation. Every buffer belongs to the caller until return.
+struct San90IqsBatchSlot {
+    int16_t* iq;
+    uint32_t capacity;
+    San90PacketInfo info;
+    San90IqsTiming timing;
+    int warning;
+    int status;
+};
+extern "C" int san90_next_batch_v1(San90Device* state, San90IqsBatchSlot* slots,
+                                   uint32_t count, uint32_t* attempted) {
+    SAN90_DISPATCH(state, san90_next_batch_v1(state, slots, count, attempted));
+    if (!state || !slots || !attempted || count == 0 || count > 4) return -100;
+    *attempted = 0;
+    // Validate the whole caller geometry before consuming any source sample.
+    for (uint32_t i = 0; i < count; ++i)
+        if (!slots[i].iq || slots[i].capacity < 16240) return -100;
+    for (uint32_t i = 0; i < count; ++i) {
+        auto& slot = slots[i];
+        slot.info = {}; slot.timing = {}; slot.warning = 0;
+        uint32_t points = 0;
+        slot.status = san90_next_v3(state, slot.iq, slot.capacity, &slot.info,
+            nullptr, nullptr, 0, &points, &slot.timing, &slot.warning);
+        ++*attempted;
+        if (slot.status) return slot.status; // Prefix remains valid; no retry here.
+    }
+    return 0;
 }
 
 // Versioned, fixed-width trigger readback ABI; never append to San90RtaActual.

@@ -328,3 +328,11 @@ it('publishes snapshots and commands compatible with the portable backend contra
   expect(validate(command, schema.$defs.command)).toBe(true);
   expect(validate({ ...command, expected_revision: 9007199254740992 }, schema.$defs.command)).toBe(false);
 });
+
+it('coalesces resume submissions while keeping backend preparation separate from receiving',async()=>{
+  const c=controlledSession(),uid=c.initial.receivers[0].receiver_uid;
+  const a=session.recover(uid),b=session.recover(uid);await Promise.resolve();
+  expect(session.recovering(uid)).toBe(true);expect(c.dispatch).toHaveBeenCalledOnce();
+  c.replies[0]({request_id:'recover',snapshot:c.initial,fault:null});await Promise.all([a,b]);
+  expect(session.recovering(uid)).toBe(false);expect(c.dispatch).toHaveBeenCalledOnce();
+});

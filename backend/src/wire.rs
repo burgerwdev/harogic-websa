@@ -32,6 +32,8 @@ pub struct BasebandFramer {
     pending_input_index: u64,
     pending_delay: f64,
     finished: bool,
+    settle_start: bool,
+    settling: Option<usize>,
 }
 
 impl BasebandFramer {
@@ -72,8 +74,15 @@ impl BasebandFramer {
             pending_input_index: 0,
             pending_delay: 0.0,
             finished: false,
+            settle_start: false,
+            settling: None,
         })
     }
+
+    /// A new stream may explicitly omit its FIR startup support. Sequence zero
+    /// is emitted only at the first retained source sample; clocks are not shifted
+    /// to conceal the omitted interval. Normal continuous framing is unchanged.
+    pub fn settle_startup(&mut self,enabled:bool) {self.settle_start=enabled;}
 
     /// Capture clock used for the causal source index of split output chunks.
     pub fn with_source_rate(mut self, input_rate: f64) -> Option<Self> {
@@ -119,6 +128,16 @@ impl BasebandFramer {
         if output.iq.is_empty() {
             return Ok(frames);
         }
+        let trimmed;
+        let output=if self.settle_start {
+            let remaining=self.settling.get_or_insert_with(||(2.0*output.delay_samples).ceil() as usize);
+            let skip=(*remaining).min(output.iq.len()/2);*remaining-=skip;
+            if skip==output.iq.len()/2 {return Ok(frames);}
+            trimmed=crate::FineOutput {iq:&output.iq[skip*2..],
+                input_index:output.input_index.checked_add((skip as f64*self.input_rate/self.rate).round() as u64).ok_or("startup source clock overflow")?,
+                output_index:output.output_index+skip as u64,..*output};
+            &trimmed
+        } else {output};
         if self.pending.is_empty() {
             self.pending_input_index = output.input_index;
             self.pending_delay = output.delay_samples;
@@ -359,6 +378,20 @@ pub fn encode_rta(
 mod tests {
     use super::*;
 
+    #[test]
+    fn recovery_start_discards_filter_support_and_keeps_true_source_origin() {
+        let mut framer=BasebandFramer::new(9,7,100e6,1200.0).unwrap().with_source_rate(48000.0).unwrap();
+        framer.settle_startup(true);
+        let iq=vec![1.0;80];
+        let mut output=crate::FineOutput {channel_id:9,epoch:7,seq:0,stamp:0,bin:0,input_index:1000,output_index:0,
+            output_rate:1200.0,center_offset_hz:Some(0.0),delay_samples:12.0,iq:&iq[..32]};
+        assert!(framer.push(&output).unwrap().is_empty());
+        output.seq=1;output.input_index=1640;output.output_index=16;output.iq=&iq;
+        let mut frames=framer.push(&output).unwrap();frames.extend(framer.finish().unwrap());
+        assert_eq!(u64::from_le_bytes(frames[0][40..48].try_into().unwrap()),1960);
+        assert_eq!(u32::from_le_bytes(frames[0][8..12].try_into().unwrap()),0);
+        assert_eq!(frames.iter().map(|f|u32::from_le_bytes(f[12..16].try_into().unwrap())).sum::<u32>(),32);
+    }
     #[test]
     fn rejects_oversized_or_nonfinite_baseband_before_emitting_wire_data() {
         for magic in [BasebandMagic::Primary, BasebandMagic::Aux] {

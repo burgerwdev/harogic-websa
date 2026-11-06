@@ -49,6 +49,19 @@ def resources(pid):
         'threads': threads, 'machine_counters': machine}
 
 
+def fine_busy_fraction(before, after, seconds):
+    """A parallel sum is not a serial-stage utilization measurement."""
+    if 'fine_owners' not in after:
+        return sum(after[key]['total_ns'] - before[key]['total_ns']
+            for key in ['fine', 'framer']) / 1e9 / seconds
+    old = {(row['channel_id'], row['epoch']): row
+        for row in before.get('fine_owners', {}).get('channels', [])}
+    fractions = [sum(row[key]['total_ns'] - old[(row['channel_id'], row['epoch'])][key]['total_ns']
+        for key in ['fine', 'framer']) / 1e9 / seconds
+        for row in after['fine_owners']['channels'] if (row['channel_id'], row['epoch']) in old]
+    return max(fractions, default=0.0)
+
+
 def summarize(artifacts):
     report = json.loads((artifacts / 'pipeline.json').read_text())
     if 'snapshots' not in report:
@@ -60,7 +73,7 @@ def summarize(artifacts):
     def delta(section):
         return (after[section]['total_ns'] - before[section]['total_ns']) / 1e9
     stages = {
-        'fine_and_framing': (delta('fine') + delta('framer')) / duration,
+        'fine_and_framing': fine_busy_fraction(before, after, duration),
         'capture_producer': (delta('pfb_submit') + delta('fine_handoff')) / duration,
         'coarse_per_worker': (after['pool_timing']['process']['total_ns'] - before['pool_timing']['process']['total_ns']) / 4e9 / duration,
     }

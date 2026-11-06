@@ -473,6 +473,11 @@ impl Manager {
     pub(super) fn processing_sources(&self, active: &[String], error: Option<&str>) {
         self.processing_kind_sources("results", active, error);
     }
+    pub(super) fn source_failed(&self,uid:&str,error:&str) {
+        for handle in self.lanes.iter().filter(|handle|handle.lane.uid==uid) {
+            handle.lane.seal("source_failed",Some(("SOURCE_FAILED",error)));
+        }
+    }
     pub(super) fn processing_failed(&self,uid:&str,error:&str) {
         for handle in self.lanes.iter().filter(|handle|handle.lane.uid==uid && matches!(handle.lane.kind.as_str(),"audio"|"results")) {
             handle.lane.seal("processing_failed",Some(("PROCESSING_FAILED",error)));
@@ -1034,6 +1039,24 @@ mod tests {
         assert_eq!(manager.resources()["active_tasks"],0);
         assert_eq!(manager.resources()["available_tasks"],8);
         drop(manager);fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn source_gap_seals_valid_prefix_and_does_not_resume_the_task() {
+        let root=directory();let mut manager=Manager::open(root.clone()).unwrap();
+        manager.start("uid-A","service-A","gap-test").unwrap().wait().unwrap();
+        for seq in 0..3 {manager.admit("uid-A",input(seq,7));}
+        manager.source_failed("uid-A","shared source handoff overload; gap length unknown");
+        manager.admit("uid-A",input(0,8)); // recovered identity must not append
+        wait(&mut manager);
+        let task=manager.snapshots()[0].clone();
+        assert_eq!(task["state"],"failed");assert_eq!(task["fault"]["code"],"SOURCE_FAILED");
+        assert_eq!(task["tracks"][0]["raw_bytes"],"192");
+        assert_eq!(task["tracks"][0]["segments"].as_array().unwrap().len(),1);
+        let id=task["task_id"].as_str().unwrap();
+        let mut file=fs::File::open(root.join(id).join("iq-000000.wbiq")).unwrap();
+        let verified=websa_channelizer::iq_archive::v2::scan(&mut file,|_,raw| {assert_eq!(raw.len(),64);Ok(())}).unwrap();
+        assert_eq!(verified.blocks,3);
+        drop(file);drop(manager);fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn drain_identity_segments_persistent_history_and_no_slot_rebind() {
