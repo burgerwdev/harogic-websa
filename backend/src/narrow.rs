@@ -34,7 +34,7 @@ struct Decimator {
     factor: usize,
     phase: usize,
     pos: usize,
-    taps: Vec<f32>,
+    taps: std::sync::Arc<[f32]>,
     re: Vec<f32>,
     im: Vec<f32>,
 }
@@ -44,7 +44,10 @@ impl Decimator {
         // Kaiser beta 8.6 gives approximately 80 dB stopband rejection.
         let n = crate::rate_plan::filter_taps(fs, pass, stop)?;
         let history = n.checked_mul(2)?;
-        Some(Self { factor, phase: 0, pos: 0, taps: design(n, (pass / fs + stop / fs) / 2.0),
+        let taps=crate::filter_plans::prepare(crate::filter_plans::Key {input_rate:fs.to_bits(),factor,
+            passband:pass.to_bits(),stopband:stop.to_bits(),length:n,implementation:"kaiser-beta-8.6-normalized-v1",
+            scalar_type:"f32",alignment:std::mem::align_of::<f32>()},||design(n,(pass/fs+stop/fs)/2.0));
+        Some(Self { factor, phase: 0, pos: 0, taps,
             re: vec![0.0; history], im: vec![0.0; history] })
     }
 

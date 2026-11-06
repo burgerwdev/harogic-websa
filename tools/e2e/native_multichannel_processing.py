@@ -32,7 +32,8 @@ def setup(origin):
             candidate['purpose'] = 'listen' if mode == 'am' else 'digital'
             candidate['baseband'].update(passband_hz=16000, minimum_rate_hz=48000)
             candidate['processors'] = [{'id': 'primary', 'kind': 'demodulator' if mode == 'am' else 'decoder', 'mode': mode,
-                'minimum_rate_hz': 0, 'pcm_gain': 0.5, 'bandwidth_hz': 6000 if mode == 'am' else 3000, 'squelch_dbm': -160}]
+                'minimum_rate_hz': 0, 'pcm_gain': 0.5, 'agc': False,
+                'bandwidth_hz': 6000 if mode == 'am' else 3000, 'squelch_dbm': -160}]
         reply = api(origin, payload={'type': 'create', 'request_id': f'create-{index}', 'config': candidate})
         assert reply['fault'] is None, reply
     return api(origin)
@@ -64,7 +65,7 @@ async def protocol(origin, snapshot):
                 trace['power'] += sum(value * value for value in samples)
                 trace['audio_frames'] += 1; trace['audio_samples'] += count
                 previous = seq, index, count, identity
-        assert trace['power'] / trace['audio_samples'] > 0.001
+        assert trace['power'] / trace['audio_samples'] > 0.001, (trace, receiver['confirmed'])
         async with asyncio.timeout(10):
             while not any(event['event']['type'] == 'am-info' for event in trace['events']):
                 message = await decode.recv()
@@ -86,7 +87,16 @@ def assert_receivers_continue(before, after):
     """Configuration/identities stay fixed while actual sample clocks advance."""
     assert len(before) == len(after)
     for old, current in zip(before, after, strict=True):
-        assert {k: v for k, v in old.items() if k != 'clock'} == {k: v for k, v in current.items() if k != 'clock'}, (old, current)
+        observations = {'clock', 'processing_statistics', 'processing_runtime', 'control_receipts'}
+        assert {k: v for k, v in old.items() if k not in observations} == {k: v for k, v in current.items() if k not in observations}, (old, current)
+        if old.get('processing_runtime'):
+            assert old['processing_runtime']['processing_generation'] == current['processing_runtime']['processing_generation']
+        lanes = {row['processing_generation']: row for row in current.get('processing_statistics', [])}
+        for previous in old.get('processing_statistics', []):
+            present = lanes[previous['processing_generation']]
+            assert present['packets']['successful_samples'] >= previous['packets']['successful_samples']
+            for counter in ['failed', 'rejected', 'cancelled']:
+                assert present['packets'][counter] == previous['packets'][counter], (counter, previous, present)
         a, b = old['clock'], current['clock']
         if a is not None:
             assert b is not None
@@ -108,7 +118,10 @@ def browser_gate(origin, snapshot, artifacts):
         expect(overview).to_be_visible()
         uid = snapshot['receivers'][0]['receiver_uid']; second = snapshot['receivers'][1]['receiver_uid']
         row = overview.locator('.mc-row').nth(0)
-        row.locator('[data-action=listen]').click()
+        if overview.locator('[data-action=master-mute]').get_attribute('aria-pressed') == 'true':
+            overview.locator('[data-action=master-mute]').click()
+        if row.locator('[data-action=listen]').get_attribute('aria-pressed') != 'true':
+            row.locator('[data-action=listen]').click()
         page.wait_for_function('(uid) => window.websaAudioStatus().some(r => r.channel === uid && r.playedFrames > 2000 && !r.error)', arg=uid)
         expect(overview.locator('.mc-monitor')).to_be_visible()
         # Observe actual post-limiter PCM. Local controls must not POST or change source revisions.
@@ -134,6 +147,7 @@ def browser_gate(origin, snapshot, artifacts):
         # Manual mix, Solo restoration, and follow selection change only browser consumers.
         overview.locator('.mc-row').nth(1).locator('[data-action=listen]').click()
         page.wait_for_function('() => window.websaAudioStatus().filter(r => r.enabled && r.owner === "workbench" && r.playedFrames > 1000).length === 2')
+        row.locator('.mc-row-more > summary').click()
         row.locator('[data-action=solo]').click()
         page.wait_for_function('(uid) => window.websaAudioStatus().filter(r => r.enabled).every(r => r.channel === uid)', arg=uid)
         row.locator('[data-action=solo]').click()
@@ -152,6 +166,7 @@ def browser_gate(origin, snapshot, artifacts):
         assert len(commands) == count, commands[count:]
         assert_receivers_continue(before['receivers'], after['receivers'])
         # Two views of one result source keep exactly one decode consumer and audio producer.
+        overview.locator('.mc-row').nth(1).locator('.mc-row-more > summary').click()
         overview.locator('.mc-row').nth(1).locator('[data-action=results]').click()
         results = page.locator(f'[data-view-id="results-{second}"]')
         expect(results).to_contain_text(re.compile('CQ|W1ABC'), timeout=35000)
@@ -205,13 +220,17 @@ def browser_gate(origin, snapshot, artifacts):
         form = overview.locator('form[data-config]')
         form.locator('[name=mode]').select_option('am')
         form.locator('button[type=submit]').click()
-        overview.locator('[data-preview] button').click()
+        preview = overview.locator('[data-preview] button')
+        if preview.count():
+            preview.click()
         third = snapshot['receivers'][2]['receiver_uid']
         page.wait_for_function('(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid)?.confirmed.processors[0]?.mode==="am")', arg=third)
         overview.locator('.mc-row').nth(2).locator('[data-action=listen]').click()
         page.wait_for_function('(uid) => window.websaAudioStatus().some(r=>r.channel===uid&&r.playedFrames>1000&&!r.error)', arg=third)
         form.locator('[name=mode]').select_option('')
-        form.locator('button[type=submit]').click(); overview.locator('[data-preview] button').click()
+        form.locator('button[type=submit]').click()
+        if preview.count():
+            preview.click()
         page.wait_for_function('(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid)?.confirmed.processors.length===0)', arg=third)
         expect(overview.locator('.mc-monitor')).to_have_count(0)
         final = api(origin)

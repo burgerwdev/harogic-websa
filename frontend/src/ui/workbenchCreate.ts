@@ -1,3 +1,4 @@
+import { CHANNEL_COLORS } from '../core/channelColors';
 import { getLang } from '../core/i18n';
 import { receiverHasAudio, type ReceiverConfig, type ReceiverMode } from '../core/multichannel';
 import { convertUnitValue } from '../core/units';
@@ -33,7 +34,7 @@ export function mountWorkbenchCreate(session: WorkbenchSession, root: HTMLElemen
     const mode = modes(session).find(m => m.id === field<HTMLSelectElement>('[name=mode]').value);
     const hz = convertUnitValue(Number(field<HTMLInputElement>('[name=frequency]').value), field<HTMLSelectElement>('[name=unit]').value, 'Hz');
     return { name: field<HTMLInputElement>('[name=name]').value.trim() || `${hz / 1e6} MHz · ${mode?.label ?? 'IQ'}`,
-      color: ['#72dd91', '#e8cd72', '#76c9ed', '#c4a5ed'][session.snapshot.receivers.length % 4], tags: [], enabled: true,
+      color: CHANNEL_COLORS[Array.from({ length: session.snapshot.capabilities.max_channels }, (_, index) => index + 1).findIndex(number => !session.snapshot.receivers.some(receiver => receiver.display_number === number)) % CHANNEL_COLORS.length], tags: [], enabled: true,
       purpose: mode ? mode.kind === 'analog' ? 'listen' : 'digital' : 'iq',
       baseband: { frequency_hz: hz, passband_hz: mode ? occupiedBandwidth(mode) : 3000, transition_hz: 1000,
         minimum_rate_hz: Math.max(mode?.minimumRateHz ?? 6000, mode ? occupiedBandwidth(mode) + 2000 : 6000) },

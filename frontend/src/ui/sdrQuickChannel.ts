@@ -1,8 +1,10 @@
+import { copyModeControls, modeControlKeys } from '../core/receiverControls';
 import { getLang, onLangChange } from '../core/i18n';
 import { clone, receiverHasAudio, type ReceiverConfig, type ReceiverState } from '../core/multichannel';
 import { formatFreqHz } from '../core/fmt';
 import { currentSdrChannel } from './sdrChannels';
 import { demodBandHz, sdrAgc, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSquelch, sdrVolume } from './sdrState';
+import { sdrAmSync, sdrDeemph, sdrSstvMode, sdrRadiofaxAcquisition, sdrRadiofaxIoc, sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPolarity, sdrRadiofaxClockRecovery, sdrRadiofaxPhasePixels, sdrRadiofaxClockPpm } from './sdrState';
 import type { WorkbenchSession } from './workbenchSession';
 
 const l = (en: string, zh: string) => getLang() === 'zh' ? zh : en;
@@ -16,7 +18,11 @@ export function currentChannelConfig(session: WorkbenchSession): ReceiverConfig 
     purpose: descriptor.kind === 'analog' ? 'listen' : 'digital',
     baseband: { frequency_hz: hz, passband_hz: passband, transition_hz: transition,
       minimum_rate_hz: Math.max(descriptor.minimumRateHz, passband + 2 * transition) },
-    processors: [{ id: `quick-${session.requestId()}`, kind: descriptor.kind === 'analog' ? 'demodulator' : 'decoder',
+    processors: [{ ...copyModeControls(session.snapshot.receivers.find(r => r.display_number === currentSdrChannel())?.confirmed.processors[0]),
+      am_sync: sdrAmSync.get(), pitch: sdrPitchHz.get(), deemph_us: sdrDeemph.get(), sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(),
+      radiofax_acquisition: sdrRadiofaxAcquisition.get(), radiofax_ioc: sdrRadiofaxIoc.get(), radiofax_lpm: sdrRadiofaxLpm.get(),
+      radiofax_modulation: sdrRadiofaxModulation.get(), radiofax_polarity: sdrRadiofaxPolarity.get(), radiofax_clock_recovery: sdrRadiofaxClockRecovery.get(),
+      radiofax_phase_pixels: sdrRadiofaxPhasePixels.get(), radiofax_clock_ppm: sdrRadiofaxClockPpm.get(), id: `quick-${session.requestId()}`, kind: descriptor.kind === 'analog' ? 'demodulator' : 'decoder',
       mode, minimum_rate_hz: descriptor.minimumRateHz, bandwidth_hz: bandwidth,
       pcm_gain: sdrVolume.get(), agc: sdrAgc.get(), squelch_dbm: sdrSquelch.get(),
       nr: sdrNr.get(), nr_algorithm: sdrNrAlgo.get(), nr_strength: sdrNrStrength.get(), nr_atten_db: sdrNrAtten.get() }] };
@@ -111,8 +117,8 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
       // C1/current receiver is the tuning source. Repeated saves reuse an existing independent copy.
       const duplicate = session.snapshot.receivers.find(r => r.display_number !== currentSdrChannel()
         && Math.abs(r.confirmed.baseband.frequency_hz - config.baseband.frequency_hz) < 0.5
-        && (['mode', 'bandwidth_hz', 'pcm_gain', 'agc', 'squelch_dbm', 'nr', 'nr_algorithm', 'nr_strength', 'nr_atten_db'] as const)
-          .every(field => r.confirmed.processors[0]?.[field] === config.processors[0]?.[field]));
+        && ([...modeControlKeys, 'mode', 'bandwidth_hz', 'pcm_gain', 'agc', 'squelch_dbm', 'nr', 'nr_algorithm', 'nr_strength', 'nr_atten_db'] as const)
+          .every(field => ({ ...copyModeControls(r.confirmed.processors[0]), ...r.confirmed.processors[0] })[field] === config.processors[0]?.[field]));
       if (duplicate) {
         if (receiverHasAudio(session.snapshot, duplicate.confirmed) && duplicate.state === 'running') session.monitor(duplicate.receiver_uid, { enabled: true });
         return l(`Already added to C${duplicate.display_number}`, `已加入 C${duplicate.display_number}`);

@@ -83,7 +83,7 @@ pub(super) fn reconcile_external_band(config: &mut receiver_workers::ChannelConf
 
 impl DevState {
     pub(super) fn channel_configs(&self) -> Vec<ChannelConfig> {
-        let mut configs: Vec<_> = (1..=3).map(|slot| self.sdr_channels.iter()
+        let mut configs: Vec<_> = (1..=MAX_CHANNELS as u32).map(|slot| self.sdr_channels.iter()
             .find(|config| config.channel == slot).cloned()
             .unwrap_or_else(|| ChannelConfig::for_slot(slot))).collect();
         let primary = &mut configs[0];
@@ -96,6 +96,9 @@ impl DevState {
         primary.pitch = self.sdr_pitch;
         primary.deemph_us = self.sdr_deemph;
         configs
+    }
+    pub(super) fn channel_config(&self, channel:u32) -> Option<ChannelConfig> {
+        self.channel_configs().into_iter().find(|config|config.channel==channel)
     }
     pub(super) fn filter_limits(&self) -> Value {
         let mut primary = self.channel_configs().into_iter().next()
@@ -147,6 +150,12 @@ impl DevState {
         Value::Array(self.channel_configs().into_iter().map(|config| {
             let entry = registry.iter().find(|entry| entry.channel == config.channel);
             let mut value = json!(config);
+            value["control"]=self.receivers.control_metadata(config.channel);
+            value["confirmed"]=multichannel::config_value(&config,None);
+            value["processing_runtime"]=self.receiver_uid_for_slot(config.channel).and_then(|uid|
+                self.receiver_workers.as_ref().map(|workers|workers.runtime_status(config.channel,uid))).unwrap_or(Value::Null);
+            value["control_receipts"]=self.receiver_uid_for_slot(config.channel).and_then(|uid|
+                self.receiver_workers.as_ref().map(|workers|workers.control_receipts(config.channel,uid))).unwrap_or_else(||json!([]));
             value["actual_iq_rate"] = entry.map_or(Value::Null, |entry| json!(entry.output_rate));
             value["channel_id"] = entry.map_or(Value::Null, |entry| json!(entry.channel_id));
             value["epoch"] = entry.map_or(Value::Null, |entry| json!(entry.epoch));
@@ -165,13 +174,17 @@ impl DevState {
         }).collect())
     }
     pub(super) fn parse_channel_config(&self, data: &Value) -> Result<ChannelConfig, String> {
+        self.parse_channel_config_base(data,None)
+    }
+    pub(super) fn parse_channel_config_base(&self,data:&Value,baseline:Option<ChannelConfig>)->Result<ChannelConfig,String> {
         if !data.is_object() { return Err("channel configuration must be an object".into()); }
         let channel = match data.get("channel") {
             None => 1,
-            Some(value) => value.as_u64().filter(|slot| (1..=3).contains(slot))
-                .ok_or("channel must be an integer in 1..=3")? as u32,
+            Some(value) => value.as_u64().filter(|slot| (1..=MAX_CHANNELS as u64).contains(slot))
+                .ok_or("channel exceeds service capacity")? as u32,
         };
-        let mut config = self.channel_configs()[(channel - 1) as usize].clone();
+        let mut config = baseline.unwrap_or(self.channel_config(channel).ok_or("channel not found")?);
+        let previous_mode=config.mode.clone();
         if data["enabled"] == true && (data.get("freq").is_some() || data.get("listen").is_some())
             && data.get("baseband").is_none() && data.get("processing_enabled").is_none() {
             self.restore_retired_listener(&mut config);
@@ -191,7 +204,7 @@ impl DevState {
         }
         config.freq = number(data, &["freq", "listen"], config.freq)?;
         config.mode = text(data, &["mode", "demod"], &config.mode)?;
-        if config.mode != self.channel_configs()[(channel - 1) as usize].mode
+        if config.mode != previous_mode
             && websa_channelizer::catalog::is_external(&config.mode)
             && alias(data, &["ifbw", "if_bw"])?.is_none() {
             config.if_bw = websa_channelizer::catalog::mode(&config.mode)
@@ -268,13 +281,6 @@ impl DevState {
         config.validate()?;
         Ok(config)
     }
-    fn request_radiofax_page(&mut self, channel: u32) -> Result<(), String> {
-        if let Some(workers) = self.receiver_workers.as_mut() {
-            workers.request_radiofax_page(channel)?;
-        }
-        Ok(())
-    }
-
     /// Tuning retains the capture when it fits; wider channels can widen the shared source.
     pub(super) fn channel_recapture(&self, config: &ChannelConfig) -> Result<Option<service_capture::CaptureConfig>, String> {
         if !config.enabled {
@@ -290,7 +296,7 @@ impl DevState {
             let center = self.capture_center();
             let bandwidth = self.capture_bandwidth();
             if let Ok(source) = service_ddc::source_plan(fs, config) {
-                let edge = if source.is_direct() { source.plan().stopband_hz } else { source.plan().occupied_bandwidth_hz / 2.0 };
+                let edge = source.plan().stopband_hz;
                 let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
                 let inside = !source.is_direct() && (-m / 2..m / 2).contains(&signed_bin(config.freq, center))
                     && (config.freq - center).abs() + edge <= bandwidth / 2.0;
@@ -301,7 +307,7 @@ impl DevState {
                 }
             }
             let mut configs = self.channel_configs();
-            configs[(config.channel - 1) as usize] = config.clone();
+            *configs.iter_mut().find(|old|old.channel==config.channel).ok_or("channel not found")? = config.clone();
             let fit=self.fit_service_capture(self.sdr_center,self.sdr_decimate,
                 self.sdr_pfb_taps_per_phase,configs.clone(),false);
             return match fit {
@@ -316,7 +322,7 @@ impl DevState {
         let bandwidth = self.capture_bandwidth();
         if let Ok(source) = service_ddc::source_plan(fs, config) {
             let plan = source.plan();
-            let edge = if source.is_direct() { plan.stopband_hz } else { plan.occupied_bandwidth_hz / 2.0 };
+            let edge = plan.stopband_hz;
             let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
             if (source.is_direct() || (-m / 2..m / 2).contains(&signed_bin(config.freq, center)))
                 && (config.freq - center).abs() + edge <= bandwidth / 2.0 {
@@ -324,7 +330,7 @@ impl DevState {
             }
         }
         let mut configs = self.channel_configs();
-        configs[(config.channel - 1) as usize] = config.clone();
+        *configs.iter_mut().find(|old|old.channel==config.channel).ok_or("channel not found")? = config.clone();
         let requested_center = if config.channel == 1 && config.freq != self.sdr_listen { config.freq } else { center };
         self.fit_service_capture(requested_center,self.sdr_decimate,self.sdr_pfb_taps_per_phase,configs,false).map(Some)
     }
@@ -332,10 +338,20 @@ impl DevState {
     pub(super) fn apply_channel_config(&mut self, data: &Value) -> Result<(), String> {
         let config = self.parse_channel_config(data)?;
         let channel = config.channel;
+        if self.receivers.check_control(channel,data)? {return Ok(());}
+        if self.receiver_workers.as_ref().is_some_and(|w|!w.controls_available(channel)) {return Err("receiver command mailbox full (64); retry after data advances".into());}
+        if (data["radiofax_new_page"]==true||data["radiofax_reset_correction"]==true)
+            && (!config.enabled||!config.processing_enabled||config.mode!="radiofax") {return Err("Radiofax action requires a running Radiofax receiver".into());}
         let mut configs = self.channel_configs();
-        let old = configs[(channel - 1) as usize].clone();
+        let old = configs.iter().find(|old|old.channel==channel).ok_or("channel not found")?.clone();
+        if data["recover"]==true {
+            self.receiver_workers.as_mut().ok_or("receiver owner unavailable")?.restart_channel(channel)?;
+            self.processing_branches.restart_channel(channel);
+            self.decode_snapshots.clear_channel(channel);
+            self.config_version+=1;
+        }
         if config == old {
-            if data["radiofax_new_page"] == true { self.request_radiofax_page(channel)?; }
+            if data["defer_receipt"]!=true {self.track_receiver_control(channel,data)?;}
             return Ok(());
         }
         self.remember_receiver_streams();
@@ -349,7 +365,7 @@ impl DevState {
             || old.radiofax_polarity!=config.radiofax_polarity || old.radiofax_clock_recovery!=config.radiofax_clock_recovery;
         let staged_fixtures = if geometry_changed && self.hardware_shim.is_none() && self.swp.mode == "sdr" {
             let mut candidate = configs.clone();
-            candidate[(channel - 1) as usize] = config.clone();
+            *candidate.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = config.clone();
             Some(match self.fixture_sources.as_ref() {
                 Some(current) => current.staged(&candidate)?,
                 None => service_fixture::FixtureSources::new().staged(&candidate)?,
@@ -400,18 +416,18 @@ impl DevState {
         }
         if !geometry_changed {
             if let Some(ddc)=self.ddc.as_mut() {
-                if let Some(current)=ddc.0.service_configs.as_mut() {current[(channel-1) as usize]=config.clone();}
+                if let Some(current)=ddc.0.service_configs.as_mut() {*current.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")?=config.clone();}
             }
         }
         if let Some(capture) = recapture {
             self.sdr_center = capture.center;
             self.invalidate_observation();
-            self.channel_power = [None; 3];
-            for slot in 1..=3 { self.decode_snapshots.clear_channel(slot); }
+            self.channel_power = vec![None; MAX_CHANNELS];
+            for slot in 1..=MAX_CHANNELS as u32 { self.decode_snapshots.clear_channel(slot); }
             self.freq_version += 1;
         }
         if geometry_changed { self.channel_power[(channel-1) as usize]=None; }
-        configs[(channel - 1) as usize] = config.clone();
+        *configs.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = config.clone();
         if channel == 1 {
             self.sdr_listen = config.freq;
             self.sdr_demod = config.mode.clone();
@@ -434,7 +450,7 @@ impl DevState {
                 end.extend_from_slice(&channel.to_le_bytes());
                 end.extend_from_slice(&entry.channel_id.to_le_bytes());
                 end.extend_from_slice(&entry.epoch.to_le_bytes());
-                self.pending_iq.push(end);
+                self.pending_iq.push(end.into());
             }
         }
         if self.receiver_failure.is_none() {
@@ -442,11 +458,11 @@ impl DevState {
                 if let Err(error)=workers.configure(&self.sdr_channels) {self.latch_receiver_failure(error);}
             }
         }
-        if self.receiver_failure.is_none() && !self.sdr_channels.iter().any(|c|c.enabled&&c.processing_enabled) {
-            self.receiver_workers=None;
-        }
+        // Keep the bounded healthy pool across an empty processor set. Recreating
+        // its thread-local models while the capture is live blocks publication
+        // for about a second and overruns the physical device queue.
         self.config_version += 1;
-        if data["radiofax_new_page"] == true { self.request_radiofax_page(channel)?; }
+        if data["defer_receipt"]!=true {self.track_receiver_control(channel,data)?;}
         Ok(())
     }
 }
@@ -454,6 +470,19 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_last_processor_keeps_models_ready_for_live_iq() {
+        let (golden,schema)=load_golden();
+        let mut state=DevState::new(golden,schema);
+        state.swp.mode="sdr".into();state.sdr_center=100e6;state.sdr_listen=100e6;
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        state.apply_channel_config(&json!({"channel":1,"enabled":false})).unwrap();
+        assert!(state.channel_configs().iter().all(|c|!c.enabled));
+        assert!(state.receiver_workers.is_some(),"live capture must retain its prepared models");
+        state.apply_channel_config(&json!({"channel":8,"enabled":true,"freq":100e6,"mode":"am"})).unwrap();
+        assert!(state.receiver_workers.is_some());
+    }
 
     #[test]
     fn external_band_reconciliation_retunes_selections_and_demotes_tuning() {
@@ -497,7 +526,10 @@ mod tests {
         state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
         let before=state.channel_configs();
         let version=state.config_version;
-        let page=json!({"radiofax_new_page":true});
+        state.remember_receiver_streams();
+        let context=state.receivers.control_metadata(1);
+        let page=json!({"radiofax_new_page":true,"action_id":"new-page-test","action_token":context["action_token"],
+            "service_id":context["service_id"],"receiver_uid":context["receiver_uid"]});
         state.parse_channel_config(&page).unwrap();
         state.parse_channel_config(&page).unwrap();
         assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
@@ -659,7 +691,7 @@ mod tests {
         let config = state.parse_channel_config(&json!({"channel": 1, "freq": 130e6, "mode": "am", "ifbw": 6000})).unwrap();
         let capture = state.channel_recapture(&config).unwrap().unwrap();
         assert_eq!(capture.center, 130e6);
-        assert_eq!(capture.configs.len(), 3);
+        assert_eq!(capture.configs.len(), MAX_CHANNELS);
         assert_eq!(capture.configs[0].freq, 130e6);
         assert_eq!(capture.configs[1].freq, 120e6);
         assert!(capture.configs[1].enabled);
@@ -687,7 +719,7 @@ mod tests {
         let output=state.process_receiver_frames_with_registry(&[frame(0,0,&[]),frame(1,0,&block)],&registry,true).unwrap();
         assert!(!output.decode.is_empty());assert_eq!(state.channel_status()[0]["squelch_open"],true);
         let first_processing=state.processing_registry()[0].epoch;
-        state.pending_iq.push(frame(2,256*step,&block));
+        state.pending_iq.push(frame(2,256*step,&block).into());
         state.apply_channel_config(&json!({"channel":1,"mode":"usb","ifbw":2400,
             "baseband":state.sdr_channels[0].baseband,"processing_enabled":true})).unwrap();
         assert!(state.receiver_failure.is_none(),"{:?}",state.receiver_failure);

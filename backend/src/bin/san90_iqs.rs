@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use websa_channelizer::{
     control_channel, pfb_pool_close, pfb_pool_finish, pfb_pool_open_strategy, pfb_pool_stats,
     pfb_pool_submit, pfb_pool_take, BasebandFramer, ChannelAction, ChannelCommand, ControlRequest,
-    FineBank, FineChannel, FineSpec, PfbBenchPool, PfbStream, PoolResult, PoolStats, MAX_IN_FLIGHT,
+    FineBank, FineChannel, FineSpec, PfbBenchPool, PfbStream, PoolResult, PoolStats, MAX_IN_FLIGHT, TASK_CAPACITY,
 };
 
 const N: usize = 16240;
@@ -1150,7 +1150,7 @@ fn run(
         if stats.submitted != target as u64
             || stats.completed != target as u64
             || stats.groups != delivery.groups
-            || stats.task_capacity != MAX_IN_FLIGHT as u32
+            || stats.task_capacity != TASK_CAPACITY as u32
             || stats.result_capacity != MAX_IN_FLIGHT as u32
             || stats.max_ready > MAX_IN_FLIGHT as u32
             || stats.max_pending > MAX_IN_FLIGHT as u32

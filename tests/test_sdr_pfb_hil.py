@@ -29,8 +29,8 @@ def test_native_pool_fixture_is_ordered_and_faster_than_packet_clock(strategy):
                              strategy=strategy)
     assert result['packets'] == result['pool']['submitted'] == result['pool']['completed']
     assert result['timestamps']['timestamp_gap_candidates'] == 0
-    capacity = result['pool']['task_capacity']
-    assert capacity == result['pool']['result_capacity'] == 6
+    capacity = result['pool']['result_capacity']
+    assert result['pool']['task_capacity'] == 4 and capacity == 6
     assert result['pool']['max_pending'] <= capacity
     assert result['pool']['max_ready'] <= capacity
 
@@ -66,7 +66,8 @@ def test_native_pool_strategies_match_on_same_iq():
     assert (baseline['packets'], baseline['pfb_groups'], baseline['checksum']) == (
         overlap['packets'], overlap['pfb_groups'], overlap['checksum'])
     assert baseline['timestamps'] == overlap['timestamps']
-    assert overlap['pool']['task_capacity'] == overlap['pool']['result_capacity'] == 6
+    assert overlap['pool']['task_capacity'] == 4
+    assert overlap['pool']['result_capacity'] == 6
 
 
 def test_fixture_matches_serial_and_closes_workers(api):

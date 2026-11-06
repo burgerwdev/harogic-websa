@@ -11,12 +11,13 @@ export interface DecoderLogEntry extends DecoderResult {
   at: number;
   source: string;
   bytes: number;
+  acknowledged?: boolean;
   timing?: { input_index: string; input_rate: number; fraction_num: string; fraction_den: string;
     delay_seconds: number; delay_known: boolean; causal_presentation: boolean; baseband_stream?: unknown };
 }
 export interface DecoderImageStrip { png: string; y: number; rows: number; pw: number; ph: number }
 export interface DecoderImage {
-  id: string | number; label: string; w: number; h: number; final: boolean;
+  id: string | number; label: string; w: number; h: number; final: boolean; partial?: boolean;
   strips: DecoderImageStrip[];
 }
 export function readDecoderImageStrip(data: Record<string, unknown>): DecoderImageStrip {
@@ -35,6 +36,7 @@ export function readDecoderImageStrip(data: Record<string, unknown>): DecoderIma
 }
 export const DECODER_LOG_ENTRIES = 200;
 export const DECODER_LOG_BYTES = 8 * 1024 * 1024;
+export const DECODER_HISTORY_BYTES = 128 * 1024 * 1024;
 const channels = new Map<number | string, { entries: DecoderLogEntry[]; bytes: number; evicted: number }>();
 const listeners = new Set<() => void>();
 let serial = 0;
@@ -47,6 +49,36 @@ export function decoderLog(channel: number | string, mode?: string) {
   const log = channelLog(channel);
   return { entries: log.entries.filter(entry => (mode === undefined || entry.mode === mode)), evicted: log.evicted };
 }
+export function decoderHistoryUsage(): { bytes: number; limit: number } {
+  return { bytes: [...channels.values()].reduce((sum, log) => sum + log.bytes, 0), limit: DECODER_HISTORY_BYTES };
+}
+export function acknowledgeDecoderLog(channel: string): void {
+  const log = channels.get(channel); if (log) for (const entry of log.entries) entry.acknowledged = true;
+}
+function liveImage(entry: DecoderLogEntry): boolean {
+  const image = entry.data as DecoderImage | DecoderRaster;
+  return entry.kind === 'image' && !image.final && !image.partial;
+}
+/** Retain unacknowledged events and active pictures until the consumer applies them. */
+function reserveHistory(channel: number | string, bytes: number, replaced: DecoderLogEntry | null): void {
+  const log = channelLog(channel), limit = typeof channel === 'string' ? 24 * 1024 * 1024 : DECODER_LOG_BYTES;
+  if (bytes > limit) throw new Error('Decoder image exceeds retained history budget; picture is incomplete');
+  const added = bytes - (replaced?.bytes ?? 0);
+  const count = replaced ? 0 : 1;
+  while (log.bytes + added > limit || log.entries.length + count > DECODER_LOG_ENTRIES
+    || decoderHistoryUsage().bytes + added > DECODER_HISTORY_BYTES) {
+    const local = log.bytes + added > limit || log.entries.length + count > DECODER_LOG_ENTRIES;
+    let oldest: { log: typeof log; entry: DecoderLogEntry } | null = null;
+    for (const candidate of local ? [log] : channels.values()) for (const entry of candidate.entries) {
+      if (entry === replaced || entry.acknowledged === false || liveImage(entry)) continue;
+      if (!oldest || entry.id < oldest.entry.id) oldest = { log: candidate, entry };
+    }
+    if (!oldest) throw new Error('Decoder history budget exhausted by pending events or active images; picture is incomplete');
+    oldest.log.entries.splice(oldest.log.entries.indexOf(oldest.entry), 1);
+    oldest.log.bytes -= oldest.entry.bytes; oldest.log.evicted++;
+  }
+}
+
 function gpsSnapshot(entry: DecoderResult): string | null {
   if (entry.mode !== 'gps' || entry.kind !== 'table' || !entry.data || typeof entry.data !== 'object' || !('table' in entry.data)) return null;
   return entry.data.table === 'satellites' || entry.data.table === 'pvt' ? entry.data.table : null;
@@ -87,7 +119,7 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
       const entry = log.entries[index];
       const picture = entry.data as DecoderImage;
       if (Number(data.rows) > picture.h) throw new Error('Invalid decoder image completion rows');
-      log.entries[index] = { ...entry, data: { ...picture, final: true } };
+      log.entries[index] = { ...entry, data: { ...picture, final: true }, acknowledged: typeof channel === 'number' };
       listeners.forEach(fn => fn());
       return;
     }
@@ -105,12 +137,13 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
     if (picture && (picture.w !== data.w || picture.h !== data.h)) throw new Error('Decoder image geometry changed');
     const strips = picture ? [...picture.strips, strip] : [strip];
     bytes = (old?.bytes ?? 0) + strip.png.length * 2 + strip.pw * strip.ph * 4;
-    while ((bytes > DECODER_LOG_BYTES || strips.length > 512) && strips.length > 1) {
+    let partial = picture?.partial === true;
+    while (strips.length > 512 && strips.length > 1) {
       const removed = strips.shift()!;
       bytes -= removed.png.length * 2 + removed.pw * removed.ph * 4;
-      log.evicted++;
+      log.evicted++; partial = true;
     }
-    result = { ...result, data: { id: data.id, label: String(data.label ?? ''), w: data.w, h: data.h, final: data.final === true, strips } };
+    result = { ...result, data: { id: data.id, label: String(data.label ?? ''), w: data.w, h: data.h, final: data.final === true && !partial, partial, strips } };
     if (old) id = old.id;
   } else {
     bytes = JSON.stringify(result.data).length * 2;
@@ -122,15 +155,13 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
         && (result.kind !== 'status' || statusType(entry.data) === statusType(result.data)));
     }
   }
-  if (previous >= 0) { log.bytes -= log.entries[previous].bytes; id = log.entries[previous].id; log.entries.splice(previous, 1); }
-  if (bytes <= DECODER_LOG_BYTES) {
-    log.entries.unshift({ ...result, id, at: Date.now(), source, bytes });
-    log.bytes += bytes;
-  } else log.evicted++;
-  while (log.entries.length > DECODER_LOG_ENTRIES || log.bytes > (typeof channel === 'string' ? 24 * 1024 * 1024 : DECODER_LOG_BYTES)) {
-    log.bytes -= log.entries.pop()!.bytes;
-    log.evicted++;
-  }
+  const old = previous >= 0 ? log.entries[previous] : null;
+  const limit = typeof channel === 'string' ? 24 * 1024 * 1024 : DECODER_LOG_BYTES;
+  if (bytes > limit && result.kind !== 'image') { log.evicted++; listeners.forEach(fn => fn()); return; }
+  reserveHistory(channel, bytes, old);
+  if (old) { log.bytes -= old.bytes; id = old.id; log.entries.splice(log.entries.indexOf(old), 1); }
+  log.entries.unshift({ ...result, id, at: Date.now(), source, bytes, acknowledged: typeof channel === 'number' });
+  log.bytes += bytes;
   listeners.forEach(fn => fn());
 }
 export function clearDecoderLog(channel: number | string, mode?: string): void {
@@ -171,16 +202,17 @@ export function addDecoderRaster(channel: string, mode: string, source: string, 
   const old = previous?.data as DecoderRaster | undefined;
   if (old && (old.w !== w || (!image.grow && old.h !== h))) throw new Error('Native picture geometry changed');
   const height = Math.max(h, old?.h ?? 0);
+  const bytes = w * height * 3 + 1024;
+  reserveHistory(channel, bytes, previous);
   const rgb = old?.h === height ? old.rgb : new Uint8Array(w * height * 3);
   if (old && rgb !== old.rgb) rgb.set(old.rgb);
   rgb.set(image.rgb, row * w * 3);
   const picture: DecoderRaster = { raster: true, id: image.id, label: image.label, w, h: height, rgb,
-    rows: Math.max(old?.rows ?? 0, row + rows), final: image.final, partial: image.partial, missingRows: image.missingRows ?? [] };
-  if (previous) { log.bytes -= previous.bytes; log.entries.splice(index, 1); }
-  const bytes = rgb.byteLength + 1024;
+    rows: Math.max(old?.rows ?? 0, row + rows), final: image.final && !(old?.partial || image.partial), partial: old?.partial === true || image.partial,
+    missingRows: image.missingRows ?? [] };
+  if (previous) { log.bytes -= previous.bytes; log.entries.splice(log.entries.indexOf(previous), 1); }
   log.entries.unshift({ id: previous?.id ?? ++serial, at: previous?.at ?? Date.now(), source,
-    provider: 'native', mode, kind: 'image', data: picture, bytes }); log.bytes += bytes;
-  while (log.entries.length > DECODER_LOG_ENTRIES || log.bytes > 24 * 1024 * 1024) { log.bytes -= log.entries.pop()!.bytes; log.evicted++; }
+    provider: 'native', mode, kind: 'image', data: picture, bytes, acknowledged: false }); log.bytes += bytes;
   listeners.forEach(fn => fn());
 }
 export function annotateDecoderResult(channel: string, timing: NonNullable<DecoderLogEntry['timing']>): void {

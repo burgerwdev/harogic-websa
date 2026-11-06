@@ -81,6 +81,16 @@ describe('native decoded stream boundaries', () => {
       type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data,
     } }))).toThrow(/structure limit/);
   });
+  it('retains eight independent clocks including the eighth stream and rejects invalid wire numbers', () => {
+    const stream = new DecodeSequence();
+    for (let channel = 1; channel <= 8; channel++) stream.accept(frame({ channel, channel_id: channel }));
+    for (let channel = 1; channel <= 8; channel++) {
+      expect(stream.accept(frame({ channel, channel_id: channel, seq: 1, event: { type: 'cw', text: `C${channel}` } })).event.text).toBe(`C${channel}`);
+    }
+    expect(() => stream.accept(frame({ channel: 0 }))).toThrow();
+    expect(() => stream.accept(frame({ channel: 4294967296 }))).toThrow();
+    expect(() => stream.accept(frame({ channel: 8, channel_id: 8, seq: 3, event: { type: 'cw' } }))).toThrow(/sequence gap/);
+  });
   it('keeps all three channel clocks independent when one changes identity', () => {
     const stream = new DecodeSequence();
     for (const channel of [1, 2, 3]) stream.accept(frame({ channel, channel_id: channel }));

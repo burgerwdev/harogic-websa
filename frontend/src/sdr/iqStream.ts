@@ -1,3 +1,4 @@
+import { knownSdrChannelNumbers } from '../ui/sdrChannels';
 // Native SDR decoded output. The browser controls, renders and plays; it performs no receiver DSP.
 import { send } from '../core/wsSend';
 import { setSdrReceiverAudioError } from '../audio/sdrAudio';
@@ -55,7 +56,7 @@ export function failSdrReceiver(message: string): void {
   worker?.terminate();
   worker = null;
   pictures.clear();
-  for (const channel of [1, 2, 3] as const) {
+  for (const channel of knownSdrChannelNumbers()) {
     setSdrReceiverAudioError(channel, message);
     setCwLevel(0, false, {}, channel);
     clearDrm(channel);
@@ -86,7 +87,7 @@ export function confirmSdrReceiverError(error: string | null | undefined): boole
   lastError = '';
   current = null;
   clearAmState();
-  for (const channel of [1, 2, 3] as const) setSdrReceiverAudioError(channel, null);
+  for (const channel of knownSdrChannelNumbers()) setSdrReceiverAudioError(channel, null);
   publishIqDebug();
   return true;
 }
@@ -102,7 +103,7 @@ function reportError(message: string): void {
   if (streamFailed && streamFailedRegistry === null) streamFailedRegistry = confirmedRegistry ?? [];
   lastError = message;
   connected = false;
-  for (const channel of [1, 2, 3] as const) {
+  for (const channel of knownSdrChannelNumbers()) {
     clearGpsSnapshots(channel);
     endRadiofaxStream(channel); setAmInfo(null, channel); setDecodeError(channel, message);
   }
@@ -114,7 +115,7 @@ function reportError(message: string): void {
 }
 /** Drop AM sync telemetry and decode errors on every channel (unsafe badge must not outlive the stream). */
 function clearAmState(): void {
-  for (const channel of [1, 2, 3] as const) { setAmInfo(null, channel); setDecodeError(channel, null); }
+  for (const channel of knownSdrChannelNumbers()) { setAmInfo(null, channel); setDecodeError(channel, null); }
 }
 function startStream(): void {
   if (worker || !enabled || failedRegistry !== null || streamFailed) return;
@@ -178,7 +179,7 @@ function samples(value: unknown): Float32Array | null {
   if (value.length > 1024 || value.some((v) => typeof v !== 'number' || !Number.isFinite(v))) throw new Error('Invalid receiver scope');
   return Float32Array.from(value);
 }
-function consumeRadiofaxImage(d: ReceiverEvent, identity: string, channel: 1 | 2 | 3): void {
+function consumeRadiofaxImage(d: ReceiverEvent, identity: string, channel: number): void {
   const width = d.width, row = d.row, rows = d.rows, revision = d.revision;
   if (typeof width !== 'number' || !Number.isInteger(width) || width <= 0
     || typeof row !== 'number' || !Number.isInteger(row) || row < 0
@@ -222,7 +223,7 @@ function consumeRadiofaxImage(d: ReceiverEvent, identity: string, channel: 1 | 2
 }
 export function consumeDecode(envelope: DecodeEnvelope): void {
   const d = envelope.event;
-  const channel = envelope.channel as 1 | 2 | 3;
+  const channel = envelope.channel as number;
   const identity = `${envelope.epoch}:${envelope.channel_id}`;
   setDecodeTiming(channel, { inputIndex: envelope.input_index, fractionNum: envelope.input_fraction_num,
     fractionDen: envelope.input_fraction_den, inputRate: envelope.input_rate, delaySeconds: envelope.delay_seconds,
@@ -372,7 +373,7 @@ export function setSdrIqEnabled(on: boolean): void {
     worker?.terminate();
     worker = null;
     connected = false;
-    for (const channel of [1, 2, 3] as const) { clearGpsSnapshots(channel); endRadiofaxStream(channel); }
+    for (const channel of knownSdrChannelNumbers()) { clearGpsSnapshots(channel); endRadiofaxStream(channel); }
     if (failedRegistry === null) clearAmState();
   }
   publishIqDebug();
@@ -381,7 +382,7 @@ export function resetSdrIq(): void {
   ft8Text = ''; ft8Count = 0; ft8Detail = ''; blocks = 0; current = null; identityChanges = 0;
   if (failedRegistry === null) { confirmedRegistry = null; lastError = ''; }
   pictures.clear();
-  for (const channel of [1, 2, 3] as const) {
+  for (const channel of knownSdrChannelNumbers()) {
     clearFt8Spots(channel); clearCwLog(channel); clearDrm(channel); clearSstv(channel);
     clearDecoderLog(channel);
     endRadiofaxStream(channel);
@@ -390,7 +391,7 @@ export function resetSdrIq(): void {
   }
   publishIqDebug();
 }
-export function renderFt8Message(report: Ft8Report, channel: 1 | 2 | 3 = 1): void {
+export function renderFt8Message(report: Ft8Report, channel: number = 1): void {
   addFt8Spot(report, Date.now(), channel);
   ft8Text = String(report.text || '');
   ft8Count = Number(report.count) || ft8Count + 1;

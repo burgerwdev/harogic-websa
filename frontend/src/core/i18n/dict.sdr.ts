@@ -1,5 +1,6 @@
 // SDR translations, merged in core/i18n.ts.
 export const en = {
+	"sdr_control_busy": "Channel command queue full; wait for pending commands before retrying.",
 	"sdr_modes_search": "Search modes or aliases",
 	"sdr_modes_more": "More…",
 	"sdr_modes_title": "Receiver modes",
@@ -35,7 +36,7 @@ export const en = {
 	"sdr_mute_on": "Mute On",
 	"sdr_mute_off": "Mute Off",
 	"sdr_listen_tip": "Tune the selected channel (MHz); other channels keep their frequencies",
-	"sdr_center_tip": "Center and tune the selected channel to this frequency (MHz); slide the zoom window here. A capture change affects all channels and recordings.",
+	"sdr_center_tip": "Set the shared capture center and tune C1 to this frequency (MHz). A capture change affects all channels and recordings.",
 	"iq_bw": "IQ BW",
 	"sdr_step_tip": "Arrow-key tuning step, remembered per demodulation mode (down to 1 Hz)",
 	"sdr_step_settings": "Steps",
@@ -343,6 +344,7 @@ export const en = {
 } as const;
 
 export const zh = {
+	"sdr_control_busy": "信道命令队列已满，请等待在途命令处理后重试。",
 	"sdr_modes_search": "搜索模式或别名",
 	"sdr_modes_more": "更多…",
 	"sdr_modes_title": "接收模式",
@@ -378,7 +380,7 @@ export const zh = {
 	"sdr_mute_on": "静音 开",
 	"sdr_mute_off": "静音 关",
 	"sdr_listen_tip": "当前信道的解调频率（MHz），其他信道频率不变",
-	"sdr_center_tip": "设置采集中心并将当前信道切到该频率（MHz），放大框平滑滑到此处。采集变更影响所有信道及录制。",
+	"sdr_center_tip": "设置共享采集中心，并将第一路切到该频率（MHz）。采集变更影响所有信道及录制。",
 	"iq_bw": "IQ 带宽",
 	"sdr_step_tip": "方向键调谐步进，按解调模式分别记忆（最小 1 Hz）",
 	"sdr_step_settings": "步进",

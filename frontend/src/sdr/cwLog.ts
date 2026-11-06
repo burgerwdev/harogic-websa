@@ -1,3 +1,4 @@
+import { channelState } from '../core/channelState';
 // The CW decode log: what the Morse decoder heard, as readable lines.
 //
 // The decoder reports characters as they are keyed, so the operator sees the text appear live. A
@@ -62,12 +63,8 @@ interface CwContext {
 	currentMarks: CwMark[];
 	level: CwLevel;
 }
-const contexts: Record<1 | 2 | 3, CwContext> = {
-	1: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
-	2: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
-	3: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
-};
-let selectedChannel: 1 | 2 | 3 = 1;
+const contexts = channelState<CwContext>(() => ({ lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } }));
+let selectedChannel: number = 1;
 const listeners = new Set<() => void>();
 const levelListeners = new Set<() => void>();
 
@@ -75,14 +72,14 @@ function notify(): void {
 	for (const fn of listeners) fn();
 }
 
-export function setCwChannel(channel: 1 | 2 | 3): void {
+export function setCwChannel(channel: number): void {
 	selectedChannel = channel;
 	notify();
 	for (const fn of levelListeners) fn();
 }
 
 /** Append decoded characters. `endsLine` closes the line (the sender paused). */
-export function addCwText(text: string, endsLine: boolean, share = 1, channel: 1 | 2 | 3 = selectedChannel): void {
+export function addCwText(text: string, endsLine: boolean, share = 1, channel: number = selectedChannel): void {
 	if (!text && !endsLine) return;
 	const context = contexts[channel];
 	if (text && !context.current) context.currentAt = Date.now();
@@ -106,7 +103,7 @@ export function cwLog(): { lines: CwLine[]; current: string; marks: CwMark[] } {
 }
 
 /** One audio block's level and keyed state: the meter and the lamp, nothing else. */
-export function setCwLevel(rms: number, keyed: boolean, details: Partial<CwLevel> = {}, channel: 1 | 2 | 3 = selectedChannel): void {
+export function setCwLevel(rms: number, keyed: boolean, details: Partial<CwLevel> = {}, channel: number = selectedChannel): void {
 	contexts[channel].level = { ...details, rms, keyed };
 	if (channel === selectedChannel) for (const fn of levelListeners) fn();
 }
@@ -120,7 +117,7 @@ export function subscribeCwLevel(fn: () => void): () => void {
 	return () => levelListeners.delete(fn);
 }
 
-export function clearCwLog(channel: 1 | 2 | 3 = selectedChannel): void {
+export function clearCwLog(channel: number = selectedChannel): void {
 	const context = contexts[channel];
 	context.lines = [];
 	context.current = '';

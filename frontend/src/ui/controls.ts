@@ -1,7 +1,10 @@
+import { sharedReceiverModeMemory, type ReceiverModeSettings } from './receiverModeMemory';
+import { copyModeControls } from '../core/receiverControls';
+import { syncMainReceiverControls } from './mainReceiverControls';
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
-import { send } from '../core/wsSend';
-import { confirmSdrChannels, currentSdrChannel, receivingSdrChannels, sdrChannelMarks, setCurrentSdrChannel, type SdrChannel } from './sdrChannels';
+import { send as sendRaw } from '../core/wsSend';
+import { confirmSdrChannels, currentSdrChannel, knownSdrChannelNumbers, sdrChannelMarks, setCurrentSdrChannel, type SdrChannel } from './sdrChannels';
 import { setSdrHoverFrequency } from './sdrHoverPassband';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 import { isKeypadOpen } from './keypad';
@@ -62,7 +65,7 @@ import { ft8DialFor } from '../sdr/ft8Log';
 import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setDecodeChannel, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
 import { resetSdrIq, setSdrIqEnabled, setSstvModePin } from '../sdr/iqStream';
 import { clearRadiofax } from '../sdr/radiofaxLog';
-import { availableSdrModeIds, isModeAvailable, modeDescriptor, modeStartupTimeoutMs } from '../sdr/registry';
+import { sdrModeIds, availableSdrModeIds, isModeAvailable, modeDescriptor, modeStartupTimeoutMs } from '../sdr/registry';
 import { resetLimits } from './limits';
 
 // Panel modules (report finding P1-5). controls.ts keeps the wiring (event binding, canvas
@@ -174,8 +177,25 @@ function requestSdrAmSync(enabled: boolean): void {
   refreshDecodeWindow();
 }
 let radiofaxSerial = 0;
+/** Freeze logical identity when an edit is created, including queued edits. */
+function channelControlContext(channel = currentSdrChannel()): Record<string, unknown> {
+  const rows = lastSdrPanelReport?.sdr?.channels ?? [];
+  const control = rows.find((row: {channel:number}) => row.channel === channel)?.control;
+  return control?.receiver_uid ? { service_id: control.service_id, receiver_uid: control.receiver_uid,
+    expected_revision: control.revision, action_token: control.action_token } : {};
+}
+const send = (message: Record<string, unknown>): void => {
+  if (message.cmd === 'SET_SDR_CHANNEL') {
+    const channel = Number(message.channel ?? currentSdrChannel());
+    const action = message.radiofax_new_page === true || message.radiofax_reset_correction === true;
+    sendRaw({ ...channelControlContext(channel), ...message,
+      ...(action && !message.action_id ? {action_id: crypto.randomUUID()} : {}) });
+  } else sendRaw(message);
+};
+
+
 let pendingRadiofax: { requestId: string; timer: number } | null = null;
-let radiofaxQueue: RadiofaxConfigPatch[] = [];
+let radiofaxQueue: Record<string, unknown>[] = [];
 
 function currentRadiofaxConfig(): Required<Omit<RadiofaxConfigPatch, 'radiofax_new_page' | 'radiofax_reset_correction'>> {
   return {
@@ -186,7 +206,7 @@ function currentRadiofaxConfig(): Required<Omit<RadiofaxConfigPatch, 'radiofax_n
   };
 }
 
-function sendRadiofaxConfig(patch: RadiofaxConfigPatch): void {
+function sendRadiofaxConfig(patch: Record<string, unknown>): void {
   const requestId = `sdr-radiofax-${++radiofaxSerial}`;
   pendingRadiofax = { requestId, timer: window.setTimeout(() => {
     pendingRadiofax = null;
@@ -197,7 +217,7 @@ function sendRadiofaxConfig(patch: RadiofaxConfigPatch): void {
     refreshDecodeWindow();
     S.setStatusError(t('sdr_filter_timeout'));
   }, 3000) };
-  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), ...currentRadiofaxConfig(), ...patch, request_id: requestId });
+  send({ cmd: 'SET_SDR_CHANNEL', ...patch, request_id: requestId });
 }
 
 function requestRadiofaxConfig(patch: RadiofaxConfigPatch): void {
@@ -212,8 +232,13 @@ function requestRadiofaxConfig(patch: RadiofaxConfigPatch): void {
   const oneShot: RadiofaxConfigPatch = {};
   if (patch.radiofax_new_page === true) oneShot.radiofax_new_page = true;
   if (patch.radiofax_reset_correction === true) oneShot.radiofax_reset_correction = true;
-  if (pendingRadiofax) { radiofaxQueue.push(oneShot); return; }
-  sendRadiofaxConfig(oneShot);
+  const command = {channel:currentSdrChannel(), ...channelControlContext(), ...currentRadiofaxConfig(), ...oneShot,
+    ...(oneShot.radiofax_new_page || oneShot.radiofax_reset_correction ? {action_id:crypto.randomUUID()} : {})};
+  if (pendingRadiofax) {
+    if (radiofaxQueue.length >= 64) {S.setStatusError(t('sdr_control_busy'));return;}
+    radiofaxQueue.push(command); return;
+  }
+  sendRadiofaxConfig(command);
   refreshDecodeWindow();
 }
 
@@ -721,15 +746,10 @@ export function applySdr() {
   if (!request.focus) {
     refocusConfirmedSdrFrequency(center, sdrCenterHz.confirmedValue());
   }
-  sdrListenHz.set(center);
+  if (currentSdrChannel() === 1) sdrListenHz.set(center);
   renderSdrState();
   prepareSdrAudioTransition();
-  if (currentSdrChannel() === 1) send({ cmd: 'SET_SDR', center, listen: center, decimate, request_id: request.id });
-  else {
-    // SET_SDR's compatibility listen field always targets C1.
-    send({ cmd: 'SET_SDR', center, decimate, request_id: request.id });
-    requestSdrTune(center, { force: true });
-  }
+  send({ cmd: 'SET_SDR', center, listen: center, decimate, request_id: request.id });
 }
 
 // Changing only the capture bandwidth keeps the listen frequency unchanged. The tuning step
@@ -790,7 +810,7 @@ export function sdrToCenter() {
   send({ cmd: 'SET_SDR', center: listen, decimate: Math.round(sdrDecimate.get()) });
 }
 
-export function applySdrDemod(restoringMode = false, filterOnly = false) {
+export function applySdrDemod(restoringMode = false, filterOnly = false, remembered?:ReceiverModeSettings) {
   const mode = sdrDemod.get();
   setSdrAudioMode(currentSdrChannel(), mode);
   const descriptor = modeDescriptor(mode);
@@ -808,7 +828,11 @@ export function applySdrDemod(restoringMode = false, filterOnly = false) {
   if (sdrDemod.pending() || sdrIfbw.pending() || sdrDeemph.pending()) {
     prepareSdrAudioTransition();
   }
-  const payload = filterOnly ? { cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw } : { cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw, volume, squelch,
+  const context = channelControlContext();
+  const restored = remembered ? {...copyModeControls(remembered),volume:remembered.pcm_gain,agc:remembered.agc,squelch:remembered.squelch_dbm,
+    nr:remembered.nr,nr_algorithm:remembered.nr_algorithm,nr_strength:remembered.nr_strength,nr_atten_db:remembered.nr_atten_db,
+    processing_enabled:true,baseband:{passband_hz:remembered.passband_hz,transition_hz:remembered.transition_hz,minimum_rate_hz:remembered.minimum_rate_hz}} : {};
+  const payload = filterOnly ? { ...context, ...restored, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw } : { ...context, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw, volume, squelch,
     agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
     nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
     sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(), ...currentRadiofaxConfig() };
@@ -982,7 +1006,7 @@ function sendReceiverEdit(edit: ReceiverEdit): void {
     finishReceiverEdit(false);
     S.setStatusError(t('sdr_filter_timeout'));
   }, modeStartupTimeoutMs(edit.mode)) };
-  const liveAudio = 'volume' in edit.payload ? {
+  const liveAudio = 'volume' in edit.payload && !('baseband' in edit.payload) ? {
     volume: sdrVolume.get(), squelch: sdrSquelch.get(), agc: sdrAgc.get(), am_sync: sdrAmSync.get(),
     deemph_us: sdrDeemph.get(), nr: sdrNr.get(), nr_strength: sdrNrStrength.get(),
     nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
@@ -1040,11 +1064,13 @@ export function selectSdrDemod(id: string): void {
   clearPassbandView();
   cancelSdrFilterEdit();
   sdrDemod.set(id);
-  sdrIfbw.set(filterValueForMode(id));
+  const context=channelControlContext();
+  const remembered=typeof context.receiver_uid==='string' ? sharedReceiverModeMemory.get(context.receiver_uid,id) : undefined;
+  sdrIfbw.set(remembered?.bandwidth_hz ?? filterValueForMode(id));
   renderSdrState();
   renderSdrTuningUi();
   syncSdrButtons();
-  applySdrDemod(true, true);
+  applySdrDemod(true, true, remembered);
 }
 
 /** Both click and keyboard bandwidth choices are explicit manual choices. */
@@ -1097,8 +1123,8 @@ function sdrSet(id: string, value: string) {
 let lastSdrPanelReport: any = null;
 
 function syncSdrChannelButtons(): void {
-  const receiving = receivingSdrChannels();
-  const multiple = receiving.length > 1 || receiving.length === 1 && receiving[0].channel !== currentSdrChannel();
+  const definitions = sdrChannelMarks();
+  const multiple = definitions.length > 1 || definitions.length === 1 && definitions[0].channel !== currentSdrChannel();
   document.querySelectorAll<HTMLButtonElement>('.sdr-channel-nav').forEach(button => {
     button.hidden = !multiple;
     button.setAttribute('aria-label', t(button.dataset.action === 'sdr-channel-prev' ? 'sdr_channel_prev' : 'sdr_channel_next'));
@@ -1125,7 +1151,7 @@ export function selectMainSdrChannel(channel: SdrChannel): void {
 }
 
 function cycleSdrChannel(direction: number): void {
-  const channels = receivingSdrChannels();
+  const channels = sdrChannelMarks();
   if (!channels.length) return;
   const index = channels.findIndex(c => c.channel === currentSdrChannel());
   const next = index < 0 ? (direction > 0 ? 0 : channels.length - 1)
@@ -1182,13 +1208,20 @@ export function syncSdrPanel(s: any) {
   const channels = Array.isArray(sdr.channels) ? sdr.channels : [];
   confirmSdrChannels(channels);
   lastSdrPanelReport = s;
-  if (currentSdrChannel() !== 1 && !sdrChannelMarks().some(c => c.channel === currentSdrChannel())) {
-    selectMainSdrChannel(receivingSdrChannels()[0]?.channel ?? 1);
+  const descriptors = sdrModeIds().map(modeDescriptor).filter((mode): mode is NonNullable<typeof mode> => mode!==undefined);
+  if (descriptors.length && channels.some((row:any)=>row.control?.receiver_uid)) {
+    sharedReceiverModeMemory.observe({service_id:channels.find((row:any)=>row.control?.receiver_uid)?.control.service_id,
+      capabilities:{mode_descriptors:descriptors},receivers:channels.filter((row:any)=>row.control?.receiver_uid&&row.confirmed)
+        .map((row:any)=>({receiver_uid:row.control.receiver_uid,revision:row.control.revision,confirmed:row.confirmed}))});
+  }
+  if (sdrChannelMarks().length && !sdrChannelMarks().some(c => c.channel === currentSdrChannel())) {
+    selectMainSdrChannel(sdrChannelMarks()[0].channel);
     return;
   }
   syncSdrChannelButtons();
   const primary = channels.find((channel: { channel: number }) => channel.channel === currentSdrChannel());
   const receiver = primary || sdr;
+  if (primary) syncMainReceiverControls(primary, send);
   const ownReply = typeof s.request_id === 'string' && s.request_id.startsWith('sdr-filter-');
   const version = Number(s.config_version);
   const receiverAck = receiverInFlight !== null && s.response_to === 'SET_SDR_CHANNEL'
@@ -1352,8 +1385,8 @@ export function syncSdrPanel(s: any) {
   if (receiver.nr_algorithm != null) sdrNrAlgo.confirm(parseNrAlgo(receiver.nr_algorithm));
   if (receiver.nr_atten_db != null) sdrNrAtten.confirm(Number(receiver.nr_atten_db));
   for (const channel of channels) {
-    if (channel.channel !== currentSdrChannel() && [1, 2, 3].includes(channel.channel)) {
-      setDecodeChannelMode(channel.channel, channel.enabled ? channel.mode : '');
+    if (channel.channel !== currentSdrChannel() && knownSdrChannelNumbers().includes(channel.channel)) {
+      setDecodeChannelMode(channel.channel, channel.enabled && channel.processing_enabled !== false ? channel.mode : '');
     }
   }
   renderSdrState();
@@ -1372,7 +1405,7 @@ export function syncSdrPanel(s: any) {
   syncSdrButtons();
   syncSdrAudioButton();
   syncRefUI();
-  setDecodeChannelMode(currentSdrChannel(), primary && !primary.enabled ? '' : sdrDemod.get());
+  setDecodeChannelMode(currentSdrChannel(), primary && (!primary.enabled || primary.processing_enabled === false) ? '' : sdrDemod.get());
   // A tune can settle while spectrum frames are paused; paint the confirmed view now.
   if (listenMoved || centerMoved) requestRender();
 }
@@ -1515,7 +1548,7 @@ function applyPresetSuccess() {
   cancelSdrCanvasGesture();
   const audioWasOn = sdrAudioOn.get();
   resetSdrIq();
-  for (const channel of [1, 2, 3] as const) clearRadiofax(channel);
+  for (const channel of knownSdrChannelNumbers()) clearRadiofax(channel);
 
   // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old
   // code cleared the fields by hand and missed one, so a Preset could reapply the previous

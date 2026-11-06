@@ -53,6 +53,21 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('AUD2 audio ingress', () => {
+  it('keeps source PCM continuous across forward and backward UTC jumps', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-05T12:00:00Z'));
+    receive(packet({ seq: 0 }));
+    receive(packet({ seq: 1, frames: 480 }));
+    vi.setSystemTime(new Date('2026-11-06T12:00:00Z'));
+    receive(packet({ seq: 2, frames: 480, input: 960n, index: 480n }));
+    vi.setSystemTime(new Date('2026-11-04T12:00:00Z'));
+    receive(packet({ seq: 3, frames: 480, input: 1920n, index: 960n }));
+    expect(posted.filter(message => message.type === 'samples')).toHaveLength(3);
+    expect(posted.filter(message => message.type === 'error')).toEqual([]);
+    // Real source loss must remain detectable independently of host UTC.
+    receive(packet({ seq: 5, frames: 480, input: 3840n, index: 1920n }));
+    expect(posted.filter(message => message.type === 'error')).toHaveLength(1);
+  });
   it('reconnects UID transport loss at a fresh boundary and ignores old socket PCM', async () => {
     vi.useFakeTimers();
     // This option is enabled only by the UID playback owner; legacy remains explicit retry.

@@ -44,7 +44,7 @@ impl DevState {
     }
 
     pub(super) fn preset_service_channels() -> Vec<receiver_workers::ChannelConfig> {
-        let mut configs: Vec<_> = (1..=3).map(receiver_workers::ChannelConfig::for_slot).collect();
+        let mut configs: Vec<_> = (1..=MAX_CHANNELS as u32).map(receiver_workers::ChannelConfig::for_slot).collect();
         configs[0].freq = 1e9;
         configs
     }
@@ -74,7 +74,7 @@ impl DevState {
             if (pan || center!=requested_center) && next[0].enabled {
                 let Ok(source)=service_ddc::source_plan(fs,&next[0]) else {continue;};
                 let plan=source.plan();
-                let edge=if source.is_direct() {plan.stopband_hz} else {plan.occupied_bandwidth_hz/2.0};
+                let edge=plan.stopband_hz;
                 let occupied_half=half-edge;
                 let listen_half=if pan {display_half_width(display as i32).min(occupied_half)} else {occupied_half};
                 if listen_half<0.0 {continue;}
@@ -143,7 +143,7 @@ impl DevState {
                 source.restart(None)?;
             }
             self.invalidate_observation();
-            self.channel_power=[None;3];
+            self.channel_power=vec![None;MAX_CHANNELS];
         }
         self.sdr_center=center;
         self.sdr_decimate=display;

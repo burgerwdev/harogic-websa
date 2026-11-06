@@ -2,7 +2,8 @@
 // The opener owns receiver state and subscriptions; a popup adopts the same DOM subtree.
 // Floating geometry persists in viewport pixels outside the zoomed analyzer frame.
 // The popup fills its own viewport without overwriting that saved floating geometry.
-import { currentSdrChannel } from './sdrChannels';
+import { channelState } from '../core/channelState';
+import { currentSdrChannel, knownSdrChannelNumbers } from './sdrChannels';
 import { clearFt8Spots, clock, ft8DecoderState, ft8Spots, setFt8Channel, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
 import { clearCwLog, cwLevel, cwLog, setCwChannel, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
 	type CwLine, type CwMark } from '../sdr/cwLog';
@@ -106,10 +107,10 @@ let wanted = false;
 let active = false;
 /** Which pane the window shows: the demodulator decides (null = nothing decodes right now). */
 let mode: DecodeMode = null;
-export type DecodeChannel = 1 | 2 | 3;
+export type DecodeChannel = number;
 let selectedChannel: DecodeChannel = 1;
-const channelModes: Record<DecodeChannel, DecodeMode> = { 1: null, 2: null, 3: null };
-const sstvViews: Record<DecodeChannel, number | null> = { 1: null, 2: null, 3: null };
+const channelModes = channelState<DecodeMode>(() => null);
+const sstvViews = channelState<number | null>(() => null);
 
 export interface DecodeTiming {
 	inputIndex: string;
@@ -120,8 +121,8 @@ export interface DecodeTiming {
 	delayKnown: boolean;
 	causalPresentation: boolean;
 }
-const channelTiming: Record<DecodeChannel, DecodeTiming | null> = { 1: null, 2: null, 3: null };
-const channelErrors: Record<DecodeChannel, string | null> = { 1: null, 2: null, 3: null };
+const channelTiming = channelState<DecodeTiming | null>(() => null);
+const channelErrors = channelState<string | null>(() => null);
 let ingesting = false;
 let pendingPaint: number | null = null;
 let paintWindow: Window | null = null;
@@ -1345,7 +1346,7 @@ export interface WfmInfo {
 	carrierHz: number; pilotDevHz: number; pilotSnrDb: number;
 	scopeL: Float32Array | null; scopeR: Float32Array | null;
 }
-const wfmInfo: Record<DecodeChannel, WfmInfo | null> = { 1: null, 2: null, 3: null };
+const wfmInfo = channelState<WfmInfo | null>(() => null);
 
 /** Record the worker's latest WFM info (called from the message handler in `iqStream`). */
 export function setWfmInfo(info: WfmInfo | null, channel: DecodeChannel = selectedChannel): void {
@@ -1360,9 +1361,9 @@ export interface AmInfo {
 	carrierHz: number | null; carrierOffsetHz: number | null; modulationPct: number | null; inputDbFs: number | null;
 	rmsDbFs: number | null; peakDbFs: number | null; scope: Float32Array | null;
 }
-const amInfo: Record<DecodeChannel, AmInfo | null> = { 1: null, 2: null, 3: null };
+const amInfo = channelState<AmInfo | null>(() => null);
 interface AmMeters { time: number; rmsPower: number | null; peakDb: number | null }
-const amMeters: Record<DecodeChannel, AmMeters | null> = { 1: null, 2: null, 3: null };
+const amMeters = channelState<AmMeters | null>(() => null);
 let confirmedAmSyncGeneration: number | null = null;
 
 /** STATUS and telemetry travel on different sockets; only the same detector generation may lock. */
@@ -1558,7 +1559,7 @@ export function toggleDecodeWindow(): void {
 export function setDecodeActive(next: boolean): void {
 	active = next;
 	if (!next) {
-		for (const channel of [1, 2, 3] as const) { amInfo[channel] = null; amMeters[channel] = null; }
+		for (const channel of knownSdrChannelNumbers()) { amInfo[channel] = null; amMeters[channel] = null; }
 		confirmedAmSyncGeneration = null;
 		renderAm();
 	}

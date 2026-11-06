@@ -185,6 +185,7 @@ def browser_gate(origin, root, artifacts):
         overview = page.locator('[data-view-id=overview-follow]')
         uid = api(origin)['receivers'][0]['receiver_uid']
         row = overview.locator(f'.mc-row[data-uid="{uid}"]')
+        row.locator('.mc-row-more > summary').click()
         held_click(page, row.locator('[data-action=rec-iq]'))
         task_id = until(lambda: next((t['task_id'] for t in api(origin)['recordings'] if t['receiver_uid'] == uid and t['state'] == 'recording'), None))
         before = int(task(origin, task_id)['tracks'][0]['raw_bytes'])

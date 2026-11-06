@@ -144,7 +144,15 @@ impl FirState {
             }
             out.push(acc);
         }
-        for k in head..n {
+        #[cfg(target_arch = "x86_64")]
+        let body = if n - head >= 4 && std::is_x86_feature_detected!("avx") {
+            // Parallel outputs retain each output's original tap order and f64
+            // multiply/add operations. There is no horizontal sum or fused FMA.
+            unsafe { self.body_avx(x, out, head) }
+        } else { head };
+        #[cfg(not(target_arch = "x86_64"))]
+        let body = head;
+        for k in body..n {
             let window = &x[k + 1 - ntaps..=k];
             let mut acc = 0.0;
             for (tap, sample) in self.taps.iter().zip(window.iter().rev()) {
@@ -159,6 +167,27 @@ impl FirState {
             self.tail.copy_within(n.., 0);
             self.tail[tlen - n..].copy_from_slice(x);
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx")]
+    unsafe fn body_avx(&self, x: &[f64], out: &mut Vec<f64>, mut k: usize) -> usize {
+        use std::arch::x86_64::*;
+        while k + 4 <= x.len() {
+            let mut acc = _mm256_setzero_pd();
+            for (j, &tap) in self.taps.iter().enumerate() {
+                // k >= ntaps - 1 and k + 3 < x.len(), so all four
+                // consecutive input samples are inside the current block.
+                let samples = _mm256_loadu_pd(x.as_ptr().add(k - j));
+                let product = _mm256_mul_pd(_mm256_set1_pd(tap), samples);
+                acc = _mm256_add_pd(acc, product);
+            }
+            let mut values = [0.0; 4];
+            _mm256_storeu_pd(values.as_mut_ptr(), acc);
+            out.extend_from_slice(&values);
+            k += 4;
+        }
+        k
     }
 }
 
@@ -404,5 +433,34 @@ mod tests {
         let mut again = Vec::new();
         filter.process_into(&[1.0, 0.0, 0.0, 0.0, 0.0], &mut again);
         assert_eq!(out, again);
+    }
+
+    #[test]
+    fn parallel_outputs_match_scalar_bits_across_short_and_long_blocks() {
+        let input: Vec<f64> = (0..4097).map(|k| {
+            (k as f64 * 0.371).sin() * 2f64.powi((k % 47) - 23)
+        }).collect();
+        for ntaps in [2, 3, 9, 33, 129, 257] {
+            let taps: Vec<f64> = (0..ntaps).map(|j| (j as f64 * 0.73).cos() / ntaps as f64).collect();
+            let expected: Vec<f64> = (0..input.len()).map(|k| {
+                let mut acc = 0.0;
+                for (j, &tap) in taps.iter().enumerate() {
+                    acc += tap * if j <= k { input[k - j] } else { 0.0 };
+                }
+                acc
+            }).collect();
+            let mut filter = FirState::new(taps);
+            let mut position = 0;
+            let mut output = Vec::new();
+            for count in [1, 0, 2, 7, 17, 61, 129, 3, 1024].into_iter().cycle() {
+                let end = (position + count).min(input.len());
+                filter.process_into(&input[position..end], &mut output);
+                for (offset, (&actual, &wanted)) in output.iter().zip(&expected[position..end]).enumerate() {
+                    assert_eq!(actual.to_bits(), wanted.to_bits(), "taps {ntaps}, sample {}", position + offset);
+                }
+                position = end;
+                if position == input.len() { break; }
+            }
+        }
     }
 }

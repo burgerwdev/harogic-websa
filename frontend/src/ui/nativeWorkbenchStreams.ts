@@ -1,7 +1,7 @@
 import { receiverHasAudio } from '../core/multichannel';
 import { onCommandReply, onCommandSent } from '../core/wsSend';
 import { claimNativeAudio, forgetNativeAudio, getSdrAudioStatus, setNativeAudioRoute, setNativeMaster } from '../audio/sdrAudio';
-import { addDecoderRaster, addDecoderResult, annotateDecoderResult, clearDecoderStatuses, clearGpsSnapshots, decoderLog, endDecoderRasters, forgetDecoderLog } from '../sdr/decoderLog';
+import { acknowledgeDecoderLog, addDecoderRaster, addDecoderResult, annotateDecoderResult, clearDecoderStatuses, clearGpsSnapshots, decoderLog, endDecoderRasters, forgetDecoderLog } from '../sdr/decoderLog';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import type { WorkbenchSession } from './workbenchSession';
 
@@ -79,7 +79,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
       stopDecoder(uid); forgetNativeAudio(uid); audioKeys.delete(uid); forgetDecoderLog(uid); errors.delete(uid);
     }
     service = snapshot.service_id;
-    for (const receiver of snapshot.receivers) if (receiver.state !== 'running' || !receiver.confirmed.processors.length || receiver.fault) endDecoderRasters(receiver.receiver_uid);
+    for (const receiver of snapshot.receivers) if (receiver.state !== 'running' || receiver.processing_state === 'failed' || !receiver.confirmed.processors.length || receiver.fault) endDecoderRasters(receiver.receiver_uid);
     setNativeMaster(session.masterGain, session.masterMuted);
     for (const [uid, decoder] of decoders) if (decoder.service !== snapshot.service_id) stopDecoder(uid);
     for (const receiver of snapshot.receivers) {
@@ -89,6 +89,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
       if (restart) errors.delete(uid);
       setNativeAudioRoute(uid, config.processors[0]?.mode ?? '', !receiver.fault && session.audible(uid), session.route(uid).gain, session.route(uid).pan, restart);
       audioKeys.set(uid, key);
+      if (receiver.processing_state === 'failed') {stopDecoder(uid);continue;}
       if (receiver.state !== 'running' || !config.processors.length || receiver.fault || decoders.has(uid) || errors.has(uid)) continue;
       const worker = new Worker(new URL('../sdr/decodeWorker.ts', import.meta.url), { type: 'module' });
       const owner = { worker, service: snapshot.service_id }; decoders.set(uid, owner);
@@ -99,7 +100,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
         if (message.type === 'frames') {
           try {
             for (const envelope of message.envelopes as DecodeEnvelope[]) {
-              if (envelope.receiver_uid !== uid || envelope.service_id !== owner.service) throw new Error('Decoded output logical source mismatch');
+              if (envelope.receiver_uid !== uid || envelope.service_id !== owner.service || envelope.channel !== receiver.display_number) throw new Error('Decoded output logical source mismatch');
               const previous = decoderLog(uid).entries[0];
               consumeReceiverResult(uid, envelope);
               if (envelope.event.type !== 'start' && decoderLog(uid).entries[0] !== previous) annotateDecoderResult(uid, { input_index: envelope.input_index, input_rate: envelope.input_rate,
@@ -108,7 +109,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
             }
             // Decoding updates the retained log immediately. Views can coalesce paint
             // without re-running every receiver's controls and speaker routing.
-            worker.postMessage({ type: 'ack' }); session.notifyResults(uid);
+            acknowledgeDecoderLog(uid); worker.postMessage({ type: 'ack' }); session.notifyResults(uid);
           } catch (error) { fail(String(error)); }
         } else if (message.type === 'error') fail(message.message);
         else if (message.type === 'closed') {

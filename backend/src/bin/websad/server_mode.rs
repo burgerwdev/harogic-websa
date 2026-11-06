@@ -540,9 +540,18 @@ mod tests {
         if std::env::var_os("WEBSA_TEST_SOAPY_NORMAL_STOP").is_some() {
             assert!(server.stop().unwrap());
             assert!(server.child.is_none());
-            for task in std::fs::read_dir("/proc/self/task").unwrap() {
-                let path=task.unwrap().path().join("comm");
-                assert_ne!(std::fs::read_to_string(path).unwrap_or_default().trim(),"soapy-server");
+            // pthread_join can wake before Linux removes the exiting task's
+            // proc entry. Keep checking the leak condition until that cleanup
+            // completes; an actual surviving supervisor still fails the test.
+            let deadline=Instant::now()+Duration::from_secs(1);
+            loop {
+                let present=std::fs::read_dir("/proc/self/task").unwrap().any(|task| {
+                    let path=task.unwrap().path().join("comm");
+                    std::fs::read_to_string(path).unwrap_or_default().trim()=="soapy-server"
+                });
+                if !present {break;}
+                assert!(Instant::now()<deadline,"joined supervisor remained in the process task list");
+                thread::sleep(Duration::from_millis(1));
             }
             return;
         }

@@ -158,7 +158,8 @@ impl DevState {
             sweep_ms_meas: self.sweep_ms_meas.clone(),
             config_version: self.config_version.clone(),
             ddc_error: self.ddc_error.clone(),
-            ddc_failure_diagnostics: self.ddc_failure_diagnostics.clone(),
+            ddc_failure_diagnostics: self.pipeline.as_ref().and_then(|pipeline|pipeline.terminal_failure())
+                .or_else(||self.ddc_failure_diagnostics.clone()),
             rta_error: self.rta_error.clone(),
             swp_error: self.swp_error.clone(),
             pnm_error: self.pnm_error.clone(),
@@ -253,13 +254,15 @@ impl StatusSnapshot {
                 set_path(&mut s, &format!("/req/{key}"), value.clone());
             }
         }
+        // New diagnostics have no key in the embedded compatibility fixture.
+        // set_path deliberately updates existing keys only, so insert this one.
+        s["sdr_last_failure"] = json!(self.ddc_failure_diagnostics);
         for (path, value) in [
             (
                 "/connected",
                 json!(mode != "server" && (!self.hardware || self.link_up)),
             ),
             ("/status_warning", json!(self.status_warning)),
-            ("/sdr_last_failure", json!(self.ddc_failure_diagnostics)),
             ("/ref_clock", json!(self.ref_clock)),
             ("/refclk_out", json!(self.refclk_out)),
             ("/refclk_ppm", json!(self.refclk_ppm)),
@@ -485,6 +488,18 @@ impl Drop for StateGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_failure_evidence_is_published_without_a_fixture_key_and_survives_recovery() {
+        let (golden,schema)=load_golden();
+        assert!(golden.get("sdr_last_failure").is_none());
+        let mut state=DevState::new(golden,schema);
+        let failure=json!({"error":"SDK timeout","actual":{"iqs_capture":{"fail_calls":3,"recovery_stall_ms":751.0}}});
+        state.ddc_failure_diagnostics=Some(failure.clone());
+        state.ddc_error=Some("SDK timeout".into());
+        assert_eq!(state.status_snapshot().build()["sdr_last_failure"],failure);
+        state.ddc_error=None;
+        assert_eq!(state.status_snapshot().build()["sdr_last_failure"],failure);
+    }
 
     #[test]
     fn status_gain_uses_each_modes_actual_and_keeps_unknown_null() {

@@ -1,3 +1,4 @@
+import { channelState } from '../core/channelState';
 // The FT8 decode log: what the protocol decoded, newest first.
 //
 // The worker reports one transmission at a time (text plus the timing it was found at); this keeps
@@ -50,8 +51,8 @@ export function ft8DialFor(signalHz: number): number {
 /** How many decodes are kept (a band's worth of traffic; the window scrolls). */
 export const MAX_FT8_SPOTS = 200;
 
-const contexts: Record<1 | 2 | 3, Ft8Spot[]> = { 1: [], 2: [], 3: [] };
-let selectedChannel: 1 | 2 | 3 = 1;
+const contexts = channelState<Ft8Spot[]>(() => []);
+let selectedChannel: number = 1;
 const listeners = new Set<(spots: Ft8Spot[]) => void>();
 
 export interface Ft8DecoderState {
@@ -62,9 +63,9 @@ export interface Ft8DecoderState {
 	level: number;
 	epoch: number;
 }
-const decoderStates: Record<1 | 2 | 3, Ft8DecoderState | null> = { 1: null, 2: null, 3: null };
+const decoderStates = channelState<Ft8DecoderState | null>(() => null);
 
-export function setFt8DecoderState(state: Ft8DecoderState | null, channel: 1 | 2 | 3 = selectedChannel): void {
+export function setFt8DecoderState(state: Ft8DecoderState | null, channel: number = selectedChannel): void {
 	decoderStates[channel] = state;
 	if (channel === selectedChannel) notify();
 }
@@ -77,13 +78,13 @@ function notify(): void {
 	for (const listener of listeners) listener(contexts[selectedChannel]);
 }
 
-export function setFt8Channel(channel: 1 | 2 | 3): void {
+export function setFt8Channel(channel: number): void {
 	selectedChannel = channel;
 	notify();
 }
 
 /** Record one decode (newest first). Returns the spot that was appended. */
-export function addFt8Spot(report: Ft8Report, at = Date.now(), channel: 1 | 2 | 3 = selectedChannel): Ft8Spot {
+export function addFt8Spot(report: Ft8Report, at = Date.now(), channel: number = selectedChannel): Ft8Spot {
 	const spot: Ft8Spot = {
 		at,
 		hz: (Number(report.centerHz) || 0) + (Number(report.frequencyHz) || 0),
@@ -109,7 +110,7 @@ export function ft8Spots(): Ft8Spot[] {
 	return contexts[selectedChannel];
 }
 
-export function clearFt8Spots(channel: 1 | 2 | 3 = selectedChannel): void {
+export function clearFt8Spots(channel: number = selectedChannel): void {
 	if (contexts[channel].length === 0) return;
 	contexts[channel] = [];
 	if (channel === selectedChannel) notify();

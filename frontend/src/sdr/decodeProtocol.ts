@@ -107,7 +107,7 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 	for (const key of ['channel', 'channel_id', 'epoch', 'seq']) {
 		if (typeof value[key] !== 'number' || !Number.isInteger(value[key]) || value[key] < 0 || value[key] > 0xffffffff) throw new Error('Invalid SDE2 identity');
 	}
-	if (typeof value.channel !== 'number' || value.channel < 1 || value.channel > 3
+	if (typeof value.channel !== 'number' || value.channel < 1 || value.channel > 0xffffffff
 		|| typeof value.input_rate !== 'number' || !Number.isFinite(value.input_rate) || value.input_rate <= 0
 		|| typeof value.delay_seconds !== 'number' || !Number.isFinite(value.delay_seconds) || value.delay_seconds < 0
 		|| typeof value.delay_known !== 'boolean' || typeof value.causal_presentation !== 'boolean'

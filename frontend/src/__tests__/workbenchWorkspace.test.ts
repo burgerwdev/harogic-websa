@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clone } from '../core/multichannel';
+import { clone, type ServiceSnapshot } from '../core/multichannel';
 import { getLang, setLang } from '../core/i18n';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
@@ -31,12 +31,17 @@ beforeEach(() => {
 });
 afterEach(() => { ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); setLang(language); vi.useRealTimers(); vi.restoreAllMocks(); });
 
-function nativeWorkspace(): void {
+function nativeWorkspace(quota?: ServiceSnapshot['recording_resources']): void {
   ui.dispose(); session.dispose(); document.body.replaceChildren();
   const snapshot = adapter.snapshot.bind(adapter);
   vi.spyOn(adapter, 'snapshot').mockImplementation(() => {
     const state = snapshot(); state.transport = 'native'; state.service_id = 'native-test';
     state.capabilities.commands = ['configure', 'create', 'retire']; state.capabilities.monitor_mixing = true;
+    if (quota) {
+      state.capabilities.commands.push('record_start', 'record_stop');
+      state.capabilities.recording_kinds = ['iq', 'audio', 'results'];
+      state.capabilities.max_recording_tasks = 8; state.recording_resources = quota;
+    }
     state.capabilities.mode_descriptors = ['nfm', 'am', 'usb', 'ft8', 'drm', 'drmplus'].map(id =>
       receiverPlugin(id, ['drm', 'drmplus'].includes(id) ? { outputs: ['audio'] } : {}));
     return state;
@@ -46,6 +51,18 @@ function nativeWorkspace(): void {
 }
 
 describe('per-channel audio settings', () => {
+  it('shows the service recording quota and keeps existing stops usable when all slots are held', async () => {
+    const started = adapter.dispatch({ type: 'record_start', request_id: 'existing-iq', receiver_uid: 'fixture-c1', kinds: ['iq'] });
+    await settle();
+    await started;
+    nativeWorkspace({ active_tasks: 8, max_tasks: 8, available_tasks: 0 });
+    click('tab-recording');
+    expect(element('[data-recording-capacity]').textContent).toContain('8 / 8');
+    expect(element('[data-recording-capacity]').textContent).toContain('0 available');
+    expect(element<HTMLButtonElement>('[data-editor] [data-action=rec-iq]').disabled).toBe(false);
+    expect(element<HTMLButtonElement>('[data-editor] [data-action=rec-audio]').disabled).toBe(true);
+    expect(element<HTMLButtonElement>('[data-editor] [data-action=rec-audio]').title).toContain('slots are full');
+  });
   it('edits the name in the heading and submits it with the existing settings form', async () => {
     nativeWorkspace();
     const input = element<HTMLInputElement>('[data-channel-name]');
@@ -105,7 +122,7 @@ describe('per-channel audio settings', () => {
       nr: true, nr_algorithm: 'dfn', nr_strength: 0.25, nr_atten_db: 14, squelch_dbm: -92.3, agc: false, pcm_gain: 0.8,
     });
     expect(session.snapshot.receivers[1]).toEqual(other);
-    expect(element('[data-draft-status]').textContent).toBe('Settings applied');
+    expect(element('[data-draft-status]').textContent).toBe('Settings accepted');
     change('mode', 'usb'); submit(); await settle();
     change('mode', 'nfm');
     expect(element<HTMLInputElement>('[name=nr]').checked).toBe(true);
@@ -196,7 +213,7 @@ describe('channel workspace workflows', () => {
     expect(element<HTMLButtonElement>('[data-config] [type=submit]').disabled).toBe(true);
     await settle();
     expect(session.snapshot.receivers[0].confirmed.baseband.frequency_hz).toBe(7123456);
-    expect(element('[data-draft-status]').textContent).toBe('Settings applied');
+    expect(element('[data-draft-status]').textContent).toBe('Settings accepted');
     expect(element('[data-preview]').textContent).toBe('');
   });
 
@@ -310,4 +327,14 @@ describe('channel workspace workflows', () => {
     expect(results).not.toHaveBeenCalled();
     ui.showOverview(); expect(results).toHaveBeenCalledWith('fixture-c1');
   });
+});
+
+it('refreshes an undrafted form after a confirmed update while an action button retains focus', async () => {
+  nativeWorkspace();
+  const row=session.snapshot.receivers[0];
+  element<HTMLButtonElement>('[data-action=radiofax_reset_correction]').focus();
+  const config=clone(row.confirmed);config.processors[0].radiofax_phase_pixels=0;config.processors[0].radiofax_clock_ppm=0;
+  const operation=adapter.dispatch({type:'configure',request_id:'external-action-confirmed',receiver_uid:row.receiver_uid,expected_revision:row.revision,config});
+  await settle();await operation;
+  expect(element<HTMLFormElement>('[data-config]').dataset.revision).toBe(session.snapshot.receivers[0].revision);
 });

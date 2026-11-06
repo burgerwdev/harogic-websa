@@ -359,6 +359,12 @@ pub struct OnAirBridge {
 }
 
 impl OnAirBridge {
+    pub fn buffer_status(&self)->Value {
+        json!({"transport":"tcp","encoding_buffer_bytes":self.encoded.len(),
+            "pid":self.server.as_ref().map(|server|server.child.id()),
+            "encoding_capacity_bytes":self.encoded.capacity(),"upstream_pending_bytes":null,
+            "upstream_pending_precision":"unavailable; socket writes do not confirm decoder consumption"})
+    }
     pub fn spawn(mode: &str, input_rate: u32, center_hz: u64) -> Result<Self, String> {
         let virtual_center = source_virtual_frequency(mode, center_hz)?;
         let expected = MODES.iter().find(|m| m.0 == mode).unwrap().1;

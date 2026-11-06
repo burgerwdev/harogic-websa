@@ -4,7 +4,7 @@
 //! preserves the signed-i16 amplitude, so framing applies only the fixed 1/32768 scale.
 //! No signal-dependent gain belongs here; transport preserves keying and modulation depth.
 //! Native receiver workers and raw IQ subscribers consume the same normalized samples.
-use crate::FineOutput;
+use crate::{FineOutput,IqFrame};
 const BASEBAND_VERSION: u32 = 2;
 const IQ_SCALE: f32 = 1.0 / 32768.0;
 pub const MAX_BASEBAND_SAMPLES: usize = 65_536;
@@ -82,7 +82,10 @@ impl BasebandFramer {
         Some(self)
     }
 
-    pub fn push(&mut self, output: &FineOutput<'_>) -> Result<Vec<Vec<u8>>, &'static str> {
+    pub fn push(&mut self,output:&FineOutput<'_>)->Result<Vec<Vec<u8>>,&'static str> {
+        self.push_native(output).map(|frames|frames.into_iter().map(IqFrame::into_wire).collect())
+    }
+    pub fn push_native(&mut self, output: &FineOutput<'_>) -> Result<Vec<IqFrame>, &'static str> {
         if self.finished
             || output.channel_id != self.channel_id
             || output.epoch != self.epoch
@@ -121,7 +124,7 @@ impl BasebandFramer {
             self.pending_delay = output.delay_samples;
         }
         if !self.started {
-            frames.push(encode_baseband(
+            frames.push(IqFrame::native(
                 self.magic,
                 0,
                 self.rate,
@@ -130,7 +133,7 @@ impl BasebandFramer {
                 self.epoch,
                 self.pending_input_index,
                 self.pending_delay,
-                &[],
+                self.input_rate,Vec::new(),
             )?);
             self.started = true;
         }
@@ -151,17 +154,19 @@ impl BasebandFramer {
             if self.pending.len() / 2 >= self.block_samples {
                 self.wire_seq = self.wire_seq.checked_add(1)
                     .ok_or("baseband wire sequence overflow")?;
-                frames.push(encode_baseband(self.magic, self.wire_seq, self.rate,
+                frames.push(IqFrame::native(self.magic, self.wire_seq, self.rate,
                     self.center_hz, self.channel_id, self.epoch, self.pending_input_index,
-                    self.pending_delay, &self.pending)?);
-                self.pending.clear();
+                    self.pending_delay,self.input_rate,std::mem::take(&mut self.pending))?);
             }
         }
         Ok(frames)
     }
 
     /// Caller must send this tail frame at stream shutdown or report an incomplete stream.
-    pub fn finish(&mut self) -> Result<Option<Vec<u8>>, &'static str> {
+    pub fn finish(&mut self)->Result<Option<Vec<u8>>,&'static str> {
+        self.finish_native().map(|frame|frame.map(IqFrame::into_wire))
+    }
+    pub fn finish_native(&mut self) -> Result<Option<IqFrame>, &'static str> {
         if self.finished {
             return Err("baseband stream already finished");
         }
@@ -173,7 +178,7 @@ impl BasebandFramer {
             .wire_seq
             .checked_add(1)
             .ok_or("baseband wire sequence overflow")?;
-        let frame = encode_baseband(
+        let frame = IqFrame::native(
             self.magic,
             self.wire_seq,
             self.rate,
@@ -182,9 +187,8 @@ impl BasebandFramer {
             self.epoch,
             self.pending_input_index,
             self.pending_delay,
-            &self.pending,
+            self.input_rate,std::mem::take(&mut self.pending),
         )?;
-        self.pending.clear();
         Ok(Some(frame))
     }
 }

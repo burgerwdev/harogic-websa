@@ -332,7 +332,7 @@ pub(super) fn recover(path: &FsPath, task: &mut Value) -> io::Result<()> {
 
 /// Validate every record in order, including the exact recovered prefix; retain only
 /// bounded segment summaries and the current PCM block.
-pub(super) fn visit(
+pub(crate) fn visit(
     path: &FsPath,
     task: &Value,
     cancel: &AtomicBool,
@@ -557,6 +557,35 @@ mod tests {
         manager.snapshots()[0].clone()
     }
     #[test]
+    fn processing_failure_is_scoped_to_uid_and_healthy_audio_remains_readable() {
+        let root=directory();let mut manager=Manager::open(root.clone()).unwrap();
+        for (uid,kind) in [("uid","audio"),("healthy","audio"),("uid","iq")] {
+            manager.start_kind(uid,"service",&format!("{uid}-{kind}"),kind).unwrap().wait().unwrap();
+        }
+        let healthy=|sequence,index| {
+            let mut block=input(sequence,index,1,48000.0,1.0);
+            let mut source:Value=serde_json::from_slice(&block.source).unwrap();source["receiver_uid"]=json!("healthy");
+            block.source=serde_json::to_vec(&source).unwrap().into();block
+        };
+        manager.admit_audio("uid",input(1,0,1,48000.0,1.0));
+        manager.admit_audio("healthy",healthy(1,0));
+        manager.processing_failed("uid","C3 controlled inference failure");
+        manager.admit_audio("healthy",healthy(2,4));
+        let tasks=manager.snapshots();
+        assert_eq!(tasks.iter().find(|task|task["receiver_uid"]=="uid"&&task["tracks"][0]["kind"]=="audio").unwrap()["fault"]["code"],"PROCESSING_FAILED");
+        assert!(tasks.iter().filter(|task|task["receiver_uid"]=="healthy"||task["tracks"][0]["kind"]=="iq")
+            .all(|task|task["fault"].is_null()));
+        manager.shutdown();let tasks=manager.snapshots();
+        let task=tasks.iter().find(|task|task["receiver_uid"]=="healthy").unwrap();
+        let mut samples=Vec::new();
+        visit(&root.join(task["task_id"].as_str().unwrap()),task,&AtomicBool::new(false),|_,_,pcm,_,_| {
+            samples.extend_from_slice(pcm);Ok(())
+        }).unwrap();
+        let bits:Vec<_>=samples.chunks_exact(4).map(|sample|u32::from_le_bytes(sample.try_into().unwrap())).collect();
+        assert_eq!(bits,vec![0.25_f32.to_bits(),(-0.0_f32).to_bits(),1,(-0.75_f32).to_bits()].repeat(2));
+        drop(manager);fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn bounded_audio_range_preserves_stereo_bits_clocks_and_immutable_snapshot() {
         use super::super::audio_read;
         use super::super::super::recording_read::Selection;
@@ -731,6 +760,10 @@ mod tests {
                 .unwrap()
                 .wait()
                 .unwrap();
+        }
+        for index in 3..MAX_ACTIVE_TASKS {
+            m.start_kind(&format!("other-{index}"),"service",&format!("fill-{index}"),"iq")
+                .unwrap().wait().unwrap();
         }
         assert!(m
             .start_kind("other", "service", "overflow", "audio")

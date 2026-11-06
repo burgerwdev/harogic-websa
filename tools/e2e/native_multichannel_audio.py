@@ -127,8 +127,23 @@ async def protocol(origin, root, artifacts):
         recording = await asyncio.to_thread(start, origin, uid, 'actual-audio', 'audio')
         iq = await asyncio.to_thread(start, origin, uid, 'same-uid-iq', 'iq')
         results = await asyncio.to_thread(start, origin, uid, 'same-uid-results', 'results')
-        rejected = api(origin, payload={'type': 'record_start', 'request_id': 'fourth-worker', 'receiver_uid': snapshot['receivers'][1]['receiver_uid'], 'kinds': ['audio']})
-        assert rejected['fault'], rejected
+        candidate = copy.deepcopy(snapshot['receivers'][0]['confirmed'])
+        candidate['name'] = 'Capacity check'; candidate['baseband']['frequency_hz'] += 30000
+        created = api(origin, payload={'type': 'create', 'request_id': 'capacity-receiver', 'config': candidate})
+        assert created['fault'] is None, created
+        fourth = next(r['receiver_uid'] for r in created['snapshot']['receivers'] if r['display_number'] == 4)
+        extras = []
+        for index, (owner, kind) in enumerate([
+            (snapshot['receivers'][1]['receiver_uid'], 'audio'),
+            (snapshot['receivers'][1]['receiver_uid'], 'iq'),
+            (snapshot['receivers'][1]['receiver_uid'], 'results'),
+            (healthy['receiver_uid'], 'iq'), (fourth, 'iq')]):
+            extras.append(await asyncio.to_thread(start, origin, owner, f'fill-shared-{index}', kind))
+        assert api(origin)['recording_resources']['active_tasks'] == 8
+        rejected = api(origin, payload={'type': 'record_start', 'request_id': 'ninth-task', 'receiver_uid': fourth, 'kinds': ['audio']})
+        assert rejected['fault'] and 'capacity' in rejected['fault']['message'], rejected
+        for extra in extras:
+            await asyncio.to_thread(finish_audio, origin, extra)
         status(origin, f'/api/sdr/recordings/{recording}/audio', 409)
         await asyncio.to_thread(until, lambda: int(task(origin, recording)['tracks'][0]['raw_bytes']) > 30000)
         # Backend PCM gain changes, while its IQ stream stays stable.
@@ -175,6 +190,7 @@ def browser_gate(origin, artifacts):
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto(origin); wait_ui_ready(page, 'sdr'); page.locator('[data-action=sdr-workbench]').click()
         overview = page.locator('[data-view-id=overview-follow]'); row = overview.locator(f'.mc-row[data-uid="{uid}"]')
+        row.locator('.mc-row-more > summary').click()
         button = row.locator('[data-action=rec-audio]'); button.scroll_into_view_if_needed(); button.hover(); page.mouse.down(); page.wait_for_timeout(1100); page.mouse.up()
         recording = until(lambda: next((t['task_id'] for t in api(origin)['recordings'] if t['receiver_uid'] == uid and t['tracks'][0]['kind'] == 'audio' and t['state'] == 'recording'), None))
         row.locator('[data-action=select]').click(); overview.locator('[data-action=tab-recording]').click()
@@ -276,7 +292,7 @@ def main():
             target = report['protocol']['task']['task_id']; file = root / target / 'audio-000000.wba'; raw = bytearray(file.read_bytes()); raw[24] ^= 1; file.write_bytes(raw)
             status(origin, f'/api/sdr/recordings/{target}/audio', 422)
             report['checks'] = ['PCM/header fields equal actual AUD2 network', 'independent CRC/Zstd and SciPy Float32 WAV reader',
-                'same UID IQ/results/audio with shared three-worker cap', 'gain and FT8 companion boundaries',
+                'same UID IQ/results/audio with eight shared task slots', 'gain and FT8 companion boundaries',
                 '1100ms mouse and 1300ms Space', '420px Chinese/light Pop out/download/Dock', 'browser exit and processor removal',
                 'SIGKILL original identity prefix', 'real EFBIG isolation', 'corruption 422']
             (args.artifacts / 'report.json').write_text(json.dumps(report, indent=2)+'\n'); print(json.dumps({'ok': True, 'checks': report['checks']}))

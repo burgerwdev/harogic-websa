@@ -13,7 +13,8 @@ export default defineConfig({
       output: {
         codeSplitting: {
           // Keep shared translations cacheable without changing synchronous language switching.
-          groups: [{ name: 'i18n', test: /[\\/]src[\\/]core[\\/]i18n(?:[\\/]|\.ts$)/ }],
+          groups: [{ name: 'i18n', test: /[\\/]src[\\/]core[\\/]i18n(?:[\\/]|\.ts$)/ },
+            { name: 'countries', test: /[\\/]src[\\/]sdr[\\/]ctyData\.ts$/ }],
         },
       },
     },

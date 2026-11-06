@@ -289,7 +289,7 @@ function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLEl
     const update: ResultUpdater = next => {
       const picture = next.data as DecoderImage;
       const extent = picture.strips.reduce((end, strip) => Math.max(end, strip.y + strip.rows), 1);
-      title.textContent = `${picture.label || next.mode} · ${picture.w} × ${extent} · ${t('decoder_image_rows', { rows: extent, total: picture.h })}${picture.final ? ` · ${t('decoder_image_complete')}` : ''}`;
+      title.textContent = `${picture.label || next.mode} · ${picture.w} × ${extent} · ${t('decoder_image_rows', { rows: extent, total: picture.h })}${picture.final && !picture.partial ? ` · ${t('decoder_image_complete')}` : ''}${picture.partial ? ` · ${t('decoder_image_partial')}` : ''}`;
       image.style.aspectRatio = `${picture.w} / ${extent}`;
       image.setAttribute('aria-label', picture.label || next.mode);
       for (const [strip, img] of strips) if (!picture.strips.includes(strip)) { img.remove(); strips.delete(strip); }

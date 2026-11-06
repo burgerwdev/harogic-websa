@@ -12,7 +12,14 @@ mod nr_neural;
 pub mod catalog;
 pub mod external;
 mod wire;
+mod iq_block;
+pub use iq_block::*;
+pub mod filter_plans;
+pub mod host_resources;
+pub mod model_preparation;
 pub mod timing;
+#[cfg(feature="bench-instrument")]
+pub mod execution_probe;
 
 pub use fine::*;
 pub use narrow::*;

@@ -7,7 +7,7 @@ use ndarray::{ArrayView2, ArrayViewMut2};
 use websa_dsp::audio::wiener::Wiener;
 use websa_dsp::audio::blanker::ImpulseBlanker;
 use websa_dsp::plugin::AudioStage;
-use std::cell::OnceCell;
+use std::cell::RefCell;
 use crate::nr_neural::NeuralStream;
 
 const MODEL: &[u8] = include_bytes!("../../frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz");
@@ -16,18 +16,22 @@ const HOP: usize = 480;
 thread_local! {
     // Tract uses Rc-backed tensors, so pristine runtimes stay on their owning
     // thread. Clones own recurrent/overlap state; this template never processes PCM.
-    static DFN_TEMPLATE: OnceCell<Result<DfTract, String>> = const { OnceCell::new() };
+    static DFN_TEMPLATE: RefCell<Option<Result<DfTract,String>>> = const { RefCell::new(None) };
 }
 
 /// Prepare the embedded model before a receiver thread starts accepting IQ.
-/// Retain preparation errors for the existing requested-DFN/Wiener fallback.
+/// Preparation stays on the owning thread; failure never selects another model.
 pub fn prepare_dfn() {
-    DFN_TEMPLATE.with(|template| { template.get_or_init(build_dfn); });
+    DFN_TEMPLATE.with(|template| {template.borrow_mut().get_or_insert_with(build_dfn);});
 }
 
 pub fn prepare_models() { prepare_dfn(); crate::nr_neural::prepare(); }
 
 fn build_dfn() -> Result<DfTract, String> {
+    let mut preparation=crate::model_preparation::Preparation::acquire()?;
+    let result=(|| {
+    #[cfg(feature="bench-instrument")]
+    crate::execution_probe::run("prepare-dfn",0)?;
     let params = DfParams::from_bytes(MODEL).map_err(|e| format!("DFN model: {e:#}"))?;
     let runtime_params = RuntimeParams::default_with_ch(1);
     let runtime = DfTract::new(params, &runtime_params).map_err(|e| format!("DFN runtime: {e:#}"))?;
@@ -35,6 +39,19 @@ fn build_dfn() -> Result<DfTract, String> {
         return Err("DFN model requires 48 kHz mono / 480-sample hops".into());
     }
     Ok(runtime)
+    })();preparation.finish(result.is_ok());result
+}
+
+pub fn retain_selected_model(algorithm:NrAlgorithm) {
+    DFN_TEMPLATE.with(|template| {
+        let mut template=template.borrow_mut();
+        if algorithm!=NrAlgorithm::Dfn || template.as_ref().is_some_and(Result::is_err) {*template=None;}
+    });
+    crate::nr_neural::retain_selected(algorithm);
+}
+pub fn model_sessions()->serde_json::Value {
+    let dfn=DFN_TEMPLATE.with(|template|usize::from(template.borrow().as_ref().is_some_and(Result::is_ok)));
+    serde_json::json!({"dfn_templates":dfn,"onnx_sessions":crate::nr_neural::session_count(),"ownership":"current_thread"})
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +71,7 @@ impl NrAlgorithm {
 #[derive(Debug, Clone)]
 pub struct NrStatus {
     pub requested: NrAlgorithm,
-    pub effective: NrAlgorithm,
+    pub effective: Option<NrAlgorithm>,
     pub state: &'static str,
     pub reason: Option<String>,
 }
@@ -69,7 +86,7 @@ struct DfnStream {
 impl DfnStream {
     fn new(atten_db: f32) -> Result<Self, String> {
         let mut runtime = DFN_TEMPLATE.with(|template| {
-            template.get_or_init(build_dfn).clone()
+            template.borrow_mut().get_or_insert_with(build_dfn).clone()
         })?;
         runtime.set_atten_lim(atten_db);
         Ok(Self {
@@ -175,18 +192,19 @@ impl NoiseReduction {
 
     pub fn status(&self) -> NrStatus {
         let (effective, state) = match self.algorithm {
-            NrAlgorithm::Off => (NrAlgorithm::Off, "off"),
-            NrAlgorithm::Wiener => (NrAlgorithm::Wiener, "wiener"),
-            NrAlgorithm::Dfn if self.dfn.is_some() => (NrAlgorithm::Dfn, "ready"),
-            NrAlgorithm::Dfn => (NrAlgorithm::Wiener, "fallback"),
-            algorithm if self.neural.is_some() => (algorithm, "ready"),
-            _ => (NrAlgorithm::Wiener, "fallback"),
+            NrAlgorithm::Off => (Some(NrAlgorithm::Off), "off"),
+            NrAlgorithm::Wiener => (Some(NrAlgorithm::Wiener), "wiener"),
+            NrAlgorithm::Dfn if self.dfn.is_some() => (Some(NrAlgorithm::Dfn), "ready"),
+            NrAlgorithm::Dfn => (None, "failed"),
+            algorithm if self.neural.is_some() => (Some(algorithm), "ready"),
+            _ => (None, "failed"),
         };
         NrStatus { requested: self.algorithm, effective, state, reason: self.failure.clone() }
     }
     /// Wiener needs a 512-sample window before emitting its first 128 samples.
     /// DFN delay is its STFT overlap plus model lookahead, in output samples.
     pub fn latency_samples(&self) -> Option<u32> {
+        if self.failure.is_some() {return None;}
         Some(if self.algorithm == NrAlgorithm::Off { 0 }
             else if let Some(dfn) = &self.dfn {
                 if dfn.runtime.atten_lim == Some(1.0) {0}
@@ -205,7 +223,11 @@ impl NoiseReduction {
     }
 
 
+    pub fn ensure_ready(&self)->Result<(),String> {
+        self.failure.as_ref().map_or(Ok(()),|error|Err(format!("selected {} model preparation failed: {error}",self.algorithm.name())))
+    }
     pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) -> Result<(), String> {
+        if let Err(error)=self.ensure_ready() {output.clear();return Err(error);}
         if self.algorithm == NrAlgorithm::Off {
             output.clear();
             output.extend_from_slice(input);
@@ -235,7 +257,6 @@ impl NoiseReduction {
             }
         }
         // Retain the original listener policy order: Wiener, then impulse repair.
-        // DFN initialization failure uses this Wiener path.
         self.blanker.process_into(output, false, &mut self.blanker_output);
         std::mem::swap(output, &mut self.blanker_output);
         Ok(())
@@ -263,7 +284,7 @@ mod tests {
         let x=signal();
         for algorithm in NEURAL {
             let mut nr=NoiseReduction::new(48000);nr.configure(48000,algorithm,1.0,0.0);
-            assert_eq!(nr.status().effective,algorithm,"{:?}",nr.status());
+            assert_eq!(nr.status().effective,Some(algorithm),"{:?}",nr.status());
             let delay=nr.latency_samples().unwrap() as usize;
             let mut padded=x.clone();padded.resize(x.len()+delay+4096,0.0);
             let out=run(&mut nr,&padded,137);
@@ -277,7 +298,7 @@ mod tests {
         let input=signal();
         for algorithm in NEURAL {
             let mut nr=NoiseReduction::new(48000);nr.configure(48000,algorithm,1.0,20.0);
-            assert_eq!(nr.status().effective,algorithm,"{:?}",nr.status());
+            assert_eq!(nr.status().effective,Some(algorithm),"{:?}",nr.status());
             let a=run(&mut nr,&input,1799);
             assert!(a.iter().all(|x|x.is_finite()));
             assert!(a.iter().any(|x|x.abs()>1e-5),"{algorithm:?} must run a real non-silent model");
@@ -288,7 +309,8 @@ mod tests {
             nr.configure(48000,algorithm,1.0,100.0);
             let at=run(&mut nr,&input,503);assert_ne!(at,b,"attenuation must change rendered samples");
             nr.configure(24000,algorithm,1.0,20.0);
-            assert_eq!(nr.status().state,"fallback");assert_eq!(nr.status().effective,NrAlgorithm::Wiener);
+            assert_eq!(nr.status().state,"failed");assert_eq!(nr.status().effective,None);
+            let mut output=vec![1.0];assert!(nr.process(&[0.1;512],&mut output).is_err());assert!(output.is_empty());
         }
     }
 
@@ -300,23 +322,26 @@ mod tests {
             .map(|n| (n as f32 * 0.071).sin() * 0.1).collect();
         let mut output = Vec::new();
         used.process(&input, &mut output).unwrap();
-        assert_eq!(used.status().effective, NrAlgorithm::Dfn, "{:?}", used.status());
+        assert_eq!(used.status().effective,Some(NrAlgorithm::Dfn), "{:?}", used.status());
 
         let mut fresh = NoiseReduction::new(48000);
         fresh.configure(48000, NrAlgorithm::Dfn, 1.0, 12.0);
-        assert_eq!(fresh.status().effective, NrAlgorithm::Dfn, "{:?}", fresh.status());
+        assert_eq!(fresh.status().effective,Some(NrAlgorithm::Dfn), "{:?}", fresh.status());
         let mut expected = Vec::new();
         fresh.process(&input, &mut expected).unwrap();
-        assert_eq!(fresh.status().effective, NrAlgorithm::Dfn, "{:?}", fresh.status());
+        assert_eq!(fresh.status().effective,Some(NrAlgorithm::Dfn), "{:?}", fresh.status());
         used.reset();
         used.process(&input, &mut output).unwrap();
-        assert_eq!(used.status().effective, NrAlgorithm::Dfn, "{:?}", used.status());
+        assert_eq!(used.status().effective,Some(NrAlgorithm::Dfn), "{:?}", used.status());
         assert_eq!(output, expected, "reset must restore pristine recurrent and overlap state");
 
         fresh.configure(24000, NrAlgorithm::Dfn, 1.0, 12.0);
         let status = fresh.status();
         assert_eq!(status.requested, NrAlgorithm::Dfn);
-        assert_eq!(status.effective, NrAlgorithm::Wiener);
+        assert_eq!(status.effective,None);
+        assert_eq!(status.state,"failed");
         assert_eq!(status.reason.as_deref(), Some("rate 24000"));
+        assert!(fresh.process(&input,&mut output).is_err());
+        assert!(output.is_empty(),"unsupported selected model cannot publish substitute audio");
     }
 }

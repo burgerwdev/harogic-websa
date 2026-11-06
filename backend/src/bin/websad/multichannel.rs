@@ -1,10 +1,10 @@
-//! P3 logical receiver API. Slots are a private bridge to the existing three-lane service.
+//! Logical receiver API. Stable identities are independent of reusable internal slots.
 use super::*;
 use receiver_workers::{BasebandConfig, ChannelConfig};
 use std::collections::VecDeque;
 
 const SOURCE: &str = "primary";
-const MAX_RECEIVERS: usize = 3;
+
 const HISTORY_LIMIT: usize = 256;
 
 /// Equal receiver audio settings can share one local speaker route even when their
@@ -44,13 +44,71 @@ pub(super) struct Directory {
     history: VecDeque<IqIdentity>,
     pub(super) replies: VecDeque<(String, Value, Value)>,
     recording_requests: BTreeMap<String,(Value,recording::StartTicket)>,
+    started:std::time::Instant,
+    actions:VecDeque<(String,Value)>,
+    action_floor:Option<u128>,
+    idle_receipts:VecDeque<Value>,
 }
 
 impl Default for Directory {
     fn default() -> Self {
         Self { boot: format!("{}-{}",std::process::id(),std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()), next:0,snapshot_revision:0,
-            receivers:BTreeMap::new(),history:VecDeque::new(),replies:VecDeque::new(),recording_requests:BTreeMap::new() }
+            receivers:BTreeMap::new(),history:VecDeque::new(),replies:VecDeque::new(),recording_requests:BTreeMap::new(),started:std::time::Instant::now(),actions:VecDeque::new(),action_floor:None,idle_receipts:VecDeque::new() }
+    }
+}
+
+impl Directory {
+    pub(super) fn control_metadata(&self,slot:u32)->Value {
+        let receiver=self.receivers.get(&slot);
+        json!({"service_id":self.boot,"receiver_uid":receiver.map(|r|&r.uid),
+            "revision":receiver.map(|r|r.revision.to_string()),"action_token":receiver.map(|_|self.started.elapsed().as_millis().to_string())})
+    }
+    pub(super) fn check_control(&self,slot:u32,data:&Value)->Result<bool,String> {
+        if data.get("service_id").is_some_and(|service|service!=&self.boot) {return Err("source service restarted; command not replayed".into());}
+        if data.get("receiver_uid").is_some_and(|uid|self.receivers.get(&slot).is_none_or(|r|uid!=&r.uid)) {return Err("receiver identity changed; command not replayed".into());}
+        if let Some(revision)=data.get("expected_revision") {
+            if !self.actions.iter().any(|(id,old)|Some(id.as_str())==data["action_id"].as_str()&&old==data)
+                && self.receivers.get(&slot).is_none_or(|r|revision.as_str()!=Some(r.revision.to_string().as_str())) {return Err("receiver revision changed; refresh before retrying".into());}
+        }
+        if data["radiofax_new_page"]!=true && data["radiofax_reset_correction"]!=true {return Ok(false);}
+        let id=data["action_id"].as_str().filter(|id|!id.is_empty()&&id.len()<=128).ok_or("action_id required")?;
+        if data["service_id"]!=self.boot || data["receiver_uid"].as_str().is_none() {return Err("actions require current service_id and receiver_uid".into());}
+        let token=data["action_token"].as_str().and_then(|s|s.parse::<u128>().ok()).ok_or("monotonic action_token required")?;
+        let now=self.started.elapsed().as_millis();
+        if token>now || now-token>5000 || self.action_floor.is_some_and(|floor|token<=floor) {return Err("action expired; refresh and explicitly submit a new action".into());}
+        if let Some((_,old))=self.actions.iter().find(|(known,_)|known==id) {
+            if old!=data {return Err("action_id reused with a different command".into());}return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+impl DevState {
+    pub(super) fn track_receiver_control(&mut self,channel:u32,data:&Value)->Result<(),String> {
+        self.remember_receiver_streams();
+        if self.receiver_uid_for_slot(channel).is_none() {return Ok(());}
+        let page=data["radiofax_new_page"]==true;let reset=data["radiofax_reset_correction"]==true;
+        let remaining=if page||reset {let issued=data["action_token"].as_str().and_then(|s|s.parse::<u128>().ok()).ok_or("action token missing")?;
+            Some(std::time::Duration::from_millis((5000_u128.saturating_sub(self.receivers.started.elapsed().as_millis().saturating_sub(issued))) as u64))} else {None};
+        if self.receiver_workers.is_none() && self.channel_config(channel).is_some_and(|c|!c.enabled||!c.processing_enabled) {
+            let uid=self.receiver_uid_for_slot(channel).unwrap().to_owned();
+            self.receivers.idle_receipts.push_back(json!({"receiver_uid":uid,"service_id":self.receivers.boot,
+                "request_id":data["request_id"],"revision":self.config_version.to_string(),"processing_generation":null,
+                "status":"inactive","boundary":{"precision":"control","source_boundary":null}}));
+            while self.receivers.idle_receipts.len()>128 {self.receivers.idle_receipts.pop_front();}return Ok(());
+        }
+        if self.receiver_workers.is_none() {self.receiver_workers=Some(receiver_workers::ReceiverWorkers::new()?);let configs=self.channel_configs();self.receiver_workers.as_mut().unwrap().configure(&configs)?;}
+        self.bind_receiver_identities();
+        self.receiver_workers.as_mut().unwrap().queue_control(channel,self.config_version,
+            data["request_id"].as_str().unwrap_or("compatibility-control"),page,reset,data["action_id"].as_str(),remaining)?;
+        if let Some(id)=data["action_id"].as_str().filter(|_|page||reset) {
+            self.receivers.actions.push_back((id.into(),data.clone()));if self.receivers.actions.len()>128 {
+                if let Some((_,old))=self.receivers.actions.pop_front() {let token=old["action_token"].as_str().and_then(|s|s.parse::<u128>().ok()).unwrap_or(0);
+                    self.receivers.action_floor=Some(self.receivers.action_floor.unwrap_or(0).max(token));}
+            }
+        }
+        Ok(())
     }
 }
 
@@ -58,6 +116,7 @@ impl Default for Directory {
 pub(super) struct ProcessingBranches {
     current:BTreeMap<u32,ProcessingBranch>,
     history:VecDeque<(sdr_pipeline::ChannelRegistryEntry,sdr_pipeline::ChannelRegistryEntry)>,
+    isolated:std::collections::BTreeSet<u32>,
 }
 struct ProcessingBranch {
     config:ChannelConfig,
@@ -68,7 +127,8 @@ struct ProcessingBranch {
 impl ProcessingBranches {
     pub(super) fn invalidate(&mut self) {self.current.clear();}
     pub(super) fn retire_channel(&mut self,channel:u32) {self.current.remove(&channel);}
-    pub(super) fn uses_channel(&self,channel:u32)->bool {self.history.iter().any(|(entry,_)|entry.channel==channel)}
+    pub(super) fn uses_channel(&self,channel:u32)->bool {self.isolated.contains(&channel)||self.history.iter().any(|(entry,_)|entry.channel==channel)}
+    pub(super) fn restart_channel(&mut self,channel:u32) {self.current.remove(&channel);self.isolated.insert(channel);}
     pub(super) fn input(&mut self,frame:&[u8],source:&sdr_pipeline::ChannelRegistryEntry,config:&ChannelConfig)
         ->Result<(sdr_pipeline::ChannelRegistryEntry,u32,bool),String> {
         let sequence=u32::from_le_bytes(frame[8..12].try_into().unwrap());
@@ -91,6 +151,14 @@ impl ProcessingBranches {
     }
 }
 impl DevState {
+    pub(super) fn receiver_uid_for_slot(&self,channel:u32)->Option<&str> {
+        self.receivers.receivers.get(&channel).map(|receiver|receiver.uid.as_str())
+    }
+    pub(super) fn receiver_uid_for_processing(&self,identity:u64)->Option<&str> {
+        let source=self.processing_source_identity(Some(identity))?;
+        self.receivers.history.iter().find(|known|service_stream::identity_key(known.entry.channel_id,known.entry.epoch)==source)
+            .map(|known|known.uid.as_str())
+    }
     pub(super) fn restore_retired_listener(&self, config: &mut ChannelConfig) {
         if !config.enabled && !self.receivers.receivers.contains_key(&config.channel) {
             config.baseband = None;
@@ -107,6 +175,17 @@ impl DevState {
             .filter(|b|b.source.channel_id==source.channel_id&&b.source.epoch==source.epoch)
             .map_or_else(||source.clone(),|b|b.output.clone())).collect()
     }
+}
+
+/// Shared wire names for both the compatibility panel and logical processors.
+pub(super) const MODE_CONTROLS: &[&str] = &[
+    "am_sync", "pitch", "deemph_us", "stereo", "audio_rate", "sstv_mode",
+    "radiofax_acquisition", "radiofax_ioc", "radiofax_lpm", "radiofax_modulation",
+    "radiofax_polarity", "radiofax_clock_recovery", "radiofax_phase_pixels", "radiofax_clock_ppm",
+];
+fn copy_mode_controls(channel: &ChannelConfig, target: &mut Value) {
+    let value=json!(channel);
+    for key in MODE_CONTROLS {target[*key]=value[*key].clone();}
 }
 
 pub(super) fn config_value(channel: &ChannelConfig, previous: Option<&Value>) -> Value {
@@ -128,10 +207,18 @@ pub(super) fn config_value(channel: &ChannelConfig, previous: Option<&Value>) ->
         "bandwidth_hz":channel.if_bw,"pcm_gain":channel.volume,"agc":channel.agc,"squelch_dbm":channel.squelch,
         "nr":channel.nr,"nr_algorithm":channel.nr_algorithm,"nr_strength":channel.nr_strength,"nr_atten_db":channel.nr_atten_db
     }])} else {json!([])};
+    if let Some(processor)=config["processors"].as_array_mut().and_then(|p|p.first_mut()) {copy_mode_controls(channel,processor);}
     config
 }
 
 impl DevState {
+    pub(super) fn bind_receiver_identities(&mut self) {
+        if let Some(workers)=self.receiver_workers.as_mut() {
+            for receiver in self.receivers.receivers.values() {
+                workers.bind_identity(receiver.channel.channel,&receiver.uid,&self.receivers.boot);
+            }
+        }
+    }
     pub(super) fn remember_receiver_streams(&mut self) {
         let configs=self.channel_configs();
         let registry=self.stream_registry();
@@ -164,6 +251,7 @@ impl DevState {
                 entry.channel_id==known.entry.channel_id && entry.epoch==known.entry.epoch));
             if let Some(index)=retired {self.receivers.history.remove(index);} else {break;}
         }
+        self.bind_receiver_identities();
     }
 
     pub(super) fn receiver_snapshot(&mut self) -> Value {
@@ -174,7 +262,14 @@ impl DevState {
             let entry=registry.iter().find(|entry|entry.channel==receiver.channel.channel);
             json!({"receiver_uid":receiver.uid,"source_id":SOURCE,"display_number":receiver.channel.channel,
                 "revision":receiver.revision.to_string(),"confirmed":receiver.config,
+                "control_receipts":self.receiver_workers.as_ref().map(|w|w.control_receipts(receiver.channel.channel,&receiver.uid))
+                    .unwrap_or_else(||json!(self.receivers.idle_receipts.iter().filter(|r|r["receiver_uid"]==receiver.uid).collect::<Vec<_>>())),
                 "audio_signature":audio_signature(&receiver.channel),
+                "processing_statistics":self.receiver_workers.as_ref().map(|workers|workers.uid_stats(receiver.channel.channel,&receiver.uid)),
+                "processing_state":self.receiver_workers.as_ref().map(|workers|workers.runtime_status(receiver.channel.channel,&receiver.uid)["state"].clone())
+                    .unwrap_or_else(||json!(if !receiver.channel.enabled||!receiver.channel.processing_enabled {"disabled"} else {"waiting"})),
+                "processing_runtime":self.receiver_workers.as_ref().map(|workers|workers.runtime_status(receiver.channel.channel,&receiver.uid)),
+                "processing_fault":self.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(receiver.channel.channel)),
                 "state":if !receiver.channel.enabled {"stopped"} else if capture_fault.is_some() {"failed"}
                     else if entry.is_some() {"running"} else {"interrupted"},
                 "stream":entry.map(|e|json!({"source_id":SOURCE,"epoch":e.epoch.to_string(),"channel_id":e.channel_id.to_string()})),
@@ -185,13 +280,16 @@ impl DevState {
                         .map(|error|fault("receiver","PROCESSING_FAILED",error)))})
         }).collect();
         let mut snapshot=json!({"contract":"multichannel-draft-v1","transport":"native","service_id":self.receivers.boot,
-            "revision":self.config_version.to_string(),
-            "capabilities":{"max_channels":MAX_RECEIVERS,"capacity_target":128,
+            "revision":self.config_version.to_string(),"action_token":self.receivers.started.elapsed().as_millis().to_string(),
+            "capabilities":{"max_channels":MAX_CHANNELS,"capacity_target":128,
                 "receiver_presets":self.receiver_presets.is_some(),
+                "processing_admission":false,"resource_policy":"observed_runtime",
+                "control_capacity":64,"control_receipt_history":128,"action_deduplication":128,"action_validity_ms":5000,
                 "modes":websa_channelizer::catalog::manifest().iter().filter_map(|m|m["id"].as_str()).collect::<Vec<_>>(),
                 "mode_descriptors":websa_channelizer::catalog::manifest().into_iter().filter(|m|matches!(m["kind"].as_str(),Some("analog"|"digital"))).collect::<Vec<_>>(),
-                "commands":if self.recordings.is_some() {vec!["create","configure","retire","output","record_start","record_stop","record_rename","record_delete"]} else {vec!["create","configure","retire","output"]},
-                "recording":self.recordings.is_some(),"recording_unavailable_reason":self.recording_error,"recording_kinds":if self.recordings.is_some() {vec!["iq","results","audio"]}else{vec![]},
+                "commands":if self.recordings.is_some() {vec!["create","configure","action","retire","output","record_start","record_stop","record_rename","record_delete"]} else {vec!["create","configure","action","retire","output"]},
+                "recording":self.recordings.is_some(),"max_recording_tasks":recording::MAX_ACTIVE_TASKS,
+                "recording_unavailable_reason":self.recording_error,"recording_kinds":if self.recordings.is_some() {vec!["iq","results","audio"]}else{vec![]},
                 "results_archive_export":self.recordings.is_some(),"audio_archive_export":self.recordings.is_some(),
                 "audio_flac_export":self.recordings.is_some(),
                 "audio_opus_export":self.recordings.is_some() && recording::opus::available(),
@@ -202,12 +300,20 @@ impl DevState {
                 "iq_archive_read":self.recordings.is_some(),"iq_range_max_samples":"1048576",
                 "iq_archive_collection":self.recordings.is_some(),"iq_collection_max_samples":super::recording_export::MAX_SAMPLES.to_string(),"iq_collection_max_segments":super::recording_collection::MAX_SEGMENTS,
                 "iq_archive_export":self.recordings.is_some(),"iq_export_max_samples":super::recording_export::MAX_SAMPLES.to_string(),"monitor_mixing":true},
-            "capture":self.capture_snapshot(),
-            "receivers":receivers,"outputs":[],"recordings":self.recordings.as_ref().map(|r|r.snapshots()).unwrap_or_default()});
+            "capture":self.capture_snapshot(),"processing_resources":self.receiver_admission,
+            "host_resources":websa_channelizer::host_resources::snapshot(),"model_preparation":websa_channelizer::model_preparation::snapshot(),
+            "receivers":receivers,"outputs":[],"recordings":self.recordings.as_ref().map(|r|r.snapshots()).unwrap_or_default(),
+            "recording_resources":self.recordings.as_ref().map(|r|r.resources())});
         if self.recordings.is_some() {
             self.receivers.snapshot_revision+=1;
             snapshot["state_revision"]=json!(self.receivers.snapshot_revision.to_string());
         }
+        let mut actual=self.sdr_actual.clone();
+        if let Some(pipeline)=self.pipeline.as_ref() {pipeline.snapshot.write_channel_status(&mut actual);}
+        snapshot["source_watermarks"]=json!({"source_id":SOURCE,"capture_epoch":snapshot["capture"]["epoch"],
+            "input_samples":actual["input_samples"],"fine_channels":actual["channel_clocks"],
+            "pfb_submitted":actual["pfb_submitted"],"pfb_completed":actual["pfb_completed"],
+            "clock_policy":"source_sample_counts; stage snapshots can be observed at different instants"});
         snapshot
     }
 
@@ -254,7 +360,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     state.remember_receiver_streams();
     let kind=request["type"].as_str().ok_or("receiver command type missing")?;
     let slot=if kind=="create" {
-        (1..=MAX_RECEIVERS as u32).find(|slot|!state.receivers.receivers.contains_key(slot))
+        (1..=MAX_CHANNELS as u32).find(|slot|!state.receivers.receivers.contains_key(slot))
             .ok_or("receiver capacity reached")?
     } else {
         let uid=request["receiver_uid"].as_str().ok_or("receiver_uid missing")?;
@@ -290,7 +396,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     if processors.len()>1 || (purpose=="iq" && !processors.is_empty()) || (purpose!="iq" && processors.is_empty()) {
         return Err("Each receiver supports zero or one primary processor; IQ-only receivers must use an empty set".into());
     }
-    let mut channel=if kind=="create" {ChannelConfig::for_slot(slot)} else {state.channel_configs()[(slot-1) as usize].clone()};
+    let mut channel=if kind=="create" {ChannelConfig::for_slot(slot)} else {state.channel_config(slot).ok_or("channel not found")?};
     channel.freq=frequency;channel.enabled=enabled;channel.processing_enabled=!processors.is_empty();
     channel.baseband=Some(baseband);
     if let Some(processor)=processors.first() {
@@ -303,13 +409,15 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
             return Err("processor kind and purpose must match the mode descriptor".into());
         }
         channel.if_bw=processor["bandwidth_hz"].as_f64().unwrap_or(descriptor.default_bandwidth_hz);
-        if let Some(gain)=processor.get("pcm_gain") {channel.volume=gain.as_f64().ok_or("invalid PCM gain")?;}
-        if let Some(agc)=processor.get("agc") {channel.agc=agc.as_bool().ok_or("invalid AGC flag")?;}
-        if let Some(squelch)=processor.get("squelch_dbm") {channel.squelch=squelch.as_f64().ok_or("invalid squelch")?;}
-        if let Some(nr)=processor.get("nr") {channel.nr=nr.as_bool().ok_or("invalid NR flag")?;}
-        if let Some(algorithm)=processor.get("nr_algorithm") {channel.nr_algorithm=algorithm.as_str().ok_or("invalid NR algorithm")?.into();}
-        if let Some(strength)=processor.get("nr_strength") {channel.nr_strength=strength.as_f64().ok_or("invalid NR strength")?;}
-        if let Some(atten)=processor.get("nr_atten_db") {channel.nr_atten_db=atten.as_f64().ok_or("invalid NR attenuation")?;}
+        // Use the same typed parser, ranges and cross-field checks as the main panel.
+        let mut controls=json!({"channel":slot,"mode":channel.mode,"freq":frequency,
+            "enabled":enabled,"processing_enabled":true,"baseband":channel.baseband,"if_bw":channel.if_bw});
+        for (wire,legacy) in [("pcm_gain","volume"),("agc","agc"),("squelch_dbm","squelch"),
+            ("nr","nr"),("nr_algorithm","nr_algorithm"),("nr_strength","nr_strength"),("nr_atten_db","nr_atten_db")] {
+            if let Some(value)=processor.get(wire) {controls[legacy]=value.clone();}
+        }
+        for key in MODE_CONTROLS {if let Some(value)=processor.get(*key) {controls[*key]=value.clone();}}
+        channel=state.parse_channel_config_base(&controls,Some(channel))?;
         let floor=processor["minimum_rate_hz"].as_f64().filter(|v|v.is_finite()&&*v>=0.0).ok_or("invalid processor minimum rate")?;
         channel.baseband.as_mut().unwrap().minimum_rate_hz=channel.baseband.as_ref().unwrap().minimum_rate_hz.max(floor);
     }
@@ -319,6 +427,9 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         processor["agc"]=json!(channel.agc);processor["squelch_dbm"]=json!(channel.squelch);
         processor["nr"]=json!(channel.nr);processor["nr_algorithm"]=json!(channel.nr_algorithm);
         processor["nr_strength"]=json!(channel.nr_strength);processor["nr_atten_db"]=json!(channel.nr_atten_db);
+        copy_mode_controls(&channel,processor);
+        processor.as_object_mut().unwrap().retain(|key,_|MODE_CONTROLS.contains(&key.as_str())||
+            ["id","kind","mode","minimum_rate_hz","bandwidth_hz","pcm_gain","agc","squelch_dbm","nr","nr_algorithm","nr_strength","nr_atten_db"].contains(&key.as_str()));
     }
     let fs=state.capture_bandwidth()/0.8;
     let plan=service_ddc::source_plan(fs,&channel)?;
@@ -335,7 +446,9 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         "mode":channel.mode,"if_bw":channel.if_bw,"baseband":channel.baseband,
         "processing_enabled":channel.processing_enabled,"volume":channel.volume,"agc":channel.agc,"squelch":channel.squelch,
         "nr":channel.nr,"nr_algorithm":channel.nr_algorithm,"nr_strength":channel.nr_strength,"nr_atten_db":channel.nr_atten_db,
-        "request_id":request["request_id"]});
+        "request_id":request["request_id"],"defer_receipt":true});
+    copy_mode_controls(&channel,&mut data);
+    if request["recover"]==true {data["recover"]=json!(true);}
     // A retained compatibility mode is irrelevant to IQ-only. Sending it would
     // also look like an explicit legacy decoder-recovery request after a fault.
     if !channel.processing_enabled {data.as_object_mut().unwrap().remove("mode");}
@@ -367,6 +480,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
     if matches!(request["type"].as_str(),Some("record_rename"|"record_delete")) {
         return recording::management::command(app, request, id, preview).await;
     }
+    if request["type"]=="action" {return action_command(app,request,id,preview).await;}
     let candidate={
         let mut state=app.state.lock().unwrap();
         if !preview {
@@ -398,6 +512,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
         }
         let mut failure=None;
         let mut estimated_bytes=0.0;
+        let mut completed_admission=None;
         match result {
             Ok((change,mut admission))=>{
                 estimated_bytes=change.output_bytes;
@@ -415,37 +530,60 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
                         if !state.receivers.receivers.contains_key(&change.slot) {
                             state.receivers.next+=1;
                             let uid=format!("receiver-{}-{}",state.receivers.boot,state.receivers.next);
-                            let channel=state.channel_configs()[(change.slot-1) as usize].clone();
+                            let channel=state.channel_config(change.slot).expect("admitted receiver slot");
                             let revision=state.config_version;
                             state.receivers.receivers.insert(change.slot,LogicalReceiver {uid,revision,
                                 channel,config:change.config.clone()});
                         }
                         let revision=state.config_version;
                         if let Some(receiver)=state.receivers.receivers.get_mut(&change.slot) {receiver.config=change.config;receiver.revision=revision;}
+                        if let Err(error)=state.track_receiver_control(change.slot,&change.data) {failure=Some(error);}
                         if change.retire {state.receivers.receivers.remove(&change.slot);}
                     }
                     service_stream::deliver_retiring(&mut state,&worker_app);
                     state.publish_identities(&worker_app.identities);
                     worker_app.display_version.store(state.freq_version,Ordering::Release);
                 }
-                drop(state);drop(admission);state=worker_app.state.lock().unwrap();
+                completed_admission=Some(admission);
             },Err(error)=>failure=Some(error),
         }
         if preview {
-            return json!({"accepted":failure.is_none(),"faults":failure.map(|e|vec![fault("request","REJECTED",&e)]).unwrap_or_default(),
+            let reply=json!({"accepted":failure.is_none(),"faults":failure.map(|e|vec![fault("request","REJECTED",&e)]).unwrap_or_default(),
                 "capture_change":false,"affected_receivers":request["receiver_uid"].as_str().map(|v|vec![v]).unwrap_or_default(),
                 "affected_tracks":[],"candidate_center_hz":state.capture_center(),"estimated_cf32_bytes_per_second":estimated_bytes});
+            drop(state);drop(completed_admission);return reply;
         }
         let reply=json!({"request_id":id,"snapshot":state.receiver_snapshot(),
             "fault":failure.map(|message|fault(if state.ddc_error.is_some() {"capture"} else {"request"},"REJECTED",&message))});
         state.receivers.replies.push_back((id,request,reply.clone()));
         if state.receivers.replies.len()>128 {state.receivers.replies.pop_front();}
-        let status=state.status_snapshot();drop(state);
+        let status=state.status_snapshot();drop(state);drop(completed_admission);
         worker_app.state.publish_status(status.revision,status.build());
         reply
     }).await {
         Ok(reply)=>Json(reply).into_response(),Err(error)=>state_worker_failed(error).into_response(),
     }
+}
+
+async fn action_command(app:Arc<App>,request:Value,id:String,preview:bool)->Response {
+    let mut state=app.state.lock().unwrap();
+    state.remember_receiver_streams();
+    let result=(||->Result<(),String> {
+        let uid=request["receiver_uid"].as_str().ok_or("receiver_uid required")?;
+        let slot=state.receiver_slot(uid).ok_or("receiver not found")?;
+        let action=request["action"].as_str().ok_or("action required")?;
+        let flag=match action {"radiofax_new_page"=>"radiofax_new_page","radiofax_reset_correction"=>"radiofax_reset_correction",_=>return Err("unsupported receiver action".into())};
+        let mut data=request.clone();data["channel"]=json!(slot);data[flag]=json!(true);
+        let channel=state.channel_config(slot).ok_or("channel absent")?;
+        if !channel.enabled||!channel.processing_enabled||channel.mode!="radiofax" {return Err("Radiofax action requires a running Radiofax receiver".into());}
+        state.receivers.check_control(slot,&data)?;
+        if state.receiver_workers.as_ref().is_some_and(|w|!w.controls_available(slot)) {return Err("receiver command mailbox full (64)".into());}
+        if !preview {state.apply_channel_config(&data)?;}
+        Ok(())
+    })();
+    if preview {return Json(json!({"accepted":result.is_ok(),"faults":result.err().map(|e|vec![fault("request","REJECTED",&e)]).unwrap_or_default(),
+        "capture_change":false,"affected_receivers":[request["receiver_uid"]],"affected_tracks":[],"candidate_center_hz":state.capture_center(),"estimated_cf32_bytes_per_second":0})).into_response();}
+    Json(json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":result.err().map(|e|fault("request","REJECTED",&e))})).into_response()
 }
 
 async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->Response {
@@ -469,7 +607,7 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
                     else {return Err("select one backend recording kind: iq, results or audio".into());};
                 let uid=request["receiver_uid"].as_str().ok_or("receiver_uid required")?;
                 let slot=state.receiver_slot(uid).ok_or("receiver no longer exists")?;
-                let channel=state.channel_configs()[(slot-1) as usize].clone();
+                let channel=state.channel_config(slot).ok_or("channel not found")?;
                 let audio_format = match request.get("audio_format") {
                     None => "wav",
                     Some(value) => value.as_str().filter(|s| matches!(*s,"wav"|"flac"|"opus"))
@@ -481,14 +619,16 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
                 let has_results=channel.processing_enabled && websa_channelizer::catalog::mode(&channel.mode)
                     .is_some_and(|mode|mode.outputs.iter().any(|kind|kind!="audio"));
                 if kind=="audio" && (!channel.processing_enabled || state.receiver_failure.is_some()
+                    || state.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(slot)).is_some()
                     || !websa_channelizer::catalog::mode(&channel.mode).is_some_and(|m|m.outputs.iter().any(|k|k=="audio"))) {
                     return Err("enable a healthy processor with published audio before recording".into());
                 }
-                if kind=="results" && (!has_results || state.receiver_failure.is_some()) {
+                if kind=="results" && (!has_results || state.receiver_failure.is_some()
+                    || state.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(slot)).is_some()) {
                     return Err("enable a healthy processor before recording its published results".into());
                 }
                 if state.swp.mode!="sdr" || !state.link_up || state.ddc_error.is_some()
-                    || !state.channel_configs()[(slot-1) as usize].enabled {return Err("enable a healthy IQ receiver before recording".into());}
+                    || !state.channel_config(slot).is_some_and(|config|config.enabled) {return Err("enable a healthy IQ receiver before recording".into());}
                 if !preview {
                     let service=state.receivers.boot.clone();
                     let pending=state.recordings.as_mut().unwrap().start_configured(uid,&service,&id,kind,audio_format,&name)?;
@@ -519,7 +659,8 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
     }).await {Ok(value)=>Json(value).into_response(),Err(error)=>state_worker_failed(error).into_response()}
 }
 
-pub(super) fn auxiliary(frame:&[u8])->bool {
+pub(super) fn auxiliary<T:IqInput+?Sized>(input:&T)->bool {
+    let frame=input.iq_header();
     frame.starts_with(b"IQAX") || (frame.starts_with(b"IQEN") && frame.len()==16
         && u32::from_le_bytes(frame[4..8].try_into().unwrap())>1)
 }
@@ -540,7 +681,7 @@ pub(super) fn record_result(state:&DevState,bytes:Bytes) {
                 "actual_rate_hz":known.entry.output_rate,"input_rate_hz":known.entry.input_rate},"envelope":envelope});
         serde_json::to_vec(&row).map(Bytes::from).map_err(|e|e.to_string())
     })();
-    match result {Ok(bytes)=>manager.admit_result(&known.uid,bytes),Err(error)=>manager.processing_sources(&[],Some(&error))}
+    match result {Ok(bytes)=>manager.admit_result(&known.uid,bytes),Err(error)=>manager.processing_failed(&known.uid,&error)}
 }
 
 /// Actual packet configuration travels with PCM, so queued old frames never acquire
@@ -557,19 +698,38 @@ pub(super) fn record_audio(state:&DevState,bytes:Bytes,config:&ChannelConfig) {
 
 pub(super) fn recording_processing_sources(state:&DevState) {
     if let Some(manager)=&state.recordings {
-        let active=state.receivers.receivers.values().filter(|r|r.channel.enabled&&r.channel.processing_enabled
+        let mut active=state.receivers.receivers.values().filter(|r|r.channel.enabled&&r.channel.processing_enabled
             && websa_channelizer::catalog::mode(&r.channel.mode).is_some_and(|m|m.outputs.iter().any(|kind|kind!="audio"))).map(|r|r.uid.clone()).collect::<Vec<_>>();
+        for known in &state.receivers.history {
+            if !active.contains(&known.uid) && state.receiver_workers.as_ref().is_some_and(|workers|workers.retiring_uid(known.slot,&known.uid)) {
+                active.push(known.uid.clone());
+            }
+        }
         manager.processing_sources(&active,state.receiver_failure.as_deref());
-        let audio=state.receivers.receivers.values().filter(|r|r.channel.enabled&&r.channel.processing_enabled
+        let mut audio=state.receivers.receivers.values().filter(|r|r.channel.enabled&&r.channel.processing_enabled
             && websa_channelizer::catalog::mode(&r.channel.mode).is_some_and(|m|m.outputs.iter().any(|kind|kind=="audio"))).map(|r|r.uid.clone()).collect::<Vec<_>>();
+        for known in &state.receivers.history {
+            if !audio.contains(&known.uid) && state.receiver_workers.as_ref().is_some_and(|workers|workers.retiring_uid(known.slot,&known.uid)) {
+                audio.push(known.uid.clone());
+            }
+        }
         manager.processing_kind_sources("audio",&audio,state.receiver_failure.as_deref());
     }
 }
 
 /// Encode once at the transport boundary; consumers share Bytes and only inspect headers.
-pub(super) fn tag_iq(state:&mut DevState,frames:Vec<Vec<u8>>)->Vec<(Bytes,Option<String>)> {
+#[cfg(test)]
+pub(super) fn tag_iq(state:&mut DevState,frames:IqFrames)->Vec<(Bytes,Option<String>)> {
+    tag_iq_if(state,frames,true)
+}
+#[cfg(test)]
+pub(super) fn tag_iq_if(state:&mut DevState,frames:IqFrames,network:bool)->Vec<(Bytes,Option<String>)> {
+    tag_iq_selected(state,frames,network,&[])
+}
+pub(super) fn tag_iq_selected(state:&mut DevState,frames:IqFrames,all:bool,wanted:&[String])->Vec<(Bytes,Option<String>)> {
     state.remember_receiver_streams();
-    frames.into_iter().map(|frame| {
+    frames.into_iter().filter_map(|input| {
+        let frame=input.iq_header();
         let key=if frame.starts_with(b"IQEN") && frame.len()==16 {
             Some((u32::from_le_bytes(frame[8..12].try_into().unwrap()),u32::from_le_bytes(frame[12..16].try_into().unwrap())))
         } else if frame.len()>=56 && matches!(frame.get(..4),Some(b"IQBF"|b"IQAX")) {
@@ -592,7 +752,9 @@ pub(super) fn tag_iq(state:&mut DevState,frames:Vec<Vec<u8>>)->Vec<(Bytes,Option
                 }
                 known.uid.clone()
             }));
-        let bytes=Bytes::from(frame);
+        let recording=uid.as_deref().is_some_and(|uid|state.recordings.as_ref().is_some_and(|manager|manager.wants_iq_for(uid)));
+        if !all && !uid.as_ref().is_some_and(|uid|wanted.contains(uid)) && !recording {return None;}
+        let bytes=Bytes::from(input.into_wire());
         if let (Some(uid),Some(recordings))=(&uid,&state.recordings) {
             if bytes.starts_with(b"IQEN") {recordings.source_end(uid);}
             else if bytes.len()>=56 && u32::from_le_bytes(bytes[12..16].try_into().unwrap())>0 {
@@ -616,7 +778,7 @@ pub(super) fn tag_iq(state:&mut DevState,frames:Vec<Vec<u8>>)->Vec<(Bytes,Option
                 }
             }
         }
-        (bytes,uid)
+        Some((bytes,uid))
     }).collect()
 }
 
@@ -627,7 +789,7 @@ pub(super) async fn iq_ws(ws:WebSocketUpgrade,State(app):State<Arc<App>>,
     let mut state=app.state.lock().unwrap();
     let slot=state.receiver_slot(&uid);
     let Some(slot)=slot else {return StatusCode::NOT_FOUND.into_response();};
-    if !state.channel_configs()[(slot-1) as usize].enabled {return StatusCode::CONFLICT.into_response();}
+    if !state.channel_config(slot).is_some_and(|config|config.enabled) {return StatusCode::CONFLICT.into_response();}
     drop(state);
     ws.on_upgrade(move|socket|client_loop(app,socket,slot==1,slot!=1,false,false,Some(slot),false,Some(uid)))
 }
@@ -709,13 +871,19 @@ mod tests {
         state.swp.mode="sdr".into();state.sdr_center=100e6;state.sdr_listen=100e6;
         state.sdr_channels[0].enabled=false;
         Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),next_client:AtomicU64::new(0),
-            epoch:Arc::new(AtomicU64::new(0)),identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            epoch:Arc::new(AtomicU64::new(0)),identities:channel_identities(),
             display_version:Arc::new(AtomicU64::new(0))})
     }
 
     fn iq_config(frequency:f64)->Value {
         json!({"name":"Independent IQ","color":"#4cc99b","tags":[],"enabled":true,"purpose":"iq",
             "baseband":{"frequency_hz":frequency,"passband_hz":3000,"transition_hz":1000,"minimum_rate_hz":6000},"processors":[]})
+    }
+
+    fn configuration_snapshot(value:&Value)->Value {
+        let mut result=value.clone();
+        for key in ["action_token","host_resources","model_preparation","processing_resources"] {result.as_object_mut().unwrap().remove(key);}
+        result
     }
 
     async fn run(app:&Arc<App>,request:Value)->Value {
@@ -764,7 +932,7 @@ mod tests {
             let rejected=run(&app,json!({"type":"configure","request_id":format!("bad-nr-{index}"),
                 "receiver_uid":after["receivers"][0]["receiver_uid"],"expected_revision":after["receivers"][0]["revision"],"config":invalid})).await;
             assert!(!rejected["fault"].is_null(),"{field}: {rejected}");
-            assert_eq!(rejected["snapshot"],after);
+            assert_eq!(configuration_snapshot(&rejected["snapshot"]),configuration_snapshot(&after));
         }
     }
 
@@ -855,7 +1023,7 @@ mod tests {
                 overflow:Arc::new(AtomicBool::new(false)),receiver_failed:Arc::new(AtomicBool::new(false)),
                 wake:Arc::new(Notify::new()),epoch:Arc::new(AtomicU64::new(0)),status_revision:Arc::new(AtomicU64::new(0)),
                 display_version:Arc::new(AtomicU64::new(0)),iq:true,aux:false,audio:false,decode:false,channel:Some(1),
-                receiver_uid:Some("logical".into()),identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+                receiver_uid:Some("logical".into()),identities:channel_identities(),
                 latest:Arc::new(PLMutex::new((None,None)))},rx)
         };
         let (slow,mut pending)=client(1);let (healthy,mut live)=client(2);
@@ -877,7 +1045,8 @@ mod tests {
     async fn dynamic_uids_revision_admission_and_stop_preserve_other_receivers() {
         let app=app();
         let mut uids=Vec::new();
-        for (index,frequency) in [100e6,100_010_000.0,100_020_000.0].into_iter().enumerate() {
+        for index in 0..MAX_CHANNELS {
+            let frequency=100e6+index as f64*10_000.0;
             let request=json!({"type":"create","request_id":format!("create-{index}"),"config":iq_config(frequency)});
             let reply=run(&app,request.clone()).await;
             assert!(reply["fault"].is_null(),"{reply}");
@@ -885,7 +1054,7 @@ mod tests {
             uids=reply["snapshot"]["receivers"].as_array().unwrap().iter()
                 .map(|receiver|receiver["receiver_uid"].as_str().unwrap().to_owned()).collect();
         }
-        assert_eq!(uids.len(),3);
+        assert_eq!(uids.len(),MAX_CHANNELS);
         let full=run(&app,json!({"type":"create","request_id":"full","config":iq_config(100e6)})).await;
         assert!(!full["fault"].is_null());
         let before=app.state.lock().unwrap().receiver_snapshot();
@@ -893,7 +1062,7 @@ mod tests {
         let rejected=run(&app,json!({"type":"configure","request_id":"invalid","receiver_uid":uids[1],
             "expected_revision":before["receivers"][1]["revision"],"config":invalid})).await;
         assert!(!rejected["fault"].is_null());
-        assert_eq!(rejected["snapshot"],before);
+        assert_eq!(configuration_snapshot(&rejected["snapshot"]),configuration_snapshot(&before));
         let mut renamed=before["receivers"][1]["confirmed"].clone();renamed["name"]=json!("Renamed");
         let changed=run(&app,json!({"type":"configure","request_id":"rename","receiver_uid":uids[1],
             "expected_revision":before["receivers"][1]["revision"],"config":renamed.clone()})).await;
@@ -903,7 +1072,7 @@ mod tests {
         assert!(!late["fault"].is_null());
         let stopped=run(&app,json!({"type":"retire","request_id":"retire","receiver_uid":uids[1]})).await;
         assert!(stopped["fault"].is_null(),"{stopped}");
-        assert_eq!(stopped["snapshot"]["receivers"].as_array().unwrap().len(),2);
+        assert_eq!(stopped["snapshot"]["receivers"].as_array().unwrap().len(),MAX_CHANNELS-1);
         assert_eq!(stopped["snapshot"]["receivers"][0],changed["snapshot"]["receivers"][0]);
         let mut state=app.state.lock().unwrap();
         let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
@@ -1017,7 +1186,7 @@ mod tests {
         for _ in 0..128 {frames.extend(live.packet().unwrap());expected.extend(reference.packet().unwrap());}
         live.stream.flush_pending().unwrap();frames.extend(live.drain().unwrap());live.finish_framers(&mut frames).unwrap();
         reference.stream.flush_pending().unwrap();expected.extend(reference.drain().unwrap());reference.finish_framers(&mut expected).unwrap();
-        let payload=|frames:&[Vec<u8>],id:u32|frames.iter().filter(|f|f.len()>=56&&u32::from_le_bytes(f[32..36].try_into().unwrap())==id)
+        let payload=|frames:&[IqFrame],id:u32|frames.iter().filter(|f|f.len()>=56&&u32::from_le_bytes(f[32..36].try_into().unwrap())==id)
             .flat_map(|f|f[56..].iter().copied()).collect::<Vec<_>>();
         assert_eq!(payload(&frames,primary.channel_id),payload(&expected,reference.channel_registry()[0].channel_id));
         let actual=payload(&frames,primary.channel_id);
@@ -1096,12 +1265,35 @@ mod tests {
         live.stream.flush_pending().unwrap();actual.extend(live.drain().unwrap());live.finish_framers(&mut actual).unwrap();
         reference.stream.flush_pending().unwrap();expected.extend(reference.drain().unwrap());reference.finish_framers(&mut expected).unwrap();
         for (entry,reference_entry) in live.channel_registry().iter().zip(reference.channel_registry().iter()) {
-            let payload=|frames:&[Vec<u8>],id:u32|frames.iter().filter(|f|u32::from_le_bytes(f[32..36].try_into().unwrap())==id)
+            let payload=|frames:&[IqFrame],id:u32|frames.iter().filter(|f|u32::from_le_bytes(f[32..36].try_into().unwrap())==id)
                 .flat_map(|frame|frame[..32].iter().chain(frame[40..].iter()).copied()).collect::<Vec<_>>();
             assert_eq!(payload(&actual,entry.channel_id),payload(&expected,reference_entry.channel_id),"processor change altered IQ bytes, clock or sequence");
         }
     }
 
+    #[test]
+    fn native_publication_updates_source_clock_without_unrequested_wire_encoding() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.swp.mode="sdr".into();state.sdr_center=100e6;state.sdr_listen=100e6;
+        let mut source=service_fixture::FixtureSources::new();source.configure(&state.channel_configs()).unwrap();
+        let frames=source.step().unwrap();state.fixture_sources=Some(source);
+        assert!(frames.iter().all(|frame|frame.native_iq().is_some()&&!frame.wire_ready()));
+        assert!(tag_iq_if(&mut state,frames.clone(),false).is_empty());
+        assert!(frames.iter().all(|frame|!frame.wire_ready()),"clock observation must not encode payload");
+        assert!(state.receiver_snapshot()["receivers"][0]["clock"]["actual_rate_hz"].as_f64().unwrap()>0.0);
+        let tagged=tag_iq_if(&mut state,frames.clone(),true);assert_eq!(tagged.len(),frames.len());
+        for ((bytes,uid),frame) in tagged.iter().zip(&frames) {
+            assert!(uid.is_some());assert!(frame.wire_ready());assert_eq!(&bytes[..],frame.wire());
+        }
+        state.sdr_channels[2]=ChannelConfig {channel:3,enabled:true,freq:100003000.0,..ChannelConfig::default()};
+        let configs=state.channel_configs();let source=state.fixture_sources.as_mut().unwrap();
+        source.configure(&configs).unwrap();let frames=source.step().unwrap();state.remember_receiver_streams();
+        let wanted=state.receivers.receivers[&3].uid.clone();
+        let tagged=tag_iq_selected(&mut state,frames.clone(),false,&[wanted.clone()]);
+        assert!(tagged.iter().all(|(_,uid)|uid.as_deref()==Some(wanted.as_str())));
+        assert!(frames.iter().filter(|frame|u32::from_le_bytes(frame.header()[32..36].try_into().unwrap())==state.stream_registry()[0].channel_id)
+            .all(|frame|!frame.wire_ready()),"another UID's IQ subscription must not encode this lane");
+    }
     #[test]
     fn iq_metadata_keeps_u64_and_fraction_delay_without_decoding_samples() {
         let app=app();let mut state=app.state.lock().unwrap();
@@ -1111,7 +1303,7 @@ mod tests {
         let entry=state.stream_registry()[0].clone();let start=(1u64<<53)+321;
         let frame=websa_channelizer::encode_baseband(websa_channelizer::BasebandMagic::Primary,0,
             entry.output_rate,entry.frequency_hz,entry.channel_id as u64,entry.epoch as u64,start,1.25,&[]).unwrap();
-        let tagged=tag_iq(&mut state,vec![frame]);let uid=tagged[0].1.clone().unwrap();
+        let tagged=tag_iq(&mut state,vec![frame.into()]);let uid=tagged[0].1.clone().unwrap();
         let mut subscriber=IqSubscriber::default();
         let output=subscriber.frames(&mut state,&uid,Message::Binary(tagged[0].0.clone())).unwrap();
         let Message::Text(text)=&output[0] else {panic!("metadata absent")};
@@ -1121,4 +1313,50 @@ mod tests {
         assert_eq!(meta["clock"]["delay_seconds"],1.25/entry.output_rate);
         assert!(matches!(&output[1],Message::Binary(bytes) if bytes.as_ptr()==tagged[0].0.as_ptr()));
     }
+    #[tokio::test]
+    async fn complete_mode_controls_round_trip_on_c1_and_c8_with_the_shared_parser() {
+        let app=app();
+        for index in 0..8 {
+            let reply=run(&app,json!({"type":"create","request_id":format!("parity-create-{index}"),"config":listen_config(100e6+index as f64*10000.0)})).await;
+            assert!(reply["fault"].is_null(),"{reply}");
+        }
+        let fields=json!({"am_sync":true,"pitch":1000.0,"deemph_us":75.0,"stereo":false,"audio_rate":24000,
+            "sstv_mode":2,"radiofax_acquisition":"manual","radiofax_ioc":"576","radiofax_lpm":"120",
+            "radiofax_modulation":"am","radiofax_polarity":"inverted","radiofax_clock_recovery":"off",
+            "radiofax_phase_pixels":3.5,"radiofax_clock_ppm":12.5});
+        for slot in [0,7] {
+            let before=app.state.lock().unwrap().receiver_snapshot();let row=&before["receivers"][slot];
+            let mut config=row["confirmed"].clone();
+            for (key,value) in fields.as_object().unwrap() {config["processors"][0][key]=value.clone();}
+            let reply=run(&app,json!({"type":"configure","request_id":format!("parity-fields-{slot}"),
+                "receiver_uid":row["receiver_uid"],"expected_revision":row["revision"],"config":config})).await;
+            assert!(reply["fault"].is_null(),"{reply}");
+            let state=app.state.lock().unwrap();let channel=state.channel_configs()[slot].clone();
+            let main=json!(&channel);let logical=config_value(&channel,None);
+            for key in MODE_CONTROLS {assert_eq!(logical["processors"][0][*key],main[*key],"{key}");}
+            assert_eq!(channel.am_sync_generation,1);
+            assert_eq!(logical["processors"][0]["pitch"],1000.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn actions_are_bound_deduplicated_expire_and_reject_old_services() {
+        let app=app();let mut config=listen_config(100e6);config["purpose"]=json!("digital");
+        config["processors"][0]["mode"]=json!("radiofax");config["processors"][0]["kind"]=json!("decoder");
+        config["baseband"]["minimum_rate_hz"]=json!(12000);config["baseband"]["passband_hz"]=json!(6000);
+        let reply=run(&app,json!({"type":"create","request_id":"fax-create","config":config})).await;
+        assert!(reply["fault"].is_null(),"{reply}");let snapshot=&reply["snapshot"];let row=&snapshot["receivers"][0];
+        let action=json!({"type":"action","request_id":"page-request","action_id":"page-once","action":"radiofax_new_page",
+            "action_token":snapshot["action_token"],"service_id":snapshot["service_id"],"receiver_uid":row["receiver_uid"],"expected_revision":row["revision"]});
+        let first=run(&app,action.clone()).await;assert!(first["fault"].is_null(),"{first}");
+        let second=run(&app,action.clone()).await;assert!(second["fault"].is_null(),"{second}");
+        let receipts=second["snapshot"]["receivers"][0]["control_receipts"].as_array().unwrap();
+        assert_eq!(receipts.iter().filter(|r|r["action_id"]=="page-once").count(),1);
+        let mut old=action.clone();old["service_id"]=json!("previous-service");
+        assert!(!run(&app,old).await["fault"].is_null());
+        app.state.lock().unwrap().receivers.started=std::time::Instant::now()-std::time::Duration::from_secs(6);
+        let mut expired=action;expired["action_id"]=json!("expired");expired["request_id"]=json!("expired-request");
+        assert!(!run(&app,expired).await["fault"].is_null());
+    }
+
 }

@@ -1,3 +1,4 @@
+import { isChannelNumber } from '../core/channelState';
 // Backend AUD2 playback: each channel has one ingress worker and one output node.
 let ctx: AudioContext | null = null;
 let spectrumProbe: AnalyserNode | null = null;
@@ -432,7 +433,7 @@ class AudioChain {
   }
 }
 function chain(channel: number): AudioChain {
-  if (!Number.isInteger(channel) || channel < 1 || channel > 3) throw new Error('Audio channel must be 1, 2, or 3');
+  if (!isChannelNumber(channel)) throw new Error('Invalid audio receiver number');
   let playback = chains.get(channel);
   if (!playback) { playback = new AudioChain(channel); chains.set(channel, playback); }
   return playback;

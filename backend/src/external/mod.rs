@@ -93,6 +93,13 @@ pub enum ExternalDecoder {
     Gnss(gnss::GnssBridge),
 }
 impl ExternalDecoder {
+    pub fn buffer_status(&self)->Value {
+        match self {
+            Self::Multimon {process,..}|Self::Rtl433 {process}=>process.buffer_status(),
+            Self::Rtty(bridge)=>bridge.buffer_status(),Self::Gnss(bridge)=>bridge.buffer_status(),
+            Self::OnAir(bridge)=>bridge.buffer_status(),
+        }
+    }
     pub fn new(mode: &str, rate: u32, center_hz: u64) -> Result<Self, String> {
         let descriptor = crate::catalog::mode(mode).ok_or_else(|| format!("unknown mode {mode}"))?;
         if !descriptor.available { return Err(descriptor.unavailable_reason.unwrap_or_else(|| "decoder unavailable".into())); }

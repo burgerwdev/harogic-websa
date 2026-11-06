@@ -11,7 +11,7 @@ export class WorkbenchSession {
   routes = new Map<string, MonitorRoute>();
   edits = new Map<string, { desired: ReceiverConfig; attempted: ReceiverConfig; pending: boolean; request_id: string | null; fault: Fault | null }>();
   fault: Fault | null = null;
-  readonly modeMemory = new ReceiverModeMemory();
+  readonly modeMemory:ReceiverModeMemory;
   private listeners = new Set<() => void>();
   private resultListeners = new Set<(uid: string) => void>();
   private sequence = 0;
@@ -23,7 +23,8 @@ export class WorkbenchSession {
   private disposed = false;
   private retiredServices = new Set<string | undefined>();
   private stop: () => void;
-  constructor(readonly adapter: ReceiverAdapter) {
+  constructor(readonly adapter: ReceiverAdapter, modeMemory = new ReceiverModeMemory()) {
+    this.modeMemory=modeMemory;
     this.snapshot = adapter.snapshot(); this.selected = this.snapshot.receivers[0]?.receiver_uid ?? '';
     this.modeMemory.observe(this.snapshot);
     this.stop = adapter.subscribe(snapshot => this.accept(snapshot));
@@ -68,7 +69,7 @@ export class WorkbenchSession {
   private monitorEligible(uid: string): boolean {
     if (this.retiring(uid)) return false;
     const r = this.snapshot.receivers.find(r => r.receiver_uid === uid);
-    if (!r || r.fault || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
+    if (!r || r.fault || r.processing_state === 'failed' || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
     const route = this.route(uid);
     if (this.monitorMode === 'follow') return uid === this.selected && this.masterGain > 0 && route.gain > 0;
     const solo = this.snapshot.receivers.some(r => r.state === 'running' && receiverHasAudio(this.snapshot, r.confirmed) && this.route(r.receiver_uid).enabled && this.route(r.receiver_uid).solo);
@@ -104,6 +105,12 @@ export class WorkbenchSession {
     });
     this.mutationTail = operation.then(() => undefined, () => undefined);
     return operation;
+  }
+  async recover(uid:string):Promise<CommandReply> {
+    const receiver=this.snapshot.receivers.find(row=>row.receiver_uid===uid);
+    if (!receiver) return this.invalidated({type:'retire',receiver_uid:uid,request_id:this.requestId()});
+    return this.send({type:'configure',receiver_uid:uid,request_id:this.requestId(),expected_revision:receiver.revision,
+      config:clone(receiver.confirmed),recover:true});
   }
   async send(command: ServiceCommand): Promise<CommandReply> {
     if (this.disposed) return this.invalidated(command);

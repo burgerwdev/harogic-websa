@@ -5,8 +5,8 @@ use std::time::Instant;
 use websa_channelizer::PfbOutput;
 use websa_channelizer::timing::TimingSnapshot;
 
-/// Admission reserve is documented in docs/en/ARCHITECTURE.md.
-/// This admits fine processing/framing only; PFB and transport retain their own gates.
+/// Benchmark-only prediction parameters. Product startup does not calibrate or
+/// install this budget, and check_plan_admission enforces geometry only.
 pub(super) const FINE_COST_RESERVE: f64 = 2.0;
 pub(super) const FINE_COST_LIMIT_NS: f64 = 1_000_000_000.0;
 
@@ -68,21 +68,13 @@ pub(super) fn fine_cost_profile() -> Result<websa_channelizer::FineCostBudget, S
     { Ok(websa_channelizer::FineCostBudget::new([1.0; 23], FINE_COST_RESERVE, FINE_COST_LIMIT_NS).unwrap()) }
 }
 
-pub(super) fn check_plan_admission(profile: &websa_channelizer::FineCostBudget, fine: i32,
-    count: usize, channel_budget: usize, output_rate_budget: f64) -> Result<(), String> {
-    if count > channel_budget { return Err("fine channel budget exceeded".into()); }
-    if !(2..=24).contains(&fine) { return Err("fine channel configuration rejected".into()); }
-    let rate = COARSE_RATE / fine as f64 * count as f64;
-    if !output_rate_budget.is_finite() || output_rate_budget <= 0.0
-        || rate > output_rate_budget + output_rate_budget * 1e-12 {
-        return Err("fine output rate budget exceeded".into());
-    }
-    let required = profile.required_ns_per_second(COARSE_RATE, std::iter::repeat_n(fine, count))
-        .map_err(str::to_owned)?;
-    if required > profile.limit_ns_per_second {
-        return Err(format!("fine cost budget exceeded: required {required:.0} ns/s, available {:.0} ns/s (reserve {})",
-            profile.limit_ns_per_second, profile.reserve));
-    }
+pub(super) fn check_plan_admission(_profile:&websa_channelizer::FineCostBudget,fine:i32,
+    count:usize,channel_budget:usize,_output_rate_budget:f64)->Result<(),String> {
+    check_plan_geometry(fine,count,channel_budget)
+}
+pub(super) fn check_plan_geometry(fine:i32,count:usize,channel_budget:usize)->Result<(),String> {
+    if count>channel_budget {return Err("fine channel budget exceeded".into());}
+    if !(2..=24).contains(&fine) {return Err("fine channel configuration rejected".into());}
     Ok(())
 }
 
@@ -184,7 +176,7 @@ impl DirectChannel {
             epoch,origin,next_seq:seq,input:0,output:0,
             scratch:vec![0.0;2*(16240/plan.decimate as usize+2)],framer})
     }
-    pub fn process(&mut self,seq:u64,stamp:u64,input_index:u64,raw:&[i16])->Result<Vec<Vec<u8>>,String> {
+    pub fn process(&mut self,seq:u64,stamp:u64,input_index:u64,raw:&[i16])->Result<IqFrames,String> {
         if seq!=self.next_seq || input_index!=self.origin+self.input || raw.len()!=2*16240 {
             return Err("direct source sequence/clock mismatch".into());
         }
@@ -194,7 +186,7 @@ impl DirectChannel {
         let count=unsafe {websa_channelizer::channel_process(self.handle,raw.as_ptr(),
             16240,self.scratch.as_mut_ptr(),(self.scratch.len()/2) as i32)};
         if count<0 {return Err("direct channel processing failed".into());}
-        let frames=self.framer.push(&websa_channelizer::FineOutput {channel_id:self.id,epoch:self.epoch,
+        let frames=self.framer.push_native(&websa_channelizer::FineOutput {channel_id:self.id,epoch:self.epoch,
             bin:0,seq,stamp,input_index:first,output_index:self.output,output_rate:self.rate,
             center_offset_hz:None,delay_samples:self.delay,iq:&self.scratch[..2*count as usize]})
             .map_err(str::to_owned)?;
@@ -240,7 +232,7 @@ impl FineState {
             output_send:Timing::default(), snapshot_publish:Timing::default(), slow_io:SlowPipeline::default(),
             period:Duration::from_secs_f64(16240.0/input_rate), slow:SlowStage::default() }
     }
-    pub fn deliver(&mut self, packet: PfbOutput) -> Result<Vec<Vec<u8>>, String> {
+    pub fn deliver(&mut self, packet: PfbOutput) -> Result<IqFrames, String> {
         let mut frames = Vec::new();
         let started = Instant::now();
         let mut framing = Duration::ZERO;
@@ -248,9 +240,9 @@ impl FineState {
         self.bank.deliver(&packet, |fine| {
             let started = Instant::now();
             if fine.channel_id == self.channel_id {
-                frames.extend(self.framer.push(fine)?);
+                frames.extend(self.framer.push_native(fine)?);
             } else if let Some((_, (_, _, framer))) = self.aux.iter_mut().find(|(_, (id, _, _))| *id == fine.channel_id) {
-                frames.extend(framer.push(fine)?);
+                frames.extend(framer.push_native(fine)?);
             } else {
                 unknown_id = Some(fine.channel_id);
                 return Err("unknown fine channel ID");
@@ -319,9 +311,10 @@ impl FineState {
 
 pub(super) struct FineWorker {
     tx: Option<SyncSender<PfbOutput>>,
-    rx: Receiver<Result<Vec<Vec<u8>>, String>>,
+    rx: Receiver<Result<IqFrames, String>>,
     join: Option<JoinHandle<FineState>>,
     timing: Arc<PLMutex<FineMetrics>>,
+    waiter: Arc<PLMutex<Option<thread::Thread>>>,
     /// Caller-side time blocked because the fine input queue is full.
     full_wait: Timing,
     /// Caller-side time spent collecting worker results.
@@ -333,9 +326,13 @@ impl FineWorker {
         let (output, rx) = sync::sync_channel(2);
         let timing = Arc::new(PLMutex::new(state.metrics()?));
         let published = timing.clone();
+        let waiter = Arc::new(PLMutex::new(None::<thread::Thread>));
+        let producer = waiter.clone();
         let join = thread::Builder::new().name("sdr-fine-framer".into()).spawn(move || {
             let mut refreshed = Instant::now();
+            let wake = || { if let Some(thread) = producer.lock().as_ref() { thread.unpark(); } };
             while let Ok(packet) = input.recv() {
+                wake();
                 let (seq, stamp, input_index) = (packet.seq, packet.stamp, packet.input_index);
                 let mut result = state.deliver(packet);
                 if refreshed.elapsed() >= Duration::from_millis(50) {
@@ -352,7 +349,10 @@ impl FineWorker {
                 let has_output = result.as_ref().is_ok_and(|frames| !frames.is_empty());
                 if failed || has_output {
                     let started = Instant::now();
+                    // The producer must drain output even when our input is full.
+                    wake();
                     let sent = output.send(result);
+                    wake();
                     if has_output {
                         let elapsed = started.elapsed();
                         state.output_send.observe(elapsed);
@@ -363,10 +363,10 @@ impl FineWorker {
             }
             state
         }).map_err(|e| e.to_string())?;
-        Ok(Self { tx: Some(tx), rx, join: Some(join), timing, full_wait:Timing::default(),
+        Ok(Self { tx: Some(tx), rx, join: Some(join), timing, waiter, full_wait:Timing::default(),
             collect_timing:Timing::default() })
     }
-    pub fn collect(&mut self, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
+    pub fn collect(&mut self, frames: &mut IqFrames) -> Result<(), String> {
         let started = Instant::now();
         let result = (|| {
             while let Ok(result) = self.rx.try_recv() { frames.extend(result?); }
@@ -375,7 +375,7 @@ impl FineWorker {
         self.collect_timing.observe(started.elapsed());
         result
     }
-    pub fn submit(&mut self, mut packet: PfbOutput, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
+    pub fn submit(&mut self, mut packet: PfbOutput, frames: &mut IqFrames) -> Result<(), String> {
         let mut blocked: Option<Instant> = None;
         loop {
             self.collect(frames)?;
@@ -386,8 +386,14 @@ impl FineWorker {
                 }
                 Err(TrySendError::Full(value)) => {
                     packet = value;
-                    blocked.get_or_insert_with(Instant::now);
-                    thread::yield_now();
+                    if blocked.is_none() {
+                        blocked = Some(Instant::now());
+                        *self.waiter.lock() = Some(thread::current());
+                        // Retry after registration so a freed slot cannot leave
+                        // us waiting for a notification that already happened.
+                        continue;
+                    }
+                    thread::park_timeout(Duration::from_millis(1));
                 }
                 Err(TrySendError::Disconnected(_)) => return Err("fine consumer disconnected".into()),
             }
@@ -395,7 +401,7 @@ impl FineWorker {
     }
     fn full_wait(&self) -> TimingSnapshot { self.full_wait.snapshot() }
     fn collect_snapshot(&self) -> TimingSnapshot { self.collect_timing.snapshot() }
-    fn finish(mut self, frames: &mut Vec<Vec<u8>>) -> Result<FineState, String> {
+    fn finish(mut self, frames: &mut IqFrames) -> Result<FineState, String> {
         self.tx.take();
         let mut failure = None;
         while let Ok(result) = self.rx.recv() {
@@ -425,6 +431,7 @@ pub(super) struct Snapshot {
     pub capture_center: f64, pub usable_bandwidth: f64, pub rate: f64,
     pub input_rate: f64, pub epoch: u64,
     pub generation: u64,
+    pub batch_packets: usize,
     pub display_fft: Value,
     pub taps: usize, pub device_decimate: u64, pub aux: Arc<[(u32, f64)]>, pub actual: Value,
     front_end: Option<hardware_swp::FrontEndActual>,
@@ -462,6 +469,7 @@ impl Snapshot {
     }
     /// Keep clocks and the producer input watermark from the same publication.
     pub fn write_channel_status(&self, actual: &mut Value) {
+        actual["ddc_batch"] = json!(self.batch_packets);
         actual["display_fft"] = self.display_fft.clone();
         actual["input_samples"] = json!(self.input_samples);
         actual["channel_registry"] = json!(&*self.registry);
@@ -479,7 +487,7 @@ impl Snapshot {
 }
 #[derive(Default)]
 pub(super) struct PipelineOutput {
-    pub frames: Vec<Vec<u8>>, pub pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
+    pub frames: IqFrames, pub pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
 }
 impl PipelineOutput {
     fn collect(mut self, rx: &Receiver<Result<Self, String>>, failure: &mut Option<String>) -> Result<Self, String> {
@@ -509,7 +517,7 @@ impl PipelineOutput {
         }
     }
 }
-type Change = Box<dyn FnOnce(&mut Ddc) -> Result<Vec<Vec<u8>>, String> + Send>;
+type Change = Box<dyn FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send>;
 struct Command {
     change: Option<Change>,
     reply: SyncSender<Result<(Snapshot, PipelineOutput), (String, PipelineOutput)>>,
@@ -527,7 +535,7 @@ pub(super) struct Pipeline {
     terminal: Arc<PLMutex<Option<Value>>>,
     refreshed: Instant,
     pending_pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
-    pending_frames: Vec<Vec<u8>>,
+    pending_frames: IqFrames,
     failure: Option<String>,
 }
 impl Ddc {
@@ -537,19 +545,19 @@ impl Ddc {
         value["available"]=json!(self.hardware.is_some());
         value["error"]=json!(self.display_fft_error);value
     }
-    pub(super) fn finish_framers(&mut self, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
+    pub(super) fn finish_framers(&mut self, frames: &mut IqFrames) -> Result<(), String> {
         if !self.direct.contains_key(&1) && self.service_configs.as_ref().is_none_or(|configs| configs[0].enabled) {
-            frames.extend(self.framer.finish().map_err(str::to_owned)?);
+            frames.extend(self.framer.finish_native().map_err(str::to_owned)?);
         }
         for (_, _, framer) in self.aux.values_mut() {
-            frames.extend(framer.finish().map_err(str::to_owned)?);
+            frames.extend(framer.finish_native().map_err(str::to_owned)?);
         }
         for route in self.direct.values_mut() {
-            frames.extend(route.framer.finish().map_err(str::to_owned)?);
+            frames.extend(route.framer.finish_native().map_err(str::to_owned)?);
         }
         Ok(())
     }
-    fn suspend_fine(&mut self) -> Result<Vec<Vec<u8>>, String> {
+    fn suspend_fine(&mut self) -> Result<IqFrames, String> {
         self.stream.flush_pending().map_err(str::to_owned)?;
         let mut frames = self.drain()?;
         if let Some(worker) = self.fine_worker.take() { self.fine = Some(worker.finish(&mut frames)?); }
@@ -583,6 +591,7 @@ impl Ddc {
         Snapshot { capture_center:self.capture_center, usable_bandwidth:self.usable_bandwidth,
             input_rate:self.stream.input_sample_rate(), epoch:self.stream.epoch(),
             generation:self.generation,
+            batch_packets:self.capture_batch_packets(),
             display_fft:self.display_fft_status(),
             rate:self.channel_rate(), taps:self.stream.taps_per_phase(), device_decimate:self.device_decimate,
             aux, actual:Value::Null, pool:self.stream.stats(), input_samples:self.input_pos,
@@ -623,8 +632,11 @@ impl Pipeline {
     pub fn packet_observation(&self) -> (u64, i32) {
         self.diagnostics.packet_observation()
     }
+    pub fn terminal_failure(&self) -> Option<Value> {
+        self.terminal.lock().clone()
+    }
     pub fn failure_diagnostics(&self) -> Value {
-        self.terminal.lock().clone().unwrap_or_else(|| {
+        self.terminal_failure().unwrap_or_else(|| {
             PipelinePresentation { snapshot:self.shared.lock().clone(), diagnostics:self.diagnostics.clone() }.encode()
         })
     }
@@ -699,9 +711,7 @@ impl Pipeline {
     }
     fn start_inner(config: PipelineConfig, channels: Option<Vec<receiver_workers::ChannelConfig>>) -> Result<Self, String> {
         if channels.is_none() {
-            let profile = fine_cost_profile()?;
-            check_plan_admission(&profile, config.fine, config.aux.len() + 1,
-                config.channel_budget, config.output_rate_budget)?;
+            check_plan_geometry(config.fine,config.aux.len()+1,config.channel_budget)?;
         }
         let (tx, commands) = sync::sync_channel::<Command>(1);
         let (output, rx) = sync::sync_channel(2);
@@ -906,7 +916,7 @@ impl Pipeline {
             }
         }
     }
-    pub fn command(&mut self, change: impl FnOnce(&mut Ddc) -> Result<Vec<Vec<u8>>, String> + Send + 'static) -> Result<Vec<Vec<u8>>, String> {
+    pub fn command(&mut self, change: impl FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send + 'static) -> Result<IqFrames, String> {
         let output = self.boundary(Some(Box::new(change)))?;
         self.pending_pan.extend(output.pan);
         Ok(output.frames)
@@ -951,7 +961,7 @@ mod tests {
         }).collect()
     }
 
-    fn direct_test_iq(frames: &[Vec<u8>]) -> Vec<[f64; 2]> {
+    fn direct_test_iq(frames: &[IqFrame]) -> Vec<[f64; 2]> {
         frames.iter().flat_map(|frame| frame[56..].chunks_exact(8).map(|sample| {
             [f32::from_le_bytes(sample[..4].try_into().unwrap()) as f64,
                 f32::from_le_bytes(sample[4..].try_into().unwrap()) as f64]
@@ -979,7 +989,7 @@ mod tests {
                 frames.extend(channel.process(packet, first, first,
                     &direct_test_tone(first, offset + residual, amplitude)).unwrap());
             }
-            frames.extend(channel.framer.finish().unwrap());
+            frames.extend(channel.framer.finish_native().unwrap());
             let iq = direct_test_iq(&frames);
             let settled = &iq[(2.0 * channel.delay).ceil() as usize + 32..];
             let rms = (settled.iter().map(|s| s[0] * s[0] + s[1] * s[1]).sum::<f64>()
@@ -1010,7 +1020,7 @@ mod tests {
                 frames.extend(channel.process(packet, first, first,
                     &direct_test_tone(first, 350_000.0 + probe, 16_384.0)).unwrap());
             }
-            frames.extend(channel.framer.finish().unwrap());
+            frames.extend(channel.framer.finish_native().unwrap());
             let iq = direct_test_iq(&frames);
             let settled = &iq[(2.0 * channel.delay).ceil() as usize + 32..];
             let gain = (settled.iter().map(|s| s[0] * s[0] + s[1] * s[1]).sum::<f64>()
@@ -1041,7 +1051,7 @@ mod tests {
                 assert_direct_test_clocks(&channel, input, input / decimate);
                 assert_eq!(channel.next_seq, first_seq + packet + 1);
             }
-            frames.extend(channel.framer.finish().unwrap());
+            frames.extend(channel.framer.finish_native().unwrap());
             assert!(frames.len() >= 4, "exercise multiple wire blocks and a flushed tail");
             let mut delivered = 0;
             for (seq, frame) in frames.iter().enumerate() {
@@ -1086,7 +1096,7 @@ mod tests {
         let raw = direct_test_tone(DIRECT_TEST_PACKET, 260_000.0, 16_384.0);
         assert_eq!(actual.process(92, 101, next, &raw).unwrap(),
             expected.process(92, 101, next, &raw).unwrap());
-        assert_eq!(actual.framer.finish().unwrap(), expected.framer.finish().unwrap());
+        assert_eq!(actual.framer.finish_native().unwrap(), expected.framer.finish_native().unwrap());
         assert_direct_test_clocks(&actual, 2 * DIRECT_TEST_PACKET,
             2 * DIRECT_TEST_PACKET / plan.decimate as u64);
     }
@@ -1207,7 +1217,7 @@ mod tests {
         assert_eq!((latest.ref_dbm, latest.atten, latest.preamp, latest.ifgain), (-27.5, 18, 1, 3));
     }
 
-    fn finish(ddc: &mut Ddc, frames: &mut Vec<Vec<u8>>) {
+    fn finish(ddc: &mut Ddc, frames: &mut IqFrames) {
         frames.extend(ddc.suspend_fine().unwrap());
         ddc.finish_framers(frames).unwrap();
     }
@@ -1242,79 +1252,47 @@ mod tests {
     }
 
     #[test]
-    fn complete_candidate_admission_checks_count_rate_and_exact_cost_boundary() {
-        let profile = websa_channelizer::FineCostBudget::new([1.0; 23], 2.0, COARSE_RATE * 4.0).unwrap();
-        assert_eq!(check_plan_admission(&profile, 3, 2, 1, COARSE_RATE).unwrap_err(), "fine channel budget exceeded");
-        assert_eq!(check_plan_admission(&profile, 3, 2, 2, COARSE_RATE / 3.0).unwrap_err(), "fine output rate budget exceeded");
-        check_plan_admission(&profile, 3, 2, 2, COARSE_RATE * 2.0 / 3.0).unwrap();
-        assert!(check_plan_admission(&profile, 3, 3, 3, COARSE_RATE).unwrap_err().contains("fine cost budget exceeded"));
-        let error = Ddc::configured_with_cost_budget(100e6, 100e6, 3, 50e6, &mut None,
-            &[100e6 + BIN_SPACING, 100e6 - BIN_SPACING], 16, IQ_FS, 3, COARSE_RATE, profile)
-            .err().unwrap();
-        assert!(error.contains("fine cost budget exceeded"));
+    fn product_geometry_is_independent_of_cpu_and_output_predictions() {
+        let profile=websa_channelizer::FineCostBudget::new([1e12;23],2.0,1.0).unwrap();
+        assert_eq!(check_plan_admission(&profile,3,2,1,COARSE_RATE).unwrap_err(),"fine channel budget exceeded");
+        assert!(check_plan_admission(&profile,1,2,2,1.0).is_err());
+        check_plan_admission(&profile,3,3,3,1.0).unwrap();
+        let ddc=Ddc::configured_with_cost_budget(100e6,100e6,3,50e6,&mut None,
+            &[100e6+BIN_SPACING,100e6-BIN_SPACING],16,IQ_FS,3,1.0,profile).unwrap();
+        assert_eq!(ddc.channel_registry().len(),1);
     }
 
     #[test]
-    fn cost_rejections_preserve_plan_and_complete_stream_after_worker_resume() {
-        let build = || {
-            let mut costs = [1.0; 23];
-            costs[0] = 4.0;
-            let profile = websa_channelizer::FineCostBudget::new(costs, 2.0, COARSE_RATE * 4.0).unwrap();
-            let mut ddc = Ddc::configured_with_cost_budget(100e6, 100e6, 3, 50e6, &mut None,
-                &[100e6 + BIN_SPACING], 16, IQ_FS, 4, COARSE_RATE * 4.0, profile).unwrap();
-            ddc.configure_aux(2, true, 100e6 + BIN_SPACING).unwrap();
-            ddc
-        };
-        let mut expected = build();
-        let mut expected_frames = Vec::new();
-        for _ in 0..48 { expected_frames.extend(expected.packet().unwrap()); }
-        finish(&mut expected, &mut expected_frames);
-        for operation in 0..4 {
-            let mut actual = build();
-            actual.resume_fine().unwrap();
-            let mut frames = Vec::new();
-            for _ in 0..24 { frames.extend(actual.packet().unwrap()); }
-            frames.extend(actual.suspend_fine().unwrap());
-            let registry = actual.channel_registry();
-            let clocks = actual.bank.clocks().unwrap();
-            let before = (actual.stream.epoch(), actual.channel_id, actual.next_id, actual.next_seq,
-                actual.listen, actual.decimate, actual.input_pos);
-            let aux = [(2, 100e6 + BIN_SPACING)];
-            let error = match operation {
-                0 => actual.configure_aux(3, true, 100e6 - BIN_SPACING).unwrap_err(),
-                1 => actual.tune(100e6 + 1000.0, 2).unwrap_err(),
-                2 => actual.replan_with_aux(100e6, 2, &aux).unwrap_err(),
-                _ => {
-                    let front_end = DevState::new(json!({"preset_defaults":{}}), json!({})).front_end(0.0);
-                    actual.recapture(100e6, 100e6, 2, 32, front_end, 16).unwrap_err()
-                }
-            };
-            assert!(error.contains("fine cost budget exceeded"), "{operation}: {error}");
-            assert_eq!((actual.stream.epoch(), actual.channel_id, actual.next_id, actual.next_seq,
-                actual.listen, actual.decimate, actual.input_pos), before);
-            assert!(Arc::ptr_eq(&registry, &actual.channel_registry()));
-            assert_eq!(actual.bank.clocks().unwrap(), clocks);
-            assert!(!actual.capture_failed);
-            actual.resume_fine().unwrap();
-            for _ in 0..24 { frames.extend(actual.packet().unwrap()); }
-            finish(&mut actual, &mut frames);
-            assert_eq!(frames.len(), expected_frames.len());
-            for (frame, control) in frames.iter().zip(&expected_frames) {
-                assert_eq!(&frame[..36], &control[..36]);
-                assert_eq!(&frame[40..], &control[40..]);
-                assert_eq!(u32::from_le_bytes(frame[36..40].try_into().unwrap()) as u64, before.0);
-            }
-            assert_eq!(actual.bank.clocks().unwrap(), expected.bank.clocks().unwrap());
-        }
+    fn predictions_do_not_gate_legacy_control_and_geometry_errors_keep_contiguous_output() {
+        let build=||Ddc::configured_with_cost_budget(100e6,100e6,3,50e6,&mut None,
+            &[100e6+BIN_SPACING],16,IQ_FS,4,1.0,
+            websa_channelizer::FineCostBudget::new([1e12;23],2.0,1.0).unwrap()).unwrap();
+        let mut expected=build();let mut reference=Vec::new();
+        for _ in 0..48 {reference.extend(expected.packet().unwrap());}finish(&mut expected,&mut reference);
+        let mut actual=build();actual.resume_fine().unwrap();let mut frames=Vec::new();
+        for _ in 0..24 {frames.extend(actual.packet().unwrap());}frames.extend(actual.suspend_fine().unwrap());
+        let before=actual.channel_registry();
+        assert!(actual.tune(100e6,1).is_err());
+        assert!(Arc::ptr_eq(&before,&actual.channel_registry()));
+        actual.resume_fine().unwrap();for _ in 0..24 {frames.extend(actual.packet().unwrap());}finish(&mut actual,&mut frames);
+        assert_eq!(frames.len(),reference.len());
+        for (a,b) in frames.iter().zip(reference) {assert_eq!(&a[..36],&b[..36]);assert_eq!(&a[40..],&b[40..]);}
+        let mut allowed=build();allowed.configure_aux(2,true,100e6+BIN_SPACING).unwrap();
+        allowed.configure_aux(3,true,100e6-BIN_SPACING).unwrap();
+        allowed.tune(100e6+1000.0,2).unwrap();
+        allowed.replan_with_aux(100e6,2,&[(2,100e6+BIN_SPACING)]).unwrap();
+        let front_end=DevState::new(json!({"preset_defaults":{}}),json!({})).front_end(0.0);
+        allowed.recapture(100e6,100e6,2,32,front_end,16).unwrap();
+        assert!(!allowed.capture_failed);
     }
 
     #[test]
     fn producer_disconnect_delivers_queued_tail_before_terminal_error() {
         let (tx, rx) = sync::sync_channel(2);
-        assert!(tx.send(Ok(PipelineOutput { frames:vec![vec![2]], pan:Vec::new() })).is_ok());
+        assert!(tx.send(Ok(PipelineOutput { frames:vec![vec![2].into()], pan:Vec::new() })).is_ok());
         drop(tx);
         let mut failure = None;
-        let pending = PipelineOutput { frames:vec![vec![1]], pan:Vec::new() };
+        let pending = PipelineOutput { frames:vec![vec![1].into()], pan:Vec::new() };
         let output = pending.collect(&rx, &mut failure).unwrap();
         assert_eq!(output.frames, vec![vec![1], vec![2]]);
         assert_eq!(PipelineOutput::default().collect(&rx, &mut failure).err().as_deref(), Some("pipeline output disconnected"));
@@ -1323,7 +1301,7 @@ mod tests {
     #[test]
     fn explicit_producer_error_preserves_tail_and_original_failure() {
         let (tx, rx) = sync::sync_channel(2);
-        assert!(tx.send(Ok(PipelineOutput { frames:vec![vec![1]], pan:Vec::new() })).is_ok());
+        assert!(tx.send(Ok(PipelineOutput { frames:vec![vec![1].into()], pan:Vec::new() })).is_ok());
         assert!(tx.send(Err("SDK reconfigure failed".into())).is_ok());
         let mut failure = None;
         assert_eq!(PipelineOutput::default().collect(&rx, &mut failure).unwrap().frames, vec![vec![1]]);
@@ -1347,7 +1325,7 @@ mod tests {
         assert_eq!(snapshot.epoch,ddc.stream.epoch());
         assert_ne!(snapshot.input_rate,snapshot.rate);
         let previous = (snapshot.capture_center, snapshot.device_decimate, snapshot.generation);
-        let mut output = PipelineOutput { frames:vec![vec![1], vec![2]], pan:vec![(vec![100e6], vec![-40.0], 0, 0, 1, 0)] };
+        let mut output = PipelineOutput { frames:vec![vec![1].into(), vec![2].into()], pan:vec![(vec![100e6], vec![-40.0], 0, 0, 1, 0)] };
         // A DSP-only change retains spectra on the same device frequency grid.
         snapshot.rate /= 2.0;
         output.capture_boundary(previous, &snapshot);

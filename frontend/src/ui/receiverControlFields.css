@@ -1,0 +1,8 @@
+[data-mode-controls] { min-width:0; margin:8px 0; padding:8px; border:1px solid var(--inner-border); border-radius:3px; }
+[data-mode-controls] legend { color:var(--label); font-size:11px; padding:0 4px; }
+[data-mode-controls] [data-mode-field] { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:5px 0; }
+[data-mode-controls] [hidden], [data-mode-controls][hidden] { display:none !important; }
+[data-mode-controls] [data-mode-field] input:not([type=checkbox]), [data-mode-controls] select { width:130px; max-width:48%; min-width:70px; }
+[data-mode-actions] { display:flex; flex-wrap:wrap; gap:6px; }
+#sdr-mode-settings { margin:6px 0; font-size:11px; }
+#sdr-mode-settings summary { cursor:pointer; color:var(--label); }

@@ -26,7 +26,7 @@ pub(super) mod opus;
 #[path = "recording_management.rs"]
 pub(super) mod management;
 
-const MAX_ACTIVE: usize = 3;
+pub(super) const MAX_ACTIVE_TASKS: usize = 8;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ITEMS: usize = 64;
 const MAX_AGE: Duration = Duration::from_secs(2);
@@ -294,6 +294,12 @@ impl Manager {
             .chain(self.lanes.iter().map(|h| h.lane.snapshot()))
             .collect()
     }
+    pub(super) fn resources(&self) -> Value {
+        json!({"active_tasks":self.lanes.len(),"max_tasks":MAX_ACTIVE_TASKS,
+            "available_tasks":MAX_ACTIVE_TASKS.saturating_sub(self.lanes.len()),
+            "queue_bytes_per_task":MAX_BYTES,"queue_items_per_task":MAX_ITEMS,
+            "max_queue_age_ms":MAX_AGE.as_millis()})
+    }
     /// Finished tasks have immutable indexes. A failed live lane must finish draining first.
     pub(super) fn readable_task(&self, id: &str) -> Result<(PathBuf, Value), &'static str> {
         if let Some(task) = self.history.iter().find(|t| t["task_id"] == id) {
@@ -332,8 +338,8 @@ impl Manager {
         if self.lanes.iter().any(|h| h.lane.uid == uid && h.lane.kind == kind) {
             return Err(format!("{kind} recording is already active or finalizing for this receiver"));
         }
-        if self.lanes.len() >= MAX_ACTIVE {
-            return Err("recording worker capacity reached".into());
+        if self.lanes.len() >= MAX_ACTIVE_TASKS {
+            return Err(format!("recording task capacity reached ({MAX_ACTIVE_TASKS}/{MAX_ACTIVE_TASKS}); preparing and finalizing tasks still hold a slot"));
         }
         self.next += 1;
         let id = format!("{kind}-{service}-{}", self.next);
@@ -411,6 +417,9 @@ impl Manager {
     pub(super) fn admit_audio(&self, uid: &str, input: audio::Input) {
         self.admit_input(uid, "audio", WorkInput::Audio(input));
     }
+    pub(super) fn wants_iq_for(&self,uid:&str)->bool {
+        self.lanes.iter().any(|handle|handle.lane.uid==uid && handle.lane.kind=="iq" && !handle.lane.queue.lock().unwrap().sealed)
+    }
     pub(super) fn wants_audio(&self) -> bool {
         self.lanes.iter().any(|h| h.lane.kind == "audio" && !h.lane.queue.lock().unwrap().sealed)
     }
@@ -463,6 +472,11 @@ impl Manager {
     /// Processing removal/failure is observed explicitly after its retiring FIFO is delivered.
     pub(super) fn processing_sources(&self, active: &[String], error: Option<&str>) {
         self.processing_kind_sources("results", active, error);
+    }
+    pub(super) fn processing_failed(&self,uid:&str,error:&str) {
+        for handle in self.lanes.iter().filter(|handle|handle.lane.uid==uid && matches!(handle.lane.kind.as_str(),"audio"|"results")) {
+            handle.lane.seal("processing_failed",Some(("PROCESSING_FAILED",error)));
+        }
     }
     pub(super) fn processing_kind_sources(&self, kind: &str, active: &[String], error: Option<&str>) {
         for handle in self.lanes.iter().filter(|h| h.lane.kind == kind) {
@@ -996,6 +1010,30 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         manager.reap();
+    }
+    #[test]
+    fn eight_slots_are_shared_by_kinds_and_hold_until_finished_lanes_are_reaped() {
+        let root=directory();
+        let mut manager=Manager::open(root.clone()).unwrap();
+        let mut tickets=Vec::new();
+        for kind in ["iq","audio","results"] {
+            tickets.push(manager.start_kind("same-uid","service",kind,kind).unwrap());
+        }
+        for index in 3..MAX_ACTIVE_TASKS {
+            tickets.push(manager.start(&format!("uid-{index}"),"service",&format!("request-{index}")).unwrap());
+        }
+        assert_eq!(manager.resources()["active_tasks"],8);
+        assert_eq!(manager.resources()["available_tasks"],0);
+        assert!(manager.start("ninth","service","ninth").err().unwrap().contains("capacity"));
+        for ticket in tickets {ticket.wait().unwrap();}
+        let ids:Vec<_>=manager.snapshots().iter().map(|task|task["task_id"].as_str().unwrap().to_owned()).collect();
+        for id in &ids {manager.stop(id).unwrap();}
+        // Stop seals input. The slot remains reserved until the writer is joined.
+        assert_eq!(manager.resources()["active_tasks"],8);
+        wait(&mut manager);
+        assert_eq!(manager.resources()["active_tasks"],0);
+        assert_eq!(manager.resources()["available_tasks"],8);
+        drop(manager);fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn drain_identity_segments_persistent_history_and_no_slot_rebind() {

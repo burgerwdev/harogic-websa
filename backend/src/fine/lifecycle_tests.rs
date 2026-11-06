@@ -1,5 +1,5 @@
 use super::{ChannelAction, ChannelCommand, FineBank};
-use crate::pfb_pool::{PfbOutput, PfbStream, MAX_IN_FLIGHT};
+use crate::pfb_pool::{PfbOutput, PfbStream, MAX_IN_FLIGHT, TASK_CAPACITY};
 use crate::wire::BasebandFramer;
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -96,7 +96,7 @@ fn multichannel_fine_quality_and_admission_matrix() {
             }
             drop(deliver);
             assert_eq!(expected_seq, packet_lengths.len() as u64);
-            assert_eq!(stream.stats().task_capacity, MAX_IN_FLIGHT as u32);
+            assert_eq!(stream.stats().task_capacity, TASK_CAPACITY as u32);
             assert_eq!(stream.stats().result_capacity, MAX_IN_FLIGHT as u32);
             for (i, channel) in samples.iter().enumerate() {
                 // Skip FIR startup, then fit one complex gain to the known 1 kHz output.
@@ -316,7 +316,7 @@ fn sixteen_bin_fixture_subscription_transitions_keep_clocks_and_failure_evidence
             stats.task_capacity,
             stats.result_capacity
         ),
-        (24, 24, MAX_IN_FLIGHT as u32, MAX_IN_FLIGHT as u32)
+        (24, 24, TASK_CAPACITY as u32, MAX_IN_FLIGHT as u32)
     );
     assert!(stats.max_pending <= MAX_IN_FLIGHT as u32);
     assert!(stats.max_ready <= MAX_IN_FLIGHT as u32);

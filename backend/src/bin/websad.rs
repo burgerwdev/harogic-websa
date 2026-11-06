@@ -20,6 +20,8 @@ mod state_lock;
 mod pipeline_bench;
 #[path = "websad/receiver_workers.rs"]
 mod receiver_workers;
+#[path = "websad/receiver_controls.rs"]
+mod receiver_controls;
 #[path = "websad/channel_controls.rs"]
 mod channel_controls;
 #[path = "websad/service_ddc.rs"]
@@ -50,11 +52,23 @@ mod recording_demod;
 mod multichannel;
 #[path = "websad/receiver_presets.rs"]
 mod receiver_presets;
+#[path = "websad/processing_admission.rs"]
+mod processing_admission;
 #[path = "websad/service_preflight.rs"]
 mod service_preflight;
+#[cfg(test)]
+#[path = "websad/eight_channel_tests.rs"]
+mod eight_channel_tests;
 #[path = "websad/server_mode.rs"]
 mod server_mode;
+/// Product receiver capacity, independent of coarse frequency bins and recording slots.
+const MAX_CHANNELS: usize = 8;
+fn channel_identities() -> Arc<[AtomicU64]> {
+    (0..MAX_CHANNELS).map(|_| AtomicU64::new(0)).collect()
+}
 use state_lock::StateMutex;
+use websa_channelizer::{IqFrame,IqInput};
+type IqFrames=Vec<IqFrame>;
 use sdr_pipeline::{Pipeline, PipelineConfig};
 use websa_channelizer::timing::Timing;
 use axum::{
@@ -204,7 +218,7 @@ struct Client {
     decode: bool,
     channel: Option<u32>,
     receiver_uid: Option<String>,
-    identities: Arc<[AtomicU64;3]>,
+    identities: Arc<[AtomicU64]>,
     /// Latest-wins slots for display frames (Python ClientStream FRAME_POLICY: POWR/RTAF
     /// newest wins, FREQ is retained). A slow display client drops stale traces instead of
     /// building a backlog that delays its control traffic.
@@ -326,9 +340,10 @@ struct DevState {
     receiver_presets: Option<Arc<std::sync::Mutex<receiver_presets::Store>>>,
     receiver_workers: Option<receiver_workers::ReceiverWorkers>,
     receiver_failure: Option<String>,
+    receiver_admission:Option<Value>,
     receiver_failure_pending: bool,
     fixture_sources: Option<service_fixture::FixtureSources>,
-    channel_power: [Option<(std::time::Instant,f64)>;3],
+    channel_power: Vec<Option<(std::time::Instant,f64)>>,
     sdr_actual: Value,
     harm_f0: f64,
     harm_count: i64,
@@ -362,7 +377,7 @@ struct DevState {
     spectrum_timing: Timing,
     state_lock_wait: Timing,
     state_lock_hold: Timing,
-    pending_iq: Vec<Vec<u8>>,
+    pending_iq: IqFrames,
     pending_receiver: receiver_workers::ReceiverFrames,
     retiring_registry: Arc<[sdr_pipeline::ChannelRegistryEntry]>,
     decode_snapshots: service_stream::DecodeSnapshots,
@@ -539,16 +554,17 @@ impl DevState {
             sdr_ref: 0.0,
             sdr_ref_set: false,
             sdr_aux: json!({}),
-            sdr_channels: (1..=3).map(receiver_workers::ChannelConfig::for_slot).collect(),
+            sdr_channels: (1..=MAX_CHANNELS as u32).map(receiver_workers::ChannelConfig::for_slot).collect(),
             receivers: multichannel::Directory::default(),
             recordings: None,
             recording_error: None,
             receiver_presets: None,
             receiver_workers: None,
             receiver_failure: None,
+            receiver_admission:None,
             receiver_failure_pending: false,
             fixture_sources: None,
-            channel_power: [None;3],
+            channel_power: vec![None;MAX_CHANNELS],
             sdr_actual: json!({}),
             harm_f0: 1e9,
             harm_count: 5,
@@ -1629,7 +1645,7 @@ impl DevState {
         aux_clients: usize,
         display_clients: usize,
         audio_clients: usize,
-    ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    ) -> (Vec<Vec<u8>>, IqFrames, IqFrames, Vec<Vec<u8>>) {
         self.tick += 1;
         let center = self.sdr_center;
         let decimate = self.sdr_decimate.max(1);
@@ -1702,14 +1718,14 @@ impl DevState {
         let mut real_rate = None;
         let mut pending = std::mem::take(&mut self.pending_iq);
         let ddc_blocked = self.ddc_error.is_some() && !Self::retry_due(&self.ddc_retry_at);
-        let iq: Vec<Vec<u8>> = if (iq_clients + aux_clients == 0
+        let iq: IqFrames = if (iq_clients + aux_clients == 0
             && (self.hardware_shim.is_none() || display_clients == 0))
             || ddc_blocked
         {
             Vec::new()
         } else if fixture {
             match self.baseband_frame(48_000.0, self.sdr_center) {
-                Ok(frames) => frames,
+                Ok(frames) => frames.into_iter().map(IqFrame::from).collect(),
                 Err(error) => { self.ddc_error = Some(error.into()); Vec::new() }
             }
         } else {
@@ -2347,12 +2363,16 @@ fn signed_bin(freq: f64, center: f64) -> i64 {
 }
 
 /// Real Rust channelizer inside the service: raw 62.5 MSps Complex16 -> PFB -> fine DDC -> IQBF.
+const SDR_PACKET_SAMPLES: usize = 16_240;
+const SDR_BATCH_PACKETS: usize = 4;
+const SDR_BATCH_SAMPLES: usize = SDR_PACKET_SAMPLES * SDR_BATCH_PACKETS;
+
 struct Ddc {
     stream: Box<PfbStream>,
     fine: Option<sdr_pipeline::FineState>,
     fine_worker: Option<sdr_pipeline::FineWorker>,
     direct: BTreeMap<u32, sdr_pipeline::DirectChannel>,
-    carry: Vec<Vec<u8>>,
+    carry: IqFrames,
     pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
     display_fft: Option<display_fft::Analyzer>,
     display_fft_error: Option<String>,
@@ -2374,7 +2394,7 @@ struct Ddc {
     pipeline_timing: sdr_pipeline::PipelineTiming,
     registry: Arc<[sdr_pipeline::ChannelRegistryEntry]>,
     #[cfg(test)]
-    cost_profile: websa_channelizer::FineCostBudget,
+    cost_profile: Option<websa_channelizer::FineCostBudget>,
     service_configs: Option<Vec<receiver_workers::ChannelConfig>>,
 }
 
@@ -2424,19 +2444,23 @@ impl Ddc {
         hardware: &mut Option<HardwareCapture>, aux_frequencies: &[f64],
         taps_per_phase: usize, fs: f64, channels: usize, output_rate_budget: f64,
     ) -> Result<Self, String> {
-        let profile = sdr_pipeline::fine_cost_profile()?;
-        Self::configured_with_cost_budget(center, listen, decimate, bandwidth, hardware,
-            aux_frequencies, taps_per_phase, fs, channels, output_rate_budget, profile)
+        Self::configured_with_optional_profile(center,listen,decimate,bandwidth,hardware,
+            aux_frequencies,taps_per_phase,fs,channels,output_rate_budget,None)
     }
 
-    fn configured_with_cost_budget(
+    #[cfg(test)]
+    fn configured_with_cost_budget(center:f64,listen:f64,decimate:i32,bandwidth:f64,hardware:&mut Option<HardwareCapture>,
+        aux:&[f64],taps:usize,fs:f64,channels:usize,output:f64,profile:websa_channelizer::FineCostBudget)->Result<Self,String> {
+        Self::configured_with_optional_profile(center,listen,decimate,bandwidth,hardware,aux,taps,fs,channels,output,Some(profile))
+    }
+
+    fn configured_with_optional_profile(
         center: f64, listen: f64, decimate: i32, bandwidth: f64,
         hardware: &mut Option<HardwareCapture>, aux_frequencies: &[f64],
-        taps_per_phase: usize, fs: f64, channels: usize, output_rate_budget: f64,
-        cost_profile: websa_channelizer::FineCostBudget,
+        taps_per_phase: usize, fs: f64, channels: usize, _output_rate_budget: f64,
+        _cost_profile: Option<websa_channelizer::FineCostBudget>,
     ) -> Result<Self, String> {
-        sdr_pipeline::check_plan_admission(&cost_profile, decimate, 1 + aux_frequencies.len(),
-            channels, output_rate_budget)?;
+        sdr_pipeline::check_plan_geometry(decimate,1+aux_frequencies.len(),channels)?;
         let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
         let primary = signed_bin(listen, center);
         if !(-m / 2..m / 2).contains(&primary) {
@@ -2469,20 +2493,20 @@ impl Ddc {
             }
         }
         let epoch = allocate_dsp_epoch()?;
-        let stream = PfbStream::with_taps(fs, 16240, bins, epoch as u64, taps_per_phase).ok_or("PFB unavailable")?;
+        let packet_capacity = if fs == IQ_FS { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
+        let stream = PfbStream::with_taps(fs, packet_capacity, bins, epoch as u64, taps_per_phase).ok_or("PFB unavailable")?;
         let rate = stream.sample_rate / decimate as f64;
         let hop = stream.input_hop();
         let mut bank = FineBank::new(
             &stream,
             bandwidth,
-            16240 / hop + 2,
+            packet_capacity / hop + 2,
             channels,
-            output_rate_budget,
+            COARSE_RATE*channels as f64,
             // Same slow-consumer budget as the IQS owner queue gate.
             CONSUMER_BUDGET,
         )
         .ok_or("fine bank unavailable")?;
-        bank.set_cost_budget(cost_profile.clone()).map_err(str::to_owned)?;
         bank.subscribe(1, bin, offset, decimate)
             .map_err(str::to_owned)?;
         let framer =
@@ -2518,7 +2542,7 @@ impl Ddc {
             pipeline_timing: sdr_pipeline::PipelineTiming::new(fs),
             registry,
             #[cfg(test)]
-            cost_profile,
+            cost_profile:_cost_profile,
             service_configs: None,
         })
     }
@@ -2527,7 +2551,7 @@ impl Ddc {
     /// New PFB/fine plan on the same IQS capture (no device reopen). The IQBF stream restarts
     /// at seq 0 with the new rate/centre; the old tail frames are returned first. A failure
     /// leaves the running plan, its aux subscriptions and the capture untouched.
-    fn replan(&mut self, listen: f64, decimate: i32) -> Result<Vec<Vec<u8>>, String> {
+    fn replan(&mut self, listen: f64, decimate: i32) -> Result<IqFrames, String> {
         let aux: Vec<(u32, f64)> = self.aux.iter().map(|(&ch, (_, f, _))| (ch, *f)).collect();
         self.replan_with_aux(listen, decimate, &aux)
     }
@@ -2538,7 +2562,7 @@ impl Ddc {
         listen: f64,
         decimate: i32,
         aux: &[(u32, f64)],
-    ) -> Result<Vec<Vec<u8>>, String> {
+    ) -> Result<IqFrames, String> {
         self.replan_with_taps(listen, decimate, aux, self.stream.taps_per_phase())
     }
 
@@ -2549,11 +2573,11 @@ impl Ddc {
         decimate: i32,
         aux: &[(u32, f64)],
         taps_per_phase: usize,
-    ) -> Result<Vec<Vec<u8>>, String> {
+    ) -> Result<IqFrames, String> {
         let frequencies: Vec<f64> = aux.iter().map(|(_, f)| *f).collect();
         // `configured` only takes the capture after the whole plan has been built, so a
         // rejected frequency or fine bank leaves the old plan's capture in place.
-        let mut next = Self::configured_with_cost_budget(
+        let mut next = Self::configured_with_optional_profile(
             self.capture_center,
             listen,
             decimate,
@@ -2615,7 +2639,7 @@ impl Ddc {
         let aux: Vec<_> = self.aux.iter().map(|(&channel, (_, frequency, _))| (channel, *frequency))
             .filter(|(_, frequency)| (frequency-center).abs() <= bandwidth/2.0).collect();
         let frequencies: Vec<_> = aux.iter().map(|(_, frequency)| *frequency).collect();
-        let mut next = Self::configured_with_cost_budget(center, listen, decimate, bandwidth, &mut None,
+        let mut next = Self::configured_with_optional_profile(center, listen, decimate, bandwidth, &mut None,
             &frequencies, taps_per_phase, fs, aux.len()+1, COARSE_RATE/decimate as f64*(aux.len()+1) as f64,
             self.cost_profile.clone())?;
         for &(channel, frequency) in &aux { next.configure_aux(channel, true, frequency)?; }
@@ -2639,7 +2663,7 @@ impl Ddc {
             next.generation = geometry.generation;
             next.device_decimate = device_decimate as u64;
         }
-        let drained = (|| -> Result<Vec<Vec<u8>>, String> {
+        let drained = (|| -> Result<IqFrames, String> {
             self.stream.flush_pending().map_err(str::to_owned)?;
             let mut tails = std::mem::take(&mut self.carry);
             tails.extend(self.drain()?);
@@ -2663,10 +2687,9 @@ impl Ddc {
     #[cfg(test)]
     /// Moves the primary channel. Inside the provisioned bins only the fine channel changes;
     /// a bin outside the plan, or a new decimation, builds a new plan on the same capture.
-    fn tune(&mut self, listen: f64, decimate: i32) -> Result<Vec<Vec<u8>>, String> {
+    fn tune(&mut self, listen: f64, decimate: i32) -> Result<IqFrames, String> {
         validate_channel_passband(self.capture_center, listen, decimate, self.stream.taps_per_phase())?;
-        sdr_pipeline::check_plan_admission(&self.cost_profile, decimate, 1 + self.aux.len(),
-            1 + self.aux.len(), COARSE_RATE / decimate as f64 * (1 + self.aux.len()) as f64)?;
+        sdr_pipeline::check_plan_geometry(decimate,1+self.aux.len(),1+self.aux.len())?;
         let signed = signed_bin(listen, self.capture_center);
         let m = self.stream.bin_count() as i64;
         let bin = signed.rem_euclid(m) as u32;
@@ -2693,7 +2716,7 @@ impl Ddc {
         self.bank
             .retune(old_id, id, bin, offset, decimate)
             .map_err(str::to_owned)?;
-        if let Some(tail) = self.framer.finish().map_err(str::to_owned)? {
+        if let Some(tail) = self.framer.finish_native().map_err(str::to_owned)? {
             frames.push(tail);
         }
         self.framer = next;
@@ -2779,7 +2802,7 @@ impl Ddc {
             }
         }
         if let Some((_, _, mut framer)) = self.aux.remove(&channel) {
-            if let Some(tail) = framer.finish().map_err(str::to_owned)? {
+            if let Some(tail) = framer.finish_native().map_err(str::to_owned)? {
                 self.carry.push(tail);
             }
         }
@@ -2793,8 +2816,8 @@ impl Ddc {
 
     /// Hardware publishes every 8 ms; IQ framing accumulates 30 blocks/s. Fake mode keeps
     /// its 85 ms source interval.
-    fn step(&mut self) -> Result<Vec<Vec<u8>>, String> {
-        let packets = if self.hardware.is_some() { 32 } else { 329 };
+    fn step(&mut self) -> Result<IqFrames, String> {
+        let packets = if self.hardware.is_some() { 32 / self.capture_batch_packets() } else { 329 };
         let mut frames = std::mem::take(&mut self.carry);
         for _ in 0..packets {
             frames.extend(self.packet()?);
@@ -2802,50 +2825,66 @@ impl Ddc {
         Ok(frames)
     }
 
-    fn packet(&mut self) -> Result<Vec<Vec<u8>>, String> {
-        const N: usize = 16240;
-        let (raw, stamp) = if let Some(capture) = &self.hardware {
-            let packet = loop {
-                if let Some((received, seq, stamp, input_index)) = self.pipeline_timing.received.take() {
-                    let elapsed = received.elapsed();
-                    self.pipeline_timing.consumer_gap.observe(elapsed);
-                    self.pipeline_timing.observe_slow("consumer_gap", seq, stamp, input_index, elapsed);
+    fn capture_batch_packets(&self) -> usize {
+        if self.hardware.is_some() && self.device_decimate == 1 && self.direct.is_empty() {
+            SDR_BATCH_PACKETS
+        } else { 1 }
+    }
+
+    fn packet(&mut self) -> Result<IqFrames, String> {
+        const N: usize = SDR_PACKET_SAMPLES;
+        let batch = self.capture_batch_packets();
+        let (raw, stamp) = if self.hardware.is_some() {
+            let mut raw = Vec::with_capacity(if batch > 1 { 2 * N * batch } else { 0 });
+            let mut first_stamp = 0;
+            for index in 0..batch {
+                let capture = self.hardware.as_ref().unwrap();
+                let packet = loop {
+                    if let Some((received, seq, stamp, input_index)) = self.pipeline_timing.received.take() {
+                        let elapsed = received.elapsed();
+                        self.pipeline_timing.consumer_gap.observe(elapsed);
+                        self.pipeline_timing.observe_slow("consumer_gap", seq, stamp, input_index, elapsed);
+                    }
+                    let packet = capture.next()?;
+                    self.pipeline_timing.received = Some((std::time::Instant::now(), self.next_seq, packet.stamp,
+                        self.input_pos + (index * N) as u64));
+                    // Packets queued before an IQS reconfigure belong to the old centre.
+                    if packet.generation >= self.generation {
+                        break packet;
+                    }
+                };
+                if let Some(last) = self.last_stamp {
+                    // Packet stamps count raw sample clocks: two ticks per complex sample
+                    // times device decimation.
+                    let expected = 2 * N as u64 * self.device_decimate;
+                    let delta = packet.stamp.saturating_sub(last);
+                    if delta.abs_diff(expected) > 8 {
+                        self.stamp_gaps += 1;
+                        eprintln!(
+                            "IQS stamp gap seq={} last={} current={} delta={}",
+                            self.next_seq, last, packet.stamp, delta
+                        );
+                        return Err(format!("IQS stamp discontinuity seq={} delta={delta} expected={expected} last={last} current={}", self.next_seq, packet.stamp));
+                    }
                 }
-                let packet = capture.next()?;
-                self.pipeline_timing.received = Some((std::time::Instant::now(), self.next_seq, packet.stamp, self.input_pos));
-                // Packets queued before an IQS reconfigure belong to the old centre.
-                if packet.generation >= self.generation {
-                    break packet;
+                self.last_stamp = Some(packet.stamp);
+                if let Some(analyzer) = &mut self.display_fft {
+                    let meta = display_fft::Meta {epoch:self.stream.epoch(),generation:packet.generation,
+                        center:self.capture_center,rate:self.stream.input_sample_rate(),bandwidth:self.usable_bandwidth,
+                        scale:packet.scale_to_v};
+                    match analyzer.push(meta,packet.seq,packet.stamp,&packet.iq,packet.warning) {
+                        Ok(Some((freq,power,warning,generation,seq)))=>self.pan.push((freq,power,warning,generation,seq,analyzer.size)),
+                        Ok(None)=>(), Err(error)=>{self.display_fft=None;self.display_fft_error=Some(error);}
+                    }
                 }
-            };
-            if let Some(last) = self.last_stamp {
-                // Packet stamps count raw sample clocks: two ticks per complex sample
-                // times device decimation.
-                let expected = 2 * N as u64 * self.device_decimate;
-                let delta = packet.stamp.saturating_sub(last);
-                if delta.abs_diff(expected) > 8 {
-                    self.stamp_gaps += 1;
-                    eprintln!(
-                        "IQS stamp gap seq={} last={} current={} delta={}",
-                        self.next_seq, last, packet.stamp, delta
-                    );
-                    return Err(format!("IQS stamp discontinuity seq={} delta={delta} expected={expected} last={last} current={}", self.next_seq, packet.stamp));
+                if let Some((freq, power)) = packet.spectrum {
+                    self.pan.push((freq, power, packet.warning, packet.generation, packet.seq,0));
                 }
+                if batch == 1 { return self.process_capture_packet(&packet.iq, packet.stamp); }
+                if index == 0 { first_stamp = packet.stamp; }
+                raw.extend_from_slice(&packet.iq);
             }
-            self.last_stamp = Some(packet.stamp);
-            if let Some(analyzer) = &mut self.display_fft {
-                let meta = display_fft::Meta {epoch:self.stream.epoch(),generation:packet.generation,
-                    center:self.capture_center,rate:self.stream.input_sample_rate(),bandwidth:self.usable_bandwidth,
-                    scale:packet.scale_to_v};
-                match analyzer.push(meta,packet.seq,packet.stamp,&packet.iq,packet.warning) {
-                    Ok(Some((freq,power,warning,generation,seq)))=>self.pan.push((freq,power,warning,generation,seq,analyzer.size)),
-                    Ok(None)=>(), Err(error)=>{self.display_fft=None;self.display_fft_error=Some(error);}
-                }
-            }
-            if let Some((freq, power)) = packet.spectrum {
-                self.pan.push((freq, power, packet.warning, packet.generation, packet.seq,0));
-            }
-            (packet.iq, packet.stamp)
+            (raw, first_stamp)
         } else {
             let mut raw = vec![0i16; N * 2];
             for i in 0..N {
@@ -2855,19 +2894,29 @@ impl Ddc {
             }
             (raw, self.input_pos + N as u64)
         };
-        self.input_pos += N as u64;
+        self.process_capture_packet(&raw, stamp)
+    }
+
+    /// Raw capture input follows the same PFB, fine filters and framing for hardware and probes.
+    fn process_capture_packet(&mut self, raw: &[i16], stamp:u64) -> Result<IqFrames,String> {
+        let count = raw.len()/2;
+        if !matches!(count, SDR_PACKET_SAMPLES | SDR_BATCH_SAMPLES) || raw.len()%2 != 0
+            || (count != SDR_PACKET_SAMPLES && !self.direct.is_empty()) {
+            return Err("invalid capture packet size".into());
+        }
+        self.input_pos += count as u64;
         let seq = self.next_seq;
         let mut frames = Vec::new();
         for route in self.direct.values_mut() {
-            frames.extend(route.process(seq,stamp,self.input_pos-N as u64,&raw)?);
+            frames.extend(route.process(seq,stamp,self.input_pos-count as u64,raw)?);
         }
         let mut retries = 0;
         loop {
             let started = std::time::Instant::now();
-            let submitted = self.stream.submit(seq, stamp, &raw);
+            let submitted = self.stream.submit(seq, stamp, raw);
             let elapsed = started.elapsed();
             self.pipeline_timing.submit.observe(elapsed);
-            self.pipeline_timing.observe_slow("pfb_submit", seq, stamp, self.input_pos - N as u64, elapsed);
+            self.pipeline_timing.observe_slow("pfb_submit", seq, stamp, self.input_pos - count as u64, elapsed);
             match submitted {
                 Ok(()) => break,
                 Err(-2) if retries < 8 => {
@@ -2882,7 +2931,7 @@ impl Ddc {
         Ok(frames)
     }
 
-    fn drain(&mut self) -> Result<Vec<Vec<u8>>, String> {
+    fn drain(&mut self) -> Result<IqFrames, String> {
         let mut frames = Vec::new();
         while let Some(packet) = self.stream.take() {
             if let Some(worker) = self.fine_worker.as_mut() {
@@ -3292,7 +3341,7 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 } else if let Some(gnss) = state.gnss_value.as_mut() {
                     gnss["stale"] = json!(true);
                 }
-                state.channel_power = [None; 3];
+                state.channel_power = vec![None; MAX_CHANNELS];
                 state.stop_pipeline().map_err(device)?;
                 state.finish_radiofax_with_registry(registry).map_err(device)?;
                 state.ddc_failure_diagnostics = None;
@@ -3312,7 +3361,7 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 state.receiver_failure_pending = false;
                 state.decode_snapshots=service_stream::DecodeSnapshots::default();
                 state.consumed_receiver_iq.clear();
-                state.channel_power = [None; 3];
+                state.channel_power = vec![None; MAX_CHANNELS];
                 state.rta_hw = None;
                 state.clear_rta_trigger(state.hardware_shim.is_none());
                 state.swp_hw = None;
@@ -3748,7 +3797,7 @@ struct App {
     next_client: AtomicU64,
     /// Bumped under the state lock when a command changes the transport session.
     epoch: Arc<AtomicU64>,
-    identities: Arc<[AtomicU64;3]>,
+    identities: Arc<[AtomicU64]>,
     /// Display configuration fence; independent of the lossless IQ session epoch.
     display_version: Arc<AtomicU64>,
 }
@@ -4046,8 +4095,8 @@ async fn publisher(app: Arc<App>) {
             let mode = state.swp.mode.clone();
             let epoch = compute.epoch.load(Ordering::Acquire);
             let mut display: Vec<Bytes> = Vec::new();
-            let mut iq_frame: Vec<Vec<u8>> = Vec::new();
-            let mut aux_frame: Vec<Vec<u8>> = Vec::new();
+            let mut iq_frame: IqFrames = Vec::new();
+            let mut aux_frame: IqFrames = Vec::new();
             let mut msgs: Vec<Value> = Vec::new();
             if let Some(error) = preparation_error {
                 msgs.push(json!({"type":"receiver_preparation_error", "error":error}));
@@ -4097,7 +4146,7 @@ async fn publisher(app: Arc<App>) {
                         match source.configure(&configs).and_then(|()|source.step()) {
                             Ok(frames)=>for frame in frames {
                                 if multichannel::auxiliary(&frame) {aux_frame.push(frame);}
-                                else if frame.starts_with(b"IQBF") {iq_frame.push(frame);}
+                                else if frame.header().starts_with(b"IQBF") {iq_frame.push(frame);}
                             },
                             Err(error)=>state.ddc_error=Some(error),
                         }
@@ -4224,7 +4273,12 @@ async fn publisher(app: Arc<App>) {
         }
         let (iq_frame,aux_frame)={
             let mut state=app.state.lock().unwrap();
-            let tagged=(multichannel::tag_iq(&mut state,iq_frame),multichannel::tag_iq(&mut state,aux_frame));
+            let clients=app.clients.lock();
+            let iq_all=clients.iter().any(|client|client.iq&&client.receiver_uid.is_none());
+            let aux_all=clients.iter().any(|client|client.aux&&client.receiver_uid.is_none());
+            let iq_uids:Vec<_>=clients.iter().filter(|client|client.iq).filter_map(|client|client.receiver_uid.clone()).collect();
+            let aux_uids:Vec<_>=clients.iter().filter(|client|client.aux).filter_map(|client|client.receiver_uid.clone()).collect();drop(clients);
+            let tagged=(multichannel::tag_iq_selected(&mut state,iq_frame,iq_all,&iq_uids),multichannel::tag_iq_selected(&mut state,aux_frame,aux_all,&aux_uids));
             let error=if state.swp.mode!="sdr" {Some("capture left SDR mode".to_owned())}
                 else if !state.link_up {Some("capture disconnected".to_owned())} else {state.ddc_error.clone()};
             if let Some(recordings)=state.recordings.as_mut() {recordings.tick(error.as_deref());}
@@ -4568,7 +4622,8 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
     let mut iq_health=tokio::time::interval(Duration::from_millis(500));
     let initial_decode={
         let mut state=app.state.lock().unwrap();
-        if (audio || decode) && state.receiver_failure.is_some() {
+        if (audio || decode) && (state.receiver_failure.is_some() || channel.is_some_and(|channel|
+            state.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(channel)).is_some())) {
             receiver_failed.store(true,Ordering::Release);
         }
     app.clients.lock().push(Client {
@@ -5036,7 +5091,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         next_client: AtomicU64::new(0),
         epoch: Arc::new(AtomicU64::new(0)),
         display_version: Arc::new(AtomicU64::new(0)),
-        identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+        identities:channel_identities(),
     });
     let router = Router::new()
         .route("/api/state", get(api_state))
@@ -5324,7 +5379,7 @@ mod tests {
         state.hardware_shim = Some("must-not-be-opened.so".into());
         let app = Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
             next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
-            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            identities:channel_identities(),
             display_version:Arc::new(AtomicU64::new(0))});
         let task = tokio::spawn(publisher(app.clone()));
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -5351,7 +5406,13 @@ mod tests {
         let error = dispatch(&mut state, "SET_REFCK", &json!({"mode":"premium"})).unwrap_err();
         assert_eq!(error.code, "unsupported");
         assert_eq!(state.ref_clock, "external");
-        assert_eq!(state.status(), before);
+        let hardware_configuration=|mut value:Value| {
+            // Logical identity discovery and monotonic action tokens are
+            // observations; all hardware and channel settings must remain equal.
+            for channel in value["sdr"]["channels"].as_array_mut().unwrap() {channel.as_object_mut().unwrap().remove("control");}
+            value
+        };
+        assert_eq!(hardware_configuration(state.status()), hardware_configuration(before.clone()));
         assert_eq!(before["has_docxo"], false);
         assert_eq!(before["has_premium_ref_clock"], false);
         assert_eq!(before["actual"]["refclk_src"], 0);
@@ -5478,8 +5539,8 @@ mod tests {
         let mut reference = build();
         reference.stream.flush_pending().unwrap();
         let mut expected = reference.drain().unwrap();
-        expected.push(reference.framer.finish().unwrap().unwrap());
-        expected.push(reference.aux.get_mut(&2).unwrap().2.finish().unwrap().unwrap());
+        expected.push(reference.framer.finish_native().unwrap().unwrap());
+        expected.push(reference.aux.get_mut(&2).unwrap().2.finish_native().unwrap().unwrap());
         let mut switched = build();
         let old_epoch = switched.stream.epoch();
         let frames = switched.replan_with_taps(center, 20, &[(2, aux_freq)], 8).unwrap();
@@ -6132,7 +6193,7 @@ mod tests {
             audio: false,
             decode:false,
             channel:None,receiver_uid:None,
-            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            identities:channel_identities(),
             latest: Arc::new(parking_lot::Mutex::new((None, None))),
         };
         send_or_count(&client, Message::Binary(vec![1].into()), 0);
@@ -6154,7 +6215,7 @@ mod tests {
             next_client: AtomicU64::new(0),
             epoch: Arc::new(AtomicU64::new(0)),
             display_version: Arc::new(AtomicU64::new(0)),
-            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            identities:channel_identities(),
         });
         let router = Router::new()
             .route("/ws", get(ws_handler))
@@ -6834,6 +6895,7 @@ mod tests {
             let state=app.state.lock().unwrap();
             service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
                 audio_configs:Vec::new(),audio:Vec::new(),decode:vec![frame(1,0,json!({"type":"start"}))],
+                ..Default::default()
             },false);
         }
         let start=next_binary(&mut paced).await;
@@ -6851,6 +6913,7 @@ mod tests {
                     service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
                         audio_configs:Vec::new(),audio:Vec::new(),decode:vec![frame(2,seq,json!({"type":"radiofax-state"})),
                             frame(3,seq,json!({"type":"radiofax-state"}))],
+                        ..Default::default()
                     },retiring);
                 }
             }
@@ -6865,6 +6928,7 @@ mod tests {
             let state=app.state.lock().unwrap();
             service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
                 audio_configs:Vec::new(),audio:Vec::new(),decode:vec![frame(1,1,json!({"type":"radiofax-state"}))],
+                ..Default::default()
             },false);
         }
         let following=next_binary(&mut paced).await;
@@ -7073,6 +7137,39 @@ mod tests {
         })
         .await
         .expect("client registration survived slow-consumer close");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn eighth_slow_audio_consumer_closes_without_retiring_healthy_connection() {
+        let (app, url) = start_ws_server().await;
+        let mut healthy = connect_ws(&url).await;
+        wait_for_client(&app).await;
+        let mut slow = connect_ws(&format!("{url}/audio?channel=8")).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while app.clients.lock().len() != 2 {tokio::task::yield_now().await;}
+        }).await.expect("both consumers registered");
+        {
+            let clients = app.clients.lock();
+            let audio = clients.iter().find(|client|client.audio && client.channel == Some(8)).unwrap();
+            for _ in 0..65 {
+                send_or_count(audio, Message::Binary(b"AUD2".to_vec().into()), app.epoch.load(Ordering::Acquire));
+            }
+        }
+        let close = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let WsMessage::Close(Some(frame)) = next_ws(&mut slow).await {break frame;}
+            }
+        }).await.expect("audio overflow closes within deadline");
+        assert_eq!(u16::from(close.code), 1013);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while app.clients.lock().len() != 1 {tokio::task::yield_now().await;}
+        }).await.expect("only the slow audio consumer is removed");
+        healthy.send(WsMessage::Ping(b"healthy".to_vec().into())).await.unwrap();
+        loop {
+            if let WsMessage::Pong(bytes) = next_ws(&mut healthy).await {
+                assert_eq!(bytes.as_ref(), b"healthy");break;
+            }
+        }
     }
 
 

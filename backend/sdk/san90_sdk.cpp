@@ -11,6 +11,25 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <cstdio>
+#include "iqs_usb_pipeline.hpp"
+
+// The vendor's IQS reader uses synchronous 64 KiB bulk reads. Keep bounded reads
+// in flight at full rate on a bounded USB pump; SDK calls retain their owner.
+// Other endpoints and capture rates retain the original libusb operation.
+extern "C" int LIBUSB_CALL libusb_init(libusb_context** out) {
+    auto& pipeline = websa_iqs_usb::current();
+    const auto init = pipeline.api().init;
+    if (!init) return LIBUSB_ERROR_NOT_SUPPORTED;
+    const int result = init(out);
+    if (!result) pipeline.context(out ? *out : nullptr);
+    return result;
+}
+extern "C" int LIBUSB_CALL libusb_bulk_transfer(libusb_device_handle* device,
+    unsigned char endpoint, unsigned char* data, int length, int* transferred,
+    unsigned int timeout) {
+    return websa_iqs_usb::current().read(device, endpoint, data, length, transferred, timeout);
+}
 
 struct San90Device;
 struct San90RtaDevice;
@@ -38,12 +57,16 @@ class San90Session {
     std::thread::id owner_;
     std::thread worker_;
     void run() {
+#if defined(__linux__)
+        pthread_setname_np(pthread_self(),"san90-session");
+#endif
         std::unique_lock<std::mutex> lock(work_);
         owner_ = std::this_thread::get_id();
         wake_.notify_all();
         for (;;) {
             wake_.wait(lock, [&] { return operation_ || stopping_; });
             if (stopping_) return;
+            websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::operation);
             auto operation = operation_;
             auto argument = argument_;
             lock.unlock();
@@ -63,6 +86,7 @@ class San90Session {
                 handle = nullptr;
                 healthy = false;
             }
+            websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::idle);
             lock.lock();
             result_ = result;
             operation_ = nullptr;
@@ -346,6 +370,7 @@ extern "C" int san90_clock_capabilities_v1(void* state, int* ocxo_type, int* int
 static int san90_iqs_configure(San90Device* state, double center_hz, const San90FrontEnd& fe,
                                double* usable_bandwidth, double* configured_center,
                                int device_decimate) {
+    websa_iqs_usb::current().stop();
     if (state->triggered) {
         int status = IQS_BusTriggerStop(&state->handle);
         if (status == -8 || status == -9) return status;
@@ -465,6 +490,9 @@ extern "C" int san90_iqs_arm_v1(San90Device* state) {
     int status = IQS_BusTriggerStart(&state->handle);
     if (status) return status;
     state->triggered = true;
+    if (websa_iqs_usb::current().start(state->sample_rate_hz == 62500000.0))
+        std::fprintf(stderr, "SDK IQS: %u ordered USB transfers, %u packet handoff at 62.5 MSps\n",
+            websa_iqs_usb::Pipeline::transfer_count(), websa_iqs_usb::Pipeline::handoff_capacity());
     return 0;
 }
 
@@ -491,6 +519,7 @@ extern "C" int san90_next(San90Device* state, int16_t* dest, uint32_t capacity,
     if (!san90_session.usable()) return -8;
     if (!state || !state->triggered || !dest || !info || capacity < 16240) return -100;
     IQStream_TypeDef stream{};
+    websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fetch);
     int status = IQS_GetIQStream_PM1(&state->handle, &stream);
     if (status && status != APIRETVAL_WARNING_IFOverflow) return status;
     auto n = stream.IQS_StreamInfo.PacketSamples;
@@ -533,6 +562,7 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
     *spectrum_points = 0;
     IQStream_TypeDef stream{};
     const auto fetch_started = San90Clock::now();
+    websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fetch);
     int status = IQS_GetIQStream_PM1(&state->handle, &stream);
     state->timing.fetch_ns = san90_elapsed_ns(fetch_started);
     state->timing.fetch_status = status;
@@ -544,6 +574,7 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
     int warning = (status == APIRETVAL_WARNING_IFOverflow || stream.DeviceState.IFOverflow)
         ? APIRETVAL_WARNING_IFOverflow : 0;
     const auto copy_started = San90Clock::now();
+    websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::copy);
     std::memcpy(dest, stream.AlternIQStream, n * 2 * sizeof(int16_t));
     state->timing.memcpy_ns = san90_elapsed_ns(copy_started);
     state->timing.measured |= 4;
@@ -561,6 +592,7 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
         fft.IQS_StreamInfo.IQSampleRate = state->sample_rate_hz;
         fft.IQS_StreamInfo.Bandwidth = state->bandwidth_hz;
         const auto fft_started = San90Clock::now();
+        websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fft);
         status = DSP_FFT_IQSToSpectrum(&state->dsp, &fft, freq, power);
         state->timing.fft_ns = san90_elapsed_ns(fft_started);
         state->timing.fft_status = status;
@@ -1607,6 +1639,15 @@ extern "C" int san90_gnss_cached_v1(void* state, int* lock, int* sats, int* docx
 extern "C" int san90_close(San90Device* state) {
     SAN90_DISPATCH(state, san90_close(state));
     if (!state) return -100;
+    auto& usb = websa_iqs_usb::current();
+    usb.stop();
+    const auto stats = usb.stats();
+    if (stats.submitted)
+        std::fprintf(stderr, "SDK IQS USB: delivered=%llu submitted=%llu failed=%llu cancelled=%llu depth=%u handoff_peak=%llu handoff_age_ms=%.3f discarded_at_stop=%llu\n",
+            static_cast<unsigned long long>(stats.delivered), static_cast<unsigned long long>(stats.submitted),
+            static_cast<unsigned long long>(stats.failed), static_cast<unsigned long long>(stats.cancelled),
+            websa_iqs_usb::Pipeline::transfer_count(), static_cast<unsigned long long>(stats.peak_queued_packets),
+            stats.max_queue_age_ns / 1e6, static_cast<unsigned long long>(stats.discarded));
     int status = san90_session.usable() && state->triggered ? IQS_BusTriggerStop(&state->handle) : 0;
     if (status) san90_open_failed(status);
     if (state->dsp) {

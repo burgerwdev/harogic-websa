@@ -1,3 +1,4 @@
+import { channelState } from '../core/channelState';
 // Gray8 storage segments belong to a logical page identified by stream epoch and transmission.
 // Images remain session-local through receiver resets; explicit deletion and budget eviction remove them.
 export const RADIOFAX_CHANNEL_BYTES = 20 * 1024 * 1024;
@@ -93,7 +94,7 @@ export function parseRadiofaxTransmissionId(value: unknown): bigint {
 	if (transmission > 18_446_744_073_709_551_615n) throw new Error('Radiofax transmission id overflow');
 	return transmission;
 }
-type Channel = 1 | 2 | 3;
+type Channel = number;
 interface Context {
 	status: RadiofaxStatus;
 	livePageId: string | null;
@@ -108,7 +109,7 @@ const newContext = (): Context => ({
 	livePageId: null, suppressedPageId: null, blockedPageId: null,
 	latestIdentity: null, latestTransmission: -1n,
 });
-const contexts: Record<Channel, Context> = { 1: newContext(), 2: newContext(), 3: newContext() };
+const contexts = channelState(newContext);
 const blockedPages = new WeakSet<RadiofaxPage>();
 // A revised prefix may be newer than the retained tail. Track transport progress
 // separately from visible height so preserving old rows cannot hide wire gaps.

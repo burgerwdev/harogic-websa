@@ -5,11 +5,11 @@ use super::nr::NrAlgorithm;
 use ort::{session::{builder::GraphOptimizationLevel, Session, SessionInputValue},
     value::{Tensor, ValueType, TensorElementType}};
 use rustfft::{num_complex::Complex32 as C, Fft, FftPlanner};
-use std::{cell::{OnceCell, RefCell}, collections::VecDeque, path::PathBuf, rc::Rc, sync::{Arc, OnceLock}};
+use std::{cell::RefCell, collections::VecDeque, path::PathBuf, rc::Rc, sync::{Arc, OnceLock}};
 
 type Model = Rc<RefCell<Session>>;
 thread_local! {
-    static MODELS: [OnceCell<Result<Model, String>>; 3] = const { [OnceCell::new(), OnceCell::new(), OnceCell::new()] };
+    static MODELS: RefCell<[Option<Result<Model,String>>;3]> = const { RefCell::new([None,None,None]) };
 }
 static ORT: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -49,6 +49,10 @@ fn zeros(shape: &[usize]) -> Result<Tensor<f32>, String> {
     Tensor::from_array((shape.to_vec(), vec![0.0;shape.iter().product()])).map_err(|e|e.to_string())
 }
 fn build(algorithm: NrAlgorithm) -> Result<Model, String> {
+    let mut preparation=crate::model_preparation::Preparation::acquire()?;
+    let result=(|| {
+    #[cfg(feature="bench-instrument")]
+    crate::execution_probe::run("prepare-onnx",index(algorithm) as u64)?;
     runtime()?;
     let mut session = Session::builder().map_err(|e|e.to_string())?
         .with_intra_threads(1).map_err(|e|e.to_string())?
@@ -77,10 +81,18 @@ fn build(algorithm: NrAlgorithm) -> Result<Model, String> {
     }
     drop(output);
     Ok(Rc::new(RefCell::new(session)))
+    })();preparation.finish(result.is_ok());result
 }
 fn model(algorithm: NrAlgorithm) -> Result<Model, String> {
-    MODELS.with(|models| models[index(algorithm)].get_or_init(||build(algorithm)).clone())
+    MODELS.with(|models|models.borrow_mut()[index(algorithm)].get_or_insert_with(||build(algorithm)).clone())
 }
+pub(super) fn retain_selected(algorithm:NrAlgorithm) {
+    MODELS.with(|models| {for (slot,model) in models.borrow_mut().iter_mut().enumerate() {
+        if !matches!(algorithm,NrAlgorithm::Gtcrn|NrAlgorithm::UlUnas|NrAlgorithm::FastEnhancer)
+            || slot!=index(algorithm) || model.as_ref().is_some_and(Result::is_err) {*model=None;}
+    }});
+}
+pub(super) fn session_count()->usize {MODELS.with(|models|models.borrow().iter().filter(|model|model.as_ref().is_some_and(Result::is_ok)).count())}
 pub(super) fn prepare() {
     for algorithm in [NrAlgorithm::Gtcrn, NrAlgorithm::UlUnas, NrAlgorithm::FastEnhancer] { let _ = model(algorithm); }
 }

@@ -51,6 +51,7 @@ pub struct RttyBridge {
     mode: String,
 }
 impl RttyBridge {
+    pub fn buffer_status(&self)->serde_json::Value {self.process.buffer_status()}
     pub fn spawn(mode: &str, rate: u32) -> Result<Self, String> {
         if rate != 48_000 { return Err("RTTY requires exactly 48000 complex samples/s".into()); }
         let reverse = match mode { "rtty" => false, "rtty-reverse" => true, _ => return Err("unknown RTTY mode".into()) };

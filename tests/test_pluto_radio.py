@@ -139,6 +139,15 @@ def test_an_accepted_lo_keeps_the_trim_until_the_exit(monkeypatch):
                                                                  str(radio.XO_NOMINAL_HZ)]
 
 
+def test_bench_can_preserve_the_existing_rate_and_custom_fir(monkeypatch):
+    factory = _fake_adi(monkeypatch, refuse_lo=False)
+    args = _args()
+    args.rate = 2_500_000
+    with radio.Radio(args, preserve_rate=True) as tx:
+        assert tx.rate == 521000
+        assert factory.instances[0].sample_rate == 521000
+
+
 @pytest.mark.parametrize('initial', ['0', '1'])
 def test_tx_lo_power_is_enabled_and_restored_on_interruption(monkeypatch, initial):
     factory = _fake_adi(monkeypatch, refuse_lo=False)

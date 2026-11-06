@@ -364,8 +364,8 @@ def run_native_pool(next_packet, fs: float, n: int, center: float,
         stats = pool.stats()
         assert stats['submitted'] == stats['completed'] == delivered
         assert stats['groups'] == groups
-        capacity = stats['task_capacity']
-        assert capacity == stats['result_capacity'] == 6
+        capacity = stats['result_capacity']
+        assert stats['task_capacity'] == 4 and capacity == 6
         # Ready results are 32-byte metadata, but they are still bounded: the pool
         # never holds more than one in-flight result per worker plus its two slots.
         if stats['max_pending'] > capacity or stats['max_ready'] > capacity:

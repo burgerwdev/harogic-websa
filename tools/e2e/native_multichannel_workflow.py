@@ -30,90 +30,133 @@ def browser_gate(origin, snapshot, artifacts):
         context = browser.new_context(viewport={'width': 1600, 'height': 1100})
         page = context.new_page(); errors = []; commands = []
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.on('request', lambda r: commands.append(json.loads(r.post_data))
-            if r.method == 'POST' and r.url == origin + '/api/sdr/receivers' else None)
+        page.on('request', lambda request: commands.append(json.loads(request.post_data))
+            if request.method == 'POST' and request.url == origin + '/api/sdr/receivers' else None)
         page.goto(origin); wait_ui_ready(page, 'sdr')
         page.locator('[data-action=sdr-workbench]').click()
         view = page.locator('[data-view-id=overview-follow]')
 
         def row(target):
-            return view.locator(f'.mc-row[data-uid="{target}"]')
+            item = view.locator(f'.mc-row[data-uid="{target}"]')
+            more = item.locator('.mc-row-more')
+            if not more.evaluate('element=>element.open'):
+                more.locator(':scope > summary').click()
+            return item
 
         def select(target):
             row(target).locator('[data-action=select]').click()
             expect(view).to_have_attribute('data-receiver-uid', target)
 
-        def review(surface=view):
-            surface.locator('[data-config] button[type=submit]').click()
-            expect(surface.locator('[data-preview] button')).to_be_enabled()
+        def frequency(surface, hz):
+            surface.locator('[data-frequency-unit=Hz]').click()
+            surface.locator('[name=frequency]').fill(str(hz))
 
-        def apply(surface=view):
-            previous = next(r['revision'] for r in api(origin)['receivers'] if r['receiver_uid'] == uid)
-            surface.locator('[data-preview] button').focus()
-            surface.locator('[data-preview] button').press('Space', delay=1100)
-            until(lambda: next(r for r in api(origin)['receivers'] if r['receiver_uid'] == uid)['revision'] != previous)
+        def advanced(surface=view):
+            button = surface.locator('[data-action=advanced-settings]')
+            if button.get_attribute('aria-expanded') != 'true':
+                button.click()
+            section = surface.locator('[data-section=processor]')
+            if not section.evaluate('element=>element.open'):
+                section.locator(':scope > summary').click()
+
+        def submit_settings(surface=view, target=uid):
+            previous = next(r['revision'] for r in api(origin)['receivers'] if r['receiver_uid'] == target)
+            button = surface.locator('[data-config] button[type=submit]')
+            button.focus(); button.press('Space', delay=1100)
+            try:
+                until(lambda: next(r for r in api(origin)['receivers'] if r['receiver_uid'] == target)['revision'] != previous)
+            except AssertionError:
+                page.screenshot(path=str(artifacts / 'submit-failure.png'))
+                (artifacts / 'submit-failure.json').write_text(json.dumps({'snapshot': api(origin), 'commands': commands,
+                    'form': surface.locator('[data-config]').evaluate('form=>({revision:form.dataset.revision, valid:form.checkValidity(), values:[...form.elements].filter(e=>e.name).map(e=>({name:e.name,value:e.value,valid:e.validity.valid,message:e.validationMessage}))})'),
+                    'preview': surface.locator('[data-preview]').inner_text()}, indent=2)+'\n')
+                raise
             expect(surface.locator('[data-preview] button')).to_have_count(0)
 
-        def save_preset(name):
+        def preset_panel():
             panel = view.locator('[data-receiver-presets]')
-            if not panel.evaluate('e=>e.open'):
+            if not panel.evaluate('element=>element.open'):
                 panel.locator('summary').click()
+            return panel
+
+        def save_preset(name):
+            panel = preset_panel()
             panel.locator('[data-preset-name]').fill(name)
             panel.locator('[data-preset-save]').click()
             expect(panel.locator('[data-preset-status]')).to_have_text('Saved')
 
-        # All three native workers are occupied by different channels and track kinds.
+        def review_preset(name):
+            panel = preset_panel()
+            panel.locator('[data-preset-list]').select_option(name)
+            panel.locator('[data-preset-load]').click()
+            expect(view.locator('[data-preview] button')).to_be_enabled()
+
+        def confirm_preset(target=uid):
+            previous = next(r['revision'] for r in api(origin)['receivers'] if r['receiver_uid'] == target)
+            button = view.locator('[data-preview] button')
+            button.focus(); button.press('Space', delay=1100)
+            until(lambda: next(r for r in api(origin)['receivers'] if r['receiver_uid'] == target)['revision'] != previous)
+            expect(view.locator('[data-preview] button')).to_have_count(0)
+
         for target, kind in [(uid, 'audio'), (second, 'results'), (third, 'iq')]:
             row(target).locator(f'[data-action=rec-{kind}]').click()
         until(lambda: len([t for t in api(origin)['recordings'] if t['state'] == 'recording']) == 3)
         tasks = {t['tracks'][0]['kind']: t['task_id'] for t in api(origin)['recordings']}
-        row(uid).locator('[data-action=listen]').click()
-        row(second).locator('[data-action=listen]').click()
+        for target in [uid, second]:
+            button = row(target).locator('[data-action=listen]')
+            if button.get_attribute('aria-pressed') != 'true':
+                button.click()
         page.wait_for_function('uids=>uids.every(uid=>window.websaAudioStatus().some(r=>r.channel===uid&&r.playedFrames>1000&&!r.error))', arg=[uid, second])
         row(second).locator('[data-action=results]').click()
         results = page.locator(f'[data-view-id="results-{second}"]')
         expect(results.locator('.mc-message-table tbody tr')).not_to_have_count(0, timeout=35000)
         results.locator('[data-close]').click()
-        save_preset('Daily AM')
+        select(uid); save_preset('Daily AM')
         select(second); save_preset('Daily FT8'); select(uid)
         before = api(origin)
         initial_tasks = {kind: task(origin, task_id) for kind, task_id in tasks.items()}
-        expect(view.locator('.mc-channel-actions [data-action=duplicate]')).to_be_disabled()
+        duplicate = view.locator('.mc-channel-actions [data-action=duplicate]')
+        if len(before['receivers']) < before['capabilities']['max_channels']:
+            expect(duplicate).to_be_enabled()
+        else:
+            expect(duplicate).to_be_disabled()
 
-        # First use of a mode uses defaults, not another mode's audio settings.
+        # Ordinary forms apply directly. A held key submits one confirmed edit.
+        page.wait_for_timeout(100)
         view.locator('[name=mode]').select_option('usb')
         expect(view.locator('[name=pcm-gain]')).to_have_value('0.5')
         expect(view.locator('[name=agc]')).to_be_checked()
-        view.locator('[data-section=processor] summary').click()
+        advanced()
         view.locator('[name=processor-bandwidth]').fill('2700')
         view.locator('[name=pcm-gain]').fill('0.65')
-        review(); apply()
+        submit_settings()
         usb = next(r for r in api(origin)['receivers'] if r['receiver_uid'] == uid)
-        # Same-tab reload retains previously confirmed AM parameters, without applying them.
+        assert usb['confirmed']['processors'][0]['mode'] == 'usb'
+        assert usb['confirmed']['processors'][0]['bandwidth_hz'] == 2700
         page.reload(); wait_ui_ready(page, 'sdr'); page.locator('[data-action=sdr-workbench]').click()
+        select(uid)
         view.locator('[name=mode]').select_option('am')
         expect(view.locator('[name=processor-bandwidth]')).to_have_value('8500')
         expect(view.locator('[name=pcm-gain]')).to_have_value('0.3')
         expect(view.locator('[name=agc]')).not_to_be_checked()
         expect(view.locator('[name=squelch]')).to_have_value('-90')
         count = len(commands)
-        # Editing after preview removes its old Apply, including select and checkbox edits.
-        review(); view.locator('[name=frequency]').fill('100001000')
-        expect(view.locator('[data-preview] button')).to_have_count(0)
-        review(); view.locator('[name=mode]').select_option('usb')
-        expect(view.locator('[data-preview] button')).to_have_count(0)
+        view.locator('[name=mode]').select_option('usb'); advanced()
         expect(view.locator('[name=processor-bandwidth]')).to_have_value('2700')
-        # Unconfirmed changes never replace confirmed mode memory.
-        view.locator('[data-section=processor] summary').click()
         view.locator('[name=processor-bandwidth]').fill('2900')
         view.locator('[name=mode]').select_option('am'); view.locator('[name=mode]').select_option('usb')
         expect(view.locator('[name=processor-bandwidth]')).to_have_value('2700')
-        assert len(commands) == count
-        view.locator('[name=mode]').select_option('am'); review()
-        view.locator('[name=agc]').check()
+        assert len(commands) == count, 'unsubmitted mode drafts changed the backend'
+
+        # Presets retain their explicit preview, invalidated by any further edit.
+        review_preset('Daily AM'); frequency(view, 100001000)
         expect(view.locator('[data-preview] button')).to_have_count(0)
-        view.locator('[name=agc]').uncheck(); review()
-        # Pop out/Dock retains the original form, its draft, preview and selection.
+        review_preset('Daily AM'); view.locator('[name=mode]').select_option('usb')
+        expect(view.locator('[data-preview] button')).to_have_count(0)
+        review_preset('Daily AM'); view.locator('[name=agc]').check()
+        expect(view.locator('[data-preview] button')).to_have_count(0)
+        assert len(commands) == count
+        review_preset('Daily AM')
         with page.expect_popup() as opened:
             view.locator('[data-pop]').click()
         child = opened.value; child.on('pageerror', lambda error: errors.append(str(error)))
@@ -121,13 +164,14 @@ def browser_gate(origin, snapshot, artifacts):
         child.wait_for_function("Array.from(document.querySelectorAll('link[rel=stylesheet]')).every(link=>link.sheet!==null)")
         child.evaluate('document.fonts.ready')
         compact = child.locator('[data-view-id=overview-follow]')
+        expect(compact.locator('[data-preview] button')).to_be_enabled()
         compact.locator('[name=name]').fill('Daily AM edited')
         expect(compact.locator('[data-preview] button')).to_have_count(0)
-        compact.locator('[name=name]').press('Home'); compact.locator('[name=name]').press('Shift+ArrowRight')
-        compact.locator('[name=name]').evaluate('e=>window.keptName=e')
+        frequency(compact, 100001000)
+        name = compact.locator('[name=name]')
+        name.press('Home'); name.press('Shift+ArrowRight'); name.evaluate('e=>window.keptName=e')
         child.wait_for_timeout(1200)
-        assert compact.locator('[name=name]').evaluate('e=>e===window.keptName&&e.selectionStart===0&&e.selectionEnd===1')
-        review(compact)
+        assert name.evaluate('e=>e===window.keptName&&e.selectionStart===0&&e.selectionEnd===1')
         page.locator('#btn-lang').click(); page.locator('#btn-theme').click()
         expect(child.locator('html')).to_have_attribute('lang', 'zh-CN')
         expect(child.locator('html')).to_have_attribute('data-theme', 'light')
@@ -138,19 +182,17 @@ def browser_gate(origin, snapshot, artifacts):
             child.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
         expect(view.locator('[name=name]')).to_have_value('Daily AM edited')
         page.locator('#btn-lang').click(); page.locator('#btn-theme').click()
-        apply()
+        submit_settings()
         am = next(r for r in api(origin)['receivers'] if r['receiver_uid'] == uid)
         assert am['confirmed']['name'] == 'Daily AM edited'
         assert am['confirmed']['baseband']['frequency_hz'] == 100001000
         assert am['confirmed']['processors'][0]['bandwidth_hz'] == 8500
         assert am['confirmed']['processors'][0]['agc'] is False
-        # Presets replace the draft explicitly; mode memory only follows their eventual confirmation.
-        panel = view.locator('[data-receiver-presets]')
-        if not panel.evaluate('e=>e.open'):
-            panel.locator('summary').click()
-        panel.locator('[data-preset-list]').select_option('Daily AM'); panel.locator('[data-preset-load]').click()
-        expect(view.locator('[name=frequency]')).to_have_value('100000000')
-        apply()
+        review_preset('Daily AM')
+        scale = {'Hz': 1, 'kHz': 1000, 'MHz': 1000000, 'GHz': 1000000000}[
+            view.locator('[name=frequency-unit]').input_value()]
+        assert float(view.locator('[name=frequency]').input_value()) * scale == 100000000
+        confirm_preset()
         restored = next(r for r in api(origin)['receivers'] if r['receiver_uid'] == uid)
         assert restored['confirmed']['name'] == 'Daily AM edited'
         assert_receivers_continue(before['receivers'][1:], api(origin)['receivers'][1:])
@@ -158,52 +200,41 @@ def browser_gate(origin, snapshot, artifacts):
             current = task(origin, tasks[kind]); old = initial_tasks[kind]
             assert current['state'] == 'recording' and len(current['tracks'][0]['segments']) == 1
             assert int(current['tracks'][0]['raw_bytes']) > int(old['tracks'][0]['raw_bytes'])
-        # Closing every view then the whole page leaves all backend recordings active.
         closed_audio_bytes = int(task(origin, tasks['audio'])['tracks'][0]['raw_bytes'])
         view.locator('[data-close]').click(); page.close()
-        until(lambda: all(task(origin, task_id)['state'] == 'recording' for task_id in tasks.values()))
         until(lambda: int(task(origin, tasks['audio'])['tracks'][0]['raw_bytes']) > closed_audio_bytes)
+        assert all(task(origin, identity)['state'] == 'recording' for identity in tasks.values())
         page = context.new_page(); page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto(origin); wait_ui_ready(page, 'sdr'); page.locator('[data-action=sdr-workbench]').click()
         view = page.locator('[data-view-id=overview-follow]')
         expect(view).to_have_attribute('data-receiver-uid', uid)
-        # Reception stop ends only that channel's audio task; restart cannot restart recording.
         view.locator('[data-action=toggle-receiver]').click()
         until(lambda: task(origin, tasks['audio'])['state'] == 'completed')
         expect(view.locator('[data-action=toggle-receiver]')).to_have_attribute('aria-checked', 'false')
-        assert task(origin, tasks['iq'])['state'] == 'recording' and task(origin, tasks['results'])['state'] == 'recording'
+        assert all(task(origin, tasks[kind])['state'] == 'recording' for kind in ['iq', 'results'])
         view.locator('[data-action=toggle-receiver]').click()
         until(lambda: api(origin)['receivers'][0]['state'] == 'running')
-        expect(view.locator('[data-action=toggle-receiver]')).to_have_attribute('aria-checked', 'true')
         assert task(origin, tasks['audio'])['state'] == 'completed'
         view.locator('[data-action=toggle-receiver]').click()
         until(lambda: api(origin)['receivers'][0]['state'] == 'stopped')
         for target, kind in [(second, 'results'), (third, 'iq')]:
             row(target).locator(f'[data-action=rec-{kind}]').click()
             until(lambda kind=kind: task(origin, tasks[kind])['state'] == 'completed')
-        finished = {kind: task(origin, task_id) for kind, task_id in tasks.items()}
-        # Free one definition, duplicate the stopped channel and reuse another preset.
-        select(third)
-        view.locator('.mc-channel-actions [data-action=retire]').click()
+        finished = {kind: task(origin, identity) for kind, identity in tasks.items()}
+        select(third); view.locator('.mc-channel-actions [data-action=retire]').click()
         until(lambda: len(api(origin)['receivers']) == 2)
-        select(uid)
-        view.locator('.mc-channel-actions [data-action=duplicate]').click()
+        select(uid); view.locator('.mc-channel-actions [data-action=duplicate]').click()
         added = until(lambda: next((r for r in api(origin)['receivers'] if r['receiver_uid'] not in [uid, second]), None))
         new_uid = added['receiver_uid']; expect(view).to_have_attribute('data-receiver-uid', new_uid)
-        assert added['confirmed']['enabled'] is False and added['confirmed']['processors'] == restored['confirmed']['processors']
+        assert not added['confirmed']['enabled'] and added['confirmed']['processors'] == restored['confirmed']['processors']
         view.locator('[name=mode]').select_option('usb')
-        default_usb = next(m['defaultBandwidthHz'] for m in snapshot['capabilities']['mode_descriptors'] if m['id'] == 'usb')
+        default_usb = next(mode['defaultBandwidthHz'] for mode in snapshot['capabilities']['mode_descriptors'] if mode['id'] == 'usb')
         expect(view.locator('[name=processor-bandwidth]')).to_have_value(f'{default_usb:g}')
-        panel = view.locator('[data-receiver-presets]')
-        if not panel.evaluate('e=>e.open'):
-            panel.locator('summary').click()
-        panel.locator('[data-preset-list]').select_option('Daily FT8'); panel.locator('[data-preset-load]').click()
-        view.locator('[data-preview] button').click()
-        until(lambda: next(r for r in api(origin)['receivers'] if r['receiver_uid'] == new_uid)['confirmed']['purpose'] == 'digital')
+        review_preset('Daily FT8'); confirm_preset(new_uid)
         new = next(r for r in api(origin)['receivers'] if r['receiver_uid'] == new_uid)
         assert new['confirmed']['name'] == added['confirmed']['name'] and not new['confirmed']['enabled']
         presets = api(origin, '/api/sdr/receiver-presets')['presets']
-        assert new['confirmed']['processors'] == next(p['settings']['processors'] for p in presets if p['name'] == 'Daily FT8')
+        assert new['confirmed']['processors'] == next(item['settings']['processors'] for item in presets if item['name'] == 'Daily FT8')
         assert all(t['state'] == 'completed' for t in api(origin)['recordings'])
         page.screenshot(path=str(artifacts / 'workflow-final.png'))
         assert not errors, errors

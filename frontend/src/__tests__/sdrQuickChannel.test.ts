@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
-import { mountSdrQuickChannel } from '../ui/sdrQuickChannel';
+import { currentChannelConfig, mountSdrQuickChannel } from '../ui/sdrQuickChannel';
 import { sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength } from '../ui/sdrState';
 import { setCurrentSdrChannel } from '../ui/sdrChannels';
 import { receiverPlugin } from './pluginFixtures';
@@ -82,5 +82,20 @@ describe('main spectrum quick channel', () => {
     const second = ui.add(); await settle(); await second;
     expect(session.snapshot.receivers).toHaveLength(5);
     expect(session.snapshot.receivers.slice(3).map(r => r.confirmed.processors[0].nr_atten_db)).toEqual([12, 18]);
+  });
+  it('copies an already running neural receiver without requiring another algorithm or changing its gain and AGC', async () => {
+    mount(4);
+    const config = currentChannelConfig(session);
+    const configured = session.configure('fixture-c1', config); await settle(); await configured;
+    const before = structuredClone(session.snapshot.receivers);
+    vi.mocked(adapter.dispatch).mockClear();
+    const added = ui.add(); await settle(); await added;
+    expect(document.querySelector('dialog')!.open).toBe(false);
+    expect(adapter.dispatch).toHaveBeenCalledTimes(1);
+    expect(session.snapshot.receivers.slice(0, 3)).toEqual(before);
+    const copy = session.snapshot.receivers[3];
+    expect(copy.confirmed.processors[0]).toMatchObject({ nr: true, nr_algorithm: 'dfn',
+      pcm_gain: config.processors[0].pcm_gain, agc: config.processors[0].agc });
+    expect(session.route(copy.receiver_uid).enabled).toBe(true);
   });
 });

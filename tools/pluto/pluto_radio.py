@@ -143,15 +143,17 @@ class Radio:
 
     Use it as a context manager. The sample rate can differ from the requested
     rate: the driver rejects some values. Read `radio.rate` after entry and
-    rebuild the signal when it differs.
+    rebuild the signal when it differs. Bench callers may preserve_rate to keep
+    the device's existing sampling clock and custom FIR configuration.
     """
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, *, preserve_rate: bool = False):
         self.args = args
         self.sdr = None
         self.rate = int(args.rate)
         self.xo_restore = None
         self.tx_lo_restore = None
+        self.preserve_rate = preserve_rate
 
     def __enter__(self) -> Radio:
         import adi  # late, so --dry-run works without pyadi-iio
@@ -182,11 +184,12 @@ class Radio:
             self.sdr.tx_lo = lo
         except (OSError, ValueError) as exc:
             raise SystemExit(self.lo_refused_message(lo, exc)) from None
-        try:
-            self.sdr.sample_rate = int(self.args.rate)
-        except ValueError as exc:
-            print(f'note: radio rejected sample_rate={int(self.args.rate)} ({exc}); '
-                  f'keeping {int(self.sdr.sample_rate)} Hz', file=sys.stderr)
+        if not self.preserve_rate:
+            try:
+                self.sdr.sample_rate = int(self.args.rate)
+            except ValueError as exc:
+                print(f'note: radio rejected sample_rate={int(self.args.rate)} ({exc}); '
+                      f'keeping {int(self.sdr.sample_rate)} Hz', file=sys.stderr)
         self.rate = int(self.sdr.sample_rate)
         self.sdr.tx_hardwaregain_chan0 = float(self.args.gain)
         # A prior application can leave the synthesizer powered down. DMA buffer

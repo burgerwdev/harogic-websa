@@ -1,3 +1,4 @@
+import { currentSdrChannel, sdrChannelMarks } from './sdrChannels';
 /** Filter gestures own one pointer and snapshot mode/listen/pitch. Moves preview only;
  * release returns a value for the command owner. Coordinates use logical canvas pixels. */
 import { ctx } from '../core/store';
@@ -77,7 +78,7 @@ function dragTargetFor(mode: string, edge: FilterEdge): DragTarget {
 
 /** Geometry in the current display window; null when the band is outside it. */
 export function filterGeometry(ifBwOverride?: number, modeOverride?: string, surface?: FilterSurface): FilterGeometry | null {
-  if (!S.sdrMode || !sdrPassbandVisible.get()) return null;
+  if (!S.sdrMode || !sdrPassbandVisible.get() || sdrChannelMarks().find(c => c.channel === currentSdrChannel())?.processing_enabled === false) return null;
   const listen = sdrListenHz.get();
   if (!(listen > 0)) return null;
   const mode = modeOverride ?? sdrDemod.get();
@@ -342,7 +343,7 @@ export function filterViewResolution(): { samples: number; atDataLimit: boolean 
 
 /** Draw inside the caller's plot clip; a badge drag may preview a different dial frequency. */
 export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: number | null = null): boolean {
-  if (!S.sdrMode || !sdrPassbandVisible.get()) return false;
+  if (!S.sdrMode || !sdrPassbandVisible.get() || sdrChannelMarks().find(c => c.channel === currentSdrChannel())?.processing_enabled === false) return false;
   const listen = listenPreview ?? sdrListenHz.get();
   if (!(listen > 0)) return false;
   const mode = sdrDemod.get();

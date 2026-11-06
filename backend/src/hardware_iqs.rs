@@ -908,7 +908,7 @@ impl HardwareCapture {
         let owner_error = error.clone();
         let owner_stats = stats.clone();
         let owner_stop = stop.clone();
-        let owner = thread::spawn(move || match Device::open(&path, center, front_end, device_decimate)
+        let owner = thread::Builder::new().name("iqs-capture".into()).spawn(move || match Device::open(&path, center, front_end, device_decimate)
         {
             Ok((mut device, geometry)) => {
                 let info = crate::hardware_swp::read_device_info(device.library, device.handle).ok().flatten();
@@ -1196,7 +1196,11 @@ impl HardwareCapture {
                                     wait = Instant::now();
                                     continue;
                                 }
-                                thread::sleep(Duration::from_millis(1));
+                                // Wake as soon as the consumer frees a slot. A
+                                // fixed millisecond sleep can miss several full-rate
+                                // packets each time this bounded handoff fills.
+                                // The token also covers consumption before park.
+                                thread::park_timeout(Duration::from_millis(1));
                             }
                             Err(TrySendError::Disconnected(_)) => {
                                 owner_stats.lock().events.record(CaptureEvent {
@@ -1212,7 +1216,7 @@ impl HardwareCapture {
             Err(e) => {
                 let _ = meta_tx.send(Err(e));
             }
-        });
+        }).map_err(|error| format!("SDK IQS owner thread: {error}"))?;
         // An SDK open that hangs must not leave a half-ready service advertising IQS. The
         // stuck owner is parked so that no new session overlaps it.
         let (geometry, device_info) = match meta_rx.recv_timeout(OPEN_TIMEOUT) {
@@ -1365,6 +1369,7 @@ impl HardwareCapture {
                 .ok_or("IQS capture closed")?
                 .recv_timeout(timeout);
             if let Ok(packet) = &packet {
+                if let Some(owner) = &self.owner { owner.thread().unpark(); }
                 let residence = packet.enqueued_at.elapsed();
                 event = Some(CaptureEvent { queue_residence_ns: duration_ns(residence), ..packet.event });
                 self.stats.lock().timings.queue_residence.observe(residence);
@@ -1414,6 +1419,7 @@ impl Drop for HardwareCapture {
         self.packets.take(); // unblock a full producer before joining the SDK owner
         self.requests.take();
         if let Some(owner) = self.owner.take() {
+            owner.thread().unpark();
             finish_owner(owner, OWNER_STOP_TIMEOUT);
         }
     }

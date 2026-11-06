@@ -3,7 +3,7 @@ use rustfft::{num_complex::Complex, FftPlanner};
 use std::time::{Duration, Instant};
 use websa_channelizer::{
     pfb_close, pfb_geometry, pfb_open_config, pfb_process, FineChannel, FineSpec, Pfb,
-    PfbStream, MAX_IN_FLIGHT,
+    PfbStream, MAX_IN_FLIGHT, TASK_CAPACITY,
 };
 
 const N: usize = 16240;
@@ -155,7 +155,7 @@ fn contract() -> Result<(), String> {
                 || stats.submitted != delivered as u64
                 || stats.completed != delivered as u64
                 || stats.groups != delivered_groups
-                || stats.task_capacity != MAX_IN_FLIGHT as u32
+                || stats.task_capacity != TASK_CAPACITY as u32
                 || stats.result_capacity != MAX_IN_FLIGHT as u32
                 || stats.max_pending > MAX_IN_FLIGHT as u32
                 || stats.max_ready > MAX_IN_FLIGHT as u32
@@ -292,7 +292,7 @@ fn run(seconds: f64, bin_count: u32, fine: bool, fused: bool, decimate: i32, tap
         || stats.submitted != delivered
         || stats.completed != delivered
         || stats.groups != groups
-        || stats.task_capacity != MAX_IN_FLIGHT as u32
+        || stats.task_capacity != TASK_CAPACITY as u32
         || stats.result_capacity != MAX_IN_FLIGHT as u32
         || stats.max_pending > MAX_IN_FLIGHT as u32
         || stats.max_ready > MAX_IN_FLIGHT as u32

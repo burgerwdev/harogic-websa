@@ -4,22 +4,32 @@ use crate::timing::{Timing, TimingSnapshot};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
     mpsc::{sync_channel, Receiver, SyncSender},
-    Arc, Mutex,
+    Arc,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// Fixed worker count; task and result channels have bounded capacity.
 pub const WORKERS: usize = 4;
+pub const TASK_CAPACITY: usize = WORKERS;
 pub const MAX_IN_FLIGHT: usize = WORKERS + 2;
 
 struct Task {
     seq: u64,
     stamp: u64,
     input_index: u64,
-    state: Pfb,
+    state: Option<Pfb>,
+    history: Vec<i16>,
     bins: Arc<Vec<u32>>,
     iq: Vec<i16>,
+    #[cfg(test)]
+    execution_gate: Option<Arc<ExecutionGate>>,
+}
+
+#[cfg(test)]
+struct ExecutionGate {
+    entered: std::sync::mpsc::Sender<u64>,
+    release: std::sync::atomic::AtomicBool,
 }
 
 #[repr(C)]
@@ -178,7 +188,7 @@ pub struct PfbBenchPool {
     overlap_history: bool,
     tail: Vec<i16>,
     input_index: u64,
-    sender: Option<SyncSender<Task>>,
+    sender: Option<Vec<SyncSender<Task>>>,
     receiver: Receiver<WorkerResult>,
     workers: Vec<JoinHandle<()>>,
     max_packet_samples: usize,
@@ -191,6 +201,8 @@ pub struct PfbBenchPool {
     timings: PoolTimings,
     slow_ns_per_sample: f64,
     stopped: bool,
+    #[cfg(test)]
+    execution_gate: Option<Arc<ExecutionGate>>,
 }
 
 impl PfbBenchPool {
@@ -234,24 +246,40 @@ impl PfbBenchPool {
         let bin_count = bins.len();
         let hop = controller.hop;
         let bins = Arc::new(bins);
-        let (sender, task_rx) = sync_channel::<Task>(MAX_IN_FLIGHT);
-        let task_rx = Arc::new(Mutex::new(task_rx));
+        let mut senders = Vec::with_capacity(WORKERS);
         let (result_tx, receiver) = sync_channel::<WorkerResult>(MAX_IN_FLIGHT);
         let workers = (0..WORKERS)
             .map(|_| {
-                let reader = task_rx.clone();
+                // Admit one outstanding packet per worker. A private
+                // mailbox wakes only the selected worker, without a second
+                // wakeup to transfer ownership of a shared blocking receiver.
+                let (sender, reader) = sync_channel::<Task>(1);
+                senders.push(sender);
                 let writer = result_tx.clone();
+                let mut reusable = controller.clone();
                 thread::spawn(move || {
                     let mut output = vec![0f32; 2 * bin_count * (packet_samples / hop + 2)];
                     loop {
-                        let item = reader.lock().unwrap().recv();
+                        let item = reader.recv();
                         let Ok(mut task) = item else {
                             break;
                         };
+                        #[cfg(test)]
+                        if let Some(gate) = &task.execution_gate {
+                            let _ = gate.entered.send(task.seq);
+                            while !gate.release.load(std::sync::atomic::Ordering::Acquire) {
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                        }
                         let started = Instant::now();
+                        let restore_history = task.state.is_none();
+                        let state = task.state.as_mut().unwrap_or(&mut reusable);
+                        if restore_history {
+                            assert!(state.load_history(task.input_index, &task.history));
+                        }
                         let bin_count = task.bins.len();
                         output.resize(2 * bin_count * (packet_samples / hop + 2), 0.0);
-                        let groups = task.state.process(&task.iq, &task.bins, &mut output);
+                        let groups = state.process(&task.iq, &task.bins, &mut output);
                         let samples = if emit_iq {
                             output[..2 * groups * bin_count].to_vec()
                         } else {
@@ -284,7 +312,7 @@ impl PfbBenchPool {
             overlap_history: strategy == 1,
             tail,
             input_index: 0,
-            sender: Some(sender),
+            sender: Some(senders),
             receiver,
             workers,
             max_packet_samples: packet_samples,
@@ -294,13 +322,15 @@ impl PfbBenchPool {
             pending: BTreeMap::new(),
             ready: VecDeque::new(),
             stats: PoolStats {
-                task_capacity: MAX_IN_FLIGHT as u32,
+                task_capacity: TASK_CAPACITY as u32,
                 result_capacity: MAX_IN_FLIGHT as u32,
                 ..Default::default()
             },
             timings: PoolTimings::default(),
             slow_ns_per_sample: 4.0 * 1e9 / fs,
             stopped: false,
+            #[cfg(test)]
+            execution_gate: None,
         })
     }
 
@@ -350,7 +380,11 @@ impl PfbBenchPool {
         if self.ready.len() >= 3 {
             return Err(-2);
         } // drain metadata; never grow an unbounded queue
-        while self.stats.submitted - self.stats.completed >= 3 {
+        // Waiting at three outstanding jobs leaves the fourth existing worker
+        // idle precisely when a scheduling tail slows the earlier jobs. Keep
+        // all workers available without increasing either channel capacity:
+        // at most two ready results plus WORKERS outstanding fit MAX_IN_FLIGHT.
+        while self.stats.submitted - self.stats.completed >= WORKERS as u64 {
             self.receive_admitted(seq, stamp).map_err(|_| -3)?;
         }
         if self.ready.len() >= 3 {
@@ -359,15 +393,15 @@ impl PfbBenchPool {
         let input_index = self.input_index;
         let threshold_ns = (((iq.len() / 2) as f64 * self.slow_ns_per_sample) as u64).max(1);
         let before = Instant::now();
-        let mut state = self.controller.clone();
+        // Overlap jobs carry only the causal input tail. Each worker retains
+        // its filters/FFT workspace instead of cloning them for every packet.
+        let state = (!self.overlap_history).then(|| self.controller.clone());
         let elapsed = before.elapsed();
         self.stats.clone_ns += elapsed.as_nanos() as u64;
         self.timings.observe(PoolTimingStage::Clone, elapsed, seq, stamp, None, threshold_ns);
         let before = Instant::now();
-        if self.overlap_history {
-            if !state.load_history(self.input_index, &self.tail) {
-                return Err(-4);
-            }
+        let history = if self.overlap_history {
+            let history = self.tail.clone();
             let n = iq.len() / 2;
             let len = self.controller.history_len();
             if n >= len {
@@ -376,9 +410,11 @@ impl PfbBenchPool {
                 self.tail.copy_within(2 * n.., 0);
                 self.tail[2 * (len - n)..].copy_from_slice(iq);
             }
+            history
         } else {
             self.controller.process(iq, &[], &mut []);
-        }
+            Vec::new()
+        };
         let elapsed = before.elapsed();
         self.stats.advance_ns += elapsed.as_nanos() as u64;
         self.timings.observe(PoolTimingStage::History, elapsed, seq, stamp, None, threshold_ns);
@@ -389,12 +425,16 @@ impl PfbBenchPool {
             stamp,
             input_index,
             state,
+            history,
             bins: self.bins.clone(),
             iq: iq.to_vec(),
+            #[cfg(test)]
+            execution_gate: self.execution_gate.clone(),
         };
         let copy_elapsed = before.elapsed();
         let send_started = Instant::now();
-        self.sender.as_ref().ok_or(-3)?.send(task).map_err(|_| -3)?;
+        let worker = seq as usize % WORKERS;
+        self.sender.as_ref().ok_or(-3)?[worker].send(task).map_err(|_| -3)?;
         let send_elapsed = send_started.elapsed();
         self.stats.task_wait_ns += before.elapsed().as_nanos() as u64;
         self.timings.observe(PoolTimingStage::IqCopy, copy_elapsed, seq, stamp, None, threshold_ns);
@@ -647,6 +687,40 @@ pub unsafe extern "C" fn pfb_pool_close(ptr: *mut PfbBenchPool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reused_worker_history_matches_serial_bits_at_partial_boundaries() {
+        for fs in [62_500_000.0, 976_562.5] {
+            for taps in [4, 8, 16] {
+                let mut reference = Pfb::with_taps(fs, 2, taps).unwrap();
+                reference.fir_kernel = 1;
+                let bins = vec![0, (reference.m - 1) as u32];
+                let mut stream = PfbStream::with_taps(fs, 16240, bins.clone(), 7, taps).unwrap();
+                let mut seed = 20261105u32;
+                let mut index = 0;
+                for seq in 0..137 {
+                    let n = [17, 16240, 4096, 121, 27][seq as usize % 5];
+                    let iq: Vec<i16> = (0..2 * n).map(|_| {
+                        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+                        (seed >> 8) as i16
+                    }).collect();
+                    let mut expected = vec![0.0; 2 * bins.len() * (n / reference.hop + 2)];
+                    let groups = reference.process(&iq, &bins, &mut expected);
+                    let stamp = 1000 + 2 * index;
+                    stream.submit(seq, stamp, &iq).unwrap();
+                    stream.flush_pending().unwrap();
+                    let actual = stream.take().unwrap();
+                    assert_eq!((actual.seq, actual.stamp, actual.input_index, actual.epoch, actual.groups),
+                        (seq, stamp, index, 7, groups as u32));
+                    assert_eq!(actual.iq.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                        expected[..2 * groups * bins.len()].iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+                    assert!(stream.take().is_none());
+                    index += n as u64;
+                }
+                stream.finish().unwrap();
+            }
+        }
+    }
     #[test]
     fn stream_reselects_only_at_drained_boundary_without_losing_history() {
         let mut stream = PfbStream::new(62_500_000.0, 16240, vec![5, 31], 7).unwrap();
@@ -769,6 +843,39 @@ mod tests {
             assert!(pool.stats.max_pending <= MAX_IN_FLIGHT as u32);
             assert!(pool.stats.max_ready <= MAX_IN_FLIGHT as u32);
         }
+    }
+
+    #[test]
+    fn every_worker_can_start_before_earlier_jobs_finish() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (entered, events) = std::sync::mpsc::channel();
+        let gate = Arc::new(ExecutionGate { entered, release: AtomicBool::new(false) });
+        let producer_gate = gate.clone();
+        let producer = thread::spawn(move || {
+            let mut pool = PfbBenchPool::new(62_500_000.0, 16240, vec![0], 1).unwrap();
+            pool.execution_gate = Some(producer_gate);
+            for seq in 0..WORKERS as u64 {
+                pool.submit(seq, 2 * seq * 16240, &vec![0; 2 * 16240]).unwrap();
+            }
+            pool.finish().unwrap();
+            (pool.ready.iter().map(|r| r.meta.seq).collect::<Vec<_>>(), pool.stats)
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut started = Vec::new();
+        for _ in 0..WORKERS {
+            match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(seq) => started.push(seq),
+                Err(_) => break,
+            }
+        }
+        // Release before asserting, including on the old three-job deadlock.
+        gate.release.store(true, Ordering::Release);
+        let (ordered, stats) = producer.join().unwrap();
+        started.sort_unstable();
+        assert_eq!(started, (0..WORKERS as u64).collect::<Vec<_>>());
+        assert_eq!(ordered, started);
+        assert!(stats.max_ready <= MAX_IN_FLIGHT as u32);
+        assert!(stats.max_pending <= MAX_IN_FLIGHT as u32);
     }
 
     #[test]
@@ -918,7 +1025,7 @@ mod tests {
                 (
                     seen as u64,
                     seen as u64,
-                    MAX_IN_FLIGHT as u32,
+                    TASK_CAPACITY as u32,
                     MAX_IN_FLIGHT as u32
                 )
             );

@@ -127,8 +127,10 @@ impl Ddc {
     fn configured_service_inner(center: f64, bandwidth: f64,
         hardware: &mut Option<HardwareCapture>, taps: usize, fs: f64,
         configs: &[ChannelConfig], allow_calibration: bool) -> Result<Self, String> {
-        if configs.len() != 3 || configs.iter().enumerate().any(|(i, c)| c.channel != i as u32 + 1) {
-            return Err("service requires exactly three channel slots".into());
+        let mut slots = std::collections::BTreeSet::new();
+        for config in configs {
+            if !(1..=MAX_CHANNELS as u32).contains(&config.channel) {return Err("service channel exceeds capacity".into());}
+            if !slots.insert(config.channel) {return Err("duplicate service channel".into());}
         }
         let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
         let mut bins = Vec::new();
@@ -148,9 +150,10 @@ impl Ddc {
         if allow_calibration { super::service_cost::admit_service(configs,fs,taps,bins.len())?; }
         else { super::service_cost::admit_service_cached(configs,fs,taps,bins.len())?; }
         let epoch = allocate_dsp_epoch()?;
-        let stream = PfbStream::with_taps(fs, 16240, bins, epoch as u64, taps).ok_or("PFB unavailable")?;
-        let mut bank = FineBank::new(&stream, bandwidth, 16240 / stream.input_hop() + 2,
-            3, COARSE_RATE * 3.0, CONSUMER_BUDGET).ok_or("fine bank unavailable")?;
+        let packet_capacity = if fs == IQ_FS { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
+        let stream = PfbStream::with_taps(fs, packet_capacity, bins, epoch as u64, taps).ok_or("PFB unavailable")?;
+        let mut bank = FineBank::new(&stream, bandwidth, packet_capacity / stream.input_hop() + 2,
+            MAX_CHANNELS, COARSE_RATE * MAX_CHANNELS as f64, CONSUMER_BUDGET).ok_or("fine bank unavailable")?;
         let mut framers = BTreeMap::new();
         let mut registry = Vec::new();
         let mut direct = BTreeMap::new();
@@ -178,16 +181,16 @@ impl Ddc {
             registry.push(sdr_pipeline::ChannelRegistryEntry { channel:config.channel, channel_id:config.channel,
                 epoch,frequency_hz:config.freq,output_rate:rate,input_rate:fs,group_delay_samples:delay,state:"active" });
         }
-        let primary = configs.first().ok_or("primary config missing")?;
+        let primary = configs.iter().find(|config|config.channel==1).cloned().unwrap_or_else(||ChannelConfig::for_slot(1));
         let primary_framer = framers.remove(&1).map(|(_,_,f)| f).unwrap_or(
             BasebandFramer::new(1, epoch as u64, primary.freq, COARSE_RATE).ok_or("primary framer rejected")?);
         let mut fine = sdr_pipeline::FineState::new_service(bank, primary_framer, fs, registry.into());
         fine.aux = framers;
-        fine.next_id = 3;
+        fine.next_id = configs.iter().map(|config|u64::from(config.channel)).max().unwrap_or(1);
         let registry = fine.registry.clone();
         let generation = hardware.as_ref().map_or(0, |c| c.geometry.generation);
         #[cfg(test)]
-        let cost_profile=websa_channelizer::FineCostBudget::new([1.0;23],1.0,f64::MAX).ok_or("cost metadata rejected")?;
+        let cost_profile=None;
         Ok(Self { stream:Box::new(stream),fine:Some(fine),fine_worker:None,direct,carry:Vec::new(),pan:Vec::new(),display_fft:None,display_fft_error:None,
             capture_center:center,usable_bandwidth:bandwidth,decimate:1,listen:primary.freq,next_seq:0,
             input_pos:0,stamp_gaps:0,last_stamp:None,generation,device_decimate:if hardware.is_some() {
@@ -200,7 +203,7 @@ impl Ddc {
 
 
     pub(super) fn recapture_service_configs(&mut self,center:f64,display_decimate:i32,
-        front_end:FrontEnd,taps:usize,configs:&[ChannelConfig])->Result<Vec<Vec<u8>>,String> {
+        front_end:FrontEnd,taps:usize,configs:&[ChannelConfig])->Result<IqFrames,String> {
         if !center.is_finite() || display_decimate<1 || !matches!(taps,4|8|16) {
             return Err("invalid service capture geometry".into());
         }
@@ -227,7 +230,7 @@ impl Ddc {
             next.generation=geometry.generation;
             next.device_decimate=device_decimate as u64;
         }
-        let drained=(||->Result<Vec<Vec<u8>>,String>{
+        let drained=(||->Result<IqFrames,String>{
             self.stream.flush_pending().map_err(str::to_owned)?;
             let mut frames=std::mem::take(&mut self.carry);
             frames.extend(self.drain()?);
@@ -250,18 +253,18 @@ impl Ddc {
         let offset = signed as f64*BIN_SPACING-(frequency-center);
         let flat = coarse_passband_hz(COARSE_RATE,taps).ok_or("invalid PFB prototype")?;
         if !frequency.is_finite() || !(-m/2..m/2).contains(&signed)
-            || (frequency-center).abs()+plan.occupied_bandwidth_hz/2.0>bandwidth/2.0
+            || (frequency-center).abs()+plan.stopband_hz>bandwidth/2.0
             || offset.abs()+plan.stopband_hz>flat {
             return Err("channel occupied bandwidth and transition exceed capture or coarse passband".into());
         }
         Ok(())
     }
 
-    pub(super) fn configure_service_channel(&mut self, config:ChannelConfig)->Result<Vec<Vec<u8>>,String> {
+    pub(super) fn configure_service_channel(&mut self, config:ChannelConfig)->Result<IqFrames,String> {
         self.configure_service_channel_inner(config,false)
     }
 
-    pub(super) fn restart_service_receivers(&mut self)->Result<Vec<Vec<u8>>,String> {
+    pub(super) fn restart_service_receivers(&mut self)->Result<IqFrames,String> {
         let configs=self.service_configs.clone().ok_or("not a service channel plan")?;
         let mut frames=Vec::new();
         for config in configs.into_iter().filter(|config|config.enabled&&config.processing_enabled&&config.baseband.is_none()) {
@@ -270,10 +273,10 @@ impl Ddc {
         Ok(frames)
     }
 
-    fn configure_service_channel_inner(&mut self,config:ChannelConfig,force:bool)->Result<Vec<Vec<u8>>,String> {
+    fn configure_service_channel_inner(&mut self,config:ChannelConfig,force:bool)->Result<IqFrames,String> {
         let mut configs = self.service_configs.clone().ok_or("not a service channel plan")?;
-        if !(1..=3).contains(&config.channel) { return Err("channel must be 1, 2, or 3".into()); }
-        let slot = config.channel as usize-1;
+        if !(1..=MAX_CHANNELS as u32).contains(&config.channel) {return Err("service channel exceeds capacity".into());}
+        let slot = configs.iter().position(|old|old.channel==config.channel).ok_or("service channel not defined")?;
         let old = &configs[slot];
         if !force && same_baseband(self.stream.input_sample_rate(),old,&config) {
             configs[slot]=config;self.service_configs=Some(configs);return Ok(Vec::new());
@@ -325,11 +328,11 @@ impl Ddc {
             else { self.bank.subscribe_planned(next_id,bin,offset,source.plan().clone()) }.map_err(str::to_owned)?;
         } else if let Some(id)=old_id.filter(|_|!old_direct) { self.bank.unsubscribe(id); }
         if let Some(mut previous)=self.direct.remove(&config.channel) {
-            frames.extend(previous.framer.finish().map_err(str::to_owned)?);
+            frames.extend(previous.framer.finish_native().map_err(str::to_owned)?);
         }
         if config.channel==1 {
             if old_id.is_some() && !old_direct {
-                if let Some(tail)=self.framer.finish().map_err(str::to_owned)? { frames.push(tail); }
+                if let Some(tail)=self.framer.finish_native().map_err(str::to_owned)? { frames.push(tail); }
             }
             if config.enabled {
                 if !source.is_direct() {
@@ -341,7 +344,7 @@ impl Ddc {
             }
         } else {
             if let Some((_,_,mut framer))=self.aux.remove(&config.channel) {
-                if let Some(tail)=framer.finish().map_err(str::to_owned)? { frames.push(tail); }
+                if let Some(tail)=framer.finish_native().map_err(str::to_owned)? { frames.push(tail); }
             }
             if config.enabled && !source.is_direct() {
                 let rate=self.bank.channel_metadata(next_id).ok_or("channel metadata absent")?.0;

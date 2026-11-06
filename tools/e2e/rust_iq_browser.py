@@ -25,7 +25,7 @@ CHANNELS = [100_000_000.0, 100_100_000.0, 100_200_000.0]
 
 
 def asset(pattern: str) -> str:
-    found = sorted((ROOT / 'frontend/dist/assets').glob(pattern))
+    found = sorted((Path(os.environ.get('WEBSA_STATIC', str(ROOT / 'frontend'))) / 'dist/assets').glob(pattern))
     if len(found) != 1:
         raise SystemExit(f'expected one built {pattern}, found {found}; rebuild the frontend')
     return '/static/dist/assets/' + found[0].name
@@ -61,7 +61,7 @@ def state(origin):
         return json.load(response)
 
 
-def start_service(port, *, hardware=False, log=None):
+def start_service(port, *, hardware=False, log=None, startup_timeout=10.0, binary=None):
     env = {**os.environ, 'WEBSA_PORT': str(port), 'WEBSA_HOST': '127.0.0.1'}
     if hardware:
         shim = os.environ.get('WEBSA_RUST_IQS_SHIM')
@@ -70,12 +70,13 @@ def start_service(port, *, hardware=False, log=None):
         env['WEBSA_RUST_IQS_SHIM'] = shim
     else:
         env.pop('WEBSA_RUST_IQS_SHIM', None)
-    proc = subprocess.Popen([str(WEBSAD)], cwd=ROOT, env=env,
+    proc = subprocess.Popen([str(binary or WEBSAD)], cwd=ROOT, env=env,
                             stdout=log or subprocess.DEVNULL,
                             stderr=log or subprocess.DEVNULL)
     origin = f'http://127.0.0.1:{port}'
     try:
-        for _ in range(100):
+        deadline = time.monotonic() + startup_timeout
+        while time.monotonic() < deadline:
             if proc.poll() is not None:
                 break
             try:

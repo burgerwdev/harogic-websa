@@ -4,7 +4,7 @@
 
 实收准备可运行 `python tools/bench/sdr_capture_observe.py --origin http://127.0.0.1:8080 --expect-service-id <当前服务ID> --seconds 300 --artifacts <新目录>`，先 GET `/api/sdr/receivers` 核对身份。工具只发 GET，拒绝服务身份变化与已有证据目录，保存源时钟／样本推进／告警／录制／负载，不打开 WebSocket 或启动采集；须另有已授权的浏览器／录制消费者。报告仅为观察证据，连接正常或计数前进均不单独证明 RF 接收或物理听感。
 
-设备窗口前完成新版 release 构建；既有进程在明确重启前仍运行旧二进制。替换硬件进程前确认目标实例、N90 占用释放与 RF 来源，另一端口不能隔离同一设备。先恢复一个真实信号，连续观察至少五分钟，检查频谱／调谐、实际输入率、源 epoch／位置及实际听感；逐路增加至三路，完整通带和过渡带须位于同一真实采集范围，再组合 IQ／发布音频／结果录制观察五分钟。停止后独立读取文件，核对 UID／实际率／源边界和接纳／落盘字节。无真实协议源或未试听的项目准确标记未验。合成 `native_multichannel*.py` 会创建／重配自己的服务，不得指向既有硬件实例。
+设备窗口前完成新版 release 构建；既有进程在明确重启前仍运行旧二进制。替换硬件进程前确认目标实例、N90 占用释放与 RF 来源，另一端口不能隔离同一设备。先恢复一个真实信号，连续观察至少五分钟，检查频谱／调谐、实际输入率、源 epoch／位置及实际听感；逐路增加至八路，完整通带和过渡带须位于同一真实采集范围，再组合 IQ／发布音频／结果录制观察五分钟。停止后独立读取文件，核对 UID／实际率／源边界和接纳／落盘字节。无真实协议源或未试听的项目准确标记未验。合成 `native_multichannel*.py` 会创建／重配自己的服务，不得指向既有硬件实例。
 
 
 结束的音频任务在 `audio_archive_read` 可用时提供**音频试听**。选择源片段和样本帧起点／长度，载入后使用原生播放／定位／音量控件，也可下载同份Float32 WAV与来源快照。立体声一帧包括两个声道；最多1,048,576帧／60秒。原共享PCM处理保持，实时监听控件独立；隐藏或编辑会释放文件播放。当前校验器先扫描完整任务，长任务载入较慢，但不会累积全部样本。门禁：`python tools/e2e/native_multichannel_audio_playback.py --artifacts /tmp/websa-audio-playback`，使用独立CRC／Zstd及SciPy WAV读取器、双卷单／双声道精确时钟夹具、实际AM／FT8网络录音、真实媒体播放／定位、420px中文／浅色Pop out／Dock、长按鼠标／键盘下载、共用名额取消／TCP停读／损坏、健康录制及SIGKILL前缀。先构建前后端。连续长文件及数字文件解码仍单独推进。
@@ -29,6 +29,36 @@
 多路频点须同时落入共享采集，完整通带和过渡带也须留在范围内。工作台的越界拒绝／预览会显示当前采集范围和该信道所需范围，指引先在主 SDR 面板调整共享中心或采集带宽，再重试；重试本身不会扩大采集。例如101.7MHz中心、3.125MHz采集仅覆盖100.1375–103.2625MHz，无法接收105MHz FM；显式将共享中心设为103.35MHz、可用带宽设为6.25MHz后可覆盖这两个频点。共享采集变更影响全部信道，主面板的中心输入还会调谐C1；只调整共享窗口时使用省略`listen`的`SET_SDR`，并核对各UID频率。
 
 三路日常工作流门禁：`python tools/e2e/native_multichannel_workflow.py --artifacts /tmp/websa-daily-workflow`。组合 AM 音频录制、FT8 结果录制、健康 IQ 录制、本地监听、确认模式记忆／刷新、预设复用、启停、复制与窗口／页面关闭，再用独立 CRC／Zstd 与 WAV 读取器验证实际文件。来源为合成／回放；RF、物理音频和长期运行仍须另验。
+
+
+八路验收将构建、浏览器与持续实收分开进行。同一采集提供八个定义；停用保留名额，删除释放名额，编号复用产生新逻辑身份。选台、本地监听与后端录制相互独立。浏览器解码历史每路至多二百项／二十四兆字节，全局至多一百二十八兆字节。复数样本、发布音频和结果共用八个录制名额，同一路三种内容占三个名额。
+
+每次在持久存储中选择新证据目录，并将 `TMPDIR` 指向该目录或磁盘缓存。清理旧测试数据前核对活动进程引用，尤其避免内存盘 `/tmp` 积累。保留上文原三路回归入口。下列实机门禁要求录制空闲及已保存的单路原始配置，每次重新核对当前服务身份，退出恢复进入时设备及信号源配置。`--known-source` 要求配置好的 Pluto 台架源；合成门禁不能证明真实射频内容或吞吐。
+
+```sh
+export TMPDIR="$HOME/.cache/harogic-websa/test-tmp"
+mkdir -p "$TMPDIR" "$HOME/.cache/harogic-websa/eight-channel"
+# 在实机阶段前构建，保留用户原安装适配库。
+make sdk-shim SDK_SHIM="$HOME/.cache/harogic-websa/eight-channel/libwebsa_san90_sdk_session.so"
+export WEBSA_RUST_IQS_SHIM="$HOME/.cache/harogic-websa/eight-channel/libwebsa_san90_sdk_session.so"
+# 每次调用重新读取当前身份，并使用新的证据目录。
+python tools/bench/eight_channel_workflow.py --expect-service-id <current-service-id> --gate controls --artifacts <new-controls-directory>
+python tools/bench/eight_channel_workflow.py --expect-service-id <current-service-id> --gate mixed-ui --artifacts <new-browser-directory>
+python tools/bench/eight_channel_recording.py --hardware --known-source --profile mixed --seconds 1800 --record-seconds 600 --skip-browser --gain -10 --lo-correction -100 --expect-service-id <current-service-id> --artifacts <new-mixed-directory>
+python tools/bench/eight_channel_recording.py --hardware --known-source --profile analog --consume-streams --seconds 1800 --record-seconds 600 --skip-browser --gain -10 --lo-correction -100 --expect-service-id <current-service-id> --artifacts <new-ordinary-directory>
+```
+
+两组持续场景均要求五十兆赫可用采集窗口、每秒六千二百五十万个实际输入样本及每相十六抽头。两组射频源均保留进入时的采样时钟及滤波器，默认使用原有四缓冲发送接口；混合组合周期保存在磁盘，退出删除该临时周期。两组台架均先用上下边带导频测量共同射频频偏，要求跨一分钟的三次观测相差不超过两赫兹后再校准；有界预热不计入验收时长，持续漂移会明确失败。正式计时前必须收到正确数字文本，运行中持续检查文本到达。普通场景验证八路调幅／窄带调频／上下边带音频；混合场景验证六路模拟信号、已知数字文本和第八路仅样本接收。每组八个共享录制任务至少运行十分钟，全部订阅流持续三十分钟，分别保留网络顺序、精确源时钟、文件校验与压缩、强制终止前缀、五分钟资源窗口及配置恢复证据。控制门禁还逐一检查原十二个采集档位的合法八路几何与越界拒绝。重处理组合为独立短时准入及运行观察，不能据此宣称八路宽带或神经模式可持续运行。无头浏览器证明实际音频播放数据，物理扬声器听感另行记录。仅模拟组合可选 `--cyclic-source`，用已有短硬件周期避免主机持续发送开销；其IQ8频率参考调整发射源硬件LO，不承诺源的相位连续。流式源仍使用连续相位修正，并在参考更新之间复用相位斜坡。两种方式均记录修正，保留相同射频音调及接收连续性检查。
+
+两组持续台架均从第八路实际复数样本测量参考频率：混合场景使用已知的正两千赫兹导频，普通场景使用已知的负一千八百赫兹下边带音调。在发射波形上施加相位连续的共同频率补偿；保留设备时钟和调制内容，每次调整保存到 `source-frequency-lock.jsonl`。这一发射端闭环只使用导频频率，不使用解码结果；接收路径保持原始样本，并继续独立检查射频音调、稳定性及正确数字文本。
+
+原生接收滤波器在支持向量指令的处理器上并行计算四个输出，保留每个输出原有的双精度乘加顺序、系数和跨块尾部；其他平台沿用标量路径。`ddc::fir::tests::parallel_outputs_match_scalar_bits_across_short_and_long_blocks` 验证不同长度滤波器及短、长块与独立标量卷积的位模式相同。局部滤波基准只用于定位与比较，不能代替全带宽持续实收。
+
+粗信道化的重叠历史任务复用各工作线程的滤波器与 FFT 工作区，每包仅携带必要的原始历史样本；串行参考策略仍保存完整状态。各工作线程使用独立有界输入，按包序轮流投递，避免加锁接收端的额外唤醒；总在途上限仍为三个处理作业，结果继续按源序交付。`pfb_pool::tests::reused_worker_history_matches_serial_bits_at_partial_boundaries` 在不同采样率、抽头数及部分块边界上比较连续串行处理的逐样本位模式。混合界面门禁在浏览器启动前关闭预热订阅，避免重复消费；操作重叠窗口时用真实关闭按钮隐藏总览，并检查监听继续。
+
+全速硬件采集且没有原始 IQ 直接路由时，每个 PFB/fine 作业合并四个物理包，减少跨线程交接，保留每秒六千二百五十万个输入样本及每相十六抽头。`eight_channel_tests::full_band_four_packet_batches_match_individual_packets_through_retune` 在八路及中途重调下，与逐包处理比较全部输出字节，包括时钟和序号。其他采集率、直接路由及模拟源仍逐包处理。USB 交接上限保持原值；短基准不能证明持续实收通过。
+
+2026年11月5日，目标 i5-8250U 的混合及普通射频门禁均以五十兆赫可用带宽、每秒六千二百五十万个样本、每相十六抽头通过 1800.03 秒持续接收，其中八录制分别运行 606.14 秒和 605.90 秒。每组均独立校验八个完整文件和八个异常恢复前缀，六个五分钟窗口均保留至少两成的逐线程及串行阶段余量。台架隔离了无关的桌面转录统计扫描和模型网关负载，并保存、恢复进入时的进程状态与处理器亲和性。构建、浏览器和持续观察继续分开执行，并记录实际隔离措施。
 
 ## 1. 环境、构建与运行
 
@@ -112,6 +142,7 @@ CSS 字体路径使用 `frontend/public/` 对应的 `/fonts/`，由 Vite 加上 
 
 硬件运行先安装厂商 SDK，再执行 `make sdk-shim` 和 `./run.sh`。
 `SDK_ROOT`、`SDK_SHIM` 配置 shim 构建，`WEBSA_RUST_IQS_SHIM` 选择运行时 shim。
+构建适配库还需要 libusb 开发头文件（Debian/Ubuntu：`libusb-1.0-0-dev`；Arch：`libusb`）。全速连续采集使用独立收包线程的四个总线传输及固定一千零二十四包／六十四兆字节交接（约二百六十六毫秒，覆盖实测约二百三十三毫秒的调度尾部）。收包线程仅处理原始字节，厂商调用仍属于原设备线程，按提交顺序交付，交接满载明确失败。采集消费者取走数据后立即唤醒等待队列空位的设备线程，保留有界队列、控制处理和积压超时。停止或重配置先取消并回收回调，再等待线程退出和释放缓冲。回调完成状态使用同步发布，因为总线库可能在其他事件线程分派回调，见[总线库线程说明](https://libusb.sourceforge.io/api-1.0/libusb_mtasync.html)。其他采样率保持原读取方式。`tests/test_iqs_usb_pipeline.py` 使用模拟回调验证顺序、字节、取消、部分读取和失败，无需厂商库或设备。
 默认实例为 `websad`，地址为 `127.0.0.1:8080`。用 `WEBSA_INSTANCE` 或 `--instance`
 选择实例；status 和 stop 自动读取保存的端点及所有权信息。设备只允许一个进程持有。
 服务与硬件配置见[FAQ 说明](FAQ_NOTES.md)和[工具指南](../../tools/README.md)。
@@ -164,7 +195,9 @@ Chromium 真实切断并重连 UID 音频 socket，确认实际输出 PCM 恢复
 生产工作台按实际能力开放 IQ 记录，隐藏未开放的预设/场景操作，IQ 参数和共享音频设置可展开；窄窗仍可编辑。跟随模式下直接点“监听”切换为手动混听，保留编辑目标。
 主面板“信道工作台”入口只聚焦工作台，保留其他独立弹窗；召回全部窗口和 Dock 仍是明确的布局操作。
 
-主面板在监听标签旁显示当前信道；工作台旁的左右按钮切换接收信道，调谐与解调控件跟随该信道，切换本身不改频率。`＋` 将当前频点与解调设置复制到独立信道；路数已满时先选择要覆盖的信道。主频谱和瀑布以不同色通带标出其他信道，以浅色虚线显示同步鼠标预览，离开图面即清除。验证：`python tools/e2e/sdr_channel_shortcuts.py --artifacts /tmp/websa-channel-shortcuts`。
+主面板在监听标签旁显示当前信道；工作台旁的左右按钮切换接收信道，调谐与解调控件跟随该信道，切换本身不改频率。`＋` 将当前频点与解调设置复制到独立信道；路数已满时先选择要覆盖的信道。每路独立保留降噪算法、增益和 AGC；神经降噪不再限制为全局一路，而是按实际信道采样率测量本地解调与降噪耗时（含立体声），保留两倍处理余量。外部解码与协议处理仍有独立的保守预算。超出负载时拒绝请求，保留各路请求设置和已有接收。主频谱和瀑布以不同色通带标出其他信道，以浅色虚线显示同步鼠标预览，离开图面即清除。验证：`python tools/e2e/sdr_channel_shortcuts.py --artifacts /tmp/websa-channel-shortcuts`。
+
+`python tools/e2e/native_multichannel_nr.py` 使用独立的模拟服务，验证两路同时运行 DFN，以及 DFN 与其他各神经降噪算法并行运行；检查实际模型状态、非静音且数值有限的连续 AUD2，以及修改一路增益/AGC 时另一路配置和流保持不变。工具记录测量所得的处理预算；这项短期验证不代表硬件持续接收容量认证。
 完整语义及尚未完成的共享样本块迁移见 [MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md)。
 
 进入 SDR 自动开启瀑布图，频谱与瀑布各占一半；Preset 恢复此布局并选中 C1。瀑布点选调谐当前信道，开启放大后可拖框选择两张图共享的显示范围。工作台将接收开关、复制、删除整齐排在一行，各信道“更多操作”也提供复制、删除。频率、接收音频参数、本地音量和声像相同的信道只播放一路；主面板调到其他频点后，自动恢复两路独立混听。此本地规则不合并接收或录制任务。

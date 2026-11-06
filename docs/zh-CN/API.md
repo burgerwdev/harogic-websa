@@ -6,7 +6,7 @@
 
 采集快照将 `state:running|idle|failed` 与设备连接状态分开；`parameters_state:live|last_known|unknown` 分别表示当前源参数、保留的上次参数及源尚未打开。未知时带宽／输入率为 null，`center_hz` 仅为请求中心，epoch `"0"` 为哨兵，不表示活动流；独立基带夹具标记 `parameters_state:simulated`，共享显示窗口／率为模拟值，epoch `"0"` 为哨兵，真实基带输入以各路 clock 为准；硬件已知时输入率取 PFB 输入率，epoch 为 DSP 源代次，不能混用设备配置代次或下游 DDC 率。失败／停止保留原参数，重开源分配新 DSP epoch。启用硬件信道的变更须有健康活动采集。旧服务可能缺少 `parameters_state`，失败后仍报告旧版缺省值。
 
-主面板输入中心频率后，将共享采集中心和 C1 监听频率一起设置到该点；已有放大框保持宽度并平滑滑到该点。IQ 带宽只修改采集带宽，保留逐路频率与模式；“移到中心”将采集移到 C1 当前频点。主面板其他调谐／解调／共享 PCM 参数仍作用于 C1；多路操作在工作台选中并编辑各 UID。采集变更可能中断所有信道并产生录制边界。
+主面板输入中心频率后，将共享采集中心和 C1 监听频率一起设置到该点；已有放大框保持宽度并平滑滑到该点。IQ 带宽只修改采集带宽，保留逐路频率与模式；“移到中心”将采集移到主面板所选信道频点。监听频率、解调及共享音频参数作用于监听旁显示的信道，箭头可选择任一定义而不调谐。工作台编辑选择限于其窗口，主面板选台也会在工作台中聚焦对应接收器。采集变更可能中断所有信道并产生录制边界。
 
 
 `audio_archive_read:true`、`audio_range_max_samples:"1048576"` 和 `audio_range_max_seconds:60` 开放 `GET /api/sdr/recordings/{task_id}/audio/range?segment=audio-000000&start=0&count=20000`。起点／长度为单音频片段内无符号十进制**样本帧**（立体声一帧包含两个声道），使用受检 u64 运算。仅读结束任务或已收尾的失败校验前缀。每次1–1,048,576帧，且按原8000–192000 Hz整数率至多60秒，保持原单／双声道。未知参数／非法计数400，活动／收尾409，未知404，片段／范围／数据错误422，共享读取名额占用429。
@@ -36,6 +36,10 @@
 
 ---
 
+能力发布 `max_channels:8` 与 `max_recording_tasks:8`。`recording_resources` 返回 `active_tasks`、`max_tasks`、`available_tasks`、`queue_bytes_per_task`、`queue_items_per_task` 和 `max_queue_age_ms`。准备及收尾中的任务保留名额，回收后释放。复数样本、发布音频和结果共享全服务八个名额；同一路同时录三种内容占三个名额。信道定义数量与录制任务数量分别计限。
+
+每路 `processing_statistics` 按逻辑 UID、服务身份、处理代次及流身份保存有界历史。`packets`、`searches` 分别报告已接纳、已开始、成功、失败、取消、拒收和在途；只有成功输入累计媒体秒。`occupancy` 包含排队、执行中、待发输出与搜索回传引用的字节／样本和单调年龄。`wall_ns`、可得的 `thread_cpu_ns` 与排队等待独立。水位描述源块；`service_consumed` 指服务已排出，不能当作远端扬声器已播放。`source_watermarks` 串联共享输入／PFB 观测和 fine 信道时钟，各观测不保证同时。模型请求／实际状态、静噪和协议窗口保留另行报告；不可观测的上游解码消费为 null。UTC 跳变、静噪关闭及协议窗口等待不等于源样本缺失。
+
 P5 IQ 记录通过同一 receiver API 接入：`record_start`（`receiver_uid`、`kinds:["iq"]`）和 `record_stop`（`task_id`），带 `request_id` 和当前 `service_id`。无需接收器配置预检或浏览器 IQ socket。服务实际开放后才发布 `recording:true`、`recording_kinds:["iq","results","audio"]` 和对应 commands；存储不可用时不发布操作，并提供 `recording_unavailable_reason`。快照 `recordings[]` 包含原服务身份、轨道、状态、已保存字节和错误，刷新/重连只读取此实际状态。`GET /api/sdr/recordings/{task_id}/index?volume=iq-000000.jsonl&offset=0` 返回最多 128 个已持久块索引及十进制 `next_offset`，不是样本下载或 SigMF。
 
 IQ、音频及结果 worker 将已排队的包合并同步，最多等待50毫秒，每批至多32项／约1 MiB（单个更大的有界输入可独占一批）。数据、存在时的IQ旁路索引和清单同步后才发布该批计数。原4 MiB／64项／2秒准入预算包含所有排队和在途包，合批不重置最旧输入的期限。原块、源时钟、片段边界和文件格式保持；停止排空并同步最后一批。
@@ -48,11 +52,11 @@ IQ、音频及结果 worker 将已排队的包合并同步，最多等待50毫�
 
 `GET /api/sdr/recordings/{task_id}/collection` 将同一已结束 IQ 任务的全部非空已校验片段下载为一个 POSIX tar `.sigmf` 归档，不接受查询参数。能力 `iq_archive_collection:true` 发布十进制字符串 `iq_collection_max_samples:"1073741823"`（任务所有片段合计）和整数 `iq_collection_max_segments:4096`。各片段在归档根目录分别成为从零计数的 `segment-000000.sigmf-data`／`.sigmf-meta`，保留实际率、频率、精确时钟及原任务／服务／UID／故障。根目录 `recording.sigmf-collection` 的有序 `core:streams` 对象保存生成的文件基名与元数据文件实际字节的 SHA-512。不暗示跨片段连续、重采样或绝对时间对齐。空任务、超限、任一片段缺口／损坏在成功响应前整体拒绝为 422；活动／收尾 409、未知任务 404、查询参数 400、读取名额占用 429。集合与 `/range`、`/export` 共用单读名额、取消和两个 64 KiB 传输项；预检保留有界逐片段计划（前缀／ID 至多 2 MiB，加至多 2 MiB 集合清单），样本与注释流式输出。预检后来源改变会结束不完整响应。工作台“全部片段”使用原生下载，波形缓冲维持原限额。
 
-`record_start` 也接受 `kinds:["results"]`，要求健康、启用且描述符实际发布文字、表格、图像或状态的处理器。当前每任务一种轨道；同一 UID 可用两个任务同时录 IQ 与结果，共享三个 worker 的限额。`results_archive_export:true` 开放 `GET /api/sdr/recordings/{task_id}/results`，不接受查询参数，流式下载 POSIX tar `results.tar`，内含 `task.json` 与 `events.jsonl`。每行包含 `version:1`、主机接收时刻 `received_at_ms`（十进制毫秒字符串）、原基带 `source` 信息及完整 `envelope`，保留 SDE2 原处理序号／时钟、服务／UID 和 `baseband_stream`。源样本位置及分数保持十进制字符串，接收时刻不建立样本绝对 UTC。清单保留故障、前缀信息及“只记录启动后实际发布事件”策略。图像保留原始增量 RGB／Gray8／base64 PNG 载荷和完整性元数据，缺少前部行仍是 partial；后端不重建独立 PNG，也不补录浏览器历史。
+`record_start` 也接受 `kinds:["results"]`，要求健康、启用且描述符实际发布文字、表格、图像或状态的处理器。当前每任务一种轨道；同一 UID 可用两个任务同时录 IQ 与结果，共享全服务八个任务名额。`results_archive_export:true` 开放 `GET /api/sdr/recordings/{task_id}/results`，不接受查询参数，流式下载 POSIX tar `results.tar`，内含 `task.json` 与 `events.jsonl`。每行包含 `version:1`、主机接收时刻 `received_at_ms`（十进制毫秒字符串）、原基带 `source` 信息及完整 `envelope`，保留 SDE2 原处理序号／时钟、服务／UID 和 `baseband_stream`。源样本位置及分数保持十进制字符串，接收时刻不建立样本绝对 UTC。清单保留故障、前缀信息及“只记录启动后实际发布事件”策略。图像保留原始增量 RGB／Gray8／base64 PNG 载荷和完整性元数据，缺少前部行仍是 partial；后端不重建独立 PNG，也不补录浏览器历史。
 
 结果日志内部格式为 WBRS0001：各 JSON 记录独立 Zstd level 1 压缩，原始块回退，16 字节类型／原始大小／存储大小／CRC32 报头，每卷有计数／字节／摘要校验尾部。每记录最多 3 MiB，共用 4 MiB／64 项／2 秒队列，包含在途工作；压缩、同步、恢复和下载均在采集锁外。无消息时正常等待；移除处理器排空并结束结果轨道，处理失败只使结果录制失败，健康 IQ 继续。结果按处理流身份分段，旧异步事件仍归原段。重启只恢复已校验前缀，不续录或重绑。下载先预检全部保留记录及尾部，再边传输边校验，后续改变导致不完整响应；与 IQ 共用单读名额及两项 64 KiB／2 秒传输队列。查询参数 400、未知 404、活动／收尾 409、种类或数据错误 422、并发 429。结束的空结果任务可下载空 JSONL。协议输入音频与数字文件解码仍未开放；Opus 导出及模拟文件重新解调见上文专用端点。
 
-`record_start` 现接受 `kinds:["audio"]`，按模式描述符的实际 `audio` 输出准入，包含 FT8 伴随音频与 DRM/DRM+ codec 音频，不以 `purpose` 排除。录制来源固定为已发布 AUD2 Float32 PCM（`source:"published_audio"`、`format:"f32_le"`），包含实际后端共享增益／AGC／NR／静噪或 codec 配置；浏览器音量／声像／静音／Solo 不进入文件。它不是协议输入音频；Opus 编码由上文专用导出端点提供。每任务一种轨道，同 UID 的 IQ、结果、音频三个任务共用三个 worker 与各任务 4 MiB／64项／2秒预算。无音频帧的 codec 正常 waiting，不按 IQ 五秒超时失败。准备确认先同步清单与首卷；停止排空，处理器移除正常结束，处理错误隔离健康 IQ。
+`record_start` 现接受 `kinds:["audio"]`，按模式描述符的实际 `audio` 输出准入，包含 FT8 伴随音频与 DRM/DRM+ codec 音频，不以 `purpose` 排除。录制来源固定为已发布 AUD2 Float32 PCM（`source:"published_audio"`、`format:"f32_le"`），包含实际后端共享增益／AGC／NR／静噪或 codec 配置；浏览器音量／声像／静音／Solo 不进入文件。它不是协议输入音频；Opus 编码由上文专用导出端点提供。每任务一种轨道，同 UID 的 IQ、结果、音频三个任务占全服务八个名额中的三个，各任务保留 4 MiB／64项／2秒预算。无音频帧的 codec 正常 waiting，不按 IQ 五秒超时失败。准备确认先同步清单与首卷；停止排空，处理器移除正常结束，处理错误隔离健康 IQ。
 
 内部 WBAU0001 保存每帧实际配置 JSON 和原始 AUD2 头／PCM；使用共同的独立 Zstd1/raw／CRC32 日志 codec，每卷 256 MiB 或4096帧滚动、至多4096卷／片段，配置 JSON 每帧16 KiB、片段清单2 MiB。处理流／音频格式起始、源配置或 RIFF 大小边界各自新段；不拼接缺样、不填静音。原处理帧携带配置快照，排队旧帧不套用当前设置。重启恢复已校验前缀，保留原 UID／服务／故障，不自动续录。
 
@@ -66,6 +70,8 @@ IQ、音频及结果 worker 将已排队的包合并同步，最多等待50毫�
 同一路径 POST 保存：`{type:"save", service_id, expected_revision, name, receiver_uid, receiver_revision}`；删除：`{type:"delete", service_id, expected_revision, name}`。修订均为十进制u64字符串。保存只从指定修订的已确认信道提取设置，并补齐实际生效的AGC／增益等默认值，不接收任意候选配置；同名替换。列表或信道修订冲突、旧服务代次返回409；非法输入400、未知项404、存储不可用503、写入失败500。成功在同步文件并原子替换后返回新列表；写盘不持有采集状态锁。客户端遇冲突显式刷新，不自动重试写入。
 
 载入是浏览器将保存设置合入目标信道后走既有 `configure` 预检／显式确认：保留目标名称、颜色、标签和接收启停；不恢复UID、源时钟、任务或本地监听。预览后信道修订／服务变化会拒绝确认，要求重新预览。带外频点或不可用模式仍由实际准入拒绝；预设不会移动共享采集或自动运行。
+
+`sdr.actual.ddc_batch` 回报每个 PFB/fine 作业合并的物理 IQS 包数：每秒六千二百五十万个样本的硬件采集且没有原始 IQ 直接路由时为 4，其余为 1。每个物理包仍检查连续性，合批不改变输出时钟和帧格式。
 
 ## 1. HTTP 接口
 
@@ -94,7 +100,7 @@ OnAir 15000 ms，GNSS-SDR 25000 ms；它不是信号捕获或定位期限，不�
 
 ### `GET /api/state`
 
-返回完整设备状态（JSON，与 WS `STATUS` 同构）。
+返回最近一次已发布的完整设备状态（JSON，与 WS `STATUS` 同构）。故障瞬间读取采集终止诊断时，可向 `POST /api/config` 发送 `{"cmd":"STATUS"}`，取得当前锁存的诊断，避免沿用最后一份健康发布。
 
 ```bash
 curl http://localhost:8080/api/state
@@ -145,8 +151,9 @@ curl http://localhost:8080/api/state
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
 | `sweep_ms` / `sweep_ms_meas` | number | SDK 估算的 SWP 最短扫频时间（ms，用于 FREQ/POWR 帧头；无估算时为 0）/ 发布器实测单步采集/发布耗时 EMA（ms，仅 STATUS）。SWT 优先显示设备估算；为 0 时固定显示带“实测”标记的 EMA，不留空也不混写两个数据源。|
 | `sdr` | obj | 请求的调谐/解调/音频设置、`actual` 捕获/显示/DDC 几何、`level_dbfs`、静噪、厂商 ADM 指标与原生流健康状态。`sdr.level_dbfs` 为频道 1 电平；每个 `sdr.channels[].level_dbfs` 测量本频道 AGC/音频增益前归一化复数 IQ，公式为 `10*log10(mean(I²+Q²))`，wire 满量程为 1。无有限测量（包括零功率）、频道停用、流身份/调谐改变、退出 SDR 模式或输入超过 1500 ms 时为 null。每个频道的 `channel_dbm` 为新鲜的 SDK 调谐点频谱峰值；`squelch_open` 为实际处理后的模拟音频门状态，在尚未处理、流已过期/停用或绕过该门的 DRM 编码音频模式下为 null。顶层 `sdr.channel_dbm` 和 `sdr.squelch_open` 回显频道 1。请求显示带宽可能窄于设备捕获带宽。|
-| `sdr.filter_limits` | obj | 当前模式的动态 `ifbw` 几何范围：`mode`、`min_hz`、`max_hz`。`min_hz` 为真实 DSP 下限——AM/DSB/CW/NFM/WFM/PM 为 50，USB/LSB 为 101；协议锁定或未知模式返回 `min_hz:0, max_hz:null`。`max_hz` 是按当前采集中心/带宽、输入采样率、PFB tap、收听频率与 CW pitch 求得的整数采样上限；非 SDR、频道 1 停用或无可行范围时为 null。它不是模式推荐值，也不包含其他已启用频道的成本准入，范围内的值仍可能被拒绝。 |
+| `sdr.filter_limits` | obj | 当前模式的动态 `ifbw` 几何范围：`mode`、`min_hz`、`max_hz`。`min_hz` 为真实 DSP 下限——AM/DSB/CW/NFM/WFM/PM 为 50，USB/LSB 为 101；协议锁定或未知模式返回 `min_hz:0, max_hz:null`。`max_hz` 是按当前采集中心/带宽、输入采样率、PFB tap、收听频率与 CW pitch 求得的整数采样上限；非 SDR、频道 1 停用或无可行范围时为 null。它不是模式推荐值，其他几何、提供者和容量校验仍适用。 |
 | `sdr.receiver_error` | string 或 null | 共享 receiver worker 的故障诊断；无接收器故障时为 null。故障停止全部音频/解码接收器，采集、原始 IQ 和显示流继续运行；与全局 `last_error`、`ddc_error` 分开。 |
+| `sdr_last_failure` | object 或 null | 最近一次采集终止诊断，恢复后仍保留。包含 `error` 和故障时的 `actual`；流水线错误还包含源位置、序号和采集配置。`actual.iqs_capture` 与有界 `actual.iqs_events` 记录失败读取、持续停顿和队列统计，不能用最后健康快照代替。无已记录故障时为 null。 |
 | `rta_actual.frame_points` | int | RTA 设备 FFT 帧宽；RTA2 传送返回频点，不受 SWP 请求点数限制 |
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` / `request_id` | str / scalar | 命令 STATUS/ERROR 的命令名及可选标量请求标识；周期发布不携带请求身份 |
@@ -221,9 +228,9 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_SDR` | `center?`, `listen?`（Hz）, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档。平移捕获窗口会带动主路监听频率；当频率离开带限 OnAir 解码器的频段时，该通道自动降级为解码器的音频伴随模式，不会提交非法组合 提供 `listen` 时原子提交采集中心与 C1 监听调谐并启用 C1，包括所有信道已停用的情况；省略时保留频率轴平移行为及信道启停状态。 |
 | `SET_SDR_FFT` | `size`：0 / 32768 / 65536 | 仅显示分析；0 保留原有 SDK 16240 样本路径。需运行中的真实 IQ 与新 shim。`sdr.actual.display_fft` 回报已生效 `size`、`requested_size`、等待/活动状态、真实输入长度、输出点数、Δf、ENBW、观察时长及错误。不重配接收器、采集或录制。 |
-| `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部三路频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
+| `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部已定义频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
 | `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（正有限值，Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（CW 为 100..1600 Hz；其他模式为 (0,20000] Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 13 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/radiofax/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 请求修改接收滤波器，通过准入后重配信道化器 |
-| `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?`、`radiofax_acquisition?`、`radiofax_ioc?`、`radiofax_lpm?`、`radiofax_modulation?`、`radiofax_polarity?`、`radiofax_clock_recovery?`、`radiofax_phase_pixels?`、`radiofax_clock_ppm?`、`radiofax_new_page?`、`radiofax_reset_correction?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。传真捕获为 auto/manual，IOC 为 auto/288/576，LPM 为 auto/60/90/120/180/240，调制为 fm/am，极性为 normal/inverted，时钟恢复为 auto/off。相位范围 ±4096 像素，时钟校正 ±5000 ppm。`radiofax_new_page` 将当前页以部分完成收尾；`radiofax_reset_correction` 将两项校正置零。协议参数变化重建解码器；相位和 ppm 不重建 RF。带限 OnAir 解码器（AIS、ADS-B、Meteor LRPT、APRS、FT4、WSPR）会对保留频率做边界协调：不带 `freq` 选择解码器时自动调谐到其标称中心（ADS-B 1090 MHz、AIS 162 MHz、Meteor 137.1 MHz）；仅改 `freq` 且离开频段时，通道降级为解码器的音频伴随模式（AM/NFM/USB）并采用该模式默认带宽。显式 `mode`+`freq` 冲突仍被拒绝。 |
+| `SET_SDR_CHANNEL` | `channel?`（1–8，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?`、`radiofax_acquisition?`、`radiofax_ioc?`、`radiofax_lpm?`、`radiofax_modulation?`、`radiofax_polarity?`、`radiofax_clock_recovery?`、`radiofax_phase_pixels?`、`radiofax_clock_ppm?`、`radiofax_new_page?`、`radiofax_reset_correction?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。传真捕获为 auto/manual，IOC 为 auto/288/576，LPM 为 auto/60/90/120/180/240，调制为 fm/am，极性为 normal/inverted，时钟恢复为 auto/off。相位范围 ±4096 像素，时钟校正 ±5000 ppm。`radiofax_new_page` 将当前页以部分完成收尾；`radiofax_reset_correction` 将两项校正置零。协议参数变化重建解码器；相位和 ppm 不重建 RF。带限 OnAir 解码器（AIS、ADS-B、Meteor LRPT、APRS、FT4、WSPR）会对保留频率做边界协调：不带 `freq` 选择解码器时自动调谐到其标称中心（ADS-B 1090 MHz、AIS 162 MHz、Meteor 137.1 MHz）；仅改 `freq` 且离开频段时，通道降级为解码器的音频伴随模式（AM/NFM/USB）并采用该模式默认带宽。显式 `mode`+`freq` 冲突仍被拒绝。 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
 | `SET_TRIGGER` | `source`（bus/freerun/level/external/timer）, `edge`（rising/falling/double）, `level`（dBm，以 `caps` 界限为准）, `safetime`/`delay`/`pretime`（0~10 s）, `acqtime`（0.0005~60 s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
@@ -243,9 +250,11 @@ AM 默认使用包络检波，`am_sync:true` 切换到载波恢复同步检波�
 
 原生 WFM 默认通过 AUD2 输出左右声道交错立体声，显式 `stereo:false` 输出单声道。DRM/DRM+ 的编解码音频不使用模拟 AGC、NR、静噪和去加重，界面禁用这些控件，保留音量和播放。停用频道可在未设置有效频率时局部更新，启用时再校验调谐。SSTV 的 `sstv_mode:null` 为自动识别，支持的整数值为固定模式；浏览器确认进入 SDR 后才重放保存选择。显示抽取、`sdr.actual.iq_rate` 捕获采样率与频道 `actual_iq_rate` 分别表示不同量。
 
-命令先校验完整的候选频道配置，再修改状态。CW pitch 超出 100..1600 Hz 时返回 `bad_parameter`，不触发接收器故障。切换 NR 保留解码历史和连续的 `audio_index`；源位置跳过被丢弃的降噪器尾部。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。神经 NR 初始化失败或运行条件不受支持时选择 Wiener；运行时推理错误触发接收器故障，不回退。
+命令先校验完整的候选频道配置，再修改状态。CW pitch 超出 100..1600 Hz 时返回 `bad_parameter`，不触发接收器故障。切换 NR 保留解码历史和连续的 `audio_index`；源位置跳过被丢弃的降噪器尾部。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。所选模型准备或推理失败明确失败该处理分支；准备失败时effective为null，不换Wiener/Off，显式恢复重试所选配置。
 
 `nr_algorithm` 接受 `wiener`、`dfn`（DeepFilterNet3）、`gtcrn`、`ul-unas` 和 `fastenhancer`。`nr_strength`（0–1）控制 Wiener；`nr_atten_db`（0–100 dB）控制神经 NR，0 dB 返回原音，数值越高混入的原音越少。神经模式要求监听 PCM 为 48 kHz。模型版本、许可、采样率转换及信号延迟见 [`backend/models/nr/README.txt`](../../backend/models/nr/README.txt)。
+
+降噪、增益和 AGC 均按频道独立设置。模型独立选择，不以预测CPU/输出量或算法数量准入。`processing_resources`报告载荷几何诊断；`processing_statistics`、`processing_runtime`、`host_resources`和`model_preparation`报告实际执行、队列与模型状态。真实逐UID过载中断该分支并标记源缺口，支持`recover:true`；其他路及独立IQ继续。
 
 `ifbw` 的含义随模式变化。AM/DSB/NFM/WFM/PM 中，它表示以拨盘频率为中心的总带宽。USB/LSB 中，它表示外侧高截止，内侧载波保护带为 `clamp(0.1 × ifbw, 100, 300)` Hz，LSB 取镜像负频率。CW 以 `max(100, pitch)` Hz 为中心，两侧各延伸 `max(50, ifbw) / 2`。浏览器数值编辑器与后端均对其他可编辑模式执行 50 Hz 下限，对 USB/LSB 执行 101 Hz 下限，避免保护带退化。浏览器还检查当前 `sdr.filter_limits`；后端另按所选模式的包络、采集和输出采样率、粗箱通带及频道容量执行准入。非法或不能准入的请求会被拒绝，不会静默截断。预设是推荐值而非上限：AM 100 kHz、SSB 50 kHz、CW 10 kHz 等高于常用预设的自定义值在通过准入时允许使用。输入支持 Hz/kHz/MHz，单位切换不改变底层 Hz 值，虚拟键盘与手动输入共用校验和提交路径。
 
@@ -341,7 +350,7 @@ RTA 发送 RTA2：基础载荷后追加 ASCII TRIG、小端 u32 JSON 字节长�
 | `/ws/audio?channel=1` | AUD2 接收 PCM |
 | `/ws/decode?channel=1` | SDE2 接收事件 |
 
-音频/解码的 `channel` 可省略以订阅全部频道，或选择槽位 1–3；非法值返回 HTTP 400。这些订阅不携带显示帧。后端负责解调，浏览器负责 PCM 播放率转换及结果显示。主面板操作当前选中的信道，工作台管理三个独立信道定义；进入 SDR 保留辅助信道。后端兼容订阅支持三路。
+音频/解码的 `channel` 可省略以订阅全部频道，或选择槽位 1–8；非法值返回 HTTP 400。这些订阅不携带显示帧。后端负责解调，浏览器负责 PCM 播放率转换及结果显示。主面板操作当前选中的信道，工作台管理八个独立信道定义；进入 SDR 保留辅助信道。后端兼容订阅支持八路。
 
 流身份为 `(epoch, channel_id)`。重调分配新频道 ID；重建计划、重新采集和新会话分配新 epoch。拒绝请求保留旧配置及旧流。旧输出尾帧先于新起始边界。每个音频/解码订阅者拥有从零开始的序号，不重置接收器或其他订阅者。源序号断裂或无起始标记的格式变化均显式失败。
 
@@ -425,7 +434,7 @@ AUD2 使用 96 字节头，后接有限交错 f32 PCM；总字节数为 `96 + fr
 | 4 | u32 | UTF-8 JSON 字节数，1 至 2 MiB（含端点） |
 | 8 | UTF-8 | JSON 信封，长度必须与声明一致 |
 
-信封字段为 `version=1`、`channel`（槽位 1–3）、`channel_id`、`epoch`、`seq`、`input_index`、`input_rate`、`input_fraction_num`、`input_fraction_den`、`delay_seconds`、`delay_known`、`causal_presentation`、`timing_kind`、`mode`、`event`。三个 u64 位置/分数字段使用十进制字符串。时钟单位和标志与 AUD2 相同。`timing_kind` 为 `sample`、`protocol_provenance` 或 `causal_presentation`；协议来源位置不代表恢复了样本时间戳。FT8 结果保留搜索窗口时刻，不使用异步完成时刻。`event` 携带模式结果；序号零携带 `{type:'start'}`。
+信封字段为 `version=1`、`channel`（槽位 1–8）、`channel_id`、`epoch`、`seq`、`input_index`、`input_rate`、`input_fraction_num`、`input_fraction_den`、`delay_seconds`、`delay_known`、`causal_presentation`、`timing_kind`、`mode`、`event`。三个 u64 位置/分数字段使用十进制字符串。时钟单位和标志与 AUD2 相同。`timing_kind` 为 `sample`、`protocol_provenance` 或 `causal_presentation`；协议来源位置不代表恢复了样本时间戳。FT8 结果保留搜索窗口时刻，不使用异步完成时刻。`event` 携带模式结果；序号零携带 `{type:'start'}`。
 
 外部提供者发送 `event:{type:'decoder-result',provider,mode,kind,data}`；`mode` 必须与
 SDE2 信封一致，`kind` 为 `text`、`table`、`image` 或 `status`。外部结果使用
@@ -644,3 +653,14 @@ RTA2 的 TRIG 元数据包括 valid、supported、simulated、generation、frame
 auto_ref.result 为 idle、adjusting、applied、ok、no_data、overflow、limit、stalled、failed、cancelled 或 timeout。只有成功结束时 target 非 null。始终没有可用采集时以 no_data 结束；已有调整但未获得新干净数据确认时以 timeout 结束。手动 Ref/AMP、调频、换模和 Preset 会取消会话并清除旧 target。
 
 SWP/RTA/SDR 的手动 Ref 使用独立本地窗口（-200 至 +100 dBm 加外部 Offset）。SET_REF 和 AUTO_SCALE.current_ref 减去 Offset 后限制在现有 -160 至 +40 dBm 协议范围。匹配的原始请求回读接受窗口，不替换显示值：Offset 为零时显示 +100 对应硬件请求 +40。同一限幅目标下继续移动窗口不重配硬件，也不重启待确认超时。拒绝或超时恢复已接受的显示值。SDR 的 sdr.ref 确认未补偿请求，与有效 ref 分开。应用 Auto 目标时只加一次 Offset。修改 Offset 同步平移绝对纵轴和迹线，不发送硬件命令；相对 dB 不变。瀑布 Fixed 范围须为有限数且低值小于高值；非法编辑回退并提示。SWP/RTA 映射或有效范围变化清空量化历史，暂停时亦然；SDR 保存原始幅度和 RF 轴，支持整幅/视窗自动噪底以及暂停后重着色，固定色阶不受来源影响。见[架构](ARCHITECTURE.md)与[验证记录](../validation/sdr-display-2026-11-04/README.md)。std/rta/sdr 可使用本地 Scale/Unit/Offset/瀑布设置；独占谐波/相噪测量时禁用 Level 控件。
+
+
+### 模式专用控制和实际应用回执
+
+逻辑 `processors[0]` 与 `SET_SDR_CHANNEL` 共用校验：`am_sync`、`pitch`、`deemph_us`、`stereo`、`audio_rate`、可空的 `sstv_mode`，以及全部 Radiofax 捕获、IOC、LPM、调制、极性、时钟恢复、相位与 ppm 字段。`am_sync_generation` 仅由服务生成。主面板“模式设置”和工作台共用控件；复制、预设和已确认模式记忆保留完整字段，瞬时动作不进入普通处理器配置。
+
+命令返回只表示接纳。`receivers[].control_receipts` 区分 `queued/applied/inactive/cancelled/expired/failed`，绑定 UID、服务、十进制修订、请求 ID 与处理代次。实际应用回执给出首个受影响源块的 channel ID、epoch、输入位置、分数、真实输入率与延迟，精度为 `block`。`inactive` 仅表示配置已保存且处理未启用，不声称已有媒体输出。到达数据前被覆盖的配置明确取消；模型准备失败不会产生应用成功回执或换用其他算法。
+
+`type:"action"` 请求带原 `receiver_uid/service_id/expected_revision/request_id`、唯一 `action_id`、当前快照的 `action_token` 和 `action:"radiofax_new_page"` 或 `"radiofax_reset_correction"`。仅活动 Radiofax 路允许动作；有效期按服务单调时钟计5000毫秒，含等待数据的时间。重试保留身份，改变载荷冲突。去重保存128个ID，淘汰推进 token 拒绝水位，防止窗口内被淘汰的动作重新执行。旧服务或过期动作须由用户明确重新发起。
+
+每路最多64个未完成控制，每个数据步前最多执行64个轻量动作；共享准备队列另限64，满时明确返回 busy。每分支回执历史最多128项。逐路控制不排空全部拥有者，满队列不丢弃IQ或打断其他路录制。兼容信道状态包含逻辑控制身份，主面板在提交时固定目标。

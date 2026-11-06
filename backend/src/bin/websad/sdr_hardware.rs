@@ -27,12 +27,12 @@ pub(super) struct HardwarePresentation {
 }
 pub(super) struct PresentedHardware {
     pub pan: Vec<Vec<u8>>,
-    pub frames: Vec<Vec<u8>>,
+    pub frames: IqFrames,
     actual: Value,
     version: u64,
     timing: Timing,
     peak: Option<(f64, f64, i32, u64)>,
-    channel_power: Option<[Option<(std::time::Instant, f64)>; 3]>,
+    channel_power: Option<Vec<Option<(std::time::Instant, f64)>>>,
 }
 impl HardwarePresentation {
     pub fn finish(mut self) -> Result<PresentedHardware, String> {
@@ -59,7 +59,7 @@ impl HardwarePresentation {
             "start":lo,"stop":hi,
             "packet_samples":16240,"packet_bytes":64960,"pan_available":false,
             "listen":self.listen,"demod":self.demod,"if_bw":self.if_bw,
-            "ddc_decimate":snapshot.registry.iter().find(|c|c.channel==1).map(|c| snapshot.usable_bandwidth/0.8/c.output_rate),"ddc_batch":1,
+            "ddc_decimate":snapshot.registry.iter().find(|c|c.channel==1).map(|c| snapshot.usable_bandwidth/0.8/c.output_rate),"ddc_batch":snapshot.batch_packets,
             "audio_rate":null,"deemph_us":self.deemph,
             "timing_scope":"capture_lifetime_cumulative","timing_quantiles":"histogram_upper_bound_ns",
             "ddc_error_count":self.errors,"ddc_error_last":self.last_error,
@@ -158,7 +158,7 @@ impl DevState {
             .or_else(|| self.ddc.as_ref().map(|d| d.0.capture_center))
             .or(self.last_capture.map(|p|p.center)).unwrap_or(self.sdr_center)
     }
-    pub(super) fn ddc_command(&mut self, command: impl FnOnce(&mut Ddc) -> Result<Vec<Vec<u8>>, String> + Send + 'static) -> Result<(), String> {
+    pub(super) fn ddc_command(&mut self, command: impl FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send + 'static) -> Result<(), String> {
         let registry = self.stream_registry();
         let frames = if let Some(pipeline) = self.pipeline.as_mut() {
             match pipeline.command(command) {
@@ -169,19 +169,20 @@ impl DevState {
             }
         } else if let Some(ddc) = self.ddc.as_mut() { command(&mut ddc.0)? }
         else { Vec::new() };
-        // Even an empty fine tail can follow a batch already queued by a
-        // detached presentation. Finish it before configuration generations
-        // advance, so that the worker cannot discard that retiring batch.
+        // Preserve immutable old configuration/identity at admission. A single
+        // source control must not wait for synchronous inference on any lane;
+        // changed generations explicitly cancel unfinished old processing.
         if !frames.is_empty() || self.receiver_workers.is_some() {
             let mut retiring = std::mem::take(&mut self.pending_iq);
             retiring.extend(frames);
-            match self.process_receiver_frames_with_registry(&retiring, &registry, true) {
+            match self.process_control_receiver_frames(&retiring, &registry) {
                 Ok(output)=>{
                     self.pending_receiver.append(output);
                 }
                 Err(error)=>self.latch_receiver_failure(error),
             }
-            for frame in retiring.iter().filter(|_|self.receiver_failure.is_none()) {
+            for input in retiring.iter().filter(|_|self.receiver_failure.is_none()) {
+                let frame=input.iq_header();
                 if frame.len()>=56 && matches!(frame.get(..4),Some(b"IQBF"|b"IQAX")) {
                     self.consumed_receiver_iq.insert((u32::from_le_bytes(frame[32..36].try_into().unwrap()),
                         u32::from_le_bytes(frame[36..40].try_into().unwrap()),u32::from_le_bytes(frame[8..12].try_into().unwrap())));
@@ -234,8 +235,8 @@ impl DevState {
             self.pipeline = Some(Pipeline::start_service(PipelineConfig {
                 center:self.sdr_center, listen:self.sdr_listen, fine:2, display_decimate:self.sdr_decimate as i32,
                 front_end:self.front_end(self.sdr_ref), shim:self.hardware_shim.clone().unwrap(),
-                taps:self.sdr_pfb_taps_per_phase, aux, channel_budget:3,
-                output_rate_budget:COARSE_RATE*3.0,
+                taps:self.sdr_pfb_taps_per_phase, aux, channel_budget:MAX_CHANNELS,
+                output_rate_budget:COARSE_RATE*MAX_CHANNELS as f64,
             },configs)?);
             self.device_detail = self.pipeline.as_ref().and_then(|pipeline| pipeline.device_info).map(|info| info.detail());
             self.remember_capture_parameters();
@@ -480,7 +481,10 @@ mod tests {
             frames:next.clone(),pan:Vec::new(),
         }).unwrap();
         state.ddc_command(|_|Ok(Vec::new())).unwrap();
-        let actual = std::mem::take(&mut state.pending_receiver);
+        let mut actual = std::mem::take(&mut state.pending_receiver);
+        // The control admits immutable work without waiting for inference.
+        // This finite test explicitly waits before comparing the complete PCM.
+        actual.append(state.receiver_workers.as_mut().unwrap().finish().unwrap());
         assert_eq!(actual.audio,expected.audio);
         assert_eq!(actual.decode,expected.decode);
         let mut raw = tail;
@@ -496,7 +500,7 @@ mod tests {
         state.sdr_actual = json!({"center":200e6});
         state.auto.last_peak = Some(-20.0);
         let mut output = PresentedHardware {
-            pan:vec![vec![1]], frames:vec![vec![2], vec![3]],
+            pan:vec![vec![1]], frames:vec![vec![2].into(), vec![3].into()],
             actual:json!({"center":100e6}), version:state.config_version,
             timing:Timing::default(), peak:Some((-40.0, -80.0, 0, 1)),
             channel_power:None,
@@ -522,17 +526,17 @@ mod tests {
         state.sdr_actual=json!({"center":100e6,"ref":-10.0});
         state.rta_actual=json!({"center":100e6});
         state.gnss_value=Some(json!({"lock":1}));
-        state.channel_power=[Some((std::time::Instant::now(),-21.0));3];
+        state.channel_power=vec![Some((std::time::Instant::now(),-21.0));MAX_CHANNELS];
         state.note_auto_acquisition(-12);
         state.auto.last_peak=Some(-20.0);
         state.auto.last_floor=Some(-80.0);
         state.auto_scale(None,false);
         let old_version=state.config_version;
         let mut output=PresentedHardware {
-            pan:vec![b"old-pan".to_vec()],frames:vec![b"retiring-iq".to_vec()],
+            pan:vec![b"old-pan".to_vec()],frames:vec![b"retiring-iq".to_vec().into()],
             actual:json!({"center":200e6,"ref":3.0}),version:old_version,
             timing:Timing::default(),peak:Some((-2.0,-50.0,0,999)),
-            channel_power:Some([Some((std::time::Instant::now(),-1.0));3]),
+            channel_power:Some(vec![Some((std::time::Instant::now(),-1.0));MAX_CHANNELS]),
         };
         let error=dispatch(&mut state,"SET_MODE",&json!({"mode":"server"})).unwrap_err();
         assert_eq!(error.code,"device_error");
@@ -565,7 +569,7 @@ mod tests {
         let mut state = DevState::new(golden, schema);
         state.swp.mode = "sdr".into();
         let mut output = PresentedHardware {
-            pan:vec![vec![1]], frames:vec![vec![2]],
+            pan:vec![vec![1]], frames:vec![vec![2].into()],
             actual:json!({"center":100e6,"ref":-7.5,"atten":12,"preamp":1,"ifgain":2}), version:state.config_version,
             timing:Timing::default(), peak:Some((-40.0, -80.0, 0, 1)),
             channel_power:None,

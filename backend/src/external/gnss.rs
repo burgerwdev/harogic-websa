@@ -54,6 +54,7 @@ pub fn unavailable_reason() -> Option<String> {
 
 pub struct GnssBridge { process: Process, pending: Vec<ExternalDecodeEvent> }
 impl GnssBridge {
+    pub fn buffer_status(&self)->serde_json::Value {self.process.buffer_status()}
     pub fn spawn(rate: u32, center_hz: u64) -> Result<Self, String> {
         if rate != 4_000_000 { return Err("GPS requires exactly 4000000 complex samples/s".into()); }
         validate_center_hz(center_hz, bench_setting()?.as_deref())?;

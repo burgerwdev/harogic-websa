@@ -1,3 +1,4 @@
+import { sharedReceiverModeMemory } from './receiverModeMemory';
 import './workbench.css';
 import { NativeReceiverAdapter } from '../core/nativeReceiverAdapter';
 import { WorkbenchSession } from './workbenchSession';
@@ -18,7 +19,7 @@ async function ensureNativeWorkbench(): Promise<void> {
   if (pending) return pending;
   pending = (async () => {
     const adapter = await NativeReceiverAdapter.connect();
-    const session = new WorkbenchSession(adapter);
+    const session = new WorkbenchSession(adapter,sharedReceiverModeMemory);
     const syncReceivers = () => confirmSdrReceiverNumbers(session.snapshot.receivers.map(r => r.display_number));
     const stopReceivers = session.subscribe(syncReceivers); syncReceivers();
     session.masterMuted = !sdrAudioOn.get();

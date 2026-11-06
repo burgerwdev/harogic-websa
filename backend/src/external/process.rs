@@ -5,7 +5,7 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,17 @@ fn nonblocking(fd: i32) -> Result<(), String> {
     }
     Ok(())
 }
-enum Input { Data(Vec<u8>), Finish, Retire }
+#[derive(Default)]
+struct InputStats { bytes:AtomicU64, executing:AtomicU64, blocks:AtomicU64, written:AtomicU64 }
+struct InputReservation { stats:Arc<InputStats>, remaining:u64, executing:bool }
+impl Drop for InputReservation {
+    fn drop(&mut self) {
+        self.stats.bytes.fetch_sub(self.remaining,Ordering::Relaxed);
+        self.stats.blocks.fetch_sub(1,Ordering::Relaxed);
+        if self.executing {self.stats.executing.fetch_sub(self.remaining,Ordering::Relaxed);}
+    }
+}
+enum Input { Data(Vec<u8>,InputReservation), Finish, Retire }
 pub struct Process {
     input: mpsc::SyncSender<Input>,
     output: mpsc::Receiver<String>,
@@ -36,6 +46,7 @@ pub struct Process {
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    stats:Arc<InputStats>,
 }
 impl Process {
     pub fn spawn(path: &Path, args: &[String]) -> Result<Self, String> { Self::start(path, args, None, Duration::ZERO) }
@@ -56,6 +67,8 @@ impl Process {
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         let (worker_error, worker_stop, worker_done) = (error.clone(), stop.clone(), done.clone());
+        let stats=Arc::new(InputStats::default());
+        let worker_stats=stats.clone();
         let thread = thread::Builder::new().name("decoder-process".into()).spawn(move || {
             let mut child = match command.spawn() {
                 Ok(child) => child,
@@ -70,7 +83,7 @@ impl Process {
                 let _ = child.kill(); let _ = child.wait(); let _ = ready_tx.send(Err(error)); return;
             }
             if ready_tx.send(Ok(())).is_err() { let _ = child.kill(); let _ = child.wait(); return; }
-            let mut pending: Option<(Vec<u8>, usize)> = None;
+            let mut pending: Option<(Vec<u8>, usize, InputReservation)> = None;
             let mut line = Vec::new();
             let mut stderr_line = Vec::new();
             let discovery_started = Instant::now();
@@ -93,24 +106,28 @@ impl Process {
                     for _ in 0..8 {
                         if pending.is_none() && finishing.is_none() && !retiring {
                             match rx.try_recv() {
-                                Ok(Input::Data(bytes)) => pending = Some((bytes, 0)),
+                                Ok(Input::Data(bytes,mut reservation)) => {worker_stats.executing.store(bytes.len() as u64,Ordering::Relaxed);reservation.executing=true;pending = Some((bytes, 0,reservation));},
                                 Ok(Input::Finish) => { stdin.take(); finishing = Some(Instant::now()); }
                                 Ok(Input::Retire) => { stdin.take(); retiring = true; }
                                 Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
                                 Err(mpsc::TryRecvError::Empty) => {}
                             }
                         }
-                        let Some((bytes, offset)) = pending.as_mut() else { break; };
+                        let Some((bytes, offset,reservation)) = pending.as_mut() else { break; };
                         let end = bytes.len().min(*offset + BLOCK_LIMIT - written);
                         match stdin.as_mut().ok_or("decoder input closed")?.write(&bytes[*offset..end]) {
                             Ok(0) => return Err("decoder stdin closed while writing".into()),
-                            Ok(count) => { *offset += count; written += count; progress = true; }
+                            Ok(count) => { *offset += count; written += count; progress = true;
+                                reservation.remaining-=count as u64;
+                                worker_stats.bytes.fetch_sub(count as u64,Ordering::Relaxed);
+                                worker_stats.executing.fetch_sub(count as u64,Ordering::Relaxed);
+                                worker_stats.written.fetch_add(count as u64,Ordering::Relaxed); }
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                             Err(error) => return Err(format!("decoder input: {error}")),
                         }
                         if *offset == bytes.len() {
-                            let (mut bytes, _) = pending.take().unwrap(); bytes.clear();
+                            let (mut bytes, _,_reservation) = pending.take().unwrap(); bytes.clear();
                             let _ = recycle_tx.try_send(bytes);
                         }
                         if written == BLOCK_LIMIT { break; }
@@ -175,10 +192,16 @@ impl Process {
             worker_done.store(true, Ordering::Release);
         }).map_err(|e| format!("starting decoder supervisor: {e}"))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self { input: tx, output: out_rx, recycled: recycle_rx, error, stop, done, thread: Some(thread) }),
+            Ok(Ok(())) => Ok(Self { input: tx, output: out_rx, recycled: recycle_rx, error, stop, done, thread: Some(thread),stats }),
             outcome => { stop.store(true, Ordering::Release); let _ = thread.join();
                 Err(outcome.ok().and_then(Result::err).unwrap_or_else(|| "decoder supervisor stopped during startup".into())) }
         }
+    }
+    pub fn buffer_status(&self)->serde_json::Value {
+        let load=|v:&AtomicU64|v.load(Ordering::Relaxed);
+        serde_json::json!({"input_held_bytes":load(&self.stats.bytes),"input_executing_bytes":load(&self.stats.executing),
+            "input_blocks":load(&self.stats.blocks),"written_bytes":load(&self.stats.written),
+            "done":self.done.load(Ordering::Acquire),"max_input_blocks":QUEUE,"max_input_block_bytes":BLOCK_LIMIT})
     }
     pub fn buffer(&self) -> Vec<u8> { self.recycled.try_recv().unwrap_or_default() }
     fn check(&self) -> Result<(), String> {
@@ -189,10 +212,13 @@ impl Process {
         if bytes.len() > BLOCK_LIMIT { return Err("decoder input block exceeds 1 MiB".into()); }
         let result = self.drain();
         if !bytes.is_empty() {
-            self.input.try_send(Input::Data(bytes)).map_err(|e| match e {
+            let size=bytes.len() as u64;
+            self.stats.bytes.fetch_add(size,Ordering::Relaxed);self.stats.blocks.fetch_add(1,Ordering::Relaxed);
+            self.input.try_send(Input::Data(bytes,InputReservation {stats:self.stats.clone(),remaining:size,executing:false})).map_err(|e| {
+                match e {
                 mpsc::TrySendError::Full(_) => "decoder input backlog exceeded 32 blocks".to_string(),
                 mpsc::TrySendError::Disconnected(_) => "decoder input process stopped".to_string(),
-            })?;
+            }})?;
         }
         self.check()?;
         Ok(result)
@@ -310,6 +336,9 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1), "live replacement waited for EOF completion");
         // Recycling happens only after every byte of a queued block was written.
         assert_eq!(process.recycled.try_iter().count(), blocks);
+        assert_eq!(process.buffer_status()["input_held_bytes"],0);
+        assert_eq!(process.buffer_status()["input_blocks"],0);
+        assert_eq!(process.buffer_status()["written_bytes"],blocks*8192);
         assert!(process.done.load(Ordering::Acquire));
         assert!(process.thread.is_none(), "retirement must reap its bounded owner");
     }

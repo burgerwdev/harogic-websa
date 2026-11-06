@@ -185,6 +185,7 @@ def browser_gate(origin, artifacts):
         overview = page.locator('[data-view-id=overview-follow]')
         row = overview.locator(f'.mc-row[data-uid="{uid}"]')
         # AM has useful telemetry even though its internal purpose is listen.
+        row.locator('.mc-row-more > summary').click()
         button = row.locator('[data-action=rec-results]'); button.scroll_into_view_if_needed()
         button.hover(); page.mouse.down(); page.wait_for_timeout(1100); page.mouse.up()
         recording = until(lambda: next((t['task_id'] for t in api(origin)['recordings'] if t['receiver_uid'] == uid

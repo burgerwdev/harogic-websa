@@ -36,7 +36,7 @@ jobs:
         name: Build and install FDK AAC 2.0.3
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ git pkg-config
+          sudo apt-get install -y cmake g++ git pkg-config libusb-1.0-0-dev
           source_dir="$(mktemp -d)"
           trap 'rm -rf -- "$source_dir"' EXIT
           git -C "$source_dir" init

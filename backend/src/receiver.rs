@@ -208,7 +208,12 @@ pub struct Ft8Result {
     messages: Vec<websa_dsp::digital::ft8::Ft8Message>,
 }
 impl Ft8Job {
+    pub fn retained_bytes(&self) -> usize {self.iq.len()*std::mem::size_of::<f32>()}
+    #[cfg(feature="bench-instrument")]
+    pub fn execution_identity(&self)->u64 {self.epoch}
     pub fn decode(self) -> Ft8Result {
+        #[cfg(feature="bench-instrument")]
+        if let Err(error)=crate::execution_probe::run("search",self.epoch) {panic!("{error}");}
         let mut decoder = Ft8Decoder::new(FT8_RATE as f64);
         decoder.push_iq(&self.iq);
         Ft8Result { epoch: self.epoch, sequence: self.sequence, clock: self.clock,
@@ -326,6 +331,18 @@ pub struct Receiver {
     peak_hold: f32,
 }
 impl Receiver {
+    /// Actual retained protocol window and model state, observed by its owner.
+    pub fn processing_status(&self) -> Value {
+        let nr=self.nr.status();
+        json!({"mode":self.config.mode,"nr_requested":nr.requested.name(),
+            "nr_effective":nr.effective.map(NrAlgorithm::name),"nr_state":nr.state,"nr_reason":nr.reason,
+            "model_sessions":crate::nr::model_sessions(),
+            "squelch":self.squelch_status().map(|(open,gain)|json!({"open":open,"gain":gain})),
+            "protocol_window_samples":self.ft8.as_ref().map(|window|window.samples.len()/2),
+            "protocol_window_bytes":self.ft8.as_ref().map(|window|window.samples.len()*4),
+            "protocol_waiting":self.ft8.as_ref().is_some_and(|window|window.samples.len()<FT8_RATE as usize*30),
+            "external":self.external.as_ref().map(|decoder|decoder.buffer_status())})
+    }
     pub fn new(config: ReceiverConfig) -> Result<Self, String> {
         config.validate()?;
         let prepared = if crate::catalog::is_external(&config.mode) {
@@ -337,6 +354,7 @@ impl Receiver {
     /// Bind an admitted decoder to the actual fine-channel cadence without spawning.
     pub fn new_prepared(config: ReceiverConfig, prepared: Option<PreparedDecoder>) -> Result<Self, String> {
         config.validate()?;
+        crate::nr::retain_selected_model(config.nr_algorithm());
         let external = match prepared {
             Some(prepared) if prepared.matches(&config.mode, config.center_hz) => Some(prepared.decoder),
             Some(_) => return Err("prepared decoder does not match receiver configuration".into()),
@@ -387,6 +405,7 @@ impl Receiver {
         nr.configure(config.audio_rate, algorithm, config.nr_strength as f32, config.nr_atten_db);
         let right_algorithm = if mode == "wfm" && config.stereo { algorithm } else { NrAlgorithm::Off };
         nr_right.configure(config.audio_rate, right_algorithm, config.nr_strength as f32, config.nr_atten_db);
+        nr.ensure_ready()?;nr_right.ensure_ready()?;
         let cw = if mode == "cw" { Some(CwDecoder::new(config.audio_rate, config.pitch as f32)?) } else { None };
         let ft8 = if mode == "ft8" { Some(Ft8Window::new()) } else { None };
         let audio_format = analog.as_ref().map(|_|(config.audio_rate,
@@ -434,6 +453,7 @@ impl Receiver {
             nr_strength: config.nr_strength, squelch_dbm: config.squelch_dbm });
         let algorithm = config.nr_algorithm();
         if self.analog.is_some() && algorithm != self.config.nr_algorithm() {
+            crate::nr::retain_selected_model(algorithm);
             // A reducer change drops its un-emitted tail, but retains decoder history.
             self.audio_source_offset = self.analog_frames.checked_sub(self.audio_frames)
                 .ok_or("noise reducer emitted beyond its input clock")?;
@@ -441,6 +461,7 @@ impl Receiver {
         self.nr.configure(config.audio_rate, algorithm, config.nr_strength as f32, config.nr_atten_db);
         let right_algorithm = if config.mode == "wfm" && config.stereo { algorithm } else { NrAlgorithm::Off };
         self.nr_right.configure(config.audio_rate, right_algorithm, config.nr_strength as f32, config.nr_atten_db);
+        self.nr.ensure_ready()?;self.nr_right.ensure_ready()?;
         self.next_status = 0;
         self.config = config;
         Ok(())
@@ -480,6 +501,8 @@ impl Receiver {
         else { self.listener.squelch_status() }
     }
     pub fn process(&mut self, iq: &[f32], clock: InputClock, power_dbm: Option<f64>) -> Result<ReceiverOutput, String> {
+        #[cfg(feature="bench-instrument")]
+        crate::execution_probe::run("receiver",self.config.center_hz)?;
         if iq.len() % 2 != 0 || iq.len() / 2 > MAX_BLOCK_COMPLEX {
             return Err("receiver expects complete IQ pairs in blocks of at most 65536 complex samples".into());
         }
@@ -720,7 +743,7 @@ impl Receiver {
         if status_due {
             let status = self.nr.status();
             out.events.push(json!({"type":"nr-status","requested":algorithm_name(status.requested),
-                "effective":algorithm_name(status.effective),"state":status.state,"reason":status.reason,
+                "effective":status.effective.map(algorithm_name),"state":status.state,"reason":status.reason,
                 "model":self.nr.model_id(),"latencySamples":self.nr.latency_samples(),
                 "audioRate":self.config.audio_rate}));
         }
@@ -1134,14 +1157,14 @@ mod tests {
             config.nr_algorithm = id.into();
             let mut receiver = Receiver::new(config.clone()).unwrap();
             assert!(receiver.config().nr);
-            assert_eq!(receiver.nr.status().effective,NrAlgorithm::Off);
+            assert_eq!(receiver.nr.status().effective,Some(NrAlgorithm::Off));
             config.nr_atten_db = 20.0;
             receiver.configure(config).unwrap();
-            assert_eq!(receiver.nr.status().effective,NrAlgorithm::Off);
+            assert_eq!(receiver.nr.status().effective,Some(NrAlgorithm::Off));
             let mut listen = mode_config("usb");
             listen.nr = true;
             receiver.configure(listen).unwrap();
-            assert_eq!(receiver.nr.status().effective,NrAlgorithm::Wiener);
+            assert_eq!(receiver.nr.status().effective,Some(NrAlgorithm::Wiener));
         }
     }
 
@@ -1154,7 +1177,7 @@ mod tests {
                 config.audio_rate=48000;config.nr_atten_db=20.0;
                 let input_rate=config.input_rate;
                 let mut receiver=Receiver::new(config).unwrap();
-                assert_eq!(receiver.nr.status().effective.name(),id,"{:?}",receiver.nr.status());
+                assert_eq!(receiver.nr.status().effective.unwrap().name(),id,"{:?}",receiver.nr.status());
                 let nr_delay=receiver.nr.latency_samples().unwrap();
                 let mut frames=0;let mut produced=0;
                 for i in 0..60 {

@@ -3,7 +3,7 @@ use super::receiver_workers::ChannelConfig;
 use super::sdr_pipeline::ChannelRegistryEntry;
 use std::f64::consts::TAU;
 use std::sync::LazyLock;
-use websa_channelizer::{encode_baseband, BasebandMagic};
+use websa_channelizer::BasebandMagic;
 
 /// Independent native-receiver inputs for the fake device. These signals are
 /// already in normalized ADC units, so IQv2 encoding must not scale them again.
@@ -201,7 +201,7 @@ impl FixtureSlot {
         })
     }
 
-    fn step(&mut self, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
+    fn step(&mut self, frames: &mut IqFrames) -> Result<(), String> {
         let entry = &self.entry;
         let magic = if entry.channel == 1 { BasebandMagic::Primary } else { BasebandMagic::Aux };
         let count = (entry.output_rate * 0.085) as usize;
@@ -209,13 +209,11 @@ impl FixtureSlot {
             .ok_or("fixture source sample clock exhausted")?;
         let sequence = self.sequence.checked_add(1).ok_or("fixture frame sequence exhausted")?;
         if self.sequence == 0 {
-            frames.push(encode_baseband(magic, 0, entry.output_rate, entry.frequency_hz,
-                entry.channel_id as u64, entry.epoch as u64, 0, 0.0, &[]).map_err(str::to_owned)?);
+            frames.push(IqFrame::native(magic,0,entry.output_rate,entry.frequency_hz,entry.channel_id as u64,entry.epoch as u64,0,0.0,entry.input_rate,Vec::new()).map_err(str::to_owned)?);
         }
         self.source.fill(&self.config, entry.output_rate, self.input_index, count, &mut self.iq);
-        frames.push(encode_baseband(magic, sequence, entry.output_rate, entry.frequency_hz,
-            entry.channel_id as u64, entry.epoch as u64, self.input_index, 0.0, &self.iq)
-            .map_err(str::to_owned)?);
+        frames.push(IqFrame::native(magic,sequence,entry.output_rate,entry.frequency_hz,entry.channel_id as u64,entry.epoch as u64,
+            self.input_index,0.0,entry.input_rate,std::mem::take(&mut self.iq)).map_err(str::to_owned)?);
         self.sequence = sequence;
         self.input_index = next_index;
         Ok(())
@@ -234,11 +232,11 @@ impl FixtureSources {
         Ok(staged)
     }
     pub(super) fn configure(&mut self, configs: &[ChannelConfig]) -> Result<(), String> {
-        let mut seen = [false; 3];
+        let mut seen = vec![false; MAX_CHANNELS];
         let mut replacements = Vec::new();
         for config in configs {
-            if !(1..=3).contains(&config.channel) || seen[(config.channel - 1) as usize] {
-                return Err("fixture channel slots must be unique values in 1..=3".into());
+            if !(1..=MAX_CHANNELS as u32).contains(&config.channel) || seen[(config.channel - 1) as usize] {
+                return Err("fixture channel slots must be unique values within service capacity".into());
             }
             seen[(config.channel - 1) as usize] = true;
             if !config.freq.is_finite() { return Err("fixture frequency must be finite".into()); }
@@ -275,8 +273,8 @@ impl FixtureSources {
 
     /// Explicit capture geometry changes restart selected fixture clocks.
     pub(super) fn restart(&mut self, channel: Option<u32>) -> Result<(), String> {
-        if channel.is_some_and(|channel| !(1..=3).contains(&channel)) {
-            return Err("fixture channel must be in 1..=3".into());
+        if channel.is_some_and(|channel| !(1..=MAX_CHANNELS as u32).contains(&channel)) {
+            return Err("fixture channel exceeds service capacity".into());
         }
         let mut identities = Vec::new();
         for (&slot, _) in &self.slots {
@@ -297,7 +295,7 @@ impl FixtureSources {
         Ok(())
     }
 
-    pub(super) fn step(&mut self) -> Result<Vec<Vec<u8>>, String> {
+    pub(super) fn step(&mut self) -> Result<IqFrames, String> {
         let mut frames = Vec::with_capacity(self.slots.len() * 2);
         for slot in self.slots.values_mut() { slot.step(&mut frames)?; }
         Ok(frames)
