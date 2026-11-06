@@ -6,7 +6,7 @@ import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountWorkbench } from '../ui/workbenchApp';
 
 const task = (id: string): RecordingTask => ({ task_id: id, receiver_uid: 'old-uid', service_id: 'old-service', state: 'completed', fault: null,
-  tracks: [{ kind: 'audio', segments: [{ segment_id: 'audio-000000', samples: '18446744073709551615', actual_rate_hz: 48000, channels: 2 }] }] } as RecordingTask);
+  tracks: [{ kind: 'audio', stored_bytes: '0', raw_bytes: '0', segments: [{ segment_id: 'audio-000000', samples: '18446744073709551615', actual_rate_hz: 48000, channels: 2 }] }] } as RecordingTask);
 afterEach(() => { document.body.innerHTML = ''; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('stored PCM playback ownership', () => {
@@ -16,6 +16,7 @@ describe('stored PCM playback ownership', () => {
       capabilities: { ...session.snapshot.capabilities, audio_archive_export: true, audio_archive_read: false } };
     const view = mountWorkbench(session, document.body);
     try {
+      document.querySelector<HTMLButtonElement>('.mc-workspace-actions [data-action=recording-files]')!.click();
       expect(document.querySelector('[data-action=audio-archive]')).toBeNull();
       session.snapshot.capabilities.audio_archive_read = true; session.notify();
       const entry = document.querySelector<HTMLElement>('[data-action=audio-archive]');

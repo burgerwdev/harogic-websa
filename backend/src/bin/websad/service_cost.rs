@@ -37,8 +37,8 @@ fn service_cost_report(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:us
 mod tests {
     use super::*;
     #[test]
-    fn eight_wide_channels_need_no_profile_or_prediction_budget() {
-        let configs:Vec<_>=(1..=8).map(|channel|receiver_workers::ChannelConfig {channel,enabled:true,
+    fn all_wide_channels_need_no_profile_or_prediction_budget() {
+        let configs:Vec<_>=(1..=MAX_CHANNELS as u32).map(|channel|receiver_workers::ChannelConfig {channel,enabled:true,
             mode:"wfm".into(),freq:100e6,if_bw:250000.0,..Default::default()}).collect();
         let before=websa_channelizer::model_preparation::snapshot();
         prepare_service(&configs,IQ_FS,16,8,true).unwrap();

@@ -61,7 +61,7 @@ impl Options {
         }
         let workload=fields.get("--workload").copied().unwrap_or("legacy");
         if !matches!(workload,"legacy"|"narrow") || (product_channels && workload=="legacy" && channels!=3) {
-            return Err("legacy product workload requires three channels; use --workload narrow for one through eight".into());
+            return Err(format!("legacy product workload requires three channels; use --workload narrow for one through {}", super::MAX_CHANNELS));
         }
         let source_kind=fields.get("--source-kind").copied().unwrap_or("hardware");
         if !matches!(source_kind,"hardware"|"raw-fixture") {return Err("invalid source-kind".into());}
@@ -102,7 +102,8 @@ impl Options {
     fn frequencies(&self) -> Result<Vec<f64>, String> {
         if self.product_channels {
             return Ok(if self.workload=="legacy" {vec![self.center, self.center + 5_000.0, self.center - 5_000.0]}
-                else {[-20e6,-12e6,-4e6,0.0,20_000.0,40_000.0,8e6,20e6].into_iter().take(self.channels).map(|offset|self.center+offset).collect()});
+                else {[-20e6,-12e6,-4e6,0.0,20_000.0,40_000.0,8e6,20e6,
+                    -18e6,-14e6,-10e6,-6e6,2e6,6e6,12e6,18e6].into_iter().take(self.channels).map(|offset|self.center+offset).collect()});
         }
         let flat = coarse_passband_hz(COARSE_RATE, self.taps).ok_or("unsupported taps")?;
         let rate = COARSE_RATE / self.fine as f64;
@@ -373,7 +374,7 @@ impl ProductReceiver {
                 errors.push(format!("channel {} IQ/audio sample conservation failed: {} audio frames, expected {expected_audio:?} with one-frame phase tolerance", i + 1, clock.samples));
             }
             let content=if self.known_tones {
-                let hz=400.0+i as f64*200.0;
+                let hz=400.0+(i%8) as f64*200.0;
                 let power=clock.recent_audio.iter().map(|sample|f64::from(*sample).powi(2)).sum::<f64>()/clock.recent_audio.len().max(1) as f64;
                 let mut re=0.0;let mut im=0.0;
                 for (index,sample) in clock.recent_audio.iter().enumerate() {
@@ -616,7 +617,7 @@ fn execute(options: &Options) -> Value {
         let modes=if options.workload=="legacy" {vec![("wfm",180_000.0),("am",6_000.0),("cw",500.0)]}
             else {vec![("am",6000.0),("am",6000.0),("nfm",12000.0),("nfm",12000.0),
                 ("usb",2400.0),("usb",2400.0),("lsb",2400.0),("lsb",2400.0)]};
-        modes.into_iter().take(options.channels).enumerate().map(|(i, (mode, bandwidth))| {
+        modes.into_iter().cycle().take(options.channels).enumerate().map(|(i, (mode, bandwidth))| {
             let mut config = ChannelConfig::for_slot((i + 1) as u32);
             config.enabled = true;
             config.freq = frequencies[i];

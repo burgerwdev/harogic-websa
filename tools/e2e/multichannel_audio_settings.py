@@ -100,9 +100,9 @@ def browser_gate(origin, snapshot, artifacts):
             return {x:r.x,y:r.y,width:r.width,height:r.height};};
           return {gain:box('[name=pcm-gain]'),squelch:box('[name=squelch]'),audio:box('.mc-channel-audio')};
         }''')
+        overview.screenshot(path=str(artifacts / 'channel-audio-settings.png'))
         assert abs(compact_layout['gain']['y'] - compact_layout['squelch']['y']) < 2, compact_layout
         assert compact_layout['gain']['width'] < compact_layout['audio']['width'] * 0.35, compact_layout
-        overview.screenshot(path=str(artifacts / 'channel-audio-settings.png'))
         overview.locator('[data-action=advanced-settings]').click()
         overview.locator('[data-section=processor] summary').click()
         overview.locator('[data-bandwidth="3000"]').click()

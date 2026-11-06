@@ -1,12 +1,19 @@
 import { clone, receiverHasAudio, type ReceiverAdapter, type ServiceSnapshot, type ReceiverConfig, type Fault,
   type MonitorRoute, type ViewBinding, type ServiceCommand, type CommandReply } from '../core/multichannel';
 import { ReceiverModeMemory } from './receiverModeMemory';
+import { loadWorkbenchPreferences, saveWorkbenchPreferences, workbenchAudioDefaults } from './workbenchPreferences';
 
 export class WorkbenchSession {
   snapshot: ServiceSnapshot;
   selected: string;
-  monitorMode: 'manual' | 'follow' = 'manual';
-  masterGain = 0.7;
+  private audioPreferences = workbenchAudioDefaults();
+  get monitorMode(): 'manual' | 'follow' { return this.audioPreferences.monitorMode; }
+  set monitorMode(mode: 'manual' | 'follow') { this.audioPreferences.monitorMode = mode; this.saveAudioPreferences(); }
+  get masterGain(): number { return this.audioPreferences.masterGain; }
+  set masterGain(gain: number) { this.audioPreferences.masterGain = gain; this.saveAudioPreferences(); }
+  private saveAudioPreferences(): void {
+    if (this.snapshot?.transport === 'native') saveWorkbenchPreferences(this.audioPreferences);
+  }
   masterMuted = false;
   routes = new Map<string, MonitorRoute>();
   edits = new Map<string, { desired: ReceiverConfig; attempted: ReceiverConfig; pending: boolean; request_id: string | null; fault: Fault | null }>();
@@ -25,11 +32,19 @@ export class WorkbenchSession {
   private disposed = false;
   private retiredServices = new Set<string | undefined>();
   private stop: () => void;
+  private readonly resetPreset = (): void => {
+    this.generation++; this.mutationTail = Promise.resolve(); this.recoveries.clear();
+    if (this.monitorMode === 'follow' && this.selected) this.routes.set(this.selected, { ...this.route(this.selected), enabled: true });
+    this.audioPreferences = workbenchAudioDefaults();
+    this.modeMemory.reset(); this.edits.clear(); this.notify();
+  };
   constructor(readonly adapter: ReceiverAdapter, modeMemory = new ReceiverModeMemory()) {
     this.modeMemory=modeMemory;
     this.snapshot = adapter.snapshot(); this.selected = this.snapshot.receivers[0]?.receiver_uid ?? '';
+    if (this.snapshot.transport === 'native') this.audioPreferences = loadWorkbenchPreferences();
     this.modeMemory.observe(this.snapshot);
     this.stop = adapter.subscribe(snapshot => this.accept(snapshot));
+    document.addEventListener('websa:preset-applied', this.resetPreset);
   }
   subscribe(fn: () => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   notify(): void { if (!this.disposed) this.listeners.forEach(fn => fn()); }
@@ -172,5 +187,5 @@ export class WorkbenchSession {
     }
     edit.pending = false; edit.request_id = null; this.notify();
   }
-  dispose(): void { this.disposed = true; this.generation++; this.stop(); this.listeners.clear(); this.resultListeners.clear(); this.retirements.clear(); }
+  dispose(): void { this.disposed = true; this.generation++; document.removeEventListener('websa:preset-applied', this.resetPreset); this.stop(); this.listeners.clear(); this.resultListeners.clear(); this.retirements.clear(); }
 }

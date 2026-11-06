@@ -5,25 +5,10 @@ import { patchWorkbench } from './workbenchDom';
 import { workbenchIcon as icon } from './workbenchIcons';
 import { formatLabel, recordingEscape as esc, syncAudioFormatMenus, wireAudioFormatMenus } from './recordingFormats';
 import type { WorkbenchSession } from './workbenchSession';
+import { frequencyLabel } from './frequencyInput';
+import { recordingFinished as finished, recordingStateLabel as stateLabel, recordingBytes as bytes, recordingSize as size, recordingDuration as duration, recordingDate, recordingFrequencies, recordingName, recordingChannel, recordingMatches, newestRecordingFirst } from './recordingPresentation';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
-const finished = (task: RecordingTask): boolean => ['completed', 'failed'].includes(task.state);
-const stateLabel = (state: string): string => ({ preparing: l('Preparing', '准备中'), waiting: l('Waiting', '等待中'), recording: l('Recording', '录制中'), finalizing: l('Saving', '保存中'), completed: l('Completed', '已完成'), failed: l('Failed', '失败') })[state] ?? state;
-const bytes = (task: RecordingTask): bigint => task.tracks.reduce((sum, track) => sum + BigInt(track.stored_bytes), 0n);
-const size = (value: bigint): string => {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
-  let unit = 0, divisor = 1n;
-  while (unit < units.length - 1 && value >= divisor * 1000n) { unit++; divisor *= 1000n; }
-  if (unit > 0 && unit < units.length - 1 && (value * 10n + divisor / 2n) / divisor >= 10000n) { unit++; divisor *= 1000n; }
-  const amount = unit ? Number((value * 10n + divisor / 2n) / divisor) / 10 : Number(value);
-  return `${new Intl.NumberFormat(getLang() === 'zh' ? 'zh-CN' : 'en', { maximumFractionDigits: 1 }).format(amount)} ${units[unit]}`;
-};
-const duration = (task: RecordingTask): string => {
-  const track = task.tracks.find(t => t.kind === 'audio') ?? task.tracks.find(t => t.kind === 'iq');
-  if (!track) return '';
-  const seconds = Math.floor(track.segments.reduce((sum, s) => sum + (s.actual_rate_hz ? Number(s.samples) / s.actual_rate_hz : 0), 0));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-};
 interface LibraryActions {
   archive(task: RecordingTask): string;
   openAudio(task: RecordingTask): void;
@@ -53,7 +38,7 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
   };
   const pending = new Set<string>();
   const can = (action: string): boolean => session.snapshot.transport === 'fixture' || !!session.snapshot.capabilities.commands?.includes(action);
-  const taskName = (task: RecordingTask): string => task.name || session.snapshot.receivers.find(r => r.receiver_uid === task.receiver_uid)?.confirmed.name || task.task_id;
+  const taskName = (task: RecordingTask): string => recordingName(task, session.snapshot);
   const button = (action: string, label: string, options = ''): string => `<button type="button" data-file-action="${action}" title="${esc(label)}" ${options}>${esc(label)}</button>`;
   const clearSelection = (): void => { selected.clear(); batchConfirmation = null; notice = ''; };
   const deleteUnavailable = (task?: RecordingTask): string => !can('record_delete') ? l('Update and restart the server to enable file deletion', '更新并重启服务器后可删除文件')
@@ -66,13 +51,9 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
     for (const id of selected) if (!tasks.some(t => t.task_id === id && finished(t)) || !can('record_delete')) selected.delete(id);
     if (editing && !tasks.some(t => t.task_id === editing)) editing = null;
     if (deleting && !tasks.some(t => t.task_id === deleting)) deleting = null;
-    const rows = tasks.filter(task => {
-      const receiver = session.snapshot.receivers.find(r => r.receiver_uid === task.receiver_uid);
-      const source = task.tracks.flatMap(t => t.segments).map(s => `${s.frequency_hz ?? ''} ${s.frequency_hz ? s.frequency_hz / 1e6 : ''} ${s.mode ?? ''}`).join(' ');
-      const text = `${taskName(task)} ${task.task_id} ${receiver?.confirmed.name ?? ''} ${receiver?.confirmed.baseband.frequency_hz ?? ''} ${receiver ? receiver.confirmed.baseband.frequency_hz / 1e6 : ''} ${source}`.toLowerCase();
-      return text.includes(query.trim().toLowerCase()) && (kind === 'all' || task.tracks.some(t => t.kind === kind))
-        && (state === 'all' || state === 'active' && !finished(task) || state === task.state);
-    }).sort((a, b) => Number(b.created_at_ms ?? 0) - Number(a.created_at_ms ?? 0) || b.task_id.localeCompare(a.task_id, undefined, { numeric: true }));
+    const rows = tasks.filter(task => recordingMatches(task, query, session.snapshot)
+      && (kind === 'all' || task.tracks.some(t => t.kind === kind))
+      && (state === 'all' || state === 'active' && !finished(task) || state === task.state)).sort(newestRecordingFirst);
     visibleTasks = rows;
     const selectable = rows.filter(t => finished(t) && !pending.has(t.task_id) && can('record_delete'));
     const selectedTasks = tasks.filter(t => selected.has(t.task_id));
@@ -81,7 +62,7 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
     const confirmed = batchConfirmation?.tasks ?? [];
     const focused = surface.body.ownerDocument.activeElement;
     patchWorkbench(surface.body, `<header class="mc-files-heading" data-key="heading"><div><h2>${l('Recording files', '录制文件')}</h2><p>${tasks.length} ${l('recordings', '项录制')}<span>·</span>${l('Total size', '总大小')} <strong data-files-total-size>${size(tasks.reduce((sum, t) => sum + bytes(t), 0n))}</strong>${tasks.some(t => !finished(t)) ? `<span>·</span>${tasks.filter(t => !finished(t)).length} ${l('active', '项进行中')}` : ''}</p></div>${icon('folder')}</header>
-      <div class="mc-files-tools" data-key="tools"><label class="mc-search">${icon('search')}<input type="search" name="file-search" data-file-search value="${esc(query)}" placeholder="${l('Name, channel or frequency', '名称、信道或频率')}" aria-label="${l('Search recordings', '搜索录制文件')}" ${batchDeleting ? 'disabled' : ''}></label>
+      <div class="mc-files-tools" data-key="tools"><label class="mc-search">${icon('search')}<input type="search" name="file-search" data-file-search value="${esc(query)}" placeholder="${l('Name, channel, 14M…', '名称、信道、14M…')}" aria-label="${l('Search recordings', '搜索录制文件')}" ${batchDeleting ? 'disabled' : ''}></label>
       <select name="file-state" data-file-state aria-label="${l('Recording status', '录制状态')}" ${batchDeleting ? 'disabled' : ''}>${[['all', l('All statuses', '全部状态')], ['active', l('In progress', '进行中')], ['completed', l('Completed', '已完成')], ['failed', l('Failed', '失败')]].map(([value, label]) => `<option value="${value}" ${value === state ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
       <nav class="mc-files-filters" data-key="filters" aria-label="${l('Recording type', '录制类型')}">${[['all', l('All', '全部')], ['audio', l('Audio', '音频')], ['iq', 'IQ'], ['results', l('Results', '结果')]].map(([value, label]) => button('filter', label, `data-key="kind-${value}" data-kind="${value}" aria-pressed="${kind === value}" ${batchDeleting ? 'disabled' : ''}`)).join('')}<span>${rows.length} ${l('shown · newest first', '项 · 最新优先')}</span></nav>
       <div class="mc-files-selection" data-key="selection"><label title="${l('Select finished recordings in the current filtered list', '选择当前筛选列表中已结束的录制')}"><input type="checkbox" name="select-all-recordings" data-file-select-all ${allSelected ? 'checked' : ''} ${!selectable.length || batchDeleting ? 'disabled' : ''}><span>${l('Select all', '全选')}</span></label><span class="mc-files-selection-info" data-selected-info>${selectedTasks.length ? l(`${selectedTasks.length} selected · ${size(selectedSize)}`, `已选 ${selectedTasks.length} 项 · ${size(selectedSize)}`) : l('Select files to delete', '选择文件以批量删除')}</span>${selectedTasks.length ? button('clear-selection', l('Clear selection', '取消选择'), batchDeleting ? 'disabled' : '') : ''}${button('delete-selected', batchDeleting ? l(`Deleting ${batchProgress} / ${confirmed.length}`, `删除中 ${batchProgress} / ${confirmed.length}`) : l('Delete selected', '删除所选'), `class="mc-file-delete" ${!selectedTasks.length || batchDeleting || !can('record_delete') ? 'disabled' : ''}`)}</div>
@@ -91,18 +72,18 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
       ${error ? `<p class="mc-error" role="alert" data-key="error">${esc(error)} ${button('dismiss', l('Dismiss', '关闭'))}</p>` : ''}
       ${notice ? `<p class="mc-files-note" data-key="notice" role="status">${esc(notice)}</p>` : ''}
       <div class="mc-files-list" data-key="list" aria-label="${l('Recording files', '录制文件')}">${rows.length ? rows.map(task => {
-        const done = finished(task), busy = batchDeleting || pending.has(task.task_id), receiver = session.snapshot.receivers.find(r => r.receiver_uid === task.receiver_uid);
+        const done = finished(task), busy = batchDeleting || pending.has(task.task_id);
         const track = task.tracks[0], type = track?.kind as TrackKind;
-        const frequency = track?.segments[0]?.frequency_hz;
-        const date = task.created_at_ms && Number(task.created_at_ms) > 0 ? new Date(Number(task.created_at_ms)).toLocaleString(getLang() === 'zh' ? 'zh-CN' : 'en-GB', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', year: 'numeric', hour12: false }) : '';
+        const frequencies = recordingFrequencies(task);
+        const date = recordingDate(task);
         return `<article class="mc-file${selected.has(task.task_id) ? ' mc-file-selected' : ''}" data-task-id="${esc(task.task_id)}" data-task-state="${task.state}"><div class="mc-file-main"><label class="mc-file-check" title="${esc(deleteUnavailable(task) || l('Select this recording', '选择此录制'))}"><input type="checkbox" data-key="file-checkbox" data-file-select="${esc(task.task_id)}" aria-label="${esc(l(`Select ${taskName(task)}`, `选择 ${taskName(task)}`))}" ${selected.has(task.task_id) ? 'checked' : ''} ${!done || busy || !can('record_delete') ? 'disabled' : ''}></label><span class="mc-file-icon">${icon(type === 'audio' ? 'volume' : type === 'iq' ? 'signal' : 'file')}</span><div class="mc-file-info">
         ${editing === task.task_id ? `<form data-file-rename><input name="recording-name" value="${esc(draft)}" required maxlength="128" aria-label="${l('Recording name', '录制名称')}" ${busy ? 'disabled' : ''}><button type="submit" title="${l('Save name', '保存名称')}" ${busy ? 'disabled' : ''}>${l('Save', '保存')}</button>${button('cancel-rename', l('Cancel', '取消'), busy ? 'disabled' : '')}</form>` : `<strong title="${esc(task.task_id)}">${esc(taskName(task))}</strong>`}
         <p><span>${type === 'audio' ? formatLabel(task.audio_format ?? 'wav') : type === 'iq' ? 'IQ' : 'JSONL'}</span>${duration(task) ? `<span>${duration(task)}</span>` : ''}${date ? `<time>${date}</time>` : ''}</p>
-        <small>${esc(`${receiver ? `C${receiver.display_number}` : l('Archived channel', '历史信道')}${frequency ? ` · ${(frequency / 1e6).toFixed(6)} MHz` : ''}`)}</small></div><div class="mc-file-meta"><span class="mc-file-state" data-state="${task.state}"><i class="mc-state-dot" data-state="${done ? task.state : 'running'}"></i>${stateLabel(task.state)}</span><span class="mc-file-size" data-file-size title="${l('Stored recording size; download size varies by format', '录制实际存储大小；下载大小随格式变化')}">${l('Size', '大小')} <b>${size(bytes(task))}</b></span></div></div>
+        <small>${esc(recordingChannel(task, session.snapshot))}${frequencies.length ? ` · ${esc(frequencies.slice(0, 2).map(frequencyLabel).join(' / '))}${frequencies.length > 2 ? ` +${frequencies.length - 2}` : ''}` : ''}</small></div><div class="mc-file-meta"><span class="mc-file-state" data-state="${task.state}"><i class="mc-state-dot" data-state="${done ? task.state : 'running'}"></i>${stateLabel(task.state)}</span><span class="mc-file-size" data-file-size title="${l('Stored recording size', '录制实际存储大小')}">${l('Size', '大小')} <b>${size(bytes(task))}</b></span></div></div>
         ${task.fault ? `<p class="mc-file-fault">${esc(task.fault.message)}</p>` : ''}
         <div class="mc-file-actions">${done ? actions.archive(task) : button('stop', task.state === 'finalizing' ? l('Saving…', '保存中…') : l('Stop recording', '停止录制'), busy || task.state === 'finalizing' ? 'disabled' : '')}<span class="mc-file-spacer"></span>${done && can('record_rename') ? button('rename', l('Rename', '重命名'), busy ? 'disabled' : '') : ''}<button type="button" data-file-action="delete" class="mc-file-delete" title="${esc(deleteUnavailable(task) || l('Delete this recording and its files', '删除此录制及其文件'))}" ${!done || busy || !can('record_delete') ? 'disabled' : ''}>${icon('trash')}<span>${l('Delete', '删除')}</span></button></div>
         ${deleting === task.task_id ? `<div class="mc-file-confirm" role="group" aria-label="${l('Confirm deletion', '确认删除')}"><span>${l('Delete this recording and its files? This cannot be undone.', '删除此录制及其文件？此操作无法撤销。')}</span>${button('cancel-delete', l('Keep', '保留'), busy ? 'disabled' : '')}${button('confirm-delete', busy ? l('Deleting…', '删除中…') : l('Delete files', '删除文件'), `class="mc-file-delete" ${busy ? 'disabled' : ''}`)}</div>` : ''}</article>`;
-      }).join('') : `<div class="mc-workspace-empty mc-files-empty">${icon(tasks.length ? 'search' : 'folder')}<h2>${tasks.length ? l('No matching recordings', '没有匹配的录制') : l('Your recordings appear here', '录制文件将显示在这里')}</h2><p>${tasks.length ? l('Try another name or clear the filters.', '试试其他名称，或清除筛选条件。') : l('Start recording from a channel. Manage audio, IQ and decoded results here.', '在信道中开始录制，即可在此管理音频、IQ 和解码结果。')}</p>${tasks.length ? button('clear', l('Clear filters', '清除筛选')) : ''}</div>`}</div>`, element => element === focused && element.matches('input:not([type=checkbox]),select'));
+      }).join('') : `<div class="mc-workspace-empty mc-files-empty">${icon(tasks.length ? 'search' : 'folder')}<h2>${tasks.length ? l('No matching recordings', '没有匹配的录制') : l('Your recordings appear here', '录制文件将显示在这里')}</h2><p>${tasks.length ? l('Search a channel name or frequency, such as 14M or 14.2 MHz.', '可搜索信道名或频率，例如 14M、14.2 MHz。') : l('Start recording from a channel. Manage audio, IQ and decoded results here.', '在信道中开始录制，即可在此管理音频、IQ 和解码结果。')}</p>${tasks.length ? button('clear', l('Clear filters', '清除筛选')) : ''}</div>`}</div>`, element => element === focused && element.matches('input:not([type=checkbox]),select'));
     const allCheckbox = surface.body.querySelector<HTMLInputElement>('[data-file-select-all]')!;
     allCheckbox.checked = allSelected;
     allCheckbox.indeterminate = !allSelected && selectable.some(t => selected.has(t.task_id));

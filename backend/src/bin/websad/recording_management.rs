@@ -106,7 +106,7 @@ mod tests {
     async fn deletion_invalidates_lookup_and_index_and_never_reappears_on_restart() {
         let root = std::env::temp_dir().join(format!("websa-delete-{}-{}", std::process::id(), millis()));
         let mut manager = Manager::open(root.clone()).unwrap();
-        manager.start("uid", "service", "delete-test").unwrap().wait().unwrap();
+        manager.start_configured("uid", "service", "delete-test", "iq", "wav", "Station 14 MHz").unwrap().wait().unwrap();
         let id = manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
         manager.stop(&id).unwrap();
         manager.shutdown();
@@ -118,6 +118,10 @@ mod tests {
             display_version: Arc::new(AtomicU64::new(0)), identities: channel_identities(),
         });
         let request = json!({"type":"record_delete","task_id":id});
+        perform(&app, &json!({"type":"record_rename","task_id":id,"name":"Evening session"}), false).unwrap();
+        let saved:Value = serde_json::from_slice(&fs::read(root.join(&id).join("task.json")).unwrap()).unwrap();
+        assert_eq!(saved["name"], "Evening session");
+        assert_eq!(saved["receiver_name"], "Station 14 MHz");
         let response = super::super::index(State(app.clone()), Path(id.clone()), Query(HashMap::new())).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");

@@ -17,7 +17,7 @@ Capability `iq_file_demodulate` adds read-only, range-bounded analogue file proc
 
 `audio_flac_export` adds a read-only FLAC export for finished published-audio tasks, including original-identity recovered prefixes. Each existing source segment becomes signed-24 PCM FLAC at its original rate/channels, using fixed-scale rounding and explicit saturation counts. This is lossless for the quantized integer input; original Float32 bits remain in WBAU0001 and the WAV export. Task/UID/service and unchanged per-frame provenance accompany the files. The bounded offline transform shares the single download lease without creating live receivers. Opus export and file management are now described in [API](API.md); no new source kind or automatic recording restart is implied. See [API](API.md) and `native_multichannel_flac.py`.
 
-P5 also supports `kinds:["audio"]` and `audio_archive_export` for actual published AUD2 PCM, including digital companions and codec output by descriptor capability. `source:"published_audio"` / `format:"f32_le"` distinguish it from protocol-input or analysis audio. Packet-owned configuration, precise source clocks and original sample bits survive source/format boundaries and verified-prefix recovery. Finished tasks download as Float32 WAV segments plus a frame timeline; browser speaker controls are excluded. These are backend tasks sharing eight service-wide task slots. Protocol-input recording and digital file decoding remain future work. See [API](API.md) and the independent `native_multichannel_audio.py` gate in [DEVELOPMENT](DEVELOPMENT.md).
+P5 also supports `kinds:["audio"]` and `audio_archive_export` for actual published AUD2 PCM, including digital companions and codec output by descriptor capability. `source:"published_audio"` / `format:"f32_le"` distinguish it from protocol-input or analysis audio. Packet-owned configuration, precise source clocks and original sample bits survive source/format boundaries and verified-prefix recovery. Finished tasks download as Float32 WAV segments plus a frame timeline; browser speaker controls are excluded. These are backend tasks sharing sixteen service-wide task slots. Protocol-input recording and digital file decoding remain future work. See [API](API.md) and the independent `native_multichannel_audio.py` gate in [DEVELOPMENT](DEVELOPMENT.md).
 
 P5 now also delivers backend `kinds:["results"]` tasks and `results_archive_export`, using the actual published SDE2 branch. A separate task may record IQ concurrently on the same UID. The workbench derives availability from mode outputs, including analog telemetry, rather than `purpose`. See [API](API.md) for WBRS0001 recovery, exact incremental image payloads and checked tar/JSONL download semantics. Browser message/PNG exports remain bounded session snapshots. Protocol-input audio and digital file decoding remain unimplemented.
 
@@ -49,8 +49,8 @@ safe integer range. Clocks retain integer and fractional positions, input/output
 delay and UTC reliability. Without reliable hardware time association, `utc_reliable=false`.
 Fixture clocks are simulated and cannot establish RF correctness.
 
-Receiver, output and recording collections are dynamic. Capabilities publish `max_channels`; the fixture
-limits operation to eight, while 128 remains a capacity target. Recording tasks contain independent
+Receiver, output and recording collections are dynamic. Capabilities publish `max_channels`; native operation
+limits receivers to sixteen, while 128 remains a capacity target. The browser demo has its own configurable limit. Recording tasks contain independent
 tracks with explicit source, format, compression, stream segments and end reasons. Analysis audio precedes
 local listening gain and routing.
 
@@ -106,7 +106,7 @@ The independent Vite fixture entry remains available. Native UI uses actual mode
 | `POST /api/sdr/receivers` | Commit create/configure/retire; reply `{request_id,snapshot,fault}` |
 | `/ws/iq?receiver_uid=...` | One receiver's ordered IQBF/IQAX v2 with JSON start and boundary metadata |
 
-Native operation admits eight logical definitions. Boot-unique UIDs map explicitly to private legacy slots;
+Native operation admits sixteen logical definitions. Boot-unique UIDs map explicitly to private legacy slots;
 retiring/reusing a slot creates a new UID. A stopped definition retains its UID. `processors=[]` selects genuine IQ-only
 operation through `RatePlan::baseband`; no dummy demodulator or receiver worker is started. Processors are admitted against actual provider and mode availability.
 
@@ -245,7 +245,7 @@ Production **WBIQ0002** is separate from experimental **WBIQ0001**; neither is S
 
 IDX2 pages hold 128 block indexes; only one page stays in memory. JSONL sidecars sync each block. EVT2 stores segment boundaries. END2 verifies block/sample totals and CRC32 of the preceding record CRC32 little-endian sequence; a checked index is required for completion. Volumes roll at 256 MiB or 4096 blocks without changing source segments. Metadata is limited to 256 KiB, blocks to 1 MiB and each task to 4096 segments, with explicit failure on excess. Stop seals admission, drains accepted blocks, writes indexes/footer, fsyncs, then atomically replaces and syncs task.json.
 
-Recovery verifies one block at a time and rebuilds JSONL indexes. A torn final record recovers its checked prefix; corruption fails explicitly without skipping damaged records or modifying the original archive. Each task has 4 MiB/64 items/2 seconds including in-flight work, with at most eight workers. Backlog failures report admitted/saved bytes and cannot claim unwritten samples complete. Compression/disk errors do not stop reception or healthy network consumers. Finished IQ tasks support bounded waveform playback and sample-range SigMF export as described below; protocol-input audio and digital file decoding remain subsequent work.
+Recovery verifies one block at a time and rebuilds JSONL indexes. A torn final record recovers its checked prefix; corruption fails explicitly without skipping damaged records or modifying the original archive. Each task has 4 MiB/64 items/2 seconds including in-flight work, with at most sixteen workers. Backlog failures report admitted/saved bytes and cannot claim unwritten samples complete. Compression/disk errors do not stop reception or healthy network consumers. Finished IQ tasks support bounded waveform playback and sample-range SigMF export as described below; protocol-input audio and digital file decoding remain subsequent work.
 
 
 Finished-task reading uses `/api/sdr/recordings/{task_id}/range` (see [API](API.md)). Each request selects a single segment and 1–1,048,576 complex samples, with at most 4096 checked blocks and 4 MiB of provenance. Sidecars locate the blocks; v2 verifies their full metadata, compressed record CRC and raw bytes before returning any success. Gaps, overlaps, changed identity/rate/frequency/baseband and out-of-bounds ranges fail. Reads span volumes without modifying originals or receivers. One blocking read/download is admitted at a time, with its permit retained through response delivery; the browser owns one waveform buffer across all windows.

@@ -176,9 +176,11 @@ describe('native receiver control and shared IQ', () => {
     session.snapshot.recordings.push({ task_id: 'retired-task', receiver_uid: 'old-uid', state: 'failed', fault: null,
       tracks: [{ track_id: 'events', kind: 'results', format: 'jsonl', source: 'decoder_results', compression: 'zstd_auto_lossless',
         state: 'failed', raw_bytes: '5000', stored_bytes: '1000', segments: [] }] }); session.notify();
-    const link = overview.querySelector<HTMLAnchorElement>('a.mc-results-download')!;
+    overview.querySelector<HTMLButtonElement>('.mc-workspace-actions [data-action=recording-files]')!.click();
+    const files = document.querySelector<HTMLElement>('[data-view-id=recording-library]')!;
+    const link = files.querySelector<HTMLAnchorElement>('a.mc-results-download')!;
     expect(link.getAttribute('href')).toBe('/api/sdr/recordings/retired-task/results'); expect(link.hasAttribute('download')).toBe(true);
-    session.snapshot.capabilities.results_archive_export = false; session.notify(); expect(overview.querySelector('a.mc-results-download')).toBeNull();
+    session.snapshot.capabilities.results_archive_export = false; session.notify(); expect(files.querySelector('a.mc-results-download')).toBeNull();
     session.snapshot.capabilities.mode_descriptors![0].outputs = ['audio']; session.notify();
     expect(overview.querySelector('[data-action=rec-results]')).toBeNull(); ui.dispose(); session.dispose();
   });
@@ -198,19 +200,21 @@ describe('native receiver control and shared IQ', () => {
     session.snapshot.recordings.push({ task_id: 'audio-history', receiver_uid: 'retired', state: 'failed', fault: null,
       tracks: [{ track_id: 'pcm', kind: 'audio', format: 'f32_le', source: 'published_audio', compression: 'zstd_auto_lossless',
         state: 'failed', raw_bytes: '400', stored_bytes: '200', segments: [] }] }); session.notify();
-    const link = overview.querySelector<HTMLAnchorElement>('a.mc-audio-download')!;
+    overview.querySelector<HTMLButtonElement>('.mc-workspace-actions [data-action=recording-files]')!.click();
+    const files = document.querySelector<HTMLElement>('[data-view-id=recording-library]')!;
+    const link = files.querySelector<HTMLAnchorElement>('a.mc-audio-download')!;
     expect(link.getAttribute('href')).toBe('/api/sdr/recordings/audio-history/audio'); expect(link.hasAttribute('download')).toBe(true);
-    expect(overview.querySelector('a.mc-audio-flac')).toBeNull();
+    expect(files.querySelector('a.mc-audio-flac')).toBeNull();
     session.snapshot.capabilities.audio_flac_export = true; session.notify();
-    overview.querySelector<HTMLButtonElement>('[data-format-task="audio-history"][data-format=flac]')!.click();
-    const flac = overview.querySelector<HTMLAnchorElement>('a.mc-audio-flac')!;
+    files.querySelector<HTMLButtonElement>('[data-format-task="audio-history"][data-format=flac]')!.click();
+    const flac = files.querySelector<HTMLAnchorElement>('a.mc-audio-flac')!;
     expect(flac.getAttribute('href')).toBe('/api/sdr/recordings/audio-history/audio/flac');
     expect(flac.title).toContain('24-bit PCM'); expect(flac.hasAttribute('download')).toBe(true);
-    session.notify(); expect(overview.querySelector('a.mc-audio-download')).toBe(link); expect(overview.querySelector('a.mc-audio-flac')).toBe(flac);
+    session.notify(); expect(files.querySelector('a.mc-audio-download')).toBe(link); expect(files.querySelector('a.mc-audio-flac')).toBe(flac);
     expect(send).toHaveBeenCalledTimes(1); expect(fetchMock).not.toHaveBeenCalled();
-    session.snapshot.capabilities.audio_flac_export = false; session.notify(); expect(overview.querySelector('a.mc-audio-flac')).toBeNull();
+    session.snapshot.capabilities.audio_flac_export = false; session.notify(); expect(files.querySelector('a.mc-audio-flac')).toBeNull();
     session.snapshot.capabilities.audio_archive_export = false; session.snapshot.capabilities.recording_kinds = ['iq']; session.notify();
-    expect(overview.querySelector('a.mc-audio-download')).toBeNull(); expect(overview.querySelector('[data-action=rec-audio]')).toBeNull();
+    expect(files.querySelector('a.mc-audio-download')).toBeNull(); expect(overview.querySelector('[data-action=rec-audio]')).toBeNull();
     ui.dispose(); session.dispose();
   });
   it('uses service-confirmed replies and ignores a late lower revision', async () => {

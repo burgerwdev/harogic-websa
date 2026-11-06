@@ -32,6 +32,27 @@ beforeEach(() => {
 afterEach(() => { ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('main spectrum quick channel', () => {
+  it('fills all sixteen slots and replaces C16 without changing the other receivers', async () => {
+    mount(16);
+    for (let channel = 4; channel <= 16; channel++) {
+      sdrListenHz.confirm(7_100_000 + channel * 1000);
+      const added = ui.add(); await settle(); await added;
+      expect(session.snapshot.receivers).toHaveLength(channel);
+    }
+    const before = structuredClone(session.snapshot.receivers);
+    const target = before.find(receiver => receiver.display_number === 16)!;
+    setCurrentSdrChannel(16); sdrListenHz.confirm(7_130_000);
+    vi.mocked(adapter.dispatch).mockClear();
+    await ui.add();
+    expect(document.querySelectorAll('[name=replace]')).toHaveLength(16);
+    expect(adapter.dispatch).not.toHaveBeenCalled();
+    choose(target.receiver_uid); submit(); await settle();
+    expect(session.snapshot.receivers).toHaveLength(16);
+    expect(session.snapshot.receivers.filter(receiver => receiver.receiver_uid !== target.receiver_uid))
+      .toEqual(before.filter(receiver => receiver.receiver_uid !== target.receiver_uid));
+    expect(session.snapshot.receivers.find(receiver => receiver.receiver_uid === target.receiver_uid)).toMatchObject({ receiver_uid: target.receiver_uid,
+      display_number: 16, confirmed: { baseband: { frequency_hz: 7_130_000 } } });
+  });
   it('creates independently when space is available, preserving existing receivers', async () => {
     mount(4); const previous = structuredClone(session.snapshot.receivers);
     const added = ui.add(); await settle(); await added;

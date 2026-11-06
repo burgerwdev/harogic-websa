@@ -3,20 +3,30 @@ import { getLang } from '../core/i18n';
 
 const frequencyUnits = ['Hz', 'kHz', 'MHz', 'GHz'] as const;
 
-/** Keep a whole-Hz precision in every unit, and retain fractional Hz when supplied. */
+/** Match the SDR panel and channel labels: one-Hz display precision. */
 export function formatFrequencyValue(value: number, unit: string): string {
   if (!Number.isFinite(value)) return '';
   const digits = ({ Hz: 0, kHz: 3, MHz: 6, GHz: 9 } as Record<string, number>)[unit] ?? 0;
-  const rounded = Number(value.toPrecision(15));
-  const [mantissa, exponent = '0'] = String(rounded).split('e');
-  const fraction = Math.max(0, (mantissa.split('.')[1]?.length ?? 0) - Number(exponent));
-  return rounded.toFixed(Math.max(digits, Math.min(12, fraction)));
+  const scale = 10 ** digits;
+  return (Math.round(value * scale) / scale).toFixed(digits);
+}
+
+export const frequencyLabel = (hz: number): string => `${formatFrequencyValue(hz / 1e6, 'MHz')} MHz`;
+
+/** Formatting a received value must not retune it when another setting is edited. */
+export function readFrequencyHz(host: HTMLElement): number {
+  const group = host.querySelector<HTMLElement>('[data-frequency-input]')!;
+  const unit = group.querySelector<HTMLInputElement>('[data-frequency-unit-value]')!.value;
+  const value = Number(group.querySelector<HTMLInputElement>('[data-frequency-value]')!.value);
+  const original = Number(group.dataset.frequencyHz);
+  return Number.isFinite(original) && value === Number(formatFrequencyValue(convertUnitValue(original, 'Hz', unit), unit))
+    ? original : convertUnitValue(value, unit, 'Hz');
 }
 
 /** Shared unit toggles use the same unit-btn/active convention as the main instrument. */
 export function frequencyInput(hz: number, unitName = 'frequency-unit', unit = 'MHz'): string {
   const label = getLang() === 'zh' ? '频率单位' : 'Frequency unit';
-  return `<span class="mc-frequency-input" data-frequency-input data-unit="${unit}"><input name="frequency" data-frequency-value type="number" min="0" step="any" value="${formatFrequencyValue(convertUnitValue(hz, 'Hz', unit), unit)}" required><input type="hidden" name="${unitName}" value="${unit}" data-frequency-unit-value><span class="unit-btn-group" role="group" aria-label="${label}">${frequencyUnits.map(value => `<button type="button" class="unit-btn${value === unit ? ' active' : ''}" data-frequency-unit="${value}" aria-pressed="${value === unit}" title="${label} · ${value}">${value}</button>`).join('')}</span></span>`;
+  return `<span class="mc-frequency-input" data-frequency-input data-frequency-hz="${hz}" data-unit="${unit}"><input name="frequency" data-frequency-value type="number" min="0" step="any" value="${formatFrequencyValue(convertUnitValue(hz, 'Hz', unit), unit)}" required><input type="hidden" name="${unitName}" value="${unit}" data-frequency-unit-value><span class="unit-btn-group" role="group" aria-label="${label}">${frequencyUnits.map(value => `<button type="button" class="unit-btn${value === unit ? ' active' : ''}" data-frequency-unit="${value}" aria-pressed="${value === unit}" title="${label} · ${value}">${value}</button>`).join('')}</span></span>`;
 }
 
 /** Synchronize markup after restoring a draft without converting its already-restored value. */

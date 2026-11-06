@@ -165,12 +165,8 @@
         "receiver_uid": {
           "type": "string"
         },
-        "task_id": {
-          "type": "string"
-        },
-        "request_id": {
-          "type": "string"
-        },
+        "task_id": { "type": "string" },
+        "request_id": { "type": "string" },
         "retryable": {
           "type": "boolean"
         }
@@ -282,9 +278,7 @@
         "type": {
           "const": "configure"
         },
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "expected_revision": {
           "$ref": "#/$defs/u64"
         },
@@ -313,9 +307,7 @@
         "type": {
           "const": "scene"
         },
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "expected_revision": {
           "$ref": "#/$defs/u64"
         },
@@ -588,6 +580,32 @@
         },
         "next_audio_index": {
           "$ref": "#/$defs/u64"
+        },
+        "file": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "file_bytes": {
+          "$ref": "#/$defs/u64"
+        },
+        "timeline_end": {
+          "$ref": "#/$defs/u64"
+        },
+        "clipped_values": {
+          "$ref": "#/$defs/u64"
+        },
+        "encoded_rate_hz": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "target_bitrate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "file_complete": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -617,7 +635,10 @@
             "cf32_le",
             "pcm_f32",
             "jsonl",
-            "f32_le"
+            "f32_le",
+            "wav",
+            "flac",
+            "opus"
           ]
         },
         "source": {
@@ -631,7 +652,9 @@
         "compression": {
           "enum": [
             "zstd_auto_lossless",
-            "none"
+            "none",
+            "lossy",
+            "lossless_s24"
           ]
         },
         "state": {
@@ -660,7 +683,8 @@
           "enum": [
             "websa-iq-v2",
             "websa-results-v1",
-            "websa-audio-v1"
+            "websa-audio-v1",
+            "websa-audio-files-v1"
           ]
         },
         "blocks": {
@@ -697,6 +721,13 @@
             ],
             "additionalProperties": false
           }
+        },
+        "timeline_bytes": {
+          "$ref": "#/$defs/u64"
+        },
+        "timeline_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       },
       "required": [
@@ -717,9 +748,7 @@
       "properties": {
         "name": { "type": "string", "maxLength": 128 },
         "audio_format": { "enum": ["wav", "flac", "opus"] },
-        "task_id": {
-          "type": "string"
-        },
+        "task_id": { "type": "string" },
         "receiver_uid": {
           "type": "string"
         },
@@ -755,9 +784,7 @@
         "service_id": {
           "type": "string"
         },
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "created_at_ms": {
           "$ref": "#/$defs/u64"
         },
@@ -769,6 +796,10 @@
         },
         "queued_bytes": {
           "$ref": "#/$defs/u64"
+        },
+        "receiver_name": {
+          "type": "string",
+          "maxLength": 128
         }
       },
       "required": [
@@ -915,7 +946,11 @@
             "audio_flac_export": {
               "type": "boolean"
             },
-            "audio_opus_export": { "type": "boolean" }
+            "audio_opus_export": { "type": "boolean" },
+            "max_recording_tasks": {
+              "type": "integer",
+              "minimum": 1
+            }
           },
           "required": [
             "max_channels",
@@ -1006,6 +1041,48 @@
         },
         "state_revision": {
           "$ref": "#/$defs/u64"
+        },
+        "recording_resources": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "active_tasks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "max_tasks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "available_tasks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "queue_bytes_per_task": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "queue_items_per_task": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "max_queue_age_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "active_tasks",
+                "max_tasks",
+                "available_tasks"
+              ],
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "required": [
@@ -1026,9 +1103,7 @@
         "type": {
           "const": "create"
         },
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "config": {
           "$ref": "#/$defs/config"
         },
@@ -1049,9 +1124,7 @@
         "type": {
           "const": "retire"
         },
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "receiver_uid": {
           "type": "string"
         },
@@ -1072,9 +1145,7 @@
         "type": {
           "const": "output"
         },
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "receiver_uid": {
           "type": "string"
         },
@@ -1097,9 +1168,7 @@
         "type": {
           "const": "record_start"
         },
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "receiver_uid": {
           "type": "string"
         },
@@ -1130,18 +1199,10 @@
         "type": {
           "const": "record_stop"
         },
-        "request_id": {
-          "type": "string"
-        },
-        "task_id": {
-          "type": "string"
-        }
+        "request_id": { "type": "string" },
+        "task_id": { "type": "string" }
       },
-      "required": [
-        "type",
-        "request_id",
-        "task_id"
-      ],
+      "required": ["type", "request_id", "task_id"],
       "additionalProperties": false
     },
     "command_record_rename": {
@@ -1188,8 +1249,12 @@
         {
           "$ref": "#/$defs/command_record_stop"
         },
-        { "$ref": "#/$defs/command_record_rename" },
-        { "$ref": "#/$defs/command_record_delete" }
+        {
+          "$ref": "#/$defs/command_record_rename"
+        },
+        {
+          "$ref": "#/$defs/command_record_delete"
+        }
       ]
     },
     "impact": {
@@ -1242,9 +1307,7 @@
     "reply": {
       "type": "object",
       "properties": {
-        "request_id": {
-          "type": "string"
-        },
+        "request_id": { "type": "string" },
         "snapshot": {
           "$ref": "#/$defs/snapshot"
         },

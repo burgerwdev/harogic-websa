@@ -4,7 +4,7 @@ import { getLang, onLangChange } from '../core/i18n';
 import type { WorkbenchSession } from './workbenchSession';
 import { syncSelectOptions, syncSelectValue } from './selectControl';
 
-type Settings = Pick<ReceiverConfig, 'purpose' | 'baseband' | 'processors'>;
+type Settings = Pick<ReceiverConfig, 'purpose' | 'baseband' | 'processors'> & Partial<Pick<ReceiverConfig, 'continuity'>>;
 interface Presets { revision: string; presets: { name: string; settings: Settings }[] }
 const endpoint = '/api/sdr/receiver-presets';
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
@@ -87,7 +87,8 @@ export function mountReceiverPresets(root: HTMLElement, session: WorkbenchSessio
   load.addEventListener('click', () => {
     const r = receiver(), preset = data?.presets.find(p => p.name === list.value);
     if (r && preset && !session.edits.get(uid)?.pending && !session.retiring(uid)) review({ ...clone(r.confirmed),
-      purpose: preset.settings.purpose, baseband: clone(preset.settings.baseband), processors: clone(preset.settings.processors) });
+      purpose: preset.settings.purpose, baseband: clone(preset.settings.baseband), processors: clone(preset.settings.processors),
+      continuity: preset.settings.continuity ?? r.confirmed.continuity });
   });
   remove.addEventListener('click', () => {
     if (list.value && root.ownerDocument.defaultView?.confirm(l(`Delete preset “${list.value}”?`, `删除预设“${list.value}”？`)))

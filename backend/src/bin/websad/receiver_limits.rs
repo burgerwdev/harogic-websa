@@ -1,9 +1,9 @@
 //! Service admission and subscription budgets. Channel-dependent budgets derive
-//! from MAX_CHANNELS; recording capacity and per-channel DSP budgets are independent.
+//! from the shared capacity contract; per-channel DSP budgets remain independent.
 use std::time::Duration;
 pub(super) use websa_channelizer::stream_limits::{DECODE_ACK_BYTES, DECODE_ACK_WINDOW};
 
-pub(super) const MAX_CHANNELS: usize = 8;
+pub(super) use websa_channelizer::service_capacity::{MAX_CHANNELS, MAX_RECORDING_TASKS, CAPACITY_TARGET};
 pub(super) const FAX_SNAPSHOT_BYTES_PER_CHANNEL: usize = 20 * 1024 * 1024;
 // Retained gray pixels become base64 on the wire. Include every channel and
 // envelope headroom; sent/unacknowledged data has its own bounded ACK credit.
@@ -28,6 +28,8 @@ mod tests {
         assert_eq!(channel["choices"], serde_json::json!((1..=MAX_CHANNELS).collect::<Vec<_>>()));
         let mut state = DevState::new(golden, schema);
         assert_eq!(state.receiver_snapshot()["capabilities"]["max_channels"], MAX_CHANNELS);
+        assert_eq!(state.receiver_snapshot()["capabilities"]["max_recording_tasks"], MAX_CHANNELS);
+        assert_eq!(state.receiver_snapshot()["capabilities"]["capacity_target"], CAPACITY_TARGET);
         assert_eq!(state.sdr_channels.len(), MAX_CHANNELS);
         let mut last = crate::receiver_workers::ChannelConfig::for_slot(MAX_CHANNELS as u32);
         assert!(last.validate().is_ok());

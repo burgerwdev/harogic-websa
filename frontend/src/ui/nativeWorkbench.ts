@@ -26,7 +26,7 @@ async function ensureNativeWorkbench(): Promise<void> {
     const current = session.snapshot.receivers.find(r => r.display_number === currentSdrChannel());
     if (current) {
       session.select(current.receiver_uid);
-      session.monitor(current.receiver_uid, { enabled: true });
+      session.routes.set(current.receiver_uid, { ...session.route(current.receiver_uid), enabled: true });
     }
     const host = document.createElement('div'); host.hidden = true; document.body.append(host);
     const streams = session.snapshot.capabilities.monitor_mixing ? mountNativeWorkbenchStreams(session) : undefined;

@@ -2029,6 +2029,7 @@ dependencies = [
  "deep_filter",
  "flacenc",
  "futures-util",
+ "libc",
  "md-5",
  "ndarray 0.15.6",
  "ort",

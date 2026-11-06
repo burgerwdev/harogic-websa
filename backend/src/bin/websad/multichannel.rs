@@ -287,7 +287,7 @@ impl DevState {
         }).collect();
         let mut snapshot=json!({"contract":"multichannel-draft-v1","transport":"native","service_id":self.receivers.boot,
             "revision":self.config_version.to_string(),"action_token":self.receivers.started.elapsed().as_millis().to_string(),
-            "capabilities":{"max_channels":MAX_CHANNELS,"capacity_target":128,
+            "capabilities":{"max_channels":MAX_CHANNELS,"capacity_target":super::receiver_limits::CAPACITY_TARGET,
                 "receiver_presets":self.receiver_presets.is_some(),
                 "processing_admission":false,"resource_policy":"observed_runtime",
                 "control_capacity":64,"control_receipt_history":128,"action_deduplication":128,"action_validity_ms":5000,
@@ -618,12 +618,12 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
                 let slot=state.receiver_slot(uid).ok_or("receiver no longer exists")?;
                 let channel=state.channel_config(slot).ok_or("channel not found")?;
                 let audio_format = match request.get("audio_format") {
-                    None => "wav",
+                    None => "opus",
                     Some(value) => value.as_str().filter(|s| matches!(*s,"wav"|"flac"|"opus"))
                         .ok_or("audio_format must be wav, flac or opus")?,
                 };
                 if kind != "audio" && request.get("audio_format").is_some() {return Err("audio_format requires an audio recording".into());}
-                if audio_format == "opus" && !recording::opus::available() {return Err("Opus requires FFmpeg with the libopus encoder on the server".into());}
+                if kind == "audio" && audio_format == "opus" && !recording::opus::available() {return Err("Opus requires FFmpeg with the libopus encoder on the server".into());}
                 let name=state.receivers.receivers.get(&slot).map(|r|r.config["name"].as_str().unwrap_or("").to_owned()).unwrap_or_default();
                 let has_results=channel.processing_enabled && websa_channelizer::catalog::mode(&channel.mode)
                     .is_some_and(|mode|mode.outputs.iter().any(|kind|kind!="audio"));
@@ -1390,9 +1390,9 @@ mod tests {
         assert!(matches!(&output[1],Message::Binary(bytes) if bytes.as_ptr()==tagged[0].0.as_ptr()));
     }
     #[tokio::test]
-    async fn complete_mode_controls_round_trip_on_c1_and_c8_with_the_shared_parser() {
+    async fn complete_mode_controls_round_trip_on_c1_and_c16_with_the_shared_parser() {
         let app=app();
-        for index in 0..8 {
+        for index in 0..MAX_CHANNELS {
             let reply=run(&app,json!({"type":"create","request_id":format!("parity-create-{index}"),"config":listen_config(100e6+index as f64*10000.0)})).await;
             assert!(reply["fault"].is_null(),"{reply}");
         }
@@ -1400,7 +1400,7 @@ mod tests {
             "sstv_mode":2,"radiofax_acquisition":"manual","radiofax_ioc":"576","radiofax_lpm":"120",
             "radiofax_modulation":"am","radiofax_polarity":"inverted","radiofax_clock_recovery":"off",
             "radiofax_phase_pixels":3.5,"radiofax_clock_ppm":12.5});
-        for slot in [0,7] {
+        for slot in [0,MAX_CHANNELS-1] {
             let before=app.state.lock().unwrap().receiver_snapshot();let row=&before["receivers"][slot];
             let mut config=row["confirmed"].clone();
             for (key,value) in fields.as_object().unwrap() {config["processors"][0][key]=value.clone();}

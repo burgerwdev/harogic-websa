@@ -17,6 +17,10 @@ struct Capture {
     std::chrono::steady_clock::time_point began;
     std::vector<int16_t> raw;
 };
+#ifndef SDR_BENCH_CHANNELS
+#define SDR_BENCH_CHANNELS 8
+#endif
+static_assert(SDR_BENCH_CHANNELS == 8 || SDR_BENCH_CHANNELS == 16);
 constexpr double rate = 62500000.0;
 constexpr double tau = 6.2831853071795864769;
 constexpr uint64_t period = 3125000; // 50 ms, exact 20 Hz carrier/tone lattice.
@@ -26,17 +30,19 @@ extern "C" int san90_open_v8(void** out, double center, const void*, int decimat
     if (!out || !bandwidth || !configured || decimate < 1 || decimate > 64 || (decimate & (decimate-1))) return -100;
     auto* capture = new Capture{decimate, center, 0, {}, {}};
     capture->raw.resize(2*period);
-    const double offsets[] = {-20e6,-12e6,-4e6,0.0,20000.0,40000.0,8e6,20e6};
+    const double offsets[] = {-20e6,-12e6,-4e6,0.0,20000.0,40000.0,8e6,20e6,
+        -18e6,-14e6,-10e6,-6e6,2e6,6e6,12e6,18e6};
     for (uint64_t i=0; i<period; ++i) {
         const double t=static_cast<double>(i)/rate;
         double re=0.0, im=0.0;
-        for (int slot=0; slot<8; ++slot) {
-            const double tone=400.0+200.0*slot;
+        for (int slot=0; slot<SDR_BENCH_CHANNELS; ++slot) {
+            const int mode=slot%8;
+            const double tone=400.0+200.0*mode;
             double phase=tau*offsets[slot]*t;
             double amplitude=1200.0;
-            if (slot<2) amplitude*=1.0+0.5*std::cos(tau*tone*t);
-            else if (slot<4) phase+=1500.0/tone*std::sin(tau*tone*t);
-            else phase+=tau*tone*t*(slot<6 ? 1.0 : -1.0);
+            if (mode<2) amplitude*=1.0+0.5*std::cos(tau*tone*t);
+            else if (mode<4) phase+=1500.0/tone*std::sin(tau*tone*t);
+            else phase+=tau*tone*t*(mode<6 ? 1.0 : -1.0);
             re+=amplitude*std::cos(phase); im+=amplitude*std::sin(phase);
         }
         capture->raw[2*i]=static_cast<int16_t>(std::lround(re));

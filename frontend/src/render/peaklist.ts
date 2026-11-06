@@ -138,6 +138,8 @@ export function resetPeakThr() {
   fittedKey = '';
   samples = [];
   setPeakThr(-80);
+  const count = document.getElementById('input-peakcnt') as HTMLInputElement | null;
+  if (count) count.value = '20';
 }
 
 function peakCount(): number {

@@ -4,6 +4,7 @@ import type { ServiceCommand, TrackKind } from '../core/multichannel';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountWorkbench } from '../ui/workbenchApp';
+import { audioDownload, resetAudioFormat, savedAudioFormat } from '../ui/recordingFormats';
 
 let adapter: FixtureReceiverAdapter, session: WorkbenchSession, ui: ReturnType<typeof mountWorkbench>, language: ReturnType<typeof getLang>;
 const overview = (): HTMLElement => document.querySelector('[data-view-id=overview-follow]')!;
@@ -45,6 +46,63 @@ it('remembers the audio format, sends it on start, and keeps the running recordi
   ui.dispose(); ui = mountWorkbench(session, document.body);
   click(overview(), '[data-action=tab-recording]');
   expect(overview().querySelector('[data-editor] [data-format-menu] summary')!.textContent).toContain('Opus');
+});
+
+it('defaults to Opus and restores the compact footer setting, including an explicit WAV preference', async () => {
+  const select = () => overview().querySelector<HTMLSelectElement>('[data-default-audio-format]')!;
+  expect(select().value).toBe('opus');
+  expect(select().closest('.mc-master')).not.toBeNull();
+  select().value = 'wav'; select().dispatchEvent(new Event('change', { bubbles: true }));
+  expect(savedAudioFormat()).toBe('wav');
+  ui.dispose(); ui = mountWorkbench(session, document.body);
+  expect(select().value).toBe('wav');
+  click(overview(), '[data-action=tab-recording]');
+  click(overview(), '[data-editor] [data-action=rec-audio]'); await settle();
+  expect(session.snapshot.recordings[0].audio_format).toBe('wav');
+  resetAudioFormat(); expect(select().value).toBe('opus'); expect(savedAudioFormat()).toBe('opus');
+  expect(session.snapshot.recordings[0].audio_format).toBe('wav');
+  expect(overview().querySelector('[data-editor] .mc-record-format')!.textContent).toBe('WAV');
+  const html = audioDownload(session.snapshot.recordings[0], 'opus', session.snapshot);
+  expect(html).toContain('Download WAV'); expect(html).not.toContain('data-format-menu');
+});
+
+it('uses Opus for missing or invalid saved format preferences', () => {
+  for (const value of ['', 'invalid']) {
+    localStorage.setItem('websa-audio-recording-format', value); expect(savedAudioFormat()).toBe('opus');
+  }
+});
+
+it('searches unit-suffixed frequencies and original channel names after renaming and retiring a channel', async () => {
+  const uid = 'fixture-c1', config = structuredClone(session.snapshot.receivers[0].confirmed);
+  config.name = 'Harbour radio'; config.baseband.frequency_hz = 7_100_000.3;
+  const configured = session.configure(uid, config); await settle(); await configured;
+  const id = await completed(uid, 'audio', 'named');
+  await send({ type: 'record_rename', request_id: 'rename', task_id: id, name: 'Evening session' });
+  await send({ type: 'retire', request_id: 'retire', receiver_uid: uid });
+  click(overview(), '.mc-workspace-actions [data-action=recording-files]');
+  for (const query of ['7M', '7.1 MHz', '7100k', '7100000 Hz', 'Harbour', 'Harbour 7.1m', 'Evening']) {
+    search(query); expect(library().querySelectorAll('.mc-file'), query).toHaveLength(1);
+  }
+  for (const query of ['14M', '7k', '7.2 MHz', 'other channel']) {
+    search(query); expect(library().querySelectorAll('.mc-file'), query).toHaveLength(0);
+  }
+});
+
+it('shows history only for the displayed frequency, including retired identities and rounded Hz matches', async () => {
+  const id = await completed('fixture-c1', 'audio', 'history');
+  await completed('fixture-c3', 'iq', 'unrelated');
+  const task = session.snapshot.recordings.find(t => t.task_id === id)!;
+  task.receiver_uid = 'retired-uid'; task.tracks[0].segments[0].frequency_hz = 7_100_000.4;
+  session.notify();
+  expect(overview().querySelector('[data-section=recording-history]')).toBeNull();
+  click(overview(), '[data-action=tab-recording]');
+  expect(overview().querySelectorAll('.mc-task')).toHaveLength(1);
+  expect(overview().querySelector('.mc-task')!.getAttribute('data-task-id')).toBe(id);
+  session.snapshot.receivers[0].confirmed.baseband.frequency_hz = 7_100_000.6; session.notify();
+  expect(overview().querySelectorAll('.mc-task')).toHaveLength(0);
+  session.snapshot.receivers[0].confirmed.baseband.frequency_hz = 7_150_000; session.notify();
+  expect(overview().querySelectorAll('.mc-task')).toHaveLength(1);
+  expect(overview().querySelector('.mc-task')!.getAttribute('data-task-id')).not.toBe(id);
 });
 
 it('manages recordings across channels and preserves rename drafts during snapshot updates', async () => {

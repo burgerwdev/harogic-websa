@@ -9,7 +9,9 @@ import { confirmSdrChannels, currentSdrChannel, knownSdrChannelNumbers, sdrChann
 import { setSdrHoverFrequency } from './sdrHoverPassband';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 import { isKeypadOpen } from './keypad';
-import { syncDisplayFftUi } from './wfRange';
+import { resetWfRange, syncDisplayFftUi } from './wfRange';
+import { resetAudioFormat } from './recordingFormats';
+import { resetWorkbenchPreferences } from './workbenchPreferences';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { parseNrAlgo, demodBandHz, sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
@@ -1479,6 +1481,10 @@ export function syncPresetStatus(responseTo?: string, requestId?: string | numbe
 }
 
 function applyPresetSuccess() {
+  sharedReceiverModeMemory.reset();
+  resetAudioFormat();
+  resetWorkbenchPreferences();
+  document.dispatchEvent(new Event('websa:preset-applied'));
   setCurrentSdrChannel(1);
   setDecodeChannel(1);
   syncSdrChannelButtons();
@@ -1493,6 +1499,7 @@ function applyPresetSuccess() {
   resetAll('swp');
   resetAll('rta');
   resetAll('ref');
+  resetAll('meas');
   resetTraceFamilyModes();
   setScale(10);
   resetTrigger();
@@ -1559,6 +1566,7 @@ function applyPresetSuccess() {
     ['web-sa-sdr-audio', 'web-sa-sdr-ref-auto'].forEach((k) => localStorage.removeItem(k));
   } catch { /* ignore */ }
   resetRtaDensityCfg();
+  resetWfRange();
   resetLimits();
   S.resetWaterfall();
   setWfPaused(false);

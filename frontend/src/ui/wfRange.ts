@@ -63,6 +63,14 @@ function save(): void {
   } catch { /* storage unavailable */ }
 }
 
+export function resetWfRange(): void {
+  for (const slot of [wfRangeMode, wfFloorSource, wfPalette, wfContrast, wfLoDbm, wfHiDbm]) slot.reset();
+  wfRangeMode.confirm('auto'); wfFloorSource.confirm('capture'); wfPalette.confirm('classic');
+  wfContrast.confirm(1); wfLoDbm.confirm(-110); wfHiDbm.confirm(-30);
+  try { localStorage.removeItem(LS_KEY); } catch { /* storage unavailable */ }
+  validation(''); syncWfRangeUi(); requestRender();
+}
+
 /** Graph controls follow the waterfall and acquisition mode independently of RF levels. */
 export function syncWfRangeUi(): void {
   const sel = el<HTMLSelectElement>('select-wf-range');

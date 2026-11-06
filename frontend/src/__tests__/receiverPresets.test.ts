@@ -51,6 +51,16 @@ it('requires refreshing after a concurrent preset change and never retries the m
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
+it('restores the saved continuity policy with tuning and processing', async () => {
+  const settings = { purpose: 'iq', baseband: { frequency_hz: 101e6, passband_hz: 3000, transition_hz: 1000, minimum_rate_hz: 6000 }, processors: [], continuity: 'strict' };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply({ revision: '1', presets: [{ name: 'Strict', settings }] })));
+  const { root, review } = mount();
+  await vi.waitFor(() => expect(get<HTMLSelectElement>(root, 'list').options.length).toBe(2));
+  const list = get<HTMLSelectElement>(root, 'list'); list.value = 'Strict'; list.dispatchEvent(new Event('change'));
+  get<HTMLButtonElement>(root, 'load').click();
+  expect(review).toHaveBeenCalledWith(expect.objectContaining({ continuity: 'strict' }));
+});
+
 it('aborts a retired view request and rejects its late response', async () => {
   let resolve!: (response: Response) => void;
   const fetch = vi.fn((_url: string, _init: RequestInit) => new Promise<Response>(r => { resolve = r; })); vi.stubGlobal('fetch', fetch);

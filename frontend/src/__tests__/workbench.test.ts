@@ -6,11 +6,26 @@ import { createFloatingWindow } from '../ui/floatingWindow';
 import { setTheme } from '../core/theme';
 import { setLang } from '../core/i18n';
 import { setUiScale } from '../core/uiScale';
+import capacity from '../../../contracts/service-capacity.json';
 
 let adapter: FixtureReceiverAdapter, session: WorkbenchSession;
 beforeEach(() => { vi.useFakeTimers(); localStorage.clear(); adapter = new FixtureReceiverAdapter(3, 10); session = new WorkbenchSession(adapter); });
 afterEach(() => { session.dispose(); adapter.dispose(); vi.useRealTimers(); vi.restoreAllMocks(); document.body.replaceChildren(); });
 const settle = async <T>(promise: Promise<T>): Promise<T> => { await vi.runAllTimersAsync(); return promise; };
+
+it('derives advertised capacity from the shared contract and enforces the recording pool across kinds', async () => {
+  const defaults = new FixtureReceiverAdapter();
+  expect(defaults.snapshot().capabilities.max_channels).toBe(capacity.MAX_CHANNELS);
+  expect(defaults.snapshot().capabilities.max_recording_tasks).toBe(capacity.MAX_CHANNELS);
+  defaults.dispose();
+  for (const [uid, kind] of [['fixture-c1', 'iq'], ['fixture-c1', 'audio'], ['fixture-c2', 'results']] as const) {
+    expect((await settle(adapter.dispatch({ type: 'record_start', request_id: `${uid}-${kind}`, receiver_uid: uid, kinds: [kind] }))).fault).toBeNull();
+  }
+  expect(adapter.snapshot().recording_resources).toEqual({ active_tasks: 3, max_tasks: 3, available_tasks: 0 });
+  expect((await settle(adapter.dispatch({ type: 'record_start', request_id: 'over', receiver_uid: 'fixture-c3', kinds: ['iq'] }))).fault?.code).toBe('LIMIT');
+  await settle(adapter.dispatch({ type: 'record_stop', request_id: 'stop', task_id: adapter.snapshot().recordings[0].task_id }));
+  expect(adapter.snapshot().recording_resources?.available_tasks).toBe(1);
+});
 
 function controlledSession() {
   session.dispose();
@@ -347,6 +362,8 @@ it('publishes snapshots and commands compatible with the portable backend contra
   };
   expect(validate(adapter.snapshot(), schema.$defs.snapshot)).toBe(true);
   await settle(adapter.dispatch({ type: 'record_start', request_id: 'contract', receiver_uid: 'fixture-c3', kinds: ['iq'] }));
+  expect(validate(adapter.snapshot(), schema.$defs.snapshot)).toBe(true);
+  await settle(adapter.dispatch({ type: 'record_start', request_id: 'audio-contract', receiver_uid: 'fixture-c1', kinds: ['audio'] }));
   expect(validate(adapter.snapshot(), schema.$defs.snapshot)).toBe(true);
   const command = { type: 'configure', request_id: 'contract-edit', expected_revision: '1', receiver_uid: 'fixture-c1', config: adapter.snapshot().receivers[0].confirmed };
   expect(validate(command, schema.$defs.command)).toBe(true);

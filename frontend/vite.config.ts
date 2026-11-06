@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['src/__tests__/setup.ts'],
+    // Full-page DOM suites are memory-heavy; bound parallelism on desktops and CI.
+    maxWorkers: 2,
   },
   base: '/static/dist/',
   build: {

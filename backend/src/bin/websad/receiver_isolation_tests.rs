@@ -416,15 +416,15 @@ fn resource_model_preparation_failure_never_substitutes_wiener_and_can_retry() {
 }
 
 #[test]
-fn resource_all_eight_owners_run_without_a_cpu_count_cap() {
-    let (mut workers,_,registry)=setup(&[1,2,3,4,5,6,7,8]);let mut output=ReceiverFrames::default();
+fn resource_all_sixteen_owners_run_without_a_cpu_count_cap() {
+    let (mut workers,_,registry)=setup(&(1..=MAX_CHANNELS as u32).collect::<Vec<_>>());let mut output=ReceiverFrames::default();
     for sequence in 1..=3 {
-        for channel in 1..=8 {send(&mut workers,&registry,channel,sequence);}
+        for channel in 1..=MAX_CHANNELS as u32 {send(&mut workers,&registry,channel,sequence);}
         output.append(workers.finish().unwrap());
     }
-    for channel in 1..=8 {assert!(payload_count(&output,100+channel)>=3);assert!(workers.channel_failure(channel).is_none());}
-    assert_eq!(workers.stats()["owner_threads"],8);
-    println!("eight_owners_resources={}",websa_channelizer::host_resources::snapshot());
+    for channel in 1..=MAX_CHANNELS as u32 {assert!(payload_count(&output,100+channel)>=3);assert!(workers.channel_failure(channel).is_none());}
+    assert_eq!(workers.stats()["owner_threads"],MAX_CHANNELS);
+    println!("sixteen_owners_resources={}",websa_channelizer::host_resources::snapshot());
 }
 
 #[test]

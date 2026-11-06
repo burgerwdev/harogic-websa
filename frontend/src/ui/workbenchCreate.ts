@@ -51,7 +51,7 @@ export function mountWorkbenchCreate(session: WorkbenchSession, root: HTMLElemen
     else if (Math.abs(config.baseband.frequency_hz - capture.center_hz) + config.baseband.passband_hz / 2 + config.baseband.transition_hz > bandwidth! / 2)
       error = l('This frequency and its passband exceed the capture range. Adjust the frequency or the shared capture in the main SDR panel.', '该频率及完整通带超出采集范围，请修改频率，或在主 SDR 面板调整共享采集。');
     field<HTMLElement>('[data-create-range]').textContent = bandwidth === null ? ''
-      : `${l('Capture range', '可用采集范围')} · ${(capture.center_hz - bandwidth / 2) / 1e6}–${(capture.center_hz + bandwidth / 2) / 1e6} MHz`;
+      : `${l('Capture range', '可用采集范围')} · ${((capture.center_hz - bandwidth / 2) / 1e6).toFixed(6)}–${((capture.center_hz + bandwidth / 2) / 1e6).toFixed(6)} MHz`;
     field<HTMLElement>('[data-create-error]').textContent = error;
     const listen = audio && field<HTMLInputElement>('[name=listen]').checked;
     field<HTMLButtonElement>('[type=submit]').textContent = listen ? l('Create and listen', '创建并监听') : l('Create and receive', '创建并接收');

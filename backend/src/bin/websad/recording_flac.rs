@@ -25,15 +25,15 @@ fn quantize(value: f32) -> (i32, bool) {
 }
 
 #[derive(Debug, PartialEq)]
-struct Segment {
+pub(super) struct Segment {
     id: String,
-    header: Vec<u8>,
+    pub(super) header: Vec<u8>,
     bytes: u64,
     samples: u64,
-    clipped: u64,
+    pub(super) clipped: u64,
     hash: [u8; 64],
 }
-struct Encoder {
+pub(super) struct Encoder {
     id: String,
     config: Verified<flacenc::config::Encoder>,
     info: StreamInfo,
@@ -47,7 +47,7 @@ struct Encoder {
     hash: Sha512,
 }
 impl Encoder {
-    fn new(id: &str, audio: &Value) -> io::Result<Self> {
+    pub(super) fn new(id: &str, audio: &Value) -> io::Result<Self> {
         let channels = audio["channels"]
             .as_u64()
             .ok_or_else(|| io_error("missing audio channels"))? as usize;
@@ -58,6 +58,10 @@ impl Encoder {
         config.multithread = false;
         // Fixed predictors and Rice coding bound per-frame CPU; no LPC search pool.
         config.subframe_coding.use_lpc = false;
+        // Estimate-only selection can badly underestimate abrupt 24-bit signals
+        // and emit enormous unary residuals. Compare actual Rice bit counts so
+        // verbatim coding bounds both output size and recording-worker time.
+        config.subframe_coding.fixed.order_sel = flacenc::config::OrderSel::BitCount;
         Ok(Self {
             id: id.to_owned(),
             config: config
@@ -74,7 +78,7 @@ impl Encoder {
             hash: Sha512::new(),
         })
     }
-    fn push(&mut self, pcm: &[u8], output: &mut (impl Write + ?Sized)) -> io::Result<()> {
+    pub(super) fn push(&mut self, pcm: &[u8], output: &mut (impl Write + ?Sized)) -> io::Result<()> {
         for bytes in pcm.chunks_exact(4) {
             let value = f32::from_le_bytes(bytes.try_into().unwrap());
             if !value.is_finite() {
@@ -97,9 +101,19 @@ impl Encoder {
         self.buffer
             .fill_interleaved(&self.samples)
             .map_err(io_error)?;
-        let frame =
+        let mut frame =
             flacenc::encode_fixed_size_frame(&self.config, &self.buffer, self.frames, &self.info)
                 .map_err(io_error)?;
+        // The encoder's partition cost tables use narrow integer arithmetic.
+        // Check the actual representation before allocating/writing its bitstream.
+        if frame.count_bits() > self.samples.len() * 24 + 1024 {
+            let mut fallback = flacenc::config::Encoder::default();
+            fallback.multithread = false;
+            fallback.subframe_coding.use_fixed = false;
+            fallback.subframe_coding.use_lpc = false;
+            let fallback = fallback.into_verified().map_err(|e| io_error(format!("FLAC config: {e:?}")))?;
+            frame = flacenc::encode_fixed_size_frame(&fallback, &self.buffer, self.frames, &self.info).map_err(io_error)?;
+        }
         let mut sink = ByteSink::new();
         frame.write(&mut sink).map_err(io_error)?;
         let next_bytes = self.bytes + sink.as_slice().len() as u64;
@@ -116,7 +130,7 @@ impl Encoder {
         self.samples.clear();
         Ok(())
     }
-    fn finish(mut self, output: &mut (impl Write + ?Sized)) -> io::Result<Segment> {
+    pub(super) fn finish(mut self, output: &mut (impl Write + ?Sized)) -> io::Result<Segment> {
         self.flush(output)?;
         // RFC 9639 excludes the final short frame from the minimum block size.
         // Fixed-block streams declare the chosen block size even for a one-sample file.
@@ -375,6 +389,9 @@ pub(crate) async fn export(
 ) -> Response {
     if !params.is_empty() {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+    if super::audio_files::task_is_direct(&app, &task) {
+        return super::audio_files::export(app, task, Some("flac")).await;
     }
     super::super::recording_export::download(
         app,

@@ -1,15 +1,28 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { frequencyInput, formatFrequencyValue, wireFrequencyInputs } from '../ui/frequencyInput';
+import { frequencyInput, formatFrequencyValue, readFrequencyHz, wireFrequencyInputs } from '../ui/frequencyInput';
 
 afterEach(() => document.body.replaceChildren());
 describe('shared frequency input', () => {
-  it('uses stable unit precision without losing one-Hz or fractional-Hz tuning', () => {
+  it('uses one-Hz precision in every unit, matching the main SDR panel', () => {
     expect(formatFrequencyValue(101.7, 'MHz')).toBe('101.700000');
     expect(formatFrequencyValue(101.700001, 'MHz')).toBe('101.700001');
     expect(formatFrequencyValue(101700.001, 'kHz')).toBe('101700.001');
     expect(formatFrequencyValue(101700001, 'Hz')).toBe('101700001');
     expect(formatFrequencyValue(0.101700001, 'GHz')).toBe('0.101700001');
-    expect(formatFrequencyValue(101.7000005, 'MHz')).toBe('101.7000005');
+    expect(formatFrequencyValue(9.830198803894, 'MHz')).toBe('9.830199');
+    expect(formatFrequencyValue(10.38406783656937, 'MHz')).toBe('10.384068');
+  });
+  it('preserves the underlying tuned value when only unrelated settings change', () => {
+    document.body.innerHTML = frequencyInput(9_830_198.803894);
+    const input = document.querySelector<HTMLInputElement>('[name=frequency]')!;
+    expect(input.value).toBe('9.830199');
+    expect(readFrequencyHz(document.body)).toBe(9_830_198.803894);
+    const stop = wireFrequencyInputs(document.body);
+    document.querySelector<HTMLButtonElement>('[data-frequency-unit=Hz]')!.click();
+    expect(readFrequencyHz(document.body)).toBe(9_830_198.803894);
+    input.value = '9830200';
+    expect(readFrequencyHz(document.body)).toBe(9_830_200);
+    stop();
   });
   it('converts the current draft through unit toggles without applying it', () => {
     document.body.innerHTML = frequencyInput(101700001);

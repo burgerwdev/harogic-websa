@@ -955,8 +955,8 @@ mod tests {
     }
     #[test]
     fn parallel_fine_matches_serial_samples_clocks_and_short_tails() {
-        let mut a = plan(8);
-        let mut b = plan(8);
+        let mut a = plan(MAX_CHANNELS as u32);
+        let mut b = plan(MAX_CHANNELS as u32);
         let mut serial = a.fine.take().unwrap();
         let mut worker = FineWorker::start(b.fine.take().unwrap()).unwrap();
         let (mut expected, mut actual) = (Vec::new(), Vec::new());
@@ -966,7 +966,7 @@ mod tests {
                 .submit(packet(&worker.state, seq), &mut actual)
                 .unwrap();
             // Pace by completion, not a guessed machine-specific sleep.
-            for slot in 1..=8 {
+            for slot in 1..=MAX_CHANNELS as u32 {
                 wait_count(&mut worker, slot, seq + 1, &mut actual);
             }
         }
@@ -979,7 +979,7 @@ mod tests {
         for (_, _, framer) in parallel.aux.values_mut() {
             actual.extend(framer.finish_native().unwrap());
         }
-        for slot in 1..=8 {
+        for slot in 1..=MAX_CHANNELS as u32 {
             assert_eq!(
                 sample_bits(&actual, slot),
                 sample_bits(&expected, slot),

@@ -133,14 +133,23 @@ def start_eight(origin, key, choices=None):
     assert all(r['fault'] is None for r in replies), replies
     assert api(origin, payload=requests[0]) == replies[0], 'duplicate request changed its receipt'
     snapshot = api(origin)
-    assert snapshot['capabilities']['max_recording_tasks'] == 8
-    assert snapshot['recording_resources']['active_tasks'] == 8
-    assert snapshot['recording_resources']['available_tasks'] == 0
+    capacity = snapshot['capabilities']['max_recording_tasks']
+    assert capacity == snapshot['recording_resources']['max_tasks']
+    assert capacity >= len(choices)
+    assert snapshot['recording_resources']['active_tasks'] == len(choices)
+    assert snapshot['recording_resources']['available_tasks'] == capacity - len(choices)
     before = {r['task_id']: r['accepted_bytes'] for r in snapshot['recordings'] if r['state'] in ACTIVE}
     spare_iq = next(index for index in range(8) if (index, 'iq') not in choices)
     ninth = api(origin, payload={'type': 'record_start', 'request_id': key + '-ninth',
         'receiver_uid': uids[spare_iq], 'kinds': ['iq']})
-    assert ninth['fault'] and 'capacity' in ninth['fault']['message'], ninth
+    if capacity == len(choices):
+        assert ninth['fault'] and 'capacity' in ninth['fault']['message'], ninth
+    else:
+        assert ninth['fault'] is None, ninth
+        extra = next(t for t in ninth['snapshot']['recordings'] if t['task_id'] not in before and t['state'] in ACTIVE)
+        reply = api(origin, payload={'type': 'record_stop', 'request_id': key + '-probe-stop', 'task_id': extra['task_id']})
+        assert reply['fault'] is None, reply
+        until(lambda: not any(t['task_id'] == extra['task_id'] and t['state'] in ACTIVE for t in api(origin)['recordings']))
     assert set(before) == {r['task_id'] for r in api(origin)['recordings'] if r['state'] in ACTIVE}
     return snapshot, ninth
 
@@ -152,18 +161,20 @@ def browser_quota(origin, artifacts, spare_audio=4):
         page.goto(origin); wait_ui_ready(page, 'sdr')
         page.locator('[data-action=sdr-workbench]').click()
         view = page.locator('[data-view-id=overview-follow]')
-        expect(view.locator('[data-recording-capacity]').first).to_contain_text('8 / 8')
+        quota = api(origin)['recording_resources']
+        expect(view.locator('[data-recording-capacity]').first).to_contain_text(f"{quota['active_tasks']} / {quota['max_tasks']}")
         rows = view.locator('.mc-row')
         rows.nth(spare_audio).locator('[data-action=select]').click()
         view.locator('[data-action=tab-recording]').click()
-        expect(view.locator('[data-editor] [data-action=rec-audio]')).to_be_disabled()
+        spare = view.locator('[data-editor] [data-action=rec-audio]')
+        expect(spare).to_be_enabled() if quota['available_tasks'] else expect(spare).to_be_disabled()
         rows.first.locator('[data-action=select]').click()
         button = view.locator('[data-editor] [data-action=rec-iq]')
         expect(button).to_be_enabled(); button.click()
-        expect(view.locator('[data-recording-capacity]').first).to_contain_text('7 / 8')
+        expect(view.locator('[data-recording-capacity]').first).to_contain_text(f"{quota['active_tasks'] - 1} / {quota['max_tasks']}")
         expect(button).to_have_attribute('aria-pressed', 'false')
         button.click()
-        expect(view.locator('[data-recording-capacity]').first).to_contain_text('8 / 8')
+        expect(view.locator('[data-recording-capacity]').first).to_contain_text(f"{quota['active_tasks']} / {quota['max_tasks']}")
         page.set_viewport_size({'width': 420, 'height': 900})
         page.screenshot(path=str(artifacts / 'quota-420.png'))
         assert not view.evaluate('host=>host.scrollWidth>host.clientWidth+2')

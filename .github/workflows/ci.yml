@@ -36,7 +36,7 @@ jobs:
         name: Build and install FDK AAC 2.0.3
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ git pkg-config libusb-1.0-0-dev
+          sudo apt-get install -y cmake g++ git pkg-config libusb-1.0-0-dev ffmpeg
           source_dir="$(mktemp -d)"
           trap 'rm -rf -- "$source_dir"' EXIT
           git -C "$source_dir" init
@@ -179,6 +179,19 @@ jobs:
         run: python tools/e2e/state_regression.py --url http://127.0.0.1:8099
       - name: Channel workbench transitions and audio controls (isolated fixture service)
         run: python tools/e2e/multichannel_audio_settings.py --artifacts "$RUNNER_TEMP/multichannel-audio-settings"
+      - name: Native recording formats, downloads and saved preferences (isolated fixture service)
+        run: python tools/e2e/native_audio_formats.py --artifacts "$RUNNER_TEMP/native-audio-formats"
+      - name: Workbench layout, frequency history and search (synthetic snapshots)
+        run: |
+          (cd frontend && exec node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5186 --strictPort) > "$RUNNER_TEMP/workbench-vite.log" 2>&1 &
+          preview_pid=$!
+          trap 'kill "$preview_pid" 2>/dev/null || true; wait "$preview_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..100}; do
+            if curl --fail --silent http://127.0.0.1:5186/static/dist/workbench.html > /dev/null; then break; fi
+            kill -0 "$preview_pid"
+            sleep 0.2
+          done
+          python tools/e2e/workbench_polish.py --artifacts "$RUNNER_TEMP/workbench-polish"
       - name: Stop the owned fake-backend service
         id: stop-fake
         if: always() && steps.start-fake.outcome != 'skipped'

@@ -94,7 +94,7 @@ export function mountRecordingAudioView(session?: WorkbenchSession): { open(task
         for (const [key, text] of Object.entries({ source: l('Source', '来源'), segment: l('Segment', '片段'), start: l('Start / sample frame', '起点 / 样本帧'), count: l('Length / sample frames', '长度 / 样本帧') })) get(`[data-label="${key}"]`).textContent = text;
         get('[data-prefix]').textContent = task.state === 'failed' ? `${l('Verified prefix only', '仅已校验前缀')}${task.fault ? ` · ${task.fault.message}` : ''}` : '';
         load.textContent = l('Load audio', '载入音频'); save.textContent = l('Download audio + source', '下载音频与来源'); cancel.textContent = l('Cancel', '取消');
-        load.title = l('Original published PCM · at most 60 seconds / 1,048,576 frames · live reception is independent', '原始发布 PCM · 最多 60 秒 / 1,048,576 样本帧 · 与实时接收独立');
+        load.title = l('Saved audio · at most 60 seconds / 1,048,576 frames · live reception is independent', '已保存音频 · 最多 60 秒 / 1,048,576 样本帧 · 与实时接收独立');
         save.title = l('Download this exact Float32 WAV snapshot and original frame clocks', '下载同一份 Float32 WAV 快照及原始帧时钟');
         audio.setAttribute('aria-label', l('Recorded audio playback', '已录音频试听'));
         const s = segments[Number(select.value)];

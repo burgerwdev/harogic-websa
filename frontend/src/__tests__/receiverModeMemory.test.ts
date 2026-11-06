@@ -36,6 +36,17 @@ it('remembers confirmed values per channel and mode across tab reload, without f
   const write = vi.spyOn(Storage.prototype, 'setItem'); restored.observe(snapshot); expect(write).not.toHaveBeenCalled();
 });
 
+it('Preset clears mode memories and ignores pre-reset snapshots until a newer confirmation', () => {
+  const memory = new ReceiverModeMemory(); memory.observe(snapshot);
+  const row = snapshot.receivers[0];
+  expect(memory.get(row.receiver_uid, 'am')).toBeDefined();
+  memory.reset();
+  expect(sessionStorage.getItem(key)).toBeNull();
+  memory.observe(snapshot); expect(memory.get(row.receiver_uid, 'am')).toBeUndefined();
+  row.revision = String(BigInt(row.revision) + 1n); row.confirmed.processors[0].bandwidth_hz = 6000;
+  memory.observe(snapshot); expect(memory.get(row.receiver_uid, 'am')?.bandwidth_hz).toBe(6000);
+});
+
 it('forgets retired receivers and old service generations, even when the UID is reused', () => {
   const memory = new ReceiverModeMemory(); memory.observe(snapshot);
   const row = snapshot.receivers.shift()!; memory.observe(snapshot);

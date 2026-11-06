@@ -14,11 +14,22 @@ export function formatAvailable(snapshot: ServiceSnapshot, format: AudioRecordin
   return snapshot.transport === 'fixture' || format === 'wav' || !!snapshot.capabilities[format === 'flac' ? 'audio_flac_export' : 'audio_opus_export'];
 }
 export function savedAudioFormat(): AudioRecordingFormat {
-  try { const value = localStorage.getItem('websa-audio-recording-format'); if (value === 'flac' || value === 'opus') return value; } catch { /* session only */ }
-  return 'wav';
+  try { const value = localStorage.getItem('websa-audio-recording-format'); if (value === 'wav' || value === 'flac' || value === 'opus') return value; } catch { /* session only */ }
+  return 'opus';
 }
 export function rememberAudioFormat(format: AudioRecordingFormat): void {
   try { localStorage.setItem('websa-audio-recording-format', format); } catch { /* session only */ }
+}
+export function resetAudioFormat(): void {
+  try { localStorage.removeItem('websa-audio-recording-format'); } catch { /* session only */ }
+  document.dispatchEvent(new Event('websa:recording-default-reset'));
+}
+export function directAudioRecording(task: RecordingTask): boolean {
+  return task.tracks.some(track => track.kind === 'audio' && track.container === 'websa-audio-files-v1');
+}
+export function defaultAudioFormatSelect(snapshot: ServiceSnapshot, selected: AudioRecordingFormat): string {
+  const label = l('Default audio recording format', '默认音频录制格式');
+  return `<label class="mc-recording-default" data-key="recording-default" title="${label} · ${l('Used for new recordings', '用于新录制')}"><span>${l('Record as', '录制格式')}</span><select data-default-audio-format aria-label="${label}">${(['opus', 'flac', 'wav'] as const).map(format => `<option value="${format}" ${selected === format ? 'selected' : ''} ${formatAvailable(snapshot, format) ? '' : 'disabled'}>${formatLabel(format)}</option>`).join('')}</select></label>`;
 }
 export function audioFormatMenu(snapshot: ServiceSnapshot, selected: AudioRecordingFormat, context: { receiver?: string; task?: string }): string {
   const owner = context.task ? `data-format-task="${esc(context.task)}"` : `data-format-receiver="${esc(context.receiver)}"`;
@@ -76,6 +87,8 @@ export function wireAudioFormatMenus(root: HTMLElement): () => void {
   return () => { close(); observer.disconnect(); root.removeEventListener('toggle', toggle, true); root.removeEventListener('scroll', scroll, true); };
 }
 export function audioDownload(task: RecordingTask, format: AudioRecordingFormat, snapshot: ServiceSnapshot): string {
+  const direct = directAudioRecording(task);
+  if (direct) format = task.audio_format ?? 'opus';
   const path = `/api/sdr/recordings/${encodeURIComponent(task.task_id)}/audio${format === 'wav' ? '' : `/${format}`}`;
-  return `<span class="mc-audio-export"><a data-key="audio-download" class="mc-audio-download${format === 'flac' ? ' mc-audio-flac' : ''}" href="${path}" download title="${esc(formatAdvice(format) + l('. Download includes audio segments and source metadata.', '。下载包含音频片段与来源信息。'))}">${l('Download', '下载')} ${formatLabel(format)}</a>${audioFormatMenu(snapshot, format, { task: task.task_id })}</span>`;
+  return `<span class="mc-audio-export"><a data-key="audio-download" class="mc-audio-download${format === 'flac' ? ' mc-audio-flac' : ''}" href="${path}" download title="${esc(formatAdvice(format) + l('. Download includes audio segments and source metadata.', '。下载包含音频片段与来源信息。'))}">${l('Download', '下载')} ${formatLabel(format)}</a>${direct ? '' : audioFormatMenu(snapshot, format, { task: task.task_id })}</span>`;
 }

@@ -89,9 +89,14 @@ pub(super) fn prepare(
     let mut next = selection.start;
     let mut records = 0;
     let mut hash = Sha256::new();
+    let direct = super::audio_files::is_direct(task);
+    let saved_pcm = if direct {
+        super::audio_files::verify(path, task, cancel)?;
+        super::audio_files::read_pcm(path, task, segment, selection.start, selection.count, cancel)?
+    } else { Vec::new() };
     // Existing journals have no random-access audio index. Stream-check every record
     // and summary (including later segments), retaining only the chosen PCM/timeline.
-    audio::visit(path, task, cancel, |_, row, pcm, id, offset| {
+    let mut collect = |row: &Value, pcm: &[u8], id: &str, offset: u64| -> io::Result<()> {
         if id != selection.segment {
             return Ok(());
         }
@@ -108,7 +113,9 @@ pub(super) fn prepare(
         }
         let skip = from - offset;
         let count = to - from;
-        let bytes = &pcm[skip as usize * stride..(skip + count) as usize * stride];
+        let bytes = if direct {
+            &saved_pcm[(from - selection.start) as usize * stride..(to - selection.start) as usize * stride]
+        } else { &pcm[skip as usize * stride..(skip + count) as usize * stride] };
         hash.update(bytes);
         wav.extend_from_slice(bytes);
         let mut selected_row = row.clone();
@@ -124,7 +131,13 @@ pub(super) fn prepare(
         timeline.push(b'\n');
         next = to;
         Ok(())
-    })?;
+    };
+    if direct {
+        super::audio_files::visit_timeline(path, task, cancel, |row| {
+            let id = row["segment_id"].as_str().ok_or_else(|| io_error("audio timeline segment missing"))?;
+            collect(&row, &[], id, number(&row["segment_sample_start"]))
+        })?;
+    } else { audio::visit(path, task, cancel, |_, row, pcm, id, offset| collect(row, pcm, id, offset))?; }
     if next != end || wav.len() != 58 + selection.count as usize * stride {
         return Err(io_error("audio range missing samples"));
     }
@@ -133,8 +146,8 @@ pub(super) fn prepare(
         .ok_or_else(|| io_error("audio index overflow"))?;
     let manifest = serde_json::to_vec(&json!({"format":"websa-audio-range-v1","task":task,
         "selection":{"segment":selection.segment,"start":selection.start.to_string(),"count":selection.count.to_string(),"first_audio_index":first_audio_index.to_string()},
-        "audio":{"source":"published_audio","sample_format":"f32_le","rate_hz":rate,"channels":channels,"frames":selection.count.to_string(),"pcm_sha256":format!("{:x}",hash.finalize()),"float32_bit_exact":true},
-        "processing":{"resampled":false,"quantized":false,"gain_applied":false,"protocol_input":false,"local_controls_included":false},
+        "audio":{"source":"published_audio","sample_format":"f32_le","rate_hz":rate,"channels":channels,"frames":selection.count.to_string(),"pcm_sha256":format!("{:x}",hash.finalize()),"float32_bit_exact":!direct || task["audio_format"]=="wav"},
+        "processing":{"resampled":direct && task["audio_format"]=="opus","quantized":direct && task["audio_format"]=="flac","lossy":direct && task["audio_format"]=="opus","gain_applied":false,"protocol_input":false,"local_controls_included":false},
         "time":{"playback_origin":"selected first audio sample; relative seconds","original_clock":"unchanged AUD2 rows/headers plus exact record_skip_frames; input index/fraction not interpolated","utc_reliable":false},
         "provenance":{"file":"frames.jsonl","records":records,"sha256":format!("{:x}",Sha256::digest(&timeline))}}))?;
     if manifest.len() > MAX_MANIFEST {

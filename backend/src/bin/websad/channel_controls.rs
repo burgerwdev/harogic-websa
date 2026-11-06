@@ -499,7 +499,7 @@ mod tests {
         state.apply_channel_config(&json!({"channel":1,"enabled":false})).unwrap();
         assert!(state.channel_configs().iter().all(|c|!c.enabled));
         assert!(state.receiver_workers.is_some(),"live capture must retain its prepared models");
-        state.apply_channel_config(&json!({"channel":8,"enabled":true,"freq":100e6,"mode":"am"})).unwrap();
+        state.apply_channel_config(&json!({"channel":MAX_CHANNELS,"enabled":true,"freq":100e6,"mode":"am"})).unwrap();
         assert!(state.receiver_workers.is_some());
     }
 

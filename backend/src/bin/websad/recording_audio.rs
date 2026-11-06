@@ -32,7 +32,7 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 fn f64_at(b: &[u8], at: usize) -> f64 {
     f64::from_le_bytes(b[at..at + 8].try_into().unwrap())
 }
-fn decode(raw: &[u8]) -> io::Result<(Value, &[u8])> {
+pub(super) fn decode(raw: &[u8]) -> io::Result<(Value, &[u8])> {
     if raw.len() < 4 {
         return Err(io_error("short audio record"));
     }
@@ -87,9 +87,10 @@ fn decode(raw: &[u8]) -> io::Result<(Value, &[u8])> {
         "original_aud2_header_hex":b[..96].iter().map(|b|format!("{b:02x}")).collect::<String>()});
     Ok((row, &b[96..]))
 }
-fn update(task: &mut Value, row: &Value, bytes: usize) -> io::Result<String> {
+pub(super) fn update(task: &mut Value, row: &Value, bytes: usize) -> io::Result<String> {
     let a = &row["audio"];
     let source = &row["source"];
+    let direct = super::audio_files::is_direct(task);
     if source["receiver_uid"] != task["receiver_uid"] || source["service_id"] != task["service_id"]
     {
         return Err(io_error("audio source ownership mismatch"));
@@ -120,6 +121,10 @@ fn update(task: &mut Value, row: &Value, bytes: usize) -> io::Result<String> {
         boundary |= number(&last["samples"]) * last["channels"].as_u64().unwrap_or(0) * 4
             + bytes as u64
             > MAX_WAV_BYTES;
+        // Commit bounded, independently playable files during long recordings.
+        if direct {
+            boundary |= number(&last["samples"]) as f64 >= a["rate_hz"].as_f64().unwrap() * 60.0;
+        }
     }
     if boundary {
         if segments.len() >= MAX_SEGMENTS {
@@ -163,6 +168,9 @@ fn saved(task: &mut Value, finished: u64, position: u64) {
     last["valid_bytes"] = json!(position.to_string());
 }
 pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
+    if super::audio_files::is_direct(&lane.task.lock().unwrap()) {
+        return super::audio_files::work(lane, path);
+    }
     fs::create_dir(path)?;
     File::open(path.parent().unwrap())?.sync_all()?;
     let mut task = lane.task.lock().unwrap().clone();
@@ -246,6 +254,7 @@ pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
 }
 
 pub(super) fn recover(path: &FsPath, task: &mut Value) -> io::Result<()> {
+    if super::audio_files::is_direct(task) { return super::audio_files::recover(path, task); }
     let interrupted = active(task["state"].as_str().unwrap_or(""));
     let completed = task["state"] == "completed";
     let last_reason = task["tracks"][0]["segments"]
@@ -454,6 +463,9 @@ pub(crate) async fn export(
     if !params.is_empty() {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    if super::audio_files::task_is_direct(&app, &task) {
+        return super::audio_files::export(app, task, None).await;
+    }
     super::super::recording_export::download(app,task,"audio.tar",|path,task,cancel| {
         let (_,lines,hash) = visit(path,task,cancel,|_,_,_,_,_|Ok(()))?;
         if lines > 0o77777777777 { return Err(io_error("audio timeline exceeds POSIX tar limit")); }
@@ -555,6 +567,92 @@ mod tests {
         }
         manager.reap();
         manager.snapshots()[0].clone()
+    }
+    #[test]
+    fn selected_formats_are_encoded_during_recording_and_download_copies_saved_bytes() {
+        assert!(opus::available(), "FFmpeg/libopus required for recording integration tests");
+        for format in ["wav", "flac", "opus"] {
+            let root = directory();
+            let mut manager = Manager::open(root.clone()).unwrap();
+            manager.start_configured("uid", "service", "start", "audio", format, "test").unwrap().wait().unwrap();
+            manager.admit_audio("uid", input(0, 0, 2, 48000.0, 0.5));
+            // Keep below the admission item bound while sending enough audio to
+            // make the streaming encoder publish media before record_stop.
+            let mut data = input(1, 0, 2, 48000.0, 0.5);
+            let mut packet = data.bytes.to_vec();
+            packet[12..16].copy_from_slice(&48000u32.to_le_bytes());
+            let pcm = packet[96..].to_vec();
+            packet.truncate(96); packet.extend(pcm.repeat(12000)); data.bytes = packet.into();
+            manager.admit_audio("uid", data);
+            let id = manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+            let path = root.join(&id);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while manager.snapshots()[0]["tracks"][0]["raw_bytes"] != "384000" {
+                assert!(Instant::now() < deadline, "{}", manager.snapshots()[0]);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(path.join(format!("audio-000000.{format}")).exists(), "{format} must be encoded before stopping");
+            assert!(!path.join("audio-000000.wba").exists());
+            // A source change creates another encoded file, even for a tiny tail.
+            manager.admit_audio("uid", input(2, 48000, 2, 48000.0, 0.8));
+            let task = finish(&mut manager);
+            assert_eq!(task["state"], "completed", "{task}");
+            assert_eq!(task["tracks"][0]["format"], format);
+            assert_eq!(task["tracks"][0]["segments"].as_array().unwrap().len(), 2);
+            assert!(audio_files::metadata_intact(&path, &task));
+            assert!(number(&task["tracks"][0]["stored_bytes"]) < 500000, "encoding must remain bounded: {task}");
+            let cancel = AtomicBool::new(false);
+            let (length, plan) = audio_files::prepare(&path, &task, Some(format), &cancel).unwrap();
+            let mut tar = Vec::new(); audio_files::emit(&mut tar, &path, &plan, &cancel).unwrap();
+            assert_eq!(tar.len() as u64, length);
+            let mut archive = tar::Archive::new(tar.as_slice());
+            for entry in archive.entries().unwrap() {
+                let mut entry = entry.unwrap(); let name = entry.path().unwrap().into_owned();
+                if name == FsPath::new("task.json") { continue; }
+                let mut bytes = Vec::new(); entry.read_to_end(&mut bytes).unwrap();
+                assert_eq!(bytes, fs::read(path.join(name)).unwrap(), "downloads must not re-encode saved files");
+            }
+            for segment in task["tracks"][0]["segments"].as_array().unwrap() {
+                let samples = number(&segment["samples"]);
+                let selection = super::super::super::recording_read::Selection { segment: segment["segment_id"].as_str().unwrap().into(), start: 0, count: samples };
+                assert!(audio_read::prepare(&path, &task, &selection, &cancel).is_ok(), "preview {format}: {segment}");
+            }
+            let different = if format == "wav" { "flac" } else { "wav" };
+            assert!(audio_files::prepare(&path, &task, Some(different), &cancel).is_err());
+            drop(manager);
+            let reopened = Manager::open(root.clone()).unwrap();
+            assert_eq!(reopened.snapshots()[0], task);
+            let file = path.join(format!("audio-000000.{format}"));
+            let mut damaged = fs::read(&file).unwrap(); damaged[20] ^= 1; fs::write(&file, damaged).unwrap();
+            assert!(audio_files::prepare(&path, &task, None, &cancel).is_err());
+            drop(reopened); fs::remove_dir_all(root).unwrap();
+        }
+    }
+    #[test]
+    fn direct_recordings_recover_finalized_prefix_and_empty_tasks() {
+        let root = directory();
+        let mut manager = Manager::open(root.clone()).unwrap();
+        manager.start_configured("uid", "service", "start", "audio", "flac", "test").unwrap().wait().unwrap();
+        manager.admit_audio("uid", input(0, 0, 1, 8000.0, 0.5));
+        manager.admit_audio("uid", input(1, 0, 1, 8000.0, 0.5));
+        manager.admit_audio("uid", input(2, 4, 1, 8000.0, 0.8));
+        let mut task = finish(&mut manager);
+        let path = root.join(task["task_id"].as_str().unwrap());
+        task["state"] = json!("recording"); task["tracks"][0]["segments"][1]["file_complete"] = json!(false);
+        persist(&path, &task).unwrap(); drop(manager);
+        let reopened = Manager::open(root.clone()).unwrap();
+        let recovered = &reopened.snapshots()[0];
+        assert_eq!(recovered["state"], "failed");
+        assert_eq!(recovered["tracks"][0]["segments"].as_array().unwrap().len(), 1);
+        audio_files::prepare(&path, recovered, None, &AtomicBool::new(false)).unwrap();
+        drop(reopened); fs::remove_dir_all(root).unwrap();
+
+        let root = directory(); let mut manager = Manager::open(root.clone()).unwrap();
+        manager.start_configured("uid", "service", "empty", "audio", "opus", "empty").unwrap().wait().unwrap();
+        let task = finish(&mut manager); let path = root.join(task["task_id"].as_str().unwrap());
+        audio_files::prepare(&path, &task, None, &AtomicBool::new(false)).unwrap();
+        assert!(audio_files::metadata_intact(&path, &task));
+        drop(manager); fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn processing_failure_is_scoped_to_uid_and_healthy_audio_remains_readable() {

@@ -17,6 +17,8 @@ pub(super) mod results;
 mod journal;
 #[path = "recording_audio.rs"]
 pub(super) mod audio;
+#[path = "recording_audio_files.rs"]
+pub(super) mod audio_files;
 #[path = "recording_flac.rs"]
 pub(super) mod flac;
 #[path = "recording_audio_read.rs"]
@@ -26,7 +28,7 @@ pub(super) mod opus;
 #[path = "recording_management.rs"]
 pub(super) mod management;
 
-pub(super) const MAX_ACTIVE_TASKS: usize = 8;
+pub(super) use super::receiver_limits::MAX_RECORDING_TASKS as MAX_ACTIVE_TASKS;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ITEMS: usize = 64;
 const MAX_AGE: Duration = Duration::from_secs(2);
@@ -335,9 +337,17 @@ impl Manager {
     }
     #[cfg(test)]
     pub(super) fn start_kind(&mut self, uid: &str, service: &str, request: &str, kind: &str) -> Result<StartTicket, String> {
-        self.start_configured(uid, service, request, kind, "wav", "")
+        // Build old journals for compatibility/recovery tests.
+        self.start_task(uid, service, request, kind, None, "")
     }
     pub(super) fn start_configured(&mut self, uid: &str, service: &str, request: &str, kind: &str, audio_format: &str, name: &str) -> Result<StartTicket, String> {
+        if kind == "audio" {
+            if !matches!(audio_format, "wav" | "flac" | "opus") { return Err("audio_format must be wav, flac or opus".into()); }
+            if audio_format == "opus" && !opus::available() { return Err("Opus requires FFmpeg with the libopus encoder on the server".into()); }
+        }
+        self.start_task(uid, service, request, kind, Some(audio_format), name)
+    }
+    fn start_task(&mut self, uid: &str, service: &str, request: &str, kind: &str, audio_format: Option<&str>, name: &str) -> Result<StartTicket, String> {
         self.reap();
         if !matches!(kind, "iq" | "results" | "audio") { return Err("unsupported recording kind".into()); }
         if self.lanes.iter().any(|h| h.lane.uid == uid && h.lane.kind == kind) {
@@ -350,7 +360,7 @@ impl Manager {
         let id = format!("{kind}-{service}-{}", self.next);
         let track = format!("{id}-{kind}");
         let mut task = json!({"storage_version":2,"task_id":id,"receiver_uid":uid,"service_id":service,"request_id":request,
-            "name":name,
+            "name":name,"receiver_name":name,
             "created_at_ms":millis(),"updated_at_ms":millis(),"state":"preparing","fault":null,
             "tracks":[{"track_id":track,"kind":"iq","format":"cf32_le","source":"baseband",
                 "compression":"zstd_auto_lossless","container":"websa-iq-v2","state":"preparing",
@@ -362,10 +372,16 @@ impl Manager {
             t["source"] = json!("decoder_results"); t["container"] = json!("websa-results-v1");
         }
         if kind == "audio" {
-            task["audio_format"] = json!(audio_format);
+            task["audio_format"] = json!(audio_format.unwrap_or("wav"));
             let t = &mut task["tracks"][0];
             t["kind"] = json!("audio"); t["format"] = json!("f32_le");
             t["source"] = json!("published_audio"); t["container"] = json!("websa-audio-v1");
+            if let Some(format) = audio_format {
+                t["container"] = json!("websa-audio-files-v1");
+                t["format"] = json!(format);
+                t["compression"] = json!(match format { "opus" => "lossy", "flac" => "lossless_s24", _ => "none" });
+                t["timeline_bytes"] = json!("0");
+            }
         }
         let lane = Arc::new(Lane {
             uid: uid.into(),
@@ -842,6 +858,7 @@ fn completed_metadata_intact(path: &FsPath, task: &Value) -> bool {
     if task["state"] != "completed" || track["state"] != "completed" {
         return false;
     }
+    if audio_files::is_direct(task) { return audio_files::metadata_intact(path, task); }
     let (prefix, extension) = match track["kind"].as_str() {
         Some("iq") => ("iq", "wbiq"),
         Some("audio") => ("audio", "wba"),
@@ -1077,7 +1094,7 @@ mod tests {
         manager.reap();
     }
     #[test]
-    fn eight_slots_are_shared_by_kinds_and_hold_until_finished_lanes_are_reaped() {
+    fn configured_slots_are_shared_by_kinds_and_hold_until_finished_lanes_are_reaped() {
         let root=directory();
         let mut manager=Manager::open(root.clone()).unwrap();
         let mut tickets=Vec::new();
@@ -1087,17 +1104,18 @@ mod tests {
         for index in 3..MAX_ACTIVE_TASKS {
             tickets.push(manager.start(&format!("uid-{index}"),"service",&format!("request-{index}")).unwrap());
         }
-        assert_eq!(manager.resources()["active_tasks"],8);
+        assert_eq!(manager.resources()["active_tasks"],MAX_ACTIVE_TASKS);
+        assert_eq!(manager.resources()["max_tasks"],super::super::receiver_limits::MAX_CHANNELS);
         assert_eq!(manager.resources()["available_tasks"],0);
-        assert!(manager.start("ninth","service","ninth").err().unwrap().contains("capacity"));
+        assert!(manager.start("over-capacity","service","over-capacity").err().unwrap().contains("capacity"));
         for ticket in tickets {ticket.wait().unwrap();}
         let ids:Vec<_>=manager.snapshots().iter().map(|task|task["task_id"].as_str().unwrap().to_owned()).collect();
         for id in &ids {manager.stop(id).unwrap();}
         // Stop seals input. The slot remains reserved until the writer is joined.
-        assert_eq!(manager.resources()["active_tasks"],8);
+        assert_eq!(manager.resources()["active_tasks"],MAX_ACTIVE_TASKS);
         wait(&mut manager);
         assert_eq!(manager.resources()["active_tasks"],0);
-        assert_eq!(manager.resources()["available_tasks"],8);
+        assert_eq!(manager.resources()["available_tasks"],MAX_ACTIVE_TASKS);
         drop(manager);fs::remove_dir_all(root).unwrap();
     }
     #[test]

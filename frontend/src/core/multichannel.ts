@@ -57,15 +57,16 @@ export interface OutputSubscription {
   samples?: U64; bytes?: U64;
 }
 export interface RecordingTrack {
-  track_id: string; kind: TrackKind; format: 'cf32_le' | 'pcm_f32' | 'f32_le' | 'jsonl';
+  track_id: string; kind: TrackKind; format: 'cf32_le' | 'pcm_f32' | 'f32_le' | 'jsonl' | AudioRecordingFormat;
+  container?: string;
   source: 'baseband' | 'analysis_audio' | 'published_audio' | 'decoder_results';
-  compression: 'zstd_auto_lossless' | 'none'; state: TaskState;
+  compression: 'zstd_auto_lossless' | 'none' | 'lossy' | 'lossless_s24'; state: TaskState;
   segments: { segment_id?: string; frequency_hz?: number; baseband?: { passband_hz: number }; stream: StreamIdentity; first_input_index: U64; samples: U64;
     actual_rate_hz: number | null; end_reason: string | null; events?: U64; mode?: string; prefix_missing?: boolean; channels?: number; first_audio_index?: U64; next_audio_index?: U64; source?: Record<string, unknown> }[];
   raw_bytes: U64; stored_bytes: U64;
 }
 export interface RecordingTask {
-  name?: string; audio_format?: AudioRecordingFormat;
+  name?: string; receiver_name?: string; audio_format?: AudioRecordingFormat;
   task_id: string; receiver_uid: ReceiverUid; state: TaskState;
   tracks: RecordingTrack[]; fault: Fault | null;
   service_id?: string; created_at_ms?: U64; accepted_bytes?: U64; queued_bytes?: U64;

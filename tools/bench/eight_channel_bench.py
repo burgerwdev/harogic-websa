@@ -110,7 +110,7 @@ def summarize(artifacts):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--channels', type=int, choices=[1, 3, 8], required=True)
+    parser.add_argument('--channels', type=int, choices=[1, 3, 8, 16], required=True)
     parser.add_argument('--seconds', type=float, required=True)
     parser.add_argument('--warmup', type=float, default=5)
     parser.add_argument('--artifacts', type=Path, required=True)
@@ -124,6 +124,7 @@ def main():
             parser.error('hardware requires an explicit existing shim')
         shim = args.artifacts / 'capture.so'
         subprocess.run(['c++', '-O3', '-std=c++17', '-Wall', '-Wextra', '-shared', '-fPIC', '-pthread',
+            f'-DSDR_BENCH_CHANNELS={max(8, args.channels)}',
             str(ROOT / 'tools/bench/eight_channel_capture.cpp'), '-o', str(shim)], check=True)
     command = [str(ROOT / 'backend/target/release/websad'), '--sdr-pipeline-bench',
         '--product-channels', 'true', '--workload', 'narrow', '--channels', str(args.channels),

@@ -223,7 +223,7 @@ mod tests {
         let app=Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
             next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
             identities:channel_identities(),display_version:Arc::new(AtomicU64::new(0))});
-        let request=json!({"channel":8,"enabled":true,"freq":100e6,"mode":"am"});
+        let request=json!({"channel":MAX_CHANNELS,"enabled":true,"freq":100e6,"mode":"am"});
         let mut ticket=preflight(&app,"SET_SDR_CHANNEL",&request).await.unwrap();
         assert!(ticket.workers.is_some(),"model preparation must finish before commit");
         let mut state=app.state.lock().unwrap();

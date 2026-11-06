@@ -3,7 +3,8 @@ use receiver_workers::{BasebandConfig, ChannelConfig};
 use std::f64::consts::TAU;
 
 fn configs() -> Vec<ChannelConfig> {
-    [-20e6, -12e6, -4e6, 0.0, 20_000.0, 40_000.0, 8e6, 20e6]
+    [-20e6, -12e6, -4e6, 0.0, 20_000.0, 40_000.0, 8e6, 20e6,
+        -18e6, -14e6, -10e6, -6e6, 2e6, 6e6, 12e6, 18e6]
         .into_iter().enumerate().map(|(slot, offset)| ChannelConfig {
             channel:slot as u32+1, enabled:true, freq:100e6+offset, processing_enabled:false,
             baseband:Some(BasebandConfig {passband_hz:6000.0,transition_hz:1000.0,minimum_rate_hz:12000.0}),
@@ -59,9 +60,9 @@ fn full_band_four_packet_batches_match_individual_packets_through_retune() {
     let mut seed = 20261105u32;
     for batch in 0..32 {
         if batch == 16 {
-            configs[7].freq += 1000.0;
-            expected.extend(reference.configure_service_channel(configs[7].clone()).unwrap());
-            actual.extend(batched.configure_service_channel(configs[7].clone()).unwrap());
+            configs[MAX_CHANNELS-1].freq += 1000.0;
+            expected.extend(reference.configure_service_channel(configs[MAX_CHANNELS-1].clone()).unwrap());
+            actual.extend(batched.configure_service_channel(configs[MAX_CHANNELS-1].clone()).unwrap());
         }
         let raw: Vec<i16> = (0..2 * SDR_BATCH_SAMPLES).map(|_| {
             seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
@@ -91,20 +92,20 @@ fn full_band_four_packet_batches_match_individual_packets_through_retune() {
 }
 
 #[test]
-fn full_band_eight_known_signals_keep_content_clocks_and_retiring_order() {
+fn full_band_sixteen_known_signals_keep_content_clocks_and_retiring_order() {
     let mut configs=configs();
     let mut live=Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap();
     let mut reference=Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap();
     let initial=live.channel_registry();
-    assert_eq!(initial.len(),8);
+    assert_eq!(initial.len(),MAX_CHANNELS);
     assert!(initial.iter().all(|row|row.input_rate==62_500_000.0));
-    // A periodic raw ADC waveform contains eight distinct known RF signals.
+    // A periodic raw ADC waveform contains sixteen distinct known RF signals.
     // Unlike --fake, this enters before the shared coarse channelizer.
     let period=312_500;
     let raw:Vec<i16>=(0..period).flat_map(|i| {
         let (mut re,mut im)=(0.0,0.0);
         for (slot,config) in configs.iter().enumerate() {
-            let phase=TAU*(config.freq-100e6+400.0+slot as f64*200.0)*i as f64/IQ_FS;
+            let phase=TAU*(config.freq-100e6+400.0+(slot%8) as f64*200.0)*i as f64/IQ_FS;
             re+=1800.0*phase.cos();im+=1800.0*phase.sin();
         }
         [re.round() as i16,im.round() as i16]
@@ -113,9 +114,9 @@ fn full_band_eight_known_signals_keep_content_clocks_and_retiring_order() {
     let mut packet=vec![0;32480];
     for n in 0..1024 {
         if n==512 {
-            configs[7].freq=configs[1].freq+1000.0;
+            configs[MAX_CHANNELS-1].freq=configs[1].freq+1000.0;
             service_cost::admit_service(&configs,IQ_FS,16,live.stream.bins().len()+1).unwrap();
-            frames.extend(live.configure_service_channel(configs[7].clone()).unwrap());
+            frames.extend(live.configure_service_channel(configs[MAX_CHANNELS-1].clone()).unwrap());
         }
         for (i,sample) in packet.iter_mut().enumerate() {*sample=raw[(n*32480+i)%raw.len()];}
         frames.extend(live.process_capture_packet(&packet,(n as u64+1)*16240).unwrap());
@@ -126,44 +127,44 @@ fn full_band_eight_known_signals_keep_content_clocks_and_retiring_order() {
     let mut report=Vec::new();
     for (slot,row) in initial.iter().enumerate() {
         let actual=payload(&frames,row.channel_id);
-        let (tone,rms)=check_tone(&actual,row.output_rate,400.0+slot as f64*200.0);
+        let (tone,rms)=check_tone(&actual,row.output_rate,400.0+(slot%8) as f64*200.0);
         report.push(json!({"channel":row.channel,"frequency":row.frequency_hz,"actual_rate":row.output_rate,
             "samples":actual.len(),"tone":tone,"rms":rms}));
-        if slot<7 {assert_eq!(actual,payload(&expected,reference.channel_registry()[slot].channel_id),"retune changed healthy channel {}",slot+1);}
+        if slot<MAX_CHANNELS-1 {assert_eq!(actual,payload(&expected,reference.channel_registry()[slot].channel_id),"retune changed healthy channel {}",slot+1);}
     }
-    let next=live.channel_registry().iter().find(|row|row.channel==8).unwrap().clone();
-    assert_ne!(next.channel_id,initial[7].channel_id);
+    let next=live.channel_registry().iter().find(|row|row.channel==MAX_CHANNELS as u32).unwrap().clone();
+    assert_ne!(next.channel_id,initial[MAX_CHANNELS-1].channel_id);
     let after=payload(&frames,next.channel_id);
     check_tone(&after,next.output_rate,-400.0);
     let id=|frame:&IqFrame|u32::from_le_bytes(frame[32..36].try_into().unwrap());
-    assert!(frames.iter().rposition(|f|id(f)==initial[7].channel_id).unwrap()<frames.iter().position(|f|id(f)==next.channel_id).unwrap());
+    assert!(frames.iter().rposition(|f|id(f)==initial[MAX_CHANNELS-1].channel_id).unwrap()<frames.iter().position(|f|id(f)==next.channel_id).unwrap());
     println!("{}",json!({"input_rate":IQ_FS,"usable_bandwidth":50e6,"taps":16,"channels":report,
-        "retuned_channel":8,"retuned_tone":-400,"healthy_channels_bit_exact":7,"ordered_tails":true}));
+        "retuned_channel":MAX_CHANNELS,"retuned_tone":-400,"healthy_channels_bit_exact":MAX_CHANNELS-1,"ordered_tails":true}));
 }
 
 #[test]
 fn sparse_service_configs_use_numbers_and_reject_duplicates() {
-    let configs:Vec<_>=configs().into_iter().filter(|c|[1,3,8].contains(&c.channel)).collect();
+    let configs:Vec<_>=configs().into_iter().filter(|c|[1,9,16].contains(&c.channel)).collect();
     let mut live=Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap();
     let mut last=configs[2].clone();last.enabled=false;
     live.configure_service_channel(last.clone()).unwrap();
-    assert_eq!(live.channel_registry().iter().map(|r|r.channel).collect::<Vec<_>>(),vec![1,3]);
+    assert_eq!(live.channel_registry().iter().map(|r|r.channel).collect::<Vec<_>>(),vec![1,9]);
     last.enabled=true;live.configure_service_channel(last).unwrap();
-    assert_eq!(live.channel_registry().iter().map(|r|r.channel).collect::<Vec<_>>(),vec![1,3,8]);
+    assert_eq!(live.channel_registry().iter().map(|r|r.channel).collect::<Vec<_>>(),vec![1,9,16]);
     let mut duplicate=configs.clone();duplicate.push(configs[0].clone());
     assert!(Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&duplicate).is_err());
-    let mut invalid=configs[0].clone();invalid.channel=9;
+    let mut invalid=configs[0].clone();invalid.channel=MAX_CHANNELS as u32+1;
     assert!(invalid.validate().is_err());
 }
 
 #[test]
-fn original_capture_choices_keep_eight_legal_definitions_and_reject_transition_edges() {
+fn original_capture_choices_keep_sixteen_legal_definitions_and_reject_transition_edges() {
     for power in 0..=11 {
         let display=1<<power;
         let span=50e6/display as f64;
-        let mut configs:Vec<_>=(1..=8).map(|channel|ChannelConfig {
+        let mut configs:Vec<_>=(1..=MAX_CHANNELS as u32).map(|channel|ChannelConfig {
             channel,enabled:true,processing_enabled:false,
-            freq:100e6+(channel as f64-4.5)*(span/10.0).min(8000.0),
+            freq:100e6+(channel as f64-(MAX_CHANNELS+1) as f64/2.0)*(span/(MAX_CHANNELS+2) as f64).min(8000.0),
             baseband:Some(BasebandConfig {passband_hz:500.0,transition_hz:500.0,minimum_rate_hz:2000.0}),
             ..ChannelConfig::default()
         }).collect();
@@ -175,12 +176,12 @@ fn original_capture_choices_keep_eight_legal_definitions_and_reject_transition_e
             service_ddc::validate_source_frequency(100e6,bandwidth,fs,16,config.freq,&source).unwrap();
         }
         let live=Ddc::configured_service(100e6,bandwidth,&mut None,16,fs,&configs).unwrap();
-        assert_eq!(live.channel_registry().len(),8);
-        let source=service_ddc::source_plan(fs,&configs[7]).unwrap();
-        configs[7].freq=100e6+bandwidth/2.0-source.plan().occupied_bandwidth_hz/2.0;
-        assert!(service_ddc::validate_source_frequency(100e6,bandwidth,fs,16,configs[7].freq,&source).is_err(),
+        assert_eq!(live.channel_registry().len(),MAX_CHANNELS);
+        let source=service_ddc::source_plan(fs,&configs[MAX_CHANNELS-1]).unwrap();
+        configs[MAX_CHANNELS-1].freq=100e6+bandwidth/2.0-source.plan().occupied_bandwidth_hz/2.0;
+        assert!(service_ddc::validate_source_frequency(100e6,bandwidth,fs,16,configs[MAX_CHANNELS-1].freq,&source).is_err(),
             "display {display}: transition outside capture was admitted");
         println!("{}",json!({"display_decimate":display,"display_bandwidth":span,"capture_bandwidth":bandwidth,
-            "actual_input_rate":fs,"receivers":8,"transition_rejected":true}));
+            "actual_input_rate":fs,"receivers":MAX_CHANNELS,"transition_rejected":true}));
     }
 }

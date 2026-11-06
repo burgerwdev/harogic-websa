@@ -14,6 +14,7 @@ pub mod external;
 mod wire;
 /// Shared Rust/browser wire budgets, generated from contracts/stream-limits.json.
 pub mod stream_limits { include!(concat!(env!("OUT_DIR"), "/stream_limits.rs")); }
+pub mod service_capacity { include!(concat!(env!("OUT_DIR"), "/service_capacity.rs")); }
 mod iq_block;
 pub use iq_block::*;
 pub mod filter_plans;

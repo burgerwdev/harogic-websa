@@ -1,6 +1,7 @@
 import { clone, type ReceiverAdapter, type ReceiverConfig, type ServiceSnapshot, type ServiceCommand,
   type ConfigureCommand, type SceneCommand, type Impact, type Fault, type CommandReply,
   type RecordingTask, type TaskState, type ReceiverState, type TrackKind } from '../core/multichannel';
+import capacity from '../../../contracts/service-capacity.json';
 
 // Demo seed count is independent of native capacity, which comes from the service.
 const DEMO_PURPOSES = ['listen', 'digital', 'iq'] as const;
@@ -26,9 +27,10 @@ function fixtureRate(config: ReceiverConfig): number {
   }
   return NaN;
 }
-export function fixtureSnapshot(maxChannels: number = DEMO_PURPOSES.length): ServiceSnapshot {
+export function fixtureSnapshot(maxChannels: number = capacity.MAX_CHANNELS): ServiceSnapshot {
   return { contract: 'multichannel-draft-v1', transport: 'fixture', revision: '1',
-    capabilities: { max_channels: maxChannels, capacity_target: 128, modes: ['nfm', 'am', 'usb', 'ft8'] },
+    capabilities: { max_channels: maxChannels, max_recording_tasks: maxChannels, capacity_target: capacity.CAPACITY_TARGET, modes: ['nfm', 'am', 'usb', 'ft8'] },
+    recording_resources: { active_tasks: 0, max_tasks: maxChannels, available_tasks: maxChannels },
     capture: { source_id: 'fixture-rf', center_hz: 7_100_000, usable_bandwidth_hz: 250_000,
       input_rate_hz: 976_562.5, epoch: '1', state: 'running' },
     receivers: DEMO_PURPOSES.slice(0, maxChannels).map((purpose, i) => ({
@@ -49,8 +51,13 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
   private rejectNext = false;
   private delayNext = false;
   private disposed = false;
-  constructor(maxChannels: number = DEMO_PURPOSES.length, private latency = 180) { this.state = fixtureSnapshot(maxChannels); }
-  snapshot(): ServiceSnapshot { return clone(this.state); }
+  constructor(maxChannels: number = capacity.MAX_CHANNELS, private latency = 180) { this.state = fixtureSnapshot(maxChannels); }
+  snapshot(): ServiceSnapshot {
+    const snapshot = clone(this.state), max = snapshot.capabilities.max_recording_tasks!;
+    const active = snapshot.recordings.filter(t => !['completed', 'failed'].includes(t.state)).length;
+    snapshot.recording_resources = { active_tasks: active, max_tasks: max, available_tasks: Math.max(0, max - active) };
+    return snapshot;
+  }
   subscribe(listener: (state: ServiceSnapshot) => void): () => void {
     this.listeners.add(listener); return () => this.listeners.delete(listener);
   }
@@ -127,7 +134,7 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
     r.state = config.enabled ? 'running' : 'stopped'; r.fault = null;
   }
   private segment(r: ReceiverState, kind: TrackKind) {
-    return { stream: clone(r.stream!), first_input_index: r.clock!.input_index, samples: '0',
+    return { frequency_hz: r.confirmed.baseband.frequency_hz, ...(r.confirmed.processors.length ? { mode: r.confirmed.processors[0].mode } : {}), stream: clone(r.stream!), first_input_index: r.clock!.input_index, samples: '0',
       actual_rate_hz: kind === 'iq' ? r.clock!.actual_rate_hz : kind === 'audio' ? 48_000 : null, end_reason: null };
   }
   private finish(task: RecordingTask): void {
@@ -163,12 +170,14 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
         || (r.confirmed.purpose === 'iq' && command.kinds.some(k => k !== 'iq'))
         || (r.confirmed.purpose !== 'digital' && command.kinds.includes('results'))) return fault('NO_CAPABILITY', 'Track source unavailable');
       if (this.state.recordings.some(t => t.receiver_uid === r.receiver_uid && ['preparing', 'recording', 'finalizing'].includes(t.state) && t.tracks.some(track => command.kinds.includes(track.kind)))) return fault('BUSY', 'Recording already active');
+      if (!this.snapshot().recording_resources!.available_tasks) return fault('LIMIT', 'Recording task capacity reached');
       const id = `fixture-task-${this.nextId++}`;
       const task: RecordingTask = { task_id: id, receiver_uid: r.receiver_uid, state: 'preparing', fault: null,
-        name: r.confirmed.name, created_at_ms: String(Date.now()), ...(command.audio_format ? { audio_format: command.audio_format } : {}),
+        name: r.confirmed.name, receiver_name: r.confirmed.name, created_at_ms: String(Date.now()), ...(command.kinds.includes('audio') ? { audio_format: command.audio_format ?? 'opus' } : {}),
         tracks: command.kinds.map(kind => ({ track_id: `${id}-${kind}`, kind,
           source: kind === 'iq' ? 'baseband' : kind === 'audio' ? 'analysis_audio' : 'decoder_results',
-          format: kind === 'iq' ? 'cf32_le' : kind === 'audio' ? 'pcm_f32' : 'jsonl',
+          format: kind === 'iq' ? 'cf32_le' : kind === 'audio' ? command.audio_format ?? 'opus' : 'jsonl',
+          ...(kind === 'audio' ? { container: 'websa-audio-files-v1' } : {}),
           compression: kind === 'iq' ? 'zstd_auto_lossless' : 'none', state: 'preparing',
           segments: [this.segment(r, kind)], raw_bytes: '0', stored_bytes: '0' })) };
       this.state.recordings.push(task);

@@ -48,7 +48,7 @@ impl Drop for Spool {
     }
 }
 
-struct Encoder {
+pub(super) struct Encoder {
     child: Child,
     path: PathBuf,
     id: String,
@@ -56,7 +56,13 @@ struct Encoder {
     frames: u64,
 }
 impl Encoder {
-    fn new(root: &FsPath, id: &str, row: &Value, source_frames: u64) -> io::Result<Self> {
+    pub(super) fn new(root: &FsPath, id: &str, row: &Value, source_frames: u64) -> io::Result<Self> {
+        Self::start(root, id, row, Some(source_frames))
+    }
+    pub(super) fn live(root: &FsPath, id: &str, row: &Value) -> io::Result<Self> {
+        Self::start(root, id, row, None)
+    }
+    fn start(root: &FsPath, id: &str, row: &Value, source_frames: Option<u64>) -> io::Result<Self> {
         if id.is_empty()
             || !id
                 .bytes()
@@ -73,9 +79,10 @@ impl Encoder {
         let path = root.join(format!("{id}.opus"));
         // Flush the resampling filter even for one-sample recordings, then trim
         // to the source duration in the Opus 48 kHz clock (at least one sample).
-        let output_frames =
-            ((source_frames * 48000 + u64::from(rate) / 2) / u64::from(rate)).max(1);
-        let filter = format!("apad=pad_len=64,aresample=48000,atrim=end_sample={output_frames}");
+        let filter = source_frames.map(|frames| {
+            let output_frames = ((frames * 48000 + u64::from(rate) / 2) / u64::from(rate)).max(1);
+            format!("apad=pad_len=64,aresample=48000,atrim=end_sample={output_frames}")
+        }).unwrap_or_else(|| "aresample=48000".into());
         let child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
@@ -89,6 +96,10 @@ impl Encoder {
                 &rate.to_string(),
                 "-ac",
                 &channels.to_string(),
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "1",
                 "-i",
                 "pipe:0",
                 "-map_metadata",
@@ -107,6 +118,10 @@ impl Encoder {
                 "48000",
                 "-threads",
                 "1",
+                "-flush_packets",
+                "1",
+                "-page_duration",
+                "200000",
                 "-f",
                 "opus",
             ])
@@ -115,24 +130,26 @@ impl Encoder {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        Ok(Self {
+        let encoder = Self {
             child,
             path,
             id: id.into(),
             channels,
             frames: 0,
-        })
+        };
+        super::audio_files::nonblocking(encoder.child.stdin.as_ref().unwrap())?;
+        Ok(encoder)
     }
-    fn push(&mut self, pcm: &[u8]) -> io::Result<()> {
-        self.child
+    pub(super) fn push(&mut self, pcm: &[u8]) -> io::Result<()> {
+        let pipe = self.child
             .stdin
             .as_mut()
-            .ok_or_else(|| io_error("Opus encoder closed"))?
-            .write_all(pcm)?;
+            .ok_or_else(|| io_error("Opus encoder closed"))?;
+        super::audio_files::write_pipe(pipe, pcm)?;
         self.frames += pcm.len() as u64 / (4 * self.channels);
         Ok(())
     }
-    fn finish(mut self, cancel: &AtomicBool) -> io::Result<Value> {
+    pub(super) fn finish(mut self, cancel: &AtomicBool) -> io::Result<Value> {
         self.child.stdin.take();
         let deadline = Instant::now() + Duration::from_secs(10);
         let status = loop {
@@ -285,6 +302,9 @@ pub(crate) async fn export(
 ) -> Response {
     if !params.is_empty() {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+    if super::audio_files::task_is_direct(&app, &task) {
+        return super::audio_files::export(app, task, Some("opus")).await;
     }
     super::super::recording_export::download(
         app,

@@ -38,17 +38,17 @@ mod tests {
         assert!(report["accepted"].as_bool().unwrap());assert!(report["worker_limit_ns_per_second"].is_null());
         assert_eq!(configs,settings);assert_eq!(websa_channelizer::model_preparation::snapshot(),before);
         let legacy=[908464826.1974062,628974609.3750001];assert!(legacy[0]>800000000.0);
-        assert_eq!(report["channels"].as_array().unwrap().len(),8);
+        assert_eq!(report["channels"].as_array().unwrap().len(),MAX_CHANNELS);
     }
     #[test]
     fn multiple_searches_images_and_high_iq_rates_have_no_prediction_gate() {
         for mode in ["ft8","sstv","radiofax","drm"] {
             let width=websa_channelizer::catalog::mode(mode).unwrap().default_bandwidth_hz;
-            let configs:Vec<_>=(1..=8).map(|channel|ChannelConfig {channel,enabled:true,freq:100e6,
+            let configs:Vec<_>=(1..=MAX_CHANNELS as u32).map(|channel|ChannelConfig {channel,enabled:true,freq:100e6,
                 mode:mode.into(),if_bw:width,..ChannelConfig::default()}).collect();
-            assert_eq!(prepare(&configs,IQ_FS).unwrap()["channels"].as_array().unwrap().len(),8);
+            assert_eq!(prepare(&configs,IQ_FS).unwrap()["channels"].as_array().unwrap().len(),MAX_CHANNELS);
         }
-        let configs:Vec<_>=(1..=8).map(|channel|ChannelConfig {channel,enabled:true,freq:100e6,processing_enabled:false,
+        let configs:Vec<_>=(1..=MAX_CHANNELS as u32).map(|channel|ChannelConfig {channel,enabled:true,freq:100e6,processing_enabled:false,
             baseband:Some(receiver_workers::BasebandConfig {passband_hz:500000.0,transition_hz:10000.0,minimum_rate_hz:900000.0}),
             ..ChannelConfig::default()}).collect();
         let report=prepare(&configs,IQ_FS).unwrap();assert!(report["publication_bytes_per_second"].as_f64().unwrap()>32.0*1024.0*1024.0);

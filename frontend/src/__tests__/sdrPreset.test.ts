@@ -29,7 +29,10 @@ import { getY } from '../render/plot';
 import { appendRadiofaxRows, radiofaxStatus, setRadiofaxChannel } from '../sdr/radiofaxLog';
 import { setPluginManifest } from '../sdr/registry';
 import { receiverPlugin } from './pluginFixtures';
-import { waterfallOn } from '../ui/waterfallState';
+import { waterfallOn, wfRangeMode, wfFloorSource, wfPalette, wfContrast, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
+import { savedAudioFormat } from '../ui/recordingFormats';
+import { loadWorkbenchPreferences, saveWorkbenchPreferences } from '../ui/workbenchPreferences';
+import { harmValMode, valleySeqPos } from '../ui/measurePrefs';
 import { setWaterfall } from '../ui/panels/waterfall';
 
 const sdrPersisted = (): string[] =>
@@ -50,6 +53,25 @@ afterEach(() => {
 });
 
 describe('Preset clears the persisted SDR preferences', () => {
+  it('resets recording defaults, waterfall mapping and peak count only after a matching success', () => {
+    localStorage.setItem('websa-audio-recording-format', 'flac');
+    saveWorkbenchPreferences({ masterGain: 0.25, monitorMode: 'follow' });
+    harmValMode.set('Avg'); valleySeqPos.set(3);
+    localStorage.setItem('websa-wf-range', JSON.stringify({ mode: 'fixed', lo: -90, hi: -10 }));
+    wfRangeMode.set('fixed'); wfFloorSource.set('view'); wfPalette.set('amber');
+    wfContrast.set(1.5); wfLoDbm.set(-90); wfHiDbm.set(-10);
+    document.body.innerHTML = '<input id="input-peakcnt" value="5">';
+    presetAll(); const command = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+    syncPresetStatus('SET_PRESET', 'unrelated');
+    expect(savedAudioFormat()).toBe('flac'); expect(wfRangeMode.get()).toBe('fixed');
+    syncPresetStatus('SET_PRESET', command.request_id);
+    expect(savedAudioFormat()).toBe('opus'); expect(localStorage.getItem('websa-wf-range')).toBeNull();
+    expect(loadWorkbenchPreferences()).toEqual({ masterGain: 0.7, monitorMode: 'manual' });
+    expect(harmValMode.get()).toBe('RT'); expect(valleySeqPos.get()).toBe(0);
+    expect([wfRangeMode.get(), wfFloorSource.get(), wfPalette.get(), wfContrast.get(), wfLoDbm.get(), wfHiDbm.get()])
+      .toEqual(['auto', 'capture', 'classic', 1, -110, -30]);
+    expect((document.getElementById('input-peakcnt') as HTMLInputElement).value).toBe('20');
+  });
 	it('clears retained fax paper only after its matching successful Preset acknowledgement', () => {
 		setRadiofaxChannel(1);
 		appendRadiofaxRows({ width: 1, row: 0, rows: 1, gray: Uint8Array.of(64), revision: 0 }, {

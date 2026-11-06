@@ -28,6 +28,7 @@ tar = "0.4.46"
 sha2 = "0.10.8"
 flacenc = { version = "0.5.1", default-features = false }
 md-5 = "0.10.6"
+libc = "0.2"
 tokio-tungstenite = "0.29"
 
 [features]

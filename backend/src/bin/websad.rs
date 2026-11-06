@@ -61,8 +61,8 @@ mod processing_admission;
 #[path = "websad/service_preflight.rs"]
 mod service_preflight;
 #[cfg(test)]
-#[path = "websad/eight_channel_tests.rs"]
-mod eight_channel_tests;
+#[path = "websad/sixteen_channel_tests.rs"]
+mod sixteen_channel_tests;
 #[path = "websad/server_mode.rs"]
 mod server_mode;
 #[path = "websad/receiver_limits.rs"]

@@ -34,13 +34,20 @@ export class ReceiverModeMemory {
   private entries = new Map<string, Map<string, ReceiverModeSettings>>();
   private encoded = '';
   private revisions = new Map<string,bigint>();
+  private resetRevisions = new Map<string,bigint>();
+
+  reset(): void {
+    this.resetRevisions = new Map(this.revisions);
+    this.entries.clear(); this.encoded = '';
+    try { sessionStorage.removeItem(key); } catch { /* storage unavailable */ }
+  }
 
   observe(snapshot: MemorySnapshot): void {
     const active = new Set(snapshot.receivers.map(r => r.receiver_uid));
     const modes = new Map(snapshot.capabilities.mode_descriptors?.map(mode => [mode.id, mode]));
     const allowed = new Set(['', ...modes.keys()]);
     if (!this.initialized || this.service !== snapshot.service_id) {
-      this.entries.clear(); this.revisions.clear(); this.service = snapshot.service_id; this.initialized = true; this.encoded = '';
+      this.entries.clear(); this.revisions.clear(); this.resetRevisions.clear(); this.service = snapshot.service_id; this.initialized = true; this.encoded = '';
       try {
         const raw = this.service ? sessionStorage.getItem(key) : null;
         const saved = raw && raw.length <= limit ? JSON.parse(raw) : null;
@@ -63,6 +70,9 @@ export class ReceiverModeMemory {
     for (const row of snapshot.receivers) {
       if (row.revision !== undefined) {
         const revision=BigInt(row.revision), known=this.revisions.get(row.receiver_uid);
+        const resetRevision = this.resetRevisions.get(row.receiver_uid);
+        if (resetRevision !== undefined && revision <= resetRevision) continue;
+        this.resetRevisions.delete(row.receiver_uid);
         if (known!==undefined && revision<known) continue;
         this.revisions.set(row.receiver_uid,revision);
       }

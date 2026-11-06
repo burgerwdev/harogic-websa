@@ -49,6 +49,7 @@ impl Store {
             if !names.insert(name)
                 || !preset["settings"]["baseband"].is_object()
                 || !preset["settings"]["processors"].is_array()
+                || preset["settings"].get("continuity").is_some_and(|c| !matches!(c.as_str(), Some("continuous" | "strict")))
                 || !matches!(
                     preset["settings"]["purpose"].as_str(),
                     Some("iq" | "listen" | "digital")
@@ -208,7 +209,7 @@ pub(super) async fn change(
                     [(receiver["display_number"].as_u64().unwrap() - 1) as usize];
                 let config = multichannel::config_value(channel, Some(&receiver["confirmed"]));
                 Some(
-                    json!({"purpose":config["purpose"],"baseband":config["baseband"],"processors":config["processors"]}),
+                    json!({"purpose":config["purpose"],"baseband":config["baseband"],"processors":config["processors"],"continuity":config["continuity"]}),
                 )
             }
             Some("delete") => None,
