@@ -1,4 +1,4 @@
-//! Native build of the same MIT ggmorse core used by the browser.
+//! Native build of the MIT ggmorse core and its PCM bridge.
 pub fn build() {
     let vendor = "../tools/vendor/ggmorse";
     println!("cargo:rerun-if-changed=native/ggmorse_bridge.cpp");

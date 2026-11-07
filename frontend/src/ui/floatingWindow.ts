@@ -21,8 +21,15 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   const key = `websa-workbench-layout:${id}`;
   let layout: FloatingLayout = { geometry: { ...initial }, hidden: false, collapsed: false };
   try {
-    const stored = JSON.parse(localStorage.getItem(key) ?? 'null') as FloatingLayout | null;
-    if (stored && Object.values(stored.geometry).every(Number.isFinite)) layout = stored;
+    const stored = JSON.parse(localStorage.getItem(key) ?? 'null') as Partial<FloatingLayout> | null;
+    const geometry = stored?.geometry;
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)
+        && geometry && typeof geometry === 'object' && !Array.isArray(geometry)
+        && [geometry.x, geometry.y, geometry.w, geometry.h].every(Number.isFinite)
+        && typeof stored.hidden === 'boolean' && typeof stored.collapsed === 'boolean') {
+      layout = { geometry: { x: geometry.x, y: geometry.y, w: geometry.w, h: geometry.h },
+        hidden: stored.hidden, collapsed: stored.collapsed };
+    }
   } catch { /* disabled or invalid storage */ }
   const save = (): void => { try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* session only */ } };
   const clamp = (g: Geometry): Geometry => {
@@ -106,13 +113,16 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
     root.appendChild(h); wire(h, d);
   }
   const resize = (): void => { apply(); save(); };
-  // Text rows, localization and width changes can change the strip height.
+  let resizeFrame: number | null = null;
+  // Defer geometry writes until after ResizeObserver delivery. Inline name
+  // editing changes strip height and must not trigger a same-frame resize loop.
   const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
-    if (layout.collapsed && !layout.hidden && !portal.isPoppedOut()) resize();
+    if (layout.collapsed && !layout.hidden && !portal.isPoppedOut() && resizeFrame === null)
+      resizeFrame = parent.requestAnimationFrame(() => { resizeFrame = null; if (layout.collapsed && !layout.hidden && !portal.isPoppedOut()) resize(); });
   });
   observer?.observe(root);
   parent.addEventListener('resize', resize); doc.body.appendChild(root); apply(); front();
   return { root, body, portal, show, hide, sync: () => portal.sync(),
     recall: (reset = false) => { portal.dock(); if (reset) { layout.geometry = { ...initial }; layout.collapsed = false; } show(); },
-    dispose: () => { observer?.disconnect(); portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
+    dispose: () => { observer?.disconnect(); if (resizeFrame !== null) parent.cancelAnimationFrame(resizeFrame); portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
 }

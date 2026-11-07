@@ -20,7 +20,11 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
   let surface: FloatingWindow | null = null, query = '', kind = 'all', state = 'all', editing: string | null = null, deleting: string | null = null;
   let draft = '', error = '', disposed = false, interacting = false;
   let notice = '', selectionService = session.snapshot.service_id, batchDeleting = false, batchProgress = 0;
-  let batchConfirmation: { tasks: RecordingTask[]; service: string | undefined } | null = null;
+  let selectionLifecycle = session.lifecycleVersion, renderedService = selectionService, renderedLifecycle = selectionLifecycle;
+  let batchConfirmation: { tasks: RecordingTask[]; service: string | undefined; lifecycle: number } | null = null;
+  const events = new AbortController();
+  const currentOwner = (service: string | undefined, lifecycle: number): boolean => !disposed
+    && service === session.snapshot.service_id && lifecycle === session.lifecycleVersion;
   const selected = new Set<string>();
   let visibleTasks: RecordingTask[] = [];
   let gestureDocument: Document | null = null;
@@ -34,6 +38,7 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
   };
   const release = (): void => {
     clearGesture();
+    clearTimeout(releaseTimer);
     releaseTimer = setTimeout(() => { interacting = false; render(); }, 0);
   };
   const pending = new Set<string>();
@@ -44,10 +49,14 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
   const deleteUnavailable = (task?: RecordingTask): string => !can('record_delete') ? l('Update and restart the server to enable file deletion', '更新并重启服务器后可删除文件')
     : task && !finished(task) ? l('Stop recording before deleting its files', '请先停止录制，再删除文件') : '';
   const render = (): void => {
-    if (!surface || disposed || interacting) return;
+    if (!surface || disposed) return;
+    if (!currentOwner(selectionService, selectionLifecycle)) {
+      selectionService = session.snapshot.service_id; selectionLifecycle = session.lifecycleVersion;
+      clearSelection(); pending.clear(); editing = deleting = null; draft = error = ''; batchDeleting = false; batchProgress = 0;
+    }
+    if (interacting) return;
     surface.sync();
     const tasks = session.snapshot.recordings;
-    if (selectionService !== session.snapshot.service_id) { selectionService = session.snapshot.service_id; clearSelection(); editing = deleting = null; }
     for (const id of selected) if (!tasks.some(t => t.task_id === id && finished(t)) || !can('record_delete')) selected.delete(id);
     if (editing && !tasks.some(t => t.task_id === editing)) editing = null;
     if (deleting && !tasks.some(t => t.task_id === deleting)) deleting = null;
@@ -89,13 +98,19 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
     allCheckbox.indeterminate = !allSelected && selectable.some(t => selected.has(t.task_id));
     surface.body.querySelectorAll<HTMLInputElement>('[data-file-select]').forEach(input => { input.checked = selected.has(input.dataset.fileSelect!); });
     syncAudioFormatMenus(surface.body);
+    renderedService = selectionService; renderedLifecycle = selectionLifecycle;
+  };
+  const displayedOwner = (): boolean => {
+    if (currentOwner(renderedService, renderedLifecycle)) return true;
+    clearGesture(); interacting = false; render(); return false;
   };
   const mutate = async (task: RecordingTask, action: 'stop' | 'rename' | 'delete'): Promise<void> => {
-    if (batchDeleting || pending.has(task.task_id)) return;
+    if (!displayedOwner() || batchDeleting || pending.has(task.task_id)) return;
+    const service = selectionService, lifecycle = selectionLifecycle;
     pending.add(task.task_id); error = ''; notice = ''; render();
     const reply = await session.send(action === 'rename' ? { type: 'record_rename', request_id: session.requestId(), task_id: task.task_id, name: draft.trim() }
       : { type: action === 'delete' ? 'record_delete' : 'record_stop', request_id: session.requestId(), task_id: task.task_id });
-    if (disposed) return;
+    if (!currentOwner(service, lifecycle)) return;
     pending.delete(task.task_id);
     if (reply.fault) error = reply.fault.message;
     else { if (action === 'rename') editing = null; if (action === 'delete') deleting = null; }
@@ -103,7 +118,7 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
   };
   const deleteSelected = async (): Promise<void> => {
     const confirmation = batchConfirmation;
-    if (!confirmation || batchDeleting || !can('record_delete') || confirmation.service !== session.snapshot.service_id) return;
+    if (!confirmation || batchDeleting || !can('record_delete') || !currentOwner(confirmation.service, confirmation.lifecycle)) return;
     batchDeleting = true; batchProgress = 0; error = notice = ''; editing = deleting = null;
     const failures: string[] = [];
     let removed = 0;
@@ -112,16 +127,13 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
     // The server shares one archive reader lease with file management. Commit
     // sequentially so requests cannot contend with another delete in this batch.
     for (const task of confirmation.tasks) {
-      if (disposed) break;
-      if (confirmation.service !== session.snapshot.service_id) {
-        failures.push(l('The server changed. Select files again.', '服务已变更，请重新选择文件。')); break;
-      }
+      if (!currentOwner(confirmation.service, confirmation.lifecycle)) return;
       const current = session.snapshot.recordings.find(t => t.task_id === task.task_id);
       if (!current) selected.delete(task.task_id);
       else if (!finished(current)) failures.push(l('A selected recording is still in progress.', '所选录制仍在进行中。'));
       else {
         const reply = await session.send({ type: 'record_delete', request_id: session.requestId(), task_id: task.task_id });
-        if (disposed) break;
+        if (!currentOwner(confirmation.service, confirmation.lifecycle)) return;
         if (reply.fault) failures.push(`${taskName(task)}: ${reply.fault.message}`);
         else { removed++; selected.delete(task.task_id); }
       }
@@ -136,6 +148,7 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
     render();
   };
   const open = (): void => {
+    if (disposed) return;
     if (surface) { render(); surface.show(); if (surface.portal.isPoppedOut()) surface.portal.popout(); return; }
     surface = createFloatingWindow('recording-library', () => l('Recording files', '录制文件'), { x: 130, y: 100, w: 720, h: 650 });
     surface.body.classList.add('mc-files-body');
@@ -146,9 +159,10 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
       gestureDocument.addEventListener('pointerup', release, true);
       gestureDocument.addEventListener('pointercancel', release, true);
       gestureDocument.defaultView?.addEventListener('blur', release);
-    }, true);
+    }, { capture: true, signal: events.signal });
     surface.body.addEventListener('click', event => {
       clearGesture(); interacting = false;
+      if (!displayedOwner()) { event.preventDefault(); return; }
       const element = event.target as HTMLElement, control = element.closest<HTMLElement>('[data-file-action],[data-action]');
       if (!control || control.matches(':disabled')) return;
       const task = session.snapshot.recordings.find(t => t.task_id === control.closest<HTMLElement>('[data-task-id]')?.dataset.taskId);
@@ -171,7 +185,7 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
       if (action === 'cancel-batch-delete') batchConfirmation = null;
       if (action === 'delete-selected') {
         const tasks = session.snapshot.recordings.filter(t => selected.has(t.task_id) && finished(t) && !pending.has(t.task_id));
-        if (tasks.length && can('record_delete')) { batchConfirmation = { tasks, service: session.snapshot.service_id }; editing = deleting = null; }
+        if (tasks.length && can('record_delete')) { batchConfirmation = { tasks, service: selectionService, lifecycle: selectionLifecycle }; editing = deleting = null; }
       }
       if (action === 'confirm-batch-delete') { void deleteSelected(); return; }
       if (task) {
@@ -184,13 +198,15 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
       if (action === 'rename') { const input = surface!.body.querySelector<HTMLInputElement>('[name=recording-name]'); input?.focus(); input?.select(); }
       if (action === 'delete') surface!.body.querySelector<HTMLButtonElement>('[data-file-action=cancel-delete]')?.focus();
       if (action === 'delete-selected') surface!.body.querySelector<HTMLButtonElement>('[data-file-action=cancel-batch-delete]')?.focus();
-    });
+    }, { signal: events.signal });
     surface.body.addEventListener('input', event => {
+      if (!displayedOwner()) return;
       const input = event.target as HTMLInputElement;
       if (input.matches('[data-file-search]')) { query = input.value; clearSelection(); render(); }
       if (input.name === 'recording-name') draft = input.value;
-    });
+    }, { signal: events.signal });
     surface.body.addEventListener('change', event => {
+      if (!displayedOwner()) return;
       const input = event.target as HTMLInputElement;
       if (input.matches('[data-file-state]')) { state = input.value; clearSelection(); render(); }
       if (input.matches('[data-file-select-all],[data-file-select]')) {
@@ -202,23 +218,29 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
         }
         render();
       }
-    });
+    }, { signal: events.signal });
     surface.body.addEventListener('submit', event => {
       if (!(event.target as HTMLElement).matches('[data-file-rename]')) return;
-      event.preventDefault(); const task = session.snapshot.recordings.find(t => t.task_id === editing);
+      event.preventDefault(); if (!displayedOwner()) return;
+      const task = session.snapshot.recordings.find(t => t.task_id === editing);
       if (!draft.trim()) { error = l('Enter a recording name.', '请输入录制名称。'); render(); return; }
       if (task) void mutate(task, 'rename');
-    });
+    }, { signal: events.signal });
     surface.body.addEventListener('keydown', event => {
+      if (!displayedOwner()) return;
       if (event.key === 'Escape') { const menu = (event.target as HTMLElement).closest<HTMLDetailsElement>('[data-format-menu]'); if (menu?.open) { menu.open = false; menu.querySelector('summary')?.focus(); event.preventDefault(); event.stopPropagation(); } else if (!batchDeleting && (editing || deleting || batchConfirmation)) { editing = deleting = null; batchConfirmation = null; render(); event.preventDefault(); event.stopPropagation(); } }
-    });
+    }, { signal: events.signal });
     render(); surface.show();
   };
   const unsubscribe = session.subscribe(render), stopLang = onLangChange(render);
   return { open, confirmDelete: task => {
-    if (batchDeleting || pending.has(task.task_id) || deleteUnavailable(task)) return;
-    selectionService = session.snapshot.service_id; clearSelection(); editing = null; deleting = task.task_id;
+    if (disposed || batchDeleting || pending.has(task.task_id) || deleteUnavailable(task)) return;
+    selectionService = session.snapshot.service_id; selectionLifecycle = session.lifecycleVersion; clearSelection(); editing = null; deleting = task.task_id;
     query = task.task_id; kind = state = 'all'; error = ''; open();
     surface?.body.querySelector<HTMLButtonElement>('[data-file-action=cancel-delete]')?.focus();
-  }, recall: reset => surface?.recall(reset), dispose: () => { disposed = true; clearGesture(); clearTimeout(releaseTimer); unwireFormats?.(); unsubscribe(); stopLang(); surface?.dispose(); } };
+  }, recall: reset => { if (!disposed) surface?.recall(reset); }, dispose: () => {
+    if (disposed) return;
+    disposed = true; events.abort(); clearGesture(); clearTimeout(releaseTimer); unwireFormats?.(); unsubscribe(); stopLang();
+    pending.clear(); clearSelection(); surface?.dispose();
+  } };
 }

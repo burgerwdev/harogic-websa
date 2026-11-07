@@ -62,6 +62,7 @@ class Pipeline {
         std::atomic<bool> done{true};
         int event_done=1; // libusb reads this only while holding its event lock
         bool submitted=false; // only the USB pump reads/writes this field
+        Clock::time_point submitted_at{},callback_at{};
     };
     struct Packet {
         std::array<unsigned char,packet_bytes> bytes;
@@ -89,7 +90,26 @@ class Pipeline {
     Clock::time_point last_read_{};
     uint64_t read_gap_max_ns_=0;
     std::atomic<OwnerPhase> owner_phase_{OwnerPhase::idle};
-    struct Observation {int64_t at_ns=0;uint64_t submitted=0,delivered=0;unsigned queued=0;OwnerPhase phase=OwnerPhase::idle;};
+    // Pump-only, reset for each asynchronous stream. Callback time is userspace
+    // dispatch time, not hardware completion or time spent runnable on a CPU.
+    struct DurationStats {
+        uint64_t max_ns=0,recent_max_ns=0;
+        void record(Clock::time_point start,Clock::time_point end) {
+            const auto ns=static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end-start).count());
+            max_ns=std::max(max_ns,ns);recent_max_ns=std::max(recent_max_ns,ns);
+        }
+        uint64_t take_recent() {const auto value=recent_max_ns;recent_max_ns=0;return value;}
+    };
+    DurationStats pump_gap_,events_time_,submit_callback_,callback_resubmit_,handoff_lock_wait_;
+    Clock::time_point last_iteration_{};
+    struct Observation {
+        int64_t at_ns=0;uint64_t submitted=0,delivered=0;unsigned queued=0;
+        OwnerPhase phase=OwnerPhase::idle;
+        unsigned awaiting_callback=0,completed_unhandled=0;
+        // Maxima recorded since the preceding observation; no duration samples
+        // or strings are allocated during normal delivery.
+        uint64_t pump_gap_ns=0,events_ns=0,submit_callback_ns=0,callback_resubmit_ns=0,handoff_lock_wait_ns=0;
+    };
     std::array<Observation,64> observations_{};
     unsigned observation_next_=0;
     Clock::time_point next_observation_{};
@@ -97,6 +117,7 @@ class Pipeline {
         // libusb may dispatch this on another thread servicing the same context.
         // Publish fields written by libusb before the pump inspects the transfer.
         auto& job=*static_cast<Job*>(transfer->user_data);
+        job.callback_at=Clock::now();
         job.event_done=1;
         job.done.store(true,std::memory_order_release);
     }
@@ -117,6 +138,9 @@ class Pipeline {
         stopping_.store(true,std::memory_order_release);available_.notify_all();
     }
     int submit(Job& job) {
+        const auto now=Clock::now();
+        if (job.callback_at!=Clock::time_point{}) callback_resubmit_.record(job.callback_at,now);
+        job.submitted_at=now;job.callback_at={};
         job.event_done=0;
         job.done.store(false,std::memory_order_relaxed);
         const int result=api_.submit(job.transfer);
@@ -131,6 +155,46 @@ class Pipeline {
         for (const auto& job:ring_->jobs)
             if (job.submitted && !job.done.load(std::memory_order_acquire)) return true;
         return false;
+    }
+    // Called by the pump while mutex_ is held. Counts describe userspace callback
+    // state: the kernel may have completed a transfer before its callback runs.
+    void observe(Clock::time_point now,bool force=false) {
+        if (!force && now<next_observation_) return;
+        Observation row;
+        row.at_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+        row.submitted=stats_.submitted;row.delivered=stats_.delivered;row.queued=ring_->count;
+        row.phase=owner_phase_.load(std::memory_order_relaxed);
+        for (const auto& job:ring_->jobs) if (job.submitted) {
+            if (job.done.load(std::memory_order_acquire)) ++row.completed_unhandled;
+            else ++row.awaiting_callback;
+        }
+        row.pump_gap_ns=pump_gap_.take_recent();row.events_ns=events_time_.take_recent();
+        row.submit_callback_ns=submit_callback_.take_recent();row.callback_resubmit_ns=callback_resubmit_.take_recent();
+        row.handoff_lock_wait_ns=handoff_lock_wait_.take_recent();
+        observations_[observation_next_]=row;
+        observation_next_=(observation_next_+1)%observations_.size();
+        next_observation_=now+std::chrono::milliseconds(10);
+    }
+    void report_failure() {
+        std::array<Observation,64> history{};unsigned history_next=0;int result=0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            result=terminal_error_;if (!result) return;
+            observe(Clock::now(),true);history=observations_;history_next=observation_next_;
+        }
+        std::fprintf(stderr,"SDK IQS USB timing: result=%d callback_clock=userspace_monotonic pump_gap_max_ns=%llu events_max_ns=%llu submit_callback_max_ns=%llu callback_resubmit_max_ns=%llu handoff_lock_wait_max_ns=%llu\n",
+            result,static_cast<unsigned long long>(pump_gap_.max_ns),static_cast<unsigned long long>(events_time_.max_ns),
+            static_cast<unsigned long long>(submit_callback_.max_ns),static_cast<unsigned long long>(callback_resubmit_.max_ns),
+            static_cast<unsigned long long>(handoff_lock_wait_.max_ns));
+        for (unsigned i=0;i<history.size();++i) {
+            const auto& row=history[(history_next+i)%history.size()];
+            if (row.at_ns) std::fprintf(stderr,"SDK IQS USB tail: monotonic_ns=%lld queued=%u submitted=%llu delivered=%llu owner_phase=%u awaiting_callback=%u completed_unhandled=%u pump_gap_ns=%llu events_ns=%llu submit_callback_ns=%llu callback_resubmit_ns=%llu handoff_lock_wait_ns=%llu\n",
+                static_cast<long long>(row.at_ns),row.queued,static_cast<unsigned long long>(row.submitted),
+                static_cast<unsigned long long>(row.delivered),static_cast<unsigned>(row.phase),
+                row.awaiting_callback,row.completed_unhandled,static_cast<unsigned long long>(row.pump_gap_ns),
+                static_cast<unsigned long long>(row.events_ns),static_cast<unsigned long long>(row.submit_callback_ns),
+                static_cast<unsigned long long>(row.callback_resubmit_ns),static_cast<unsigned long long>(row.handoff_lock_wait_ns));
+        }
     }
     void run(unsigned char endpoint) {
 #if defined(__linux__)
@@ -147,39 +211,38 @@ class Pipeline {
         if (failure) fail(failure);
         unsigned next=0;
         while (!stopping_.load(std::memory_order_acquire)) {
+            const auto iteration=Clock::now();
+            if (last_iteration_!=Clock::time_point{}) pump_gap_.record(last_iteration_,iteration);
+            last_iteration_=iteration;
             auto& job=ring_->jobs[next];
             if (!job.done.load(std::memory_order_acquire)) {
                 timeval wait{0,10000};
+                const auto events_started=Clock::now();
                 const int result=api_.events(context_,&wait,&job.event_done);
+                events_time_.record(events_started,Clock::now());
                 if (result && result!=LIBUSB_ERROR_INTERRUPTED) {
                     std::fprintf(stderr,"SDK IQS USB events failed: status=%d\n",result);
                     fail(result);
                 }
                 continue;
             }
+            submit_callback_.record(job.submitted_at,job.callback_at);
             const int actual=job.transfer->actual_length;
             int result=error(job.transfer->status);
             if (actual<0 || actual>packet_bytes) result=LIBUSB_ERROR_OVERFLOW;
             bool overflow=false;
             uint64_t read_gap=0,max_read_gap=0,oldest_age=0,submitted=0,delivered=0;
-            std::array<Observation,64> history{};
-            unsigned history_next=0;
             {
+                const auto locking=Clock::now();
                 std::lock_guard<std::mutex> lock(mutex_);
                 const auto now=Clock::now();
-                if (now>=next_observation_) {
-                    observations_[observation_next_]={std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count(),
-                        stats_.submitted,stats_.delivered,ring_->count,owner_phase_.load(std::memory_order_relaxed)};
-                    observation_next_=(observation_next_+1)%observations_.size();
-                    next_observation_=now+std::chrono::milliseconds(10);
-                }
+                handoff_lock_wait_.record(locking,now);observe(now);
                 overflow=ring_->count==capacity;
                 if (overflow) {
                     read_gap=std::chrono::duration_cast<std::chrono::nanoseconds>(now-last_read_).count();
                     max_read_gap=read_gap_max_ns_;
                     oldest_age=std::chrono::duration_cast<std::chrono::nanoseconds>(now-ring_->packets[ring_->head].queued).count();
                     submitted=stats_.submitted;delivered=stats_.delivered;
-                    history=observations_;history_next=observation_next_;
                 }
                 if (!overflow) {
                     auto& packet=ring_->packets[ring_->tail];
@@ -196,13 +259,6 @@ class Pipeline {
                     capacity,static_cast<unsigned long long>(read_gap),static_cast<unsigned long long>(max_read_gap),
                     static_cast<unsigned long long>(oldest_age),static_cast<unsigned long long>(submitted),
                     static_cast<unsigned long long>(delivered));
-                for (unsigned i=0;i<history.size();++i) {
-                    const auto& row=history[(history_next+i)%history.size()];
-                    if (row.at_ns) std::fprintf(stderr,"SDK IQS USB tail: monotonic_ns=%lld queued=%u submitted=%llu delivered=%llu owner_phase=%u\n",
-                        static_cast<long long>(row.at_ns),row.queued,
-                        static_cast<unsigned long long>(row.submitted),static_cast<unsigned long long>(row.delivered),
-                        static_cast<unsigned>(row.phase));
-                }
                 handoff_overflow_.store(true,std::memory_order_release);
                 fail(LIBUSB_ERROR_OVERFLOW);break;
             }
@@ -216,6 +272,9 @@ class Pipeline {
             if (failure) {fail(failure);break;}
             next=(next+1)%depth;
         }
+        // Capture the failure before cancellation changes the callback state or
+        // a broken event loop parks teardown. Normal stop emits no failure tail.
+        report_failure();
         for (auto& job:ring_->jobs) {
             if (job.submitted && !job.done.load(std::memory_order_acquire)) {
                 api_.cancel(job.transfer);
@@ -273,6 +332,8 @@ public:
             if (!ring || !ring->packets) {fail(LIBUSB_ERROR_NO_MEM);stop();return LIBUSB_ERROR_NO_MEM;}
             ring->device=device;ring->timeout=timeout;ring_=std::move(ring);
             last_read_=Clock::now();read_gap_max_ns_=0;
+            pump_gap_={};events_time_={};submit_callback_={};callback_resubmit_={};handoff_lock_wait_={};
+            last_iteration_={};
             observations_={};observation_next_=0;next_observation_=last_read_;
             stopping_.store(false,std::memory_order_release);
             try {pump_=std::thread([this,endpoint]{run(endpoint);});}

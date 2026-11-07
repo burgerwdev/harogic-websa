@@ -70,7 +70,7 @@ export class Param<T> {
 	}
 
 	private read(): T | null {
-		if (!this.#opts.persistKey || typeof localStorage === 'undefined') return null;
+		if (!this.#opts.persistKey) return null;
 		try {
 			const raw = localStorage.getItem(this.#opts.persistKey);
 			if (raw === null) return null;
@@ -81,7 +81,7 @@ export class Param<T> {
 	}
 
 	private persist(v: T): void {
-		if (!this.#opts.persistKey || typeof localStorage === 'undefined') return;
+		if (!this.#opts.persistKey) return;
 		try {
 			localStorage.setItem(this.#opts.persistKey, this.#opts.serialize ? this.#opts.serialize(v) : String(v));
 		} catch {

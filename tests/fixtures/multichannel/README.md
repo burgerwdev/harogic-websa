@@ -6,7 +6,7 @@ Portable JSON Schema for the P2 snapshot/receiver/command/event/task boundary an
 the native P3/P4 receiver/processed-output API and P5 backend IQ tasks. This is an intentionally versioned, evolving draft.
 The corresponding TypeScript definitions live in
 `frontend/src/core/multichannel.ts`; semantics and migration points are documented
-in `docs/en/MULTICHANNEL_DRAFT.md` and its Chinese counterpart.
+in [the receiver contract](../../../docs/en/reference/RECEIVERS.md) and its Chinese counterpart.
 
 `fixtureReceiverAdapter.ts` creates the development snapshot and owns simulated
 state. No fixture here replaces original captured IQ or the production contract.
@@ -22,8 +22,9 @@ meta/data archive; the internal WBIQ containers keep their original format.
 `tools/e2e/native_multichannel_archive.py` validates actual snapshots against
 this schema and exported samples with the independent official SigMF reader.
 
-Published audio uses internal WBAU0001, a bounded CRC/Zstd journal retaining original
-AUD2 Float32 samples and packet-owned backend configuration. The schema publishes
+New published-audio tasks write WAV/FLAC/Opus media directly. Legacy WBAU0001
+fixtures retain the bounded CRC/Zstd journal, original AUD2 Float32 samples and
+packet-owned backend configuration for backward-compatibility checks. The schema publishes
 `audio_archive_export`, `published_audio` / `f32_le` and audio segment metadata.
 `tools/e2e/native_multichannel_audio.py` independently checks actual network bytes,
 CRC/system libzstd and Float32 WAV exports with SciPy (development-only dependency).

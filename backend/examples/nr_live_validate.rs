@@ -23,12 +23,22 @@ struct Audio {
 fn u32_at(b:&[u8],i:usize)->u32 {u32::from_le_bytes(b[i..i+4].try_into().unwrap())}
 fn u64_at(b:&[u8],i:usize)->u64 {u64::from_le_bytes(b[i..i+8].try_into().unwrap())}
 fn f64_at(b:&[u8],i:usize)->f64 {f64::from_le_bytes(b[i..i+8].try_into().unwrap())}
+fn decode_event(b: &[u8]) -> Result<Value, Box<dyn std::error::Error>> {
+    if b.len() < 8 || &b[..4] != b"SDE2" || u32_at(b, 4) as usize != b.len() - 8 {
+        return Err("invalid decode envelope".into());
+    }
+    let envelope: Value = serde_json::from_slice(&b[8..])?;
+    Ok(envelope["event"].clone())
+}
 impl Audio {
     fn packet(&mut self,b:&[u8],file:&mut impl Write)->Result<(),Box<dyn std::error::Error>> {
         if b.len()<96 || &b[..4]!=b"AUD2" {return Err("unexpected PCM protocol".into());}
         let identity=(u32_at(b,32),u32_at(b,36));let seq=u32_at(b,8);let frames=u32_at(b,12);
         let channels=u32_at(b,56);let rate=f64_at(b,16);let source_rate=f64_at(b,72);
-        if b.len()!=96+frames as usize*channels as usize*4 || rate!=48000.0 || channels!=1 {return Err("unexpected PCM geometry".into());}
+        let bytes = (frames as usize).checked_mul(channels as usize).and_then(|n| n.checked_mul(4)).and_then(|n| n.checked_add(96));
+        let delay=f64_at(b,48);
+        if bytes!=Some(b.len()) || rate!=48000.0 || channels!=1 {return Err("unexpected PCM geometry".into());}
+        if !source_rate.is_finite() || source_rate<=0.0 || !delay.is_finite() || delay<0.0 {return Err("invalid PCM source clock or delay".into());}
         let first=u64_at(b,64);let index=u64_at(b,40);let num=u64_at(b,80);let den=u64_at(b,88);
         if den==0 || num>=den {return Err("invalid source fraction".into());}
         if seq==0 {
@@ -42,16 +52,19 @@ impl Audio {
                 return Err(format!("PCM source clock discontinuity: identity={identity:?} seq={seq} frame={first} previous=({old}+{frac},frames={count}) current=({index}+{num}/{den},frames={frames}) source_rate={source_rate} actual_advance={elapsed} expected_advance={}",source_rate*count as f64/rate).into());
             }
         }
-        self.previous=Some((index,num as f64/den as f64,frames));self.seq=seq;self.next_frame+=frames as u64;
-        self.packets+=1;self.frames+=frames as u64;self.delay=f64_at(b,48);
-        if !self.delay.is_finite() {return Err("nonfinite delay".into());}
-        let now=Instant::now();if let Some(old)=self.last {self.max_gap_ms=self.max_gap_ms.max(now.duration_since(old).as_secs_f64()*1000.0);}self.last=Some(now);
+        let next_frame=self.next_frame.checked_add(frames as u64).ok_or("audio frame index overflow")?;
+        let (mut peak,mut overrange,mut energy)=(self.peak,self.overrange,self.energy);
         for sample in b[96..].chunks_exact(4) {
             let value=f32::from_le_bytes(sample.try_into().unwrap());
             if !value.is_finite() {return Err("nonfinite PCM".into());}
-            self.peak=self.peak.max(value.abs());self.overrange+=u64::from(value.abs()>1.0);self.energy+=(value as f64).powi(2);
+            peak=peak.max(value.abs());overrange+=u64::from(value.abs()>1.0);energy+=(value as f64).powi(2);
         }
-        file.write_all(&b[96..])?;Ok(())
+        file.write_all(&b[96..])?;
+        self.previous=Some((index,num as f64/den as f64,frames));self.seq=seq;self.next_frame=next_frame;
+        self.packets+=1;self.frames+=frames as u64;self.delay=delay;
+        self.peak=peak;self.overrange=overrange;self.energy=energy;
+        let now=Instant::now();if let Some(old)=self.last {self.max_gap_ms=self.max_gap_ms.max(now.duration_since(old).as_secs_f64()*1000.0);}self.last=Some(now);
+        Ok(())
     }
 }
 #[tokio::main(flavor="current_thread")]
@@ -85,7 +98,7 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
             loop {
                 match decode.next().await.ok_or("decode socket ended before model ready")?? {
                     Message::Binary(b) if b.starts_with(b"SDE2")=>{
-                        let envelope:Value=serde_json::from_slice(&b[8..])?;let event=&envelope["event"];
+                        let event=decode_event(&b)?;
                         if event["type"]=="nr-status" && event["requested"]==id {
                             if event["effective"]!=id || event["state"]!="ready" {return Err(event.to_string().into());}
                             break Ok::<Value,Box<dyn std::error::Error>>(event.clone());
@@ -107,7 +120,7 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
             },
             message=decode.next()=>match message.ok_or("decode socket ended")?? {
                 Message::Binary(b) if b.starts_with(b"SDE2")=>{
-                    let envelope:Value=serde_json::from_slice(&b[8..])?;let event=&envelope["event"];
+                    let event=decode_event(&b)?;
                     if event["type"]=="nr-status" {statuses.push(event.clone());}
                     if event["type"]=="error" {return Err(event.to_string().into());}
                 },
@@ -138,4 +151,62 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
         if restored_channel[key]!=channel[key] {return Err(format!("receiver setting not restored: {key}").into());}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn packet(seq: u32, index: u64) -> Vec<u8> {
+        websa_channelizer::encode_audio(
+            websa_channelizer::AudioFrameMetadata {
+                seq,
+                rate: 48000.0,
+                frequency_hz: 7_100_000.0,
+                channel_id: 1,
+                epoch: 1,
+                input_index: index,
+                delay_seconds: 0.01,
+                channels: 1,
+                audio_index: index,
+                input_rate: 48000.0,
+                input_fraction_num: 0,
+                input_fraction_den: 1,
+                delay_known: true,
+                causal_presentation: false,
+            },
+            if seq == 0 { &[] } else { &[0.25] },
+        )
+        .unwrap()
+    }
+    #[test]
+    fn evidence_reader_rejects_nonfinite_source_clocks_before_counting_pcm() {
+        for value in [f64::NAN, f64::INFINITY, 0.0, -48000.0] {
+            let mut audio = Audio::default();
+            let mut output = Vec::new();
+            audio.packet(&packet(0, 0), &mut output).unwrap();
+            audio.packet(&packet(1, 0), &mut output).unwrap();
+            let mut invalid = packet(2, 1);
+            invalid[72..80].copy_from_slice(&value.to_le_bytes());
+            assert!(
+                audio.packet(&invalid, &mut output).is_err(),
+                "accepted source rate {value}"
+            );
+            assert_eq!(audio.frames, 1);
+            assert_eq!(output.len(), 4);
+        }
+    }
+    #[test]
+    fn evidence_reader_rejects_short_or_mismatched_decode_envelopes() {
+        for bytes in [b"SDE2".to_vec(), b"SDE2\0\0\0\0{\"event\":{}}".to_vec()] {
+            let result =
+                std::panic::catch_unwind(|| decode_event(&bytes).map_err(|e| e.to_string()));
+            assert!(
+                matches!(result, Ok(Err(_))),
+                "malformed framing must return an error, not panic or yield an event"
+            );
+        }
+        let valid =
+            websa_channelizer::encode_decode_event(br#"{"event":{"type":"nr-status"}}"#).unwrap();
+        assert_eq!(decode_event(&valid).unwrap()["type"], "nr-status");
+    }
 }

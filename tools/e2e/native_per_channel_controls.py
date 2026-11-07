@@ -91,17 +91,19 @@ def gate(origin, artifacts):
             for _ in range(7):
                 page.locator('[data-action=sdr-channel-next]').click()
             expect(page.locator('#sdr-current-channel')).to_have_text('C8')
-            page.locator('#sdr-mode-settings > summary').click()
-            main = page.locator('#sdr-mode-controls')
-            expect(main.locator('[name=mode-am_sync]')).to_be_checked()
+            expect(page.locator('#sdr-mode-settings')).to_have_count(0)
+            expect(page.locator('#sdr-settings [data-mode-controls]')).to_have_count(0)
+            main = page.locator('#sdr-audio-rate-row')
+            expect(main.locator('[data-sdr-audio-rate]')).to_have_count(3)
+            expect(main.locator('[data-sdr-audio-rate="48000"]')).to_have_attribute('aria-pressed', 'true')
             previous = row(7)['revision']
-            main.locator('[name=mode-am_sync]').uncheck()
-            main.locator('[type=submit]').click()
+            main.locator('[data-sdr-audio-rate="24000"]').click()
             page.locator('[data-action=sdr-channel-prev]').click()
             until(lambda: row(7)['revision'] != previous)
-            assert row(7)['confirmed']['processors'][0]['am_sync'] is False
+            assert row(7)['confirmed']['processors'][0]['audio_rate'] == 24000
+            assert row(7)['confirmed']['processors'][0]['am_sync'] is True
             assert row(6)['revision'] == initial['receivers'][6]['revision']
-            report['cases'].append({'case': 'Main C8 submit followed immediately by selection change', 'receiver': row(7)})
+            report['cases'].append({'case': 'Main C8 audio rate followed immediately by selection change', 'receiver': row(7)})
 
             select(7)
             view.locator('[name=mode]').select_option('cw')
@@ -147,26 +149,86 @@ def gate(origin, artifacts):
             previous = row(7)['revision']
             view.locator('[data-config] button[type=submit]').click()
             until(lambda: row(7)['revision'] != previous)
-            failed = until(lambda: row(7) if row(7).get('processing_state') == 'failed' else None)
-            expect(view.locator('[data-processing-runtime]')).to_contain_text('Processing failed')
+            def published_failure():
+                current = row(7)
+                return current if current.get('processing_state') == 'failed' and current.get('reception') is not None else None
+            failed = until(published_failure)
+            failure_reason = 'selected dfn model preparation failed: rate 24000'
+            assert failed['processing_fault']['error'] == failure_reason
             assert failed['confirmed']['processors'][0]['nr_algorithm'] == 'dfn'
+            assert failed['reception']['state'] == 'stopped'
+            assert failed['reception']['manual_recovery_allowed'] is False
             expect(view.locator('[data-config]')).to_have_attribute('data-revision', failed['revision'])
-            view.locator('[data-action=recover-processing]').click()
-            retried = until(lambda: row(7) if row(7).get('processing_state') == 'failed'
-                and row(7)['processing_runtime']['processing_generation'] != failed['processing_runtime']['processing_generation'] else None)
-            expect(view.locator('[data-config]')).to_have_attribute('data-revision', retried['revision'])
+            live = view.locator('[data-live-state=fault]')
+            expect(live).to_be_visible()
+            expect(live.locator('[role=status]')).to_have_text('Reception fault')
+            diagnostics = live.locator('[data-section=live-diagnostics]')
+            if not diagnostics.evaluate('element=>element.open'):
+                diagnostics.locator('summary').click()
+            expect(diagnostics.locator('pre')).to_be_visible()
+            expect(diagnostics.locator('pre')).to_contain_text(failure_reason)
+            expect(view.locator('[data-action=recover-processing]')).to_have_count(0)
+            view.locator('[data-action=tab-output]').click()
+            expect(view.locator('[data-processing-runtime]')).to_contain_text(failure_reason)
+            expect(view.locator('[data-action=recover-processing]')).to_have_count(0)
+            page.locator('[data-action=sdr-channel-next]').click()
+            expect(page.locator('#sdr-current-channel')).to_have_text('C8')
+            expect(page.locator('#sdr-mode-settings')).to_have_count(0)
+            expect(main.locator('[data-sdr-audio-rate="24000"]')).to_have_attribute('aria-pressed', 'true')
+            # An internal model/rate error is not a recoverable interruption.
+            # A direct retry must be rejected without changing the failed owner;
+            # repair the selected configuration before requesting new processing.
+            rejected = api(origin, payload={'type': 'configure', 'request_id': 'invalid-rate-recovery',
+                'service_id': initial['service_id'], 'receiver_uid': uids[7],
+                'expected_revision': failed['revision'], 'config': failed['confirmed'], 'recover': True})
+            assert rejected['request_id'] == 'invalid-rate-recovery'
+            assert rejected['fault'] is not None
+            assert 'requires source repair' in rejected['fault']['message'], rejected['fault']
+            after_rejection = row(7)
+            for key in ['receiver_uid', 'revision', 'confirmed', 'stream']:
+                assert after_rejection[key] == failed[key], key
+            assert after_rejection['processing_runtime']['processing_generation'] == failed['processing_runtime']['processing_generation']
+            assert after_rejection['processing_state'] == 'failed'
+            view.locator('[data-action=tab-receive]').click()
+            expect(view.locator('[data-config]')).to_have_attribute('data-revision', failed['revision'])
             view.locator('[name=mode-audio_rate]').fill('48000')
             previous = row(7)['revision']
             view.locator('[data-config] button[type=submit]').click()
             until(lambda: row(7)['revision'] != previous)
             expect(view.locator('[data-config]')).to_have_attribute('data-revision', row(7)['revision'])
-            recovered = until(lambda: row(7) if row(7).get('processing_state') == 'active'
-                and row(7).get('processing_runtime', {}).get('observed_receiver', {}).get('nr_effective') == 'dfn' else None, timeout=20)
+            def effective_model():
+                current = row(7)
+                runtime = current.get('processing_runtime') or {}
+                observed = runtime.get('observed_receiver') or {}
+                return current if current.get('processing_state') == 'active' and observed.get('nr_effective') == 'dfn' else None
+            recovered = until(effective_model, timeout=20)
             assert recovered['processing_runtime']['processing_generation'] != failed['processing_runtime']['processing_generation']
-            report['cases'].append({'case': 'Selected-model failure and explicit independent recovery', 'failed': failed, 'retry_with_unchanged_invalid_rate': retried, 'recovered': recovered})
+            assert recovered['receiver_uid'] == failed['receiver_uid']
+            assert recovered['confirmed']['processors'][0]['audio_rate'] == 48000
+            assert recovered['confirmed']['processors'][0]['nr_algorithm'] == 'dfn'
+            expect(view.locator('[data-live-state=healthy]')).to_be_visible()
+            report['cases'].append({'case': 'Selected-model failure, denied invalid retry and configuration repair',
+                'failed': failed, 'rejected_retry': rejected['fault'], 'after_rejection': after_rejection, 'recovered': recovered})
             report['recovered_pcm'] = audio_format(origin, uids[7], 48000, 1)
             final = api(origin)
             assert [{key: r[key] for key in ['receiver_uid', 'revision', 'confirmed', 'stream']} for r in final['receivers'][1:7]] == healthy
+            view.locator('[data-close]').click()
+            page.locator('[data-action=sdr-channel-next]').click()
+            expect(page.locator('#sdr-current-channel')).to_have_text('C1')
+            page.locator('[data-sdr-audio-rate="12000"]').click()
+            until(lambda: row(0)['confirmed']['processors'][0]['audio_rate'] == 12000)
+            expect(main.locator('[data-sdr-audio-rate="12000"]')).to_have_attribute('aria-pressed', 'true')
+            report['12khz_pcm'] = audio_format(origin, uids[0], 12000, 1)
+            page.locator('[data-action=preset]').click()
+            def preset_audio():
+                current = api(origin)
+                return current if current['receivers'][0]['confirmed']['processors'][0]['audio_rate'] == 48000 else None
+            preset = until(preset_audio)
+            expect(main.locator('[data-sdr-audio-rate="48000"]')).to_have_attribute('aria-pressed', 'true')
+            report['preset_audio_rate'] = preset['receivers'][0]['confirmed']['processors'][0]['audio_rate']
+            page.reload(); wait_ui_ready(page, 'sdr')
+            expect(main.locator('[data-sdr-audio-rate="48000"]')).to_have_attribute('aria-pressed', 'true')
+            expect(page.locator('#sdr-mode-settings')).to_have_count(0)
             assert not errors, errors
             page.screenshot(path=str(artifacts / 'desktop.png'))
             page.set_viewport_size({'width': 420, 'height': 900})

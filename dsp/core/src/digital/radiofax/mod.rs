@@ -1206,6 +1206,8 @@ mod tests {
         let mut quiet = plugin();
         quiet.process_iq(&vec![0.0; 48_000]);
         quiet.process_iq(&vec![0.0; 48_000]);
+        assert!(quiet.take_radiofax_spans().is_empty());
+        assert!(!quiet.radiofax_state().has_picture);
     }
 
     #[test]

@@ -5,14 +5,15 @@
 //! and counts decodes per level, then checks the numbers against the baseline committed below. The
 //! same harness stacks the four-signal composite (`ft8_multi3_iq.bin`: three co-slot transmissions
 //! at 800/875/950 Hz -- 25-75 Hz apart, i.e. genuinely crowded -- plus a fourth sharing the strong
-//! signal's *exact* frequency, the co-channel pair only subtraction can untangle) under a noise
+//! signal's *exact* frequency, exercising co-channel subtraction) under a noise
 //! floor that puts the *weakest* signal at
 //! -20 dB -- the busy-band case a single-pass decoder is expected to fail and the case subtraction
 //! and OSD exist to fix.
 //!
-//! SNR here is **in-band**: signal mean power against noise power measured in the 100-3000 Hz band
-//! the waterfall actually reads (the noise itself is white at 48 kHz, scaled so its in-band share is
-//! exact). That is within ~0.6 dB of WSJT-X's convention of referencing SNR to 2500 Hz, so the
+//! SNR here is **nominal in-band**: active signal power against the expected white-noise share
+//! in the 100-3000 Hz receive band. Total noise power is normalized at 48 kHz; a finite
+//! realization's measured band power can differ slightly. This is within ~0.6 dB of the
+//! convention of referencing SNR to 2500 Hz, so the
 //! levels below can be compared with the literature: the reference decoder is quoted down to about
 //! -21 dB. Everything is deterministic (fixed seeds, fixed frequency offsets), so a run reproduces
 //! bit-for-bit and the baseline is a real floor, not a hope.
@@ -24,17 +25,14 @@
 use websa_dsp::digital::ft8::Ft8Decoder;
 
 mod common;
-use common::{noise, noise_power_for, scenario, BAND_HZ, RATE, SLOT_SAMPLES};
+use common::{insert, noise, noise_power_for, scenario, BAND_HZ, RATE, SLOT_SAMPLES};
 
 const IQ_BYTES: &[u8] = include_bytes!("../../../tests/fixtures/ft8/ft8_cq_iq.bin");
 const MULTI_BYTES: &[u8] = include_bytes!("../../../tests/fixtures/ft8/ft8_multi3_iq.bin");
 const EXPECTED_CALL: &str = "JO1WKO";
-/// One FT8 slot: the buffer the decode runs over.
-/// The waterfall's analysis band: what "in-band" noise means.
-/// The sweep. Six levels, eight trials each (four frequency offsets x two noise seeds): enough for
-/// a rate with resolution 1/8, cheap enough to keep the whole test around half a minute.
+/// Six levels and four distinct frequency offsets with one fixed noise realization.
 const LEVELS_DB: [f64; 6] = [-24.0, -22.0, -20.0, -18.0, -16.0, -14.0];
-const TRIALS_PER_LEVEL: usize = 8;
+const TRIALS_PER_LEVEL: usize = 4;
 /// Where the transmission starts inside the slot (seconds): not slot-aligned, like a real capture.
 const INSERT_S: f64 = 0.64;
 /// Per-trial frequency offsets: on-grid, half-tone low, off-grid high. A decoder that only works
@@ -42,9 +40,9 @@ const INSERT_S: f64 = 0.64;
 const OFFSETS_HZ: [f64; 4] = [0.0, -3.125, 4.5, -11.25];
 
 /// The multi fixture's four signals, marker -> intended in-band SNR. The two -16 dB signals sit at
-/// MULTI_WEAK_SNR_DB; the mid one at MULTI_WEAK_SNR_DB + 8; the strong one MULTI_WEAK_SNR_DB + 24.
+/// MULTI_WEAK_SNR_DB; the mid one at MULTI_WEAK_SNR_DB + 8; the strong one MULTI_WEAK_SNR_DB + 16.
 const MULTI_EXPECTED: [(&str, f64); 4] = [
-    ("CQ JO1WKO", 4.0),
+    ("CQ JO1WKO", -4.0),
     ("JA1XYZ", -12.0),
     ("BG7BVP", -20.0),
     ("K1ABC", -20.0),
@@ -56,17 +54,18 @@ const MULTI_WEAK_AMP_DB: f64 = -16.0;
 
 // ---------------------------------------------------------------------------
 // The committed baseline. Measured on the pre-change decoder (single pass, no
-// subtraction, no OSD) with this exact harness on 2026-09-29; recorded so the
-// improvement tasks have a number to beat and so no later change can silently
-// give the sensitivity back. Floors are the measured value minus one trial of
-// slack, which absorbs cross-platform float drift without making the check
-// cosmetic. The co-channel signal is the story: 0/4 before, 4/4 is the target
-// of the subtraction pass.
+// subtraction, no OSD) on 2026-09-29. Single-signal scenario power is unchanged.
+// The old multi-signal helper rescaled the fixture, so its historical counts do
+// not establish sensitivity at the stated -20 dB. Its existing floors remain
+// required after correcting that helper; failures are sensitivity limitations.
 // ---------------------------------------------------------------------------
 /// Decoded trials (of `TRIALS_PER_LEVEL`) per level, in `LEVELS_DB` order: the
-/// single-pass cliff sits at about -19 dB in-band.
-const PRE_CHANGE_SINGLE: [usize; 6] = [0, 0, 0, 4, 8, 8];
-const FLOOR_SINGLE: [usize; 6] = [0, 0, 0, 3, 7, 7];
+/// single-pass cliff sits at about -19 dB in-band. The original harness repeated each
+/// of four identical scenarios twice: counts [0,0,0,4,8,8], floors [0,0,0,3,7,7].
+/// With duplicates removed, 2*unique >= old_floor iff unique >= ceil(old_floor/2).
+/// These floors therefore preserve the original acceptance condition exactly.
+const PRE_CHANGE_SINGLE: [usize; 6] = [0, 0, 0, 2, 4, 4];
+const FLOOR_SINGLE: [usize; 6] = [0, 0, 0, 2, 4, 4];
 /// Decoded trials (of `MULTI_TRIALS`) where all four signals came out at once.
 const PRE_CHANGE_MULTI_ALL: usize = 0;
 /// Decoded trials where at least two signals came out.
@@ -82,6 +81,25 @@ fn decode_slot(iq: &[f32]) -> Vec<String> {
         .into_iter()
         .map(|m| m.text)
         .collect::<Vec<_>>()
+}
+
+fn multi_slot(noise_iq: &[f32], multi: &[f32], offset_hz: f64) -> Vec<f32> {
+    let mut slot = noise_iq.to_vec();
+    insert(&mut slot, multi, 0.0, offset_hz);
+    slot
+}
+
+#[test]
+fn noise_harness_preserves_the_multi_fixture_signal_power() {
+    let background = vec![0.125; 512];
+    let signal: Vec<f32> = [1.0, 0.5].into_iter().cycle().take(200).collect();
+    let slot = multi_slot(&background, &signal, 0.0);
+    let added: Vec<f32> = slot[..signal.len()].iter().zip(&background)
+        .map(|(combined, background)| combined - background).collect();
+    // Multi-fixture amplitudes encode the power ratios; adding a separately
+    // calibrated noise floor must preserve those amplitudes as well as ratios.
+    assert!((common::power_of(&added) / common::power_of(&signal) - 1.0).abs() < 1e-6);
+    assert_eq!(&slot[signal.len()..], &background[signal.len()..]);
 }
 
 #[test]
@@ -125,7 +143,7 @@ fn the_sensitivity_floor_holds() {
         );
     }
 
-    // --- the busy band: three co-slot signals, weakest at MULTI_WEAK_SNR_DB ---
+    // --- the busy band: four co-slot signals, weakest at MULTI_WEAK_SNR_DB ---
     let multi: Vec<f32> = MULTI_BYTES
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -140,12 +158,9 @@ fn the_sensitivity_floor_holds() {
     println!("\n four signals (weakest at {MULTI_WEAK_SNR_DB} dB in-band), {MULTI_TRIALS} trials:");
     for trial in 0..MULTI_TRIALS {
         let seed = 0xA11C_0FF1 + trial as u64;
-        let slot = scenario(
+        let slot = multi_slot(
             &noise(SLOT_SAMPLES, noise_power, seed),
-            noise_power,
             &multi,
-            0.0, // amplitudes are already in the fixture; snr_db=0 keeps them
-            0.0,
             OFFSETS_HZ[trial % OFFSETS_HZ.len()],
         );
         let texts = decode_slot(&slot);
@@ -153,6 +168,9 @@ fn the_sensitivity_floor_holds() {
             .iter()
             .filter(|(marker, _)| texts.iter().any(|t| t.starts_with(marker)))
             .count();
+        false_positives += texts.iter().filter(|text| {
+            !MULTI_EXPECTED.iter().any(|(marker, _)| text.starts_with(marker))
+        }).count();
         println!("  trial {trial}: {hits}/4 signals -> {texts:?}");
         multi_all += (hits == 4) as usize;
         multi_two += (hits >= 2) as usize;
@@ -166,9 +184,10 @@ fn the_sensitivity_floor_holds() {
         "busy-band regression: all four signals decoded in {multi_all}/{MULTI_TRIALS} trials, floor is {FLOOR_MULTI_ALL}"
     );
 
-    println!("\n baseline (pre-change, single pass): single {PRE_CHANGE_SINGLE:?}/8, multi-two {PRE_CHANGE_MULTI_TWO}/4, multi-all {PRE_CHANGE_MULTI_ALL}/4");
-    println!(" this run: multi-two {multi_two}/4, multi-all {multi_all}/4, floors single {FLOOR_SINGLE:?}/8, multi-two {FLOOR_MULTI_TWO}/4, multi-all {FLOOR_MULTI_ALL}/4");
+    println!("\n baseline (pre-change, single pass): single {PRE_CHANGE_SINGLE:?}/4, multi-two {PRE_CHANGE_MULTI_TWO}/4, multi-all {PRE_CHANGE_MULTI_ALL}/4");
+    println!(" this run: multi-two {multi_two}/4, multi-all {multi_all}/4, floors single {FLOOR_SINGLE:?}/4, multi-two {FLOOR_MULTI_TWO}/4, multi-all {FLOOR_MULTI_ALL}/4");
     println!(" false-positive decodes across the sweep: {false_positives}");
+    assert_eq!(false_positives, 0, "sensitivity sweep emitted unrelated messages");
     // The baseline documents the pre-change decoder; if this run is strictly *better* somewhere,
     // the improvement tasks have landed and the constants above should be re-recorded (see the
     // comment block at the constants).

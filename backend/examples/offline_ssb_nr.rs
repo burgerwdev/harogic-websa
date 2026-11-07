@@ -15,6 +15,22 @@ fn save(path: &Path, samples: &[f32]) -> std::io::Result<()> {
     out.flush()
 }
 
+fn annotation_end(
+    row: &serde_json::Value,
+    offset: usize,
+    samples: usize,
+) -> Result<usize, &'static str> {
+    let start = usize::try_from(row["core:sample_start"].as_u64().ok_or("block start")?)
+        .map_err(|_| "block start exceeds addressable samples")?;
+    let n = usize::try_from(row["core:sample_count"].as_u64().ok_or("block length")?)
+        .map_err(|_| "block length exceeds addressable samples")?;
+    let end = offset.checked_add(n).ok_or("block end overflow")?;
+    if start != offset || end > samples {
+        return Err("non-contiguous annotations");
+    }
+    Ok(end)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 4 {
@@ -48,17 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut offset, mut input, mut unlevelled, mut block) =
         (0, Vec::new(), Vec::new(), Vec::new());
     for row in blocks {
-        let start = row["core:sample_start"].as_u64().ok_or("block start")? as usize;
-        let n = row["core:sample_count"].as_u64().ok_or("block length")? as usize;
-        if start != offset || offset + n > iq.len() / 2 {
-            return Err("non-contiguous annotations".into());
-        }
-        let chunk = &iq[offset * 2..(offset + n) * 2];
+        let end = annotation_end(row, offset, iq.len() / 2)?;
+        let chunk = &iq[offset * 2..end * 2];
         agc.process_into(chunk, &mut block);
         input.extend_from_slice(&block);
         raw.process_into(chunk, &mut block);
         unlevelled.extend_from_slice(&block);
-        offset += n;
+        offset = end;
     }
     if offset * 2 != iq.len() || input.len() != unlevelled.len() {
         return Err("sample count mismatch".into());
@@ -78,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         let mut nr = NoiseReduction::new(48000);
         nr.configure(48000, algorithm, 0.25, attenuation);
-        if nr.status().effective != algorithm {
+        if nr.status().effective != Some(algorithm) {
             return Err(format!("{name}: {:?}", nr.status()).into());
         }
         let delay = nr.latency_samples().ok_or("unknown NR delay")? as usize;
@@ -117,4 +129,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("{}", serde_json::to_string_pretty(&manifest)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn metadata_annotation_end_rejects_overflow_before_slicing_user_iq() {
+        let row = serde_json::json!({"core:sample_start":1,"core:sample_count":u64::MAX});
+        let result = std::panic::catch_unwind(|| annotation_end(&row, 1, 2));
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "overflow must be rejected before slicing or reading more IQ"
+        );
+        assert_eq!(
+            annotation_end(
+                &serde_json::json!({"core:sample_start":1,"core:sample_count":1}),
+                1,
+                2
+            ),
+            Ok(2)
+        );
+        assert!(annotation_end(
+            &serde_json::json!({"core:sample_start":2,"core:sample_count":1}),
+            1,
+            3
+        )
+        .is_err());
+    }
 }

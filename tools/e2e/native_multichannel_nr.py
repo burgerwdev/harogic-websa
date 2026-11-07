@@ -8,16 +8,13 @@ import copy
 import json
 import math
 import os
-import socket
 import struct
-import subprocess
 import time
 import urllib.request
 from pathlib import Path
 
+from rust_iq_browser import free_port, start_service, stop
 from websockets.asyncio.client import connect
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def api(origin, payload=None, path='/api/sdr/receivers'):
@@ -149,39 +146,22 @@ def main():
     parser.add_argument('--seconds', type=float, default=2)
     parser.add_argument('--include-multi', action='store_true')
     args = parser.parse_args()
+    if not math.isfinite(args.seconds) or args.seconds <= 0:
+        parser.error('--seconds must be finite and positive')
     args.artifacts.mkdir(parents=True, exist_ok=True)
-    with socket.socket() as port_socket:
-        port_socket.bind(('127.0.0.1', 0))
-        port = port_socket.getsockname()[1]
-    env = {**os.environ, 'WEBSA_PORT': str(port), 'WEBSA_HOST': '127.0.0.1',
-        'WEBSA_RECORDING_DIR': str(args.artifacts / 'recordings')}
-    env.pop('WEBSA_RUST_IQS_SHIM', None)
-    origin = f'http://127.0.0.1:{port}'
+    os.environ['WEBSA_RECORDING_DIR'] = str((args.artifacts / 'recordings').resolve())
     with (args.artifacts / 'service.log').open('w') as log:
-        process = subprocess.Popen([str(ROOT / 'backend/target/release/websad')], cwd=ROOT, env=env,
-            stdout=log, stderr=log)
+        process, origin = start_service(free_port(), log=log, startup_timeout=30)
         try:
-            deadline = time.monotonic() + 30
-            while True:
-                assert process.poll() is None, 'test service exited'
-                try:
-                    api(origin)
-                    break
-                except OSError:
-                    if time.monotonic() > deadline:
-                        raise
-                    time.sleep(0.1)
             results = run(origin, args.seconds, args.include_multi)
             (args.artifacts / 'result.json').write_text(json.dumps(results, indent=2) + '\n')
-            print(json.dumps({'passed': True, 'algorithms': [result['second_algorithm'] for result in results],
+            passed = all('error' not in stream for result in results for stream in result['audio'])
+            print(json.dumps({'passed': passed, 'algorithms': [result['second_algorithm'] for result in results],
                 'artifacts': str(args.artifacts)}))
+            if not passed:
+                raise SystemExit(1)
         finally:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            stop(process)
 
 
 if __name__ == '__main__':

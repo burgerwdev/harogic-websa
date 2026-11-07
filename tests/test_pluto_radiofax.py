@@ -316,11 +316,13 @@ class _FakeRadio:
         self.rate = int(args.rate) + 1000
         self.sdr = _FakeSdr()
         self.sdr.pushed = []
+        self.lifecycle = []
 
     def __enter__(self) -> _FakeRadio:
         return self
 
     def __exit__(self, *_exc) -> bool:
+        self.lifecycle.append('close')
         return False
 
     def open_stream(self) -> None:
@@ -329,6 +331,10 @@ class _FakeRadio:
     def push_chunk(self, part) -> None:
         assert not self.sdr.tx_cyclic_buffer
         self.sdr.tx(part)
+
+    def drain_stream(self, zero) -> None:
+        assert not np.any(zero)
+        self.lifecycle.append('drain')
 
 
 def test_repeat_pause_uses_the_accepted_rate_and_real_silence(monkeypatch):
@@ -347,6 +353,7 @@ def test_repeat_pause_uses_the_accepted_rate_and_real_silence(monkeypatch):
     ])
     assert code == 0
     radio = opened[0]
+    assert radio.lifecycle == ['drain', 'close']
     assert radio.rate == RATE + 1000
     chunks = radio.sdr.pushed
     assert chunks

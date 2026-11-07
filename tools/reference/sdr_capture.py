@@ -1,18 +1,38 @@
-"""Bounded IQS capture for the opt-in wideband SDR pipeline.
+"""Bounded IQS capture for offline Python reference tools (not the Rust service).
 
 One SDK reader owns each packet until copied. Consumers see immutable IQ, a
-configuration epoch, and a monotonic sample index. No packet is dropped while
-subscribed: queue saturation is counted and treated as a throughput failure.
+configuration epoch, and a monotonic sample index. Queue saturation is counted
+and backpressures the reader until the consumer catches up or capture stops.
 """
 from __future__ import annotations
 
 import ctypes as C
+import operator
 import queue
 import threading
 import time
 from dataclasses import dataclass
 
 import numpy as np
+
+# A reference packet may own at most 4 MiB; SDK metadata never sizes an
+# unbounded ctypes read. The normal SAN packet contains 16,240 complex samples.
+MAX_PACKET_BYTES = 4 * 1024 * 1024
+IQ_SAMPLE_BYTES = 2 * C.sizeof(C.c_int16)
+
+
+def validate_iq_packet(stream, max_samples: int, expected_format: int,
+                       sample_bytes: int = IQ_SAMPLE_BYTES) -> tuple[int, int]:
+    """Validate SDK metadata before a reference tool reads foreign IQ memory."""
+    count = int(stream.IQS_StreamInfo.PacketSamples)
+    size = int(stream.IQS_StreamInfo.PacketDataSize)
+    data_format = stream.IQS_Profile.DataFormat.value
+    if (sample_bytes not in (2, 4) or not 2 <= count <= max_samples
+            or size > MAX_PACKET_BYTES or not stream.AlternIQStream
+            or data_format != expected_format or size != count * sample_bytes):
+        raise RuntimeError(
+            f'IQS invalid packet: samples={count}, bytes={size}, format={data_format}')
+    return count, size
 
 
 @dataclass(frozen=True)
@@ -27,9 +47,15 @@ class CapturedIq:
 
 class SdrCapture:
     def __init__(self, dev, lock, packet_samples: int):
+        try:
+            bounded_samples = operator.index(packet_samples)
+        except TypeError as exc:
+            raise ValueError('packet_samples must be an integer') from exc
+        if isinstance(packet_samples, bool) or not 2 <= bounded_samples <= MAX_PACKET_BYTES // IQ_SAMPLE_BYTES:
+            raise ValueError('packet_samples exceeds the reference capture packet budget')
         self.dev = dev
         self.lock = lock
-        self.packet_samples = packet_samples
+        self.packet_samples = bounded_samples
         self.queue: queue.Queue[CapturedIq] = queue.Queue(maxsize=2)
         self.stop_event = threading.Event()
         self.active = threading.Event()
@@ -96,6 +122,8 @@ class SdrCapture:
             try:
                 packet = self.queue.get(timeout=remaining)
             except queue.Empty:
+                if self.failure:
+                    raise RuntimeError('IQS capture failed') from self.failure
                 return None
             if packet.epoch == self.epoch:
                 return packet
@@ -128,10 +156,9 @@ class SdrCapture:
                     iq = None
                     index = self.sample_index
                     if status == 0:
-                        count = int(stream.IQS_StreamInfo.PacketSamples)
-                        if count < 2 or count > self.packet_samples or not stream.AlternIQStream:
-                            raise RuntimeError(f'IQS invalid packet: samples={count}')
-                        raw = C.string_at(stream.AlternIQStream, count * 4)
+                        count, size = validate_iq_packet(
+                            stream, self.packet_samples, sb.DataFormat_TypeDef.Complex16bit)
+                        raw = C.string_at(stream.AlternIQStream, size)
                         iq = np.frombuffer(raw, dtype=np.int16)
                         self.sample_index += count
                         self.captured_samples += count

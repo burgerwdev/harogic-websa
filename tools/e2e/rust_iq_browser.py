@@ -13,13 +13,15 @@ import os
 import socket
 import subprocess
 import sys
-import time
 import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.native_service import start_owned_service  # noqa: E402 — repository root bootstrap above
+
 WEBSAD = ROOT / 'backend/target/release/websad'
 CHANNELS = [100_000_000.0, 100_100_000.0, 100_200_000.0]
 
@@ -70,24 +72,10 @@ def start_service(port, *, hardware=False, log=None, startup_timeout=10.0, binar
         env['WEBSA_RUST_IQS_SHIM'] = shim
     else:
         env.pop('WEBSA_RUST_IQS_SHIM', None)
-    proc = subprocess.Popen([str(binary or WEBSAD)], cwd=ROOT, env=env,
-                            stdout=log or subprocess.DEVNULL,
-                            stderr=log or subprocess.DEVNULL)
-    origin = f'http://127.0.0.1:{port}'
-    try:
-        deadline = time.monotonic() + startup_timeout
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                break
-            try:
-                state(origin)
-                return proc, origin
-            except OSError:
-                time.sleep(0.1)
-        raise RuntimeError('native websad did not start; inspect the service log')
-    except BaseException:
-        stop(proc)
-        raise
+    return start_owned_service([str(binary or WEBSAD)], port=port, cwd=ROOT, env=env,
+                               stdout=log or subprocess.DEVNULL,
+                               stderr=log or subprocess.DEVNULL,
+                               startup_timeout=startup_timeout)
 
 
 def configure(origin, frequencies):

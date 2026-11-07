@@ -33,6 +33,7 @@ import websockets.sync.client as wsc
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tools.bench.sdr_network_diagnostics import restore, state  # noqa: E402
+from tools.native_service import start_owned_service  # noqa: E402
 
 SERVICE = 'http://127.0.0.1:8080'
 WEBSAD_PORT = 8108
@@ -91,15 +92,8 @@ class DisplayRx(threading.Thread):
                     self.powr.append((self.last_freq, power))
                 elif tag in (b'RTAF', b'RTA2'):
                     points = int.from_bytes(data[8:12], 'little')
-                    wf_len = int.from_bytes(data[12:14], 'little')
-                    start = struct.unpack_from('<d', data, 16)[0]
-                    step = 0.0
-                    if points > 1:
-                        stop = struct.unpack_from(
-                            '<d', data, 24 + points * 8 + points * 4 + wf_len * 2)[0]
-                        step = (stop - start) / points
+                    freq = np.frombuffer(data, '<f8', points, 24)
                     power = np.frombuffer(data, '<f4', points, 24 + points * 8)
-                    freq = start + step * np.arange(points)
                     self.rtaf.append((freq, power))
         except Exception as exc:
             if not self.halt.is_set():
@@ -163,16 +157,11 @@ def start_websad(port, log_path, shim=None, *, hardware=True):
         env.pop('WEBSA_RUST_IQS_SHIM', None)
         env['WEBSA_FAKE'] = '1'
     with open(log_path, 'w') as log:
-        proc = subprocess.Popen([str(WEBSAD)], cwd=ROOT, env=env, stdout=log, stderr=log)
-    url = f'http://127.0.0.1:{port}'
-    for _ in range(50):
         try:
-            with urllib.request.urlopen(url + '/api/state', timeout=1):
-                return proc, url
-        except OSError:
-            time.sleep(0.1)
-    proc.terminate()
-    raise SystemExit(f'websad did not come up; log: {log_path}')
+            return start_owned_service([str(WEBSAD)], port=port, cwd=ROOT, env=env,
+                                       stdout=log, stderr=log, startup_timeout=5.0)
+        except RuntimeError as exc:
+            raise SystemExit(f'{exc}; log: {log_path}') from exc
 
 
 def peak_of(freq, power):

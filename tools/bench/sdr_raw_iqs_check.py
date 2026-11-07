@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from ctypes import byref, c_void_p, string_at
 from statistics import median
@@ -51,8 +52,13 @@ def measure(dev, decimate: int, seconds: float = 5.0, raw_path=None, fmt='16',
             timestamps=False) -> dict:
     import htra_api as T
     from tools.reference import sdk_bindings as sb
+    from tools.reference.sdr_capture import MAX_PACKET_BYTES, validate_iq_packet
     from tools.sdr_probe.probe_stream import config
 
+    if fmt not in ('8', '16') or (raw_path and fmt != '16'):
+        raise ValueError('raw output requires 16-bit IQ; supported formats are 8 and 16')
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('seconds must be finite and positive')
     formats = {'8': T.DataFormat_TypeDef.Complex8bit,
                '16': T.DataFormat_TypeDef.Complex16bit}
     st, _out, info = config(dev, 100e6, decimate, T.TriggerMode_TypeDef.Adaptive,
@@ -61,6 +67,11 @@ def measure(dev, decimate: int, seconds: float = 5.0, raw_path=None, fmt='16',
         return {'decimate': decimate, 'config_status': st}
     stream = sb.IQStream_TypeDef()
     packet_samples = int(info.PacketSamples)
+    sample_bytes = int(fmt) // 4
+    fs = float(info.IQSampleRate)
+    if (not 2 <= packet_samples <= MAX_PACKET_BYTES // sample_bytes
+            or not math.isfinite(fs) or fs <= 0):
+        raise RuntimeError(f'IQS invalid configuration: samples={packet_samples}, rate={fs}')
     count = samples = errors = 0
     first = last = None
     max_gap = 0.0
@@ -78,18 +89,18 @@ def measure(dev, decimate: int, seconds: float = 5.0, raw_path=None, fmt='16',
             if status:
                 errors += 1
                 continue
+            points, size = validate_iq_packet(stream, packet_samples, formats[fmt], sample_bytes)
             if first is None:
                 first = now
             if last is not None:
                 max_gap = max(max_gap, now - last)
             last = now
             count += 1
-            points = int(stream.IQS_StreamInfo.PacketSamples)
             samples += points
             if timestamps:
                 stamps.append((int(stream.IQS_TriggerInfo.SysTimerCountOfFirstDataPoint), points))
             if raw and saved < 120 and points == packet_samples:
-                raw.write(string_at(stream.AlternIQStream, packet_samples * 4))
+                raw.write(string_at(stream.AlternIQStream, size))
                 saved += 1
     finally:
         T.dll.IQS_BusTriggerStop(byref(dev))
@@ -98,10 +109,10 @@ def measure(dev, decimate: int, seconds: float = 5.0, raw_path=None, fmt='16',
     duration = (last - first) if first is not None and count > 1 else 0
     # Include one packet's expected duration in denominator: measuring between completions
     # otherwise counts N packets across N-1 intervals and biases a short run high.
-    duration += packet_samples / float(info.IQSampleRate)
-    stamp_info = timestamp_summary(stamps, float(info.IQSampleRate)) if timestamps else None
+    duration += packet_samples / fs
+    stamp_info = timestamp_summary(stamps, fs) if timestamps else None
     return {'decimate': decimate, 'format_bits': int(fmt),
-            'configured_sps': float(info.IQSampleRate),
+            'configured_sps': fs,
             'timestamps': stamp_info,
             'host_minus_device_ms': (round((duration - stamp_info['device_duration_s']) * 1000, 2)
                                      if stamp_info and stamp_info['timestamp_usable'] else None),

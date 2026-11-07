@@ -223,7 +223,6 @@ class BenchRadio(Radio):
         streamed = self.stream_thread is not None
         entering_lo = int(self.sdr.tx_lo)
         receiver = snapshot['receivers'][-1]
-        assert receiver['display_number'] == 8
         ready = threading.Event()
         def track():
             try:
@@ -283,18 +282,27 @@ class BenchRadio(Radio):
         self.check_stream()
         source = json.loads((self.artifacts / 'source.json').read_text())
         source['frequency_reference'] = ('phase-continuous transmit correction' if streamed else
-            'cyclic analog source hardware LO correction, without phase continuity guarantee') + ' from acquired IQ8 tone; all adjustments logged'
+            'cyclic analog source hardware LO correction, without phase continuity guarantee') + f' from acquired IQ{receiver["display_number"]} tone; all adjustments logged'
         source['reference_hz'] = reference_hz
         save(self.artifacts / 'source.json', source)
 
-    def narrow(self, *, streaming=False):
+    def narrow(self, *, streaming=False, frequencies=FREQUENCIES, tones=TONES, modes=MODES):
         # The short period is continuous in either the hardware cyclic buffer or
         # the existing streaming path, which permits transmit-only carrier trim.
+        if not 1 <= len(frequencies) <= 16 or len(tones) != len(frequencies) or len(modes) != len(frequencies):
+            raise ValueError('narrow source requires 1-16 matching frequency, tone and mode entries')
+        if any(mode not in ['am', 'nfm', 'usb', 'lsb'] for mode in modes):
+            raise ValueError('unsupported narrow source mode')
+        if any(not np.isfinite(frequency) or not np.isfinite(tone) or not 0 < tone < 4000
+               or abs(frequency - CENTER) + 8000 >= self.rate / 2
+               for frequency, tone in zip(frequencies, tones, strict=True)):
+            raise ValueError('source frequencies must fit the actual transmit sample rate')
         count = round(self.rate / 10)
         phase = np.arange(count, dtype=np.float64) * (2 * np.pi / count)
         signal = np.zeros(count, dtype=np.complex64)
         actual = []
-        for frequency, tone, mode in zip(FREQUENCIES, TONES, MODES, strict=True):
+        scale = 1536 * min(1, 8 / len(frequencies))
+        for frequency, tone, mode in zip(frequencies, tones, modes, strict=True):
             rf_cycles = round((frequency - CENTER) * count / self.rate)
             tone_cycles = round(tone * count / self.rate)
             modulation = tone_cycles * phase
@@ -305,7 +313,7 @@ class BenchRadio(Radio):
                 component = np.exp(1j * (rf_cycles * phase + 2500 / tone * np.sin(modulation)))
             else:
                 component = np.exp(1j * (rf_cycles + (tone_cycles if mode == 'usb' else -tone_cycles)) * phase)
-            signal += (1536 * component).astype(np.complex64)
+            signal += (scale * component).astype(np.complex64)
             actual.append({'frequency_hz': CENTER + rf_cycles * self.rate / count,
                 'commanded_frequency_hz': self.sdr.tx_lo + rf_cycles * self.rate / count,
                 'tone_hz': tone_cycles * self.rate / count, 'mode': mode})

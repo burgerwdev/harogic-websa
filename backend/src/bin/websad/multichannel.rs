@@ -66,7 +66,12 @@ impl Directory {
     }
     pub(super) fn check_control(&self,slot:u32,data:&Value)->Result<bool,String> {
         if data.get("service_id").is_some_and(|service|service!=&self.boot) {return Err("source service restarted; command not replayed".into());}
-        if data.get("receiver_uid").is_some_and(|uid|self.receivers.get(&slot).is_none_or(|r|uid!=&r.uid)) {return Err("receiver identity changed; command not replayed".into());}
+        if data.get("receiver_uid").is_some_and(|uid| {
+            // An explicit null binds a new edit to an observed empty slot.
+            // Omitted identity remains the legacy, unbound command form.
+            if uid.is_null() { data["service_id"] != self.boot || self.receivers.contains_key(&slot) }
+            else { self.receivers.get(&slot).is_none_or(|r|uid!=&r.uid) }
+        }) {return Err("receiver identity changed; command not replayed".into());}
         if let Some(revision)=data.get("expected_revision") {
             if !self.actions.iter().any(|(id,old)|Some(id.as_str())==data["action_id"].as_str()&&old==data)
                 && self.receivers.get(&slot).is_none_or(|r|revision.as_str()!=Some(r.revision.to_string().as_str())) {return Err("receiver revision changed; refresh before retrying".into());}
@@ -408,6 +413,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     channel.freq=frequency;channel.enabled=enabled;channel.processing_enabled=!processors.is_empty();
     channel.baseband=Some(baseband);
     if let Some(processor)=processors.first() {
+        if processor["id"].as_str().is_none() {return Err("processor id must be a string".into());}
         if !matches!(processor["kind"].as_str(),Some("demodulator"|"decoder")) {return Err("unsupported processor kind".into());}
         channel.mode=processor["mode"].as_str().ok_or("processor mode missing")?.into();
         let descriptor=websa_channelizer::catalog::mode(&channel.mode).ok_or("unsupported processor mode")?;
@@ -416,7 +422,11 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
             || processor["kind"]!=if purpose=="listen" {"demodulator"} else {"decoder"} {
             return Err("processor kind and purpose must match the mode descriptor".into());
         }
-        channel.if_bw=processor["bandwidth_hz"].as_f64().unwrap_or(descriptor.default_bandwidth_hz);
+        channel.if_bw=match processor.get("bandwidth_hz") {
+            None=>descriptor.default_bandwidth_hz,
+            Some(value)=>value.as_f64().filter(|value|value.is_finite())
+                .ok_or("bandwidth_hz must be a finite number")?,
+        };
         // Use the same typed parser, ranges and cross-field checks as the main panel.
         let mut controls=json!({"channel":slot,"mode":channel.mode,"freq":frequency,
             "enabled":enabled,"processing_enabled":true,"baseband":channel.baseband,"if_bw":channel.if_bw});
@@ -440,7 +450,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         processor.as_object_mut().unwrap().retain(|key,_|MODE_CONTROLS.contains(&key.as_str())||
             ["id","kind","mode","minimum_rate_hz","bandwidth_hz","pcm_gain","agc","squelch_dbm","nr","nr_algorithm","nr_strength","nr_atten_db"].contains(&key.as_str()));
     }
-    let fs=state.capture_bandwidth()/0.8;
+    let fs=state.capture_input_rate();
     let plan=service_ddc::source_plan(fs,&channel)?;
     if enabled {
         let (lo,hi)=state.freq_limits();
@@ -912,6 +922,40 @@ mod tests {
         config
     }
 
+    #[test]
+    fn native_config_boundary_rejects_malformed_processor_fields_before_admission() {
+        let app = app();
+        let mut state = app.state.lock().unwrap();
+        let before = state.channel_configs();
+        let revision = state.config_version;
+        let mut config = listen_config(100e6);
+        config["baseband"] = json!({"frequency_hz":100e6,"passband_hz":16000,
+            "transition_hz":1000,"minimum_rate_hz":48000});
+        let request = |config: Value| json!({"type":"create","request_id":"typed-processor","config":config});
+        let mut accepted = Vec::new();
+        for (field, value) in [("id", None), ("id", Some(Value::Null)), ("id", Some(json!(3))),
+            ("bandwidth_hz", Some(Value::Null)), ("bandwidth_hz", Some(json!("6000"))),
+            ("bandwidth_hz", Some(json!(true)))] {
+            let mut malformed = config.clone();
+            let processor = malformed["processors"][0].as_object_mut().unwrap();
+            if let Some(value) = value { processor.insert(field.into(), value); }
+            else { processor.remove(field); }
+            let label = malformed["processors"][0].to_string();
+            if prepare_change(&mut state, &request(malformed)).is_ok() { accepted.push(label); }
+            assert_eq!(state.channel_configs(), before);
+            assert_eq!(state.config_version, revision);
+            assert!(state.receivers.receivers.is_empty());
+        }
+        // Omission still selects the catalog default; only explicitly malformed
+        // values are rejected, and valid processor IDs remain caller-defined.
+        config["processors"][0].as_object_mut().unwrap().remove("bandwidth_hz");
+        let valid = prepare_change(&mut state, &request(config)).unwrap();
+        assert_eq!(valid.config["processors"][0]["id"], "primary");
+        assert_eq!(valid.config["processors"][0]["bandwidth_hz"].as_f64(),
+            Some(websa_channelizer::catalog::mode("am").unwrap().default_bandwidth_hz));
+        assert!(accepted.is_empty(), "malformed processor fields were accepted: {accepted:?}");
+    }
+
     #[tokio::test]
     async fn ft8_quick_copy_requires_processor_passband_and_never_changes_primary_on_rejection() {
         let app=app();
@@ -1058,6 +1102,48 @@ mod tests {
                 assert_eq!(receivers[0]["confirmed"]["baseband"]["frequency_hz"],100_010_000.0);
                 assert!(state.channel_configs()[0].processing_enabled);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_slot_tuning_is_bound_to_service_and_rejects_concurrent_slot_reuse() {
+        let app = app();
+        let created = run(&app, json!({"type":"create","request_id":"old-listener",
+            "config":iq_config(100e6)})).await;
+        let old_uid = created["snapshot"]["receivers"][0]["receiver_uid"].clone();
+        let retired = run(&app, json!({"type":"retire","request_id":"retire-listener",
+            "receiver_uid":old_uid})).await;
+        assert!(retired["snapshot"]["receivers"].as_array().unwrap().is_empty());
+        let request = json!({"channel":1,"enabled":true,"freq":100_005_000.0,
+            "service_id":retired["snapshot"]["service_id"],"receiver_uid":null});
+        let mut state = app.state.lock().unwrap();
+        let before = state.channel_configs();
+        for service in [Value::Null, json!("previous-service")] {
+            let mut stale = request.clone(); stale["service_id"] = service;
+            if stale["service_id"].is_null() { stale.as_object_mut().unwrap().remove("service_id"); }
+            assert!(dispatch(&mut state, "SET_SDR_CHANNEL", &stale).is_err());
+            assert_eq!(state.channel_configs(), before);
+        }
+        let mut stale = request.clone(); stale["receiver_uid"] = old_uid.clone();
+        assert!(dispatch(&mut state, "SET_SDR_CHANNEL", &stale).is_err());
+        assert_eq!(state.channel_configs(), before);
+
+        dispatch(&mut state, "SET_SDR_CHANNEL", &request)
+            .expect("a current empty-slot intent must restore the retired listener");
+        let current = state.receiver_snapshot()["receivers"][0].clone();
+        assert_ne!(current["receiver_uid"], old_uid);
+        assert_eq!(current["confirmed"]["purpose"], "listen");
+        assert_eq!(current["confirmed"]["baseband"]["frequency_hz"], 100_005_000.0);
+        let restored = state.channel_configs();
+        let revision = state.config_version;
+        // Another client's create can occupy this slot after an empty snapshot
+        // was observed. The delayed edit must not retune its new identity.
+        let mut delayed = request; delayed["freq"] = json!(100_025_000.0);
+        assert!(dispatch(&mut state, "SET_SDR_CHANNEL", &delayed).is_err());
+        assert_eq!(state.channel_configs(), restored);
+        assert_eq!(state.config_version, revision);
+        for field in ["receiver_uid", "revision", "confirmed", "stream"] {
+            assert_eq!(state.receiver_snapshot()["receivers"][0][field], current[field], "{field}");
         }
     }
 

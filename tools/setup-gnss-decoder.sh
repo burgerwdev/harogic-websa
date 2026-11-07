@@ -65,10 +65,12 @@ if [[ -n "$ARCHIVE_OVERRIDE" ]]; then
   [[ "${digest%% *}" == "$SHA" ]] || { printf 'Source archive checksum mismatch\n' >&2; exit 1; }
   [[ "$ARCHIVE_OVERRIDE" == "$ARCHIVE" ]] || cp "$ARCHIVE_OVERRIDE" "$ARCHIVE"
 elif [[ ! -f "$ARCHIVE" ]]; then
-  curl --fail --location --proto '=https' --proto-redir '=https' "$URL" --output "$ARCHIVE.part"
-  digest="$(sha256sum "$ARCHIVE.part")"
+  download_temp="$(mktemp "$PREFIX/downloads/.gnss-download.XXXXXX")"
+  trap 'rm -f -- "$download_temp"' EXIT
+  curl --fail --location --proto '=https' --proto-redir '=https' "$URL" --output "$download_temp"
+  digest="$(sha256sum "$download_temp")"
   [[ "${digest%% *}" == "$SHA" ]] || { printf 'Source archive checksum mismatch\n' >&2; exit 1; }
-  mv "$ARCHIVE.part" "$ARCHIVE"
+  mv "$download_temp" "$ARCHIVE"
 fi
 digest="$(sha256sum "$ARCHIVE")"
 [[ "${digest%% *}" == "$SHA" ]] || { printf 'Cached source archive checksum mismatch\n' >&2; exit 1; }

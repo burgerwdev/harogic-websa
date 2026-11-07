@@ -1,11 +1,9 @@
 /**
  * STATUS → parameter-slot wiring.
  *
- * `updateStatus()` is the only place where a backend report enters the frontend, and every
- * recurring "the panel disagrees with the device" bug in this project lived here (the
- * parameter-slot model in core/params.ts was introduced for exactly that). The pure slots
- * are unit tested in params.test.ts; this test covers the mapping from the wire payload
- * onto them, which had no test at all (report finding P0-2 step 2).
+ * `updateStatus()` maps backend reports onto parameter slots. The pure slots are tested
+ * in params.test.ts; this file exercises wire values, requested-versus-confirmed state,
+ * mode transitions and the corresponding UI.
  *
  * The payload below is a real STATUS captured from a SAN-90, trimmed to the fields the
  * slots consume (kept structurally complete so a shape change fails here).

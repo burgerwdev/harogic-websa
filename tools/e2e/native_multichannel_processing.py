@@ -14,7 +14,7 @@ from pathlib import Path
 from native_multichannel import api, config
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, post, start_service, stop
-from viewport_baseline import wait_ui_ready
+from viewport_baseline import wait_async_condition, wait_ui_ready
 from websockets.asyncio.client import connect
 from websockets.sync.client import connect as sync_connect
 
@@ -234,14 +234,14 @@ def browser_gate(origin, snapshot, artifacts):
         if preview.count():
             preview.click()
         third = snapshot['receivers'][2]['receiver_uid']
-        page.wait_for_function('(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid)?.confirmed.processors[0]?.mode==="am")', arg=third)
+        wait_async_condition(page, '(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid)?.confirmed.processors[0]?.mode==="am")', arg=third)
         overview.locator('.mc-row').nth(2).locator('[data-action=listen]').click()
         page.wait_for_function('(uid) => window.websaAudioStatus().some(r=>r.channel===uid&&r.playedFrames>1000&&!r.error)', arg=third)
         form.locator('[name=mode]').select_option('')
         form.locator('button[type=submit]').click()
         if preview.count():
             preview.click()
-        page.wait_for_function('(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid)?.confirmed.processors.length===0)', arg=third)
+        wait_async_condition(page, '(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid)?.confirmed.processors.length===0)', arg=third)
         expect(overview.locator('.mc-monitor')).to_have_count(0)
         final = api(origin)
         assert final['receivers'][0]['stream'] == before['receivers'][0]['stream']

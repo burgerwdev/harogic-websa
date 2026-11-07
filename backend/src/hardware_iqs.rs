@@ -1,8 +1,8 @@
 //! Exclusive SDK 0.55.100 IQS owner for the opt-in WebSA SDR path.
 //! Only this thread calls open/next/close. Sustained stalls end the stream explicitly.
 use crate::hardware_swp::{
-    owner_slot_free, park_stuck_owner, read_defaults, read_front_end_actual, FrontEnd,
-    FrontEndActual, GnssInfo, SwpDefaults, OPEN_TIMEOUT,
+    finish_owner, owner_slot_free, park_stuck_owner, read_defaults, read_front_end_actual, FrontEnd,
+    FrontEndActual, GnssInfo, SwpDefaults, OPEN_TIMEOUT, OWNER_STOP_TIMEOUT,
 };
 use websa_channelizer::timing::{Timing, TimingSnapshot};
 use parking_lot::Mutex;
@@ -52,9 +52,6 @@ const STALL_RECOVERY: Duration = Duration::from_millis(750);
 const PACKET_WAIT: Duration = Duration::from_secs(4);
 /// Reopening cannot fix consumer backlog. Fail explicitly after this continuous wait.
 const BACKLOG_TIMEOUT: Duration = Duration::from_secs(2);
-/// Give healthy teardown a short grace period, then park the exclusive SDK owner.
-const OWNER_STOP_TIMEOUT: Duration = Duration::from_millis(250);
-
 /// Bus failures without a valid packet. IF overflow is valid data, not a retry.
 const TRANSIENT_IQS: [i32; 3] = [-8, -9, -10];
 
@@ -153,6 +150,9 @@ struct PacketInfo {
 pub struct CaptureGeometry {
     pub center: f64,
     pub bandwidth: f64,
+    /// Versioned shim clock contract, validated against SDK IQSampleRate by
+    /// the production shim. Usable RF bandwidth does not determine this rate.
+    pub sample_rate: f64,
     pub refclk_hz: Option<f64>,
     pub refclk_src: Option<i32>,
     pub front_end: Option<FrontEndActual>,
@@ -665,6 +665,7 @@ impl Device {
                 CaptureGeometry {
                     center: configured,
                     bandwidth,
+                    sample_rate: FS / f64::from(device_decimate),
                     refclk_hz,
                     refclk_src,
                     front_end: read_front_end_actual(library, handle, b"san90_iqs_front_end_actual_v1\0"),
@@ -714,6 +715,7 @@ impl Device {
         Ok(CaptureGeometry {
             center: configured,
             bandwidth,
+            sample_rate: FS / f64::from(device_decimate),
             refclk_hz,
             refclk_src,
             front_end: read_front_end_actual(self.library, self.handle, b"san90_iqs_front_end_actual_v1\0"),
@@ -1471,17 +1473,6 @@ impl HardwareCapture {
     }
 }
 
-/// Never close SDK state on another thread while an owner call is still running.
-/// Parking keeps the existing session exclusion gate closed until owner teardown ends.
-fn finish_owner(owner: JoinHandle<()>, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    while !owner.is_finished() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    if owner.is_finished() { let _ = owner.join(); }
-    else { park_stuck_owner(owner); }
-}
-
 impl Drop for HardwareCapture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -1900,6 +1891,20 @@ extern "C" int san90_next_v3(void* h, short* iq, unsigned cap, PacketInfo* info,
         compile_fake_iqs_source("shim", FAKE_IQS_SHIM)
     }
 
+    pub(crate) fn compile_fake_iqs_narrow_bandwidth_shim() -> String {
+        // Usable bandwidth is independent of sample clock in the shim ABI.
+        // Keep the same requested decimation and stamp cadence, but report a
+        // narrower analog passband at both open and reconfiguration.
+        compile_fake_iqs_source("narrow_bandwidth", &FAKE_IQS_SHIM.replace(
+            "*bandwidth = 50000000.0 / decimate;", "*bandwidth = 25000000.0 / decimate;"))
+    }
+
+    pub(crate) fn compile_fake_iqs_reconfigure_failure_shim() -> String {
+        let source = FAKE_IQS_SHIM.replace(
+            "    reconfig_center = center;", "    return -110;\n    reconfig_center = center;");
+        compile_fake_iqs_source("reconfigure_failure", &source)
+    }
+
     fn compile_fake_iqs_source(name: &str, contents: &str) -> String {
         let dir = std::env::temp_dir().join(format!("websa_fake_iqs_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2069,10 +2074,21 @@ extern "C" int SWP_ProfileDeInit(void**, SWP_Profile_TypeDef* out) { *out = {}; 
 extern "C" int SWP_Configuration(void**, const SWP_Profile_TypeDef* in, SWP_Profile_TypeDef* out, SWP_TraceInfo_TypeDef* trace) {
     *out = *in; *trace = {}; return 0;
 }
+static int configuration_mode = 0;
+static int starts = 0, stops = 0;
+extern "C" int IQS_BusTriggerStart(void**) { ++starts; return 0; }
+extern "C" int IQS_BusTriggerStop(void**) { ++stops; return 0; }
 extern "C" int IQS_Configuration(void**, const IQS_Profile_TypeDef* in, IQS_Profile_TypeDef* out, IQS_StreamInfo_TypeDef* stream) {
     *out = *in;
     out->RefLevel_dBm = -17.5; out->Atten = 13; out->Preamplifier = ForcedOff; out->IFGainGrade = 2;
     *stream = {}; stream->PacketSamples = 16240; stream->IQSampleRate = 3906250.0; stream->Bandwidth = 3125000.0;
+    stream->PacketDataSize = 16240 * 4;
+    if (configuration_mode == 1) stream->IQSampleRate = std::numeric_limits<double>::quiet_NaN();
+    if (configuration_mode == 2) stream->IQSampleRate = std::numeric_limits<double>::infinity();
+    if (configuration_mode == 3) stream->PacketDataSize -= 1;
+    if (configuration_mode == 4) stream->PacketDataSize += 1;
+    if (configuration_mode == 5) out->DataFormat = Complex8bit;
+    if (configuration_mode == 6) stream->PacketSamples = UINT32_MAX;
     return 0;
 }
 static int packet_mode = -12;
@@ -2083,10 +2099,13 @@ static int16_t samples[16240 * 2];
 extern "C" int IQS_GetIQStream_PM1(void**, IQStream_TypeDef* stream) {
     *stream = {};
     stream->AlternIQStream = packet_mode == 2 ? nullptr : samples;
-    stream->IQS_StreamInfo.PacketSamples = packet_mode == 1 ? 1 : 16240;
+    stream->IQS_StreamInfo.PacketSamples = packet_mode == 1 ? 1 : packet_mode == 8 ? UINT32_MAX : 16240;
+    stream->IQS_StreamInfo.PacketDataSize = packet_mode == 4 ? 16240 * 4 - 1 : packet_mode == 5 ? 16240 * 4 + 1 : 16240 * 4;
+    stream->IQS_Profile.DataFormat = packet_mode == 6 ? Complex8bit : packet_mode == 7 ? Real16bit : Complex16bit;
     stream->IQS_TriggerInfo.SysTimerCountOfFirstDataPoint = next_stamp;
     next_stamp += 519680;
     stream->IQS_ScaleToV = packet_mode == 3 ? std::numeric_limits<float>::quiet_NaN() : 1.0f;
+    if (packet_mode == 9) stream->IQS_ScaleToV = std::numeric_limits<float>::infinity();
     stream->DeviceState.IFOverflow = overflow_flag;
     return packet_mode < 0 ? packet_mode : 0;
 }
@@ -2122,7 +2141,17 @@ int main() {
         assert(sizeof(actual) == 24);
         assert(san90_iqs_front_end_actual_v1(&state, &actual) == 0);
         assert(actual.ref_dbm == -17.5 && actual.atten == 13 && actual.preamp == 1 && actual.ifgain == 2);
-        state.triggered = true;
+        for (configuration_mode = 1; configuration_mode <= 6; ++configuration_mode) {
+            state.triggered = true;
+            const int starts_before = starts, stops_before = stops;
+            assert(san90_iqs_reconfig_v2(&state, 100000000.0, &request, 16, &bandwidth, &center) == -102);
+            assert(!state.triggered && starts == starts_before && stops == stops_before + 1);
+            // Rejected geometry cannot replace the last known-good readback.
+            assert(state.sample_rate_hz == 3906250.0 && state.center_hz == 100000000.0);
+        }
+        configuration_mode = 0;
+        assert(san90_iqs_reconfig_v2(&state, 100000000.0, &request, 16, &bandwidth, &center) == 0);
+        assert(state.triggered && starts == 1);
         return 0;
     });
     for (int i = 0; i < 16240 * 2; ++i) samples[i] = i % 2 ? -32768 : 32767;
@@ -2157,10 +2186,16 @@ int main() {
     assert(timing.fetch_status == 0 && timing.fft_status == -12);
     fft_mode = 1;
     assert(next() == -103 && warning == 0);
-    for (packet_mode = 1; packet_mode <= 3; ++packet_mode) {
-        assert(san90_next(&state, copied, 16240, &info) == -103);
-        assert(san90_next_v2(&state, copied, 16240, &info, nullptr, nullptr, 0, &points) == -103);
-        assert(next() == -103 && warning == 0);
+    for (packet_mode = 1; packet_mode <= 9; ++packet_mode) {
+        for (int entry = 0; entry < 3; ++entry) {
+            std::fill(std::begin(copied), std::end(copied), -1234);
+            int status = entry == 0 ? san90_next(&state, copied, 16240, &info)
+                : entry == 1 ? san90_next_v2(&state, copied, 16240, &info, nullptr, nullptr, 0, &points)
+                : next();
+            assert(status == -103);
+            for (auto value : copied) assert(value == -1234);
+        }
+        assert(warning == 0);
     }
     packet_mode = fft_mode = 0;
     assert(next() == 0 && warning == 0);
@@ -2370,7 +2405,7 @@ int main() {
         assert_eq!(geometry.center, 200e6);
         assert_eq!(geometry.generation, 1);
         capture.arm().unwrap();
-        // Up to two old-generation packets can still be queued; later fetches are generation 1.
+        // Queued old-generation packets drain before the newly armed generation.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let packet = capture.next().unwrap();

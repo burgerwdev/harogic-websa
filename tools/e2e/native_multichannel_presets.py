@@ -58,9 +58,8 @@ def browser_gate(origin, snapshot, recording, artifacts):
         saved = api(origin, ENDPOINT)
         entry = saved['presets'][0]
         assert entry['name'] == NAME
-        assert set(entry['settings']) == {'purpose', 'baseband', 'processors'}
-        assert entry['settings']['baseband'] == before[0]['confirmed']['baseband']
-        assert entry['settings']['processors'][0]['agc'] is True
+        assert entry['settings'] == {key: before[0]['confirmed'][key]
+            for key in ['purpose', 'baseband', 'processors', 'continuity']}
         assert_receivers_continue(before, api(origin)['receivers'])
         assert not writes
         # The server, rather than the page session, owns the saved preset.
@@ -68,6 +67,8 @@ def browser_gate(origin, snapshot, recording, artifacts):
         panel.locator('summary').click()
         expect(panel.locator('[data-preset-list] option')).to_have_count(2)
         configure(origin, uid, 'retune', lambda c: c['baseband'].update(frequency_hz=100001000))
+        expect(view.locator('[name=frequency]')).to_have_value('100.001000')
+        view.locator('[data-frequency-unit=Hz]').click()
         expect(view.locator('[name=frequency]')).to_have_value('100001000')
         panel.locator('[data-preset-list]').select_option(NAME)
         panel.locator('[data-preset-load]').click()
@@ -77,7 +78,7 @@ def browser_gate(origin, snapshot, recording, artifacts):
         # An external stop after preview must not be undone by confirming stale settings.
         def stop_and_change_agc(c):
             c['enabled'] = False
-            c['processors'][0]['agc'] = False
+            c['processors'][0]['agc'] = not entry['settings']['processors'][0]['agc']
         stopped = configure(origin, uid, 'concurrent-stop', stop_and_change_agc)
         expect(view.locator('[data-action=toggle-receiver]')).to_have_attribute('aria-checked', 'false')
         preview.locator('button').click()
@@ -130,6 +131,7 @@ def browser_gate(origin, snapshot, recording, artifacts):
         expect(child_panel.locator('summary')).to_have_text('频点预设')
         child_panel.locator('[data-preset-load]').focus(); child.keyboard.press('Space', delay=1300)
         expect(compact.locator('[data-preview]')).to_contain_text('100.000000')
+        compact.locator('[data-frequency-unit=Hz]').click()
         expect(compact.locator('[name=frequency]')).to_have_value('100000000')
         assert compact.locator('.mc-body').evaluate('e=>e.scrollWidth-e.clientWidth') == 0
         child.screenshot(path=str(artifacts / 'presets-420-zh-light.png'))

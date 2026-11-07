@@ -60,7 +60,7 @@ mkdir -p -- "$build_dir" "$(dirname -- "$output")"
 # provides the no_std panic handler; AX.25 CRC and AIS framing require Rust.
 env -u MAKEFLAGS -u MFLAGS -u CARGO_MAKEFLAGS \
     CARGO_TARGET_DIR="$build_dir/rust" \
-    "$cargo" build --offline --release --manifest-path "$onair_root/rust/Cargo.toml" \
+    "$cargo" build --offline --release -j 1 --manifest-path "$onair_root/rust/Cargo.toml" \
     -p onair --features bare
 
 # Section GC discards receiver functions (and their decoder dependencies) from

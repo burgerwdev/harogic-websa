@@ -9,10 +9,10 @@ esac
 cd "$(dirname "$0")"
 
 echo "==== Rust service contracts ===="
-cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib -- --test-threads=1
-cargo test --release -j 1 --manifest-path backend/Cargo.toml --bins -- --test-threads=1
-cargo test -j 1 --manifest-path backend/Cargo.toml --test '*' -- --test-threads=1
-cargo build --release -j 1 --manifest-path backend/Cargo.toml --bin websad
+# Integration tests also build the service executable. Keep one profile so they
+# share dependencies with the unit tests and do not repeat a debug build.
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib --bins --tests -- --test-threads=1
+echo 'Service binary rebuilt for integration tests; restart any running instance with make restart.'
 
 echo "==== Python tool tests (pytest) ===="
 python3 -m pytest tests/ -q

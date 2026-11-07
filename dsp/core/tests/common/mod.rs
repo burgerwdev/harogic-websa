@@ -3,9 +3,9 @@
 //! seeds — the same code produces the same samples everywhere, which is what makes the committed
 //! sensitivity baselines a contract instead of a hope.
 //!
-//! SNR here is **in-band**: signal mean power against noise power in the 100-3000 Hz band the
-//! waterfall reads (white noise at 48 kHz scaled so its in-band share is exact), within ~0.6 dB of
-//! WSJT-X's 2500 Hz reference convention.
+//! SNR here is **nominal in-band**: active signal power against the expected white-noise share
+//! in the 100-3000 Hz receive band. Total noise power is normalized; finite realizations vary
+//! slightly in measured band power. The convention differs from 2500 Hz by about 0.6 dB.
 #![allow(dead_code)]
 
 pub const RATE: f64 = 48_000.0;
@@ -31,7 +31,7 @@ impl Rng {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    /// Standard normal, Box-Muller (both values of the pair, cached).
+    /// Standard normal, using the cosine output of a Box-Muller pair.
     pub fn normal(&mut self) -> f64 {
         fn unit(rng: &mut Rng) -> f64 {
             // 53 random bits -> uniform in (0, 1]: the open lower bound keeps log() finite.
@@ -103,8 +103,9 @@ pub fn at_amp_db(iq: &[f32], amp_db: f64) -> Vec<f32> {
 }
 
 /// One scenario buffer: noise at `noise_power` (total) + `signal` inserted at `snr_db` in-band,
-/// `insert_s` into the slot, shifted by `hz`. For pre-scaled signals (already at their level) use
-/// `snr_db = 0.0` and fold the level into `signal` with [`at_amp_db`].
+/// `insert_s` into the slot, shifted by `hz`. `noise_power` is the receive-band noise power,
+/// not the total power of the white noise buffer. This always rescales the signal;
+/// use [`insert`] to preserve an already calibrated signal amplitude.
 pub fn scenario(
     noise_iq: &[f32],
     noise_power: f64,

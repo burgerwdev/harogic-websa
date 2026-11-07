@@ -15,14 +15,13 @@ import os
 import resource
 import signal
 import struct
-import subprocess
 import time
 import zlib
 from pathlib import Path
 
 from native_multichannel import api, config
 from playwright.sync_api import expect, sync_playwright
-from rust_iq_browser import ROOT, WEBSAD, free_port, post, start_service, stop
+from rust_iq_browser import ROOT, WEBSAD, free_port, post, start_owned_service, start_service, stop
 from viewport_baseline import wait_ui_ready
 from websockets.asyncio.client import connect
 
@@ -241,16 +240,11 @@ def write_failure_gate(artifacts):
     def limit():
         signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
         resource.setrlimit(resource.RLIMIT_FSIZE, (65536, 65536))
-    def ready():
-        try:
-            return api(origin)
-        except OSError:
-            return None
     proc = None
     with (artifacts / 'write-failure-service.log').open('w') as log:
         try:
-            proc = subprocess.Popen([str(WEBSAD)], cwd=ROOT, env=env, stdout=log, stderr=log, preexec_fn=limit)
-            until(ready)
+            proc, origin = start_owned_service([str(WEBSAD)], port=int(env['WEBSA_PORT']), cwd=ROOT,
+                env=env, stdout=log, stderr=log, preexec_fn=limit, startup_timeout=12)
             setup(origin)
             before = api(origin)
             uid, healthy = [r['receiver_uid'] for r in before['receivers'][::2]]
@@ -271,8 +265,8 @@ def write_failure_gate(artifacts):
             blocks, complete = read_archive(root / task_id / 'iq-000000.wbiq')
             assert blocks and not complete
             stop(proc)
-            proc = subprocess.Popen([str(WEBSAD)], cwd=ROOT, env=env, stdout=log, stderr=log)
-            until(ready)
+            proc, origin = start_owned_service([str(WEBSAD)], port=int(env['WEBSA_PORT']), cwd=ROOT,
+                env=env, stdout=log, stderr=log, startup_timeout=12)
             recovered = task(origin, task_id)
             assert recovered['state'] == 'failed'
             assert int(recovered['tracks'][0]['raw_bytes']) == sum(i['raw_bytes'] for i, _ in blocks)

@@ -29,6 +29,8 @@ export class WorkbenchSession {
   private retirements = new Map<string, Promise<CommandReply>>();
   private mutationTail: Promise<void> = Promise.resolve();
   private generation = 0;
+  /** Invalidates local continuations on Preset, service replacement, and disposal. */
+  get lifecycleVersion(): number { return this.generation; }
   private disposed = false;
   private retiredServices = new Set<string | undefined>();
   private stop: () => void;
@@ -88,9 +90,9 @@ export class WorkbenchSession {
     const r = this.snapshot.receivers.find(r => r.receiver_uid === uid);
     if (!r || r.reception && r.reception.state!=='receiving' || r.fault || r.processing_state === 'failed' || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
     const route = this.route(uid);
-    if (this.monitorMode === 'follow') return uid === this.selected && this.masterGain > 0 && route.gain > 0;
+    if (this.monitorMode === 'follow') return uid === this.selected;
     const solo = this.snapshot.receivers.some(r => r.state === 'running' && receiverHasAudio(this.snapshot, r.confirmed) && this.route(r.receiver_uid).enabled && this.route(r.receiver_uid).solo);
-    return route.enabled && (!solo || route.solo) && route.gain > 0 && this.masterGain > 0;
+    return route.enabled && (!solo || route.solo);
   }
   /** A scratch receiver can revisit a saved frequency without doubling the same audio. */
   duplicateMonitor(uid: string): string | null {
@@ -106,22 +108,48 @@ export class WorkbenchSession {
       && signature(r) === key && this.route(r.receiver_uid).gain === route.gain && this.route(r.receiver_uid).pan === route.pan)
       .sort((a, b) => a.display_number - b.display_number)[0]?.receiver_uid ?? null;
   }
-  audible(uid: string): boolean { return this.monitorEligible(uid) && this.duplicateMonitor(uid) === null; }
+  /** Selected healthy routes keep rendering PCM before the local output controls. */
+  playbackActive(uid: string): boolean { return this.monitorEligible(uid) && this.duplicateMonitor(uid) === null; }
+  audible(uid: string): boolean { return !this.masterMuted && this.masterGain > 0 && this.route(uid).gain > 0 && this.playbackActive(uid); }
   retiring(uid: string): boolean { return this.retirements.has(uid); }
   private invalidated(command: ServiceCommand): CommandReply {
     return { request_id: command.request_id, snapshot: this.snapshot, fault: { scope: 'request',
       code: this.disposed ? 'CLOSED' : 'SOURCE_RESTARTED', message: 'Receiver session changed before command completion', retryable: !this.disposed } };
   }
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.mutationTail.then(operation);
+    this.mutationTail = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
   private enqueue(command: ServiceCommand): Promise<CommandReply> {
     const generation = this.generation, captured = clone(command);
-    const operation = this.mutationTail.then(() => {
+    return this.serialize(async () => {
       if (this.disposed || generation !== this.generation) return this.invalidated(captured);
       if (captured.type === 'retire' && !this.snapshot.receivers.some(r => r.receiver_uid === captured.receiver_uid))
         return { request_id: captured.request_id, snapshot: this.snapshot, fault: null };
       return this.dispatch(captured);
     });
-    this.mutationTail = operation.then(() => undefined, () => undefined);
-    return operation;
+  }
+  /** Observe identity at dispatch, after earlier local mutations have committed. */
+  create(config: ReceiverConfig): Promise<{ receiver_uid: string | null; fault: Fault | null }> {
+    const command: ServiceCommand = { type: 'create', request_id: this.requestId(), config: clone(config) };
+    const generation = this.generation;
+    return this.serialize(async () => {
+      const cancelled = () => ({ receiver_uid: null, fault: this.invalidated(command).fault });
+      if (this.disposed || generation !== this.generation) return cancelled();
+      const known = new Set(this.snapshot.receivers.map(r => r.receiver_uid)), sequence = this.commandSequence + 1;
+      const reply = await this.dispatch(command);
+      if (this.disposed || generation !== this.generation) return cancelled();
+      if (reply.fault) return { receiver_uid: null, fault: reply.fault };
+      const added = reply.snapshot.receivers.filter(r => !known.has(r.receiver_uid));
+      // The protocol returns a snapshot, not a created UID. External concurrent
+      // additions are ambiguous even when names and configurations happen to match.
+      if (added.length === 1) return { receiver_uid: added[0].receiver_uid, fault: null };
+      const fault: Fault = { scope: 'request', code: 'IDENTITY', request_id: command.request_id,
+        message: 'Channel creation completed, but its identity is ambiguous; select the channel explicitly', retryable: false };
+      if (sequence >= this.faultSequence) { this.faultSequence = sequence; this.fault = fault; this.notify(); }
+      return { receiver_uid: null, fault };
+    });
   }
   async recover(uid:string):Promise<CommandReply> {
     const existing=this.recoveries.get(uid);if(existing) return existing;

@@ -3,7 +3,7 @@
 
 `getElementById('...')` with a string literal is invisible to the type system - renaming or
 deleting an element in index.html fails silently at runtime (`if (el)` swallows it). This
-check turns that into a build failure (report finding P1-5).
+check turns that into a build failure.
 
 It found a real one when it was written: `cur-ifgain` was read by core/ws.ts to show the
 actual IF-gain grade, but no such element existed, so the readout never appeared.

@@ -59,6 +59,19 @@ function block(magic = 'IQBF'): ArrayBuffer {
   new Float32Array(data, 56).set([0.5, -0.25, 0.125, 0.75]); return data;
 }
 describe('native receiver control and shared IQ', () => {
+  it('does not commit a command after disposal while its preflight reply is pending', async () => {
+    let finish!: (value: unknown) => void;
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = adapter.dispatch({ type: 'retire', request_id: 'close-during-admission', receiver_uid: uid });
+    const result = pending.catch(error => error);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    adapter.dispose(); finish(response(impact));
+    expect(await result).toBeInstanceOf(Error);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(adapter.snapshot()).toEqual(snapshot);
+  });
+
   it.each(['en', 'zh'] as const)('explains an out-of-capture FM rejection in %s and retries after an explicit shared-window change', async lang => {
     const previousLang = getLang(); setLang(lang);
     snapshot.capture = { ...snapshot.capture, center_hz: 101_700_000, usable_bandwidth_hz: 3_125_000,

@@ -17,7 +17,8 @@ export function renderReceiverTranscript(host: HTMLElement, entries: readonly De
       rows.push(current);
     }
     current.line.text += data.text;
-    current.line.marks.push(...data.marks);
+    // A retained transmission can exceed the engine's function-argument limit.
+    for (const mark of data.marks) current.line.marks.push(mark);
     current.complete = data.endsLine;
   }
   const template = host.ownerDocument.createElement('div');

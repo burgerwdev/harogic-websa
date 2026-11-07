@@ -32,6 +32,36 @@ beforeEach(() => {
 afterEach(() => { ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('main spectrum quick channel', () => {
+  it.each(['Preset', 'service replacement'])('invalidates an open replacement candidate on %s', async change => {
+    mount(); await ui.add(); choose('fixture-c2');
+    if (change === 'Preset') document.dispatchEvent(new Event('websa:preset-applied'));
+    else { session.snapshot = { ...structuredClone(session.snapshot), service_id: 'replacement-service' }; session.notify(); }
+    submit(); await settle();
+    expect(adapter.dispatch).not.toHaveBeenCalled();
+    expect(session.routes.size).toBe(0);
+    expect(document.querySelector('dialog')!.open).toBe(false);
+  });
+
+  it('does not enable listening or announce an in-flight addition after its owner is disposed', async () => {
+    mount(4);
+    let complete!: () => void;
+    vi.mocked(adapter.dispatch).mockImplementation(command => new Promise(resolve => {
+      const snapshot = structuredClone(session.snapshot);
+      if (command.type !== 'create') throw new Error('Expected a create command');
+      snapshot.receivers.push({ ...structuredClone(snapshot.receivers[0]), receiver_uid: 'created-after-close',
+        display_number: 4, confirmed: command.config });
+      complete = () => resolve({ request_id: command.request_id, snapshot, fault: null });
+    }));
+    const changed = vi.fn(); document.addEventListener('websa:sdr-channels-changed', changed);
+    try {
+      const added = ui.add(); await settle(); ui.dispose(); complete();
+      await added;
+      expect(session.snapshot.receivers).toHaveLength(4);
+      expect(session.routes.size).toBe(0);
+      expect(changed).not.toHaveBeenCalled();
+    } finally { document.removeEventListener('websa:sdr-channels-changed', changed); }
+  });
+
   it('fills all sixteen slots and replaces C16 without changing the other receivers', async () => {
     mount(16);
     for (let channel = 4; channel <= 16; channel++) {

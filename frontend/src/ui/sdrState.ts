@@ -50,17 +50,15 @@ export const sdrDemod = createParam<string>('sdr.demod', {
 
 // The legacy pane stored Auto and the viewed mode separately. Only Auto off made that
 // viewed mode a decoder pin; an Auto-on history filter must never become receiver config.
-if (typeof localStorage !== 'undefined') {
-	try {
-		const auto = localStorage.getItem('web-sa-sstv-auto');
-		if (auto !== null && localStorage.getItem('web-sa-sdr-sstv-mode') === null) {
-			const raw = localStorage.getItem('web-sa-sstv-mode');
-			const pin = raw !== null && raw.trim() !== '' ? Number(raw) : NaN;
-			localStorage.setItem('web-sa-sdr-sstv-mode', String(auto === '0' && Number.isInteger(pin) && pin >= 0 ? pin : -1));
-		}
-		localStorage.removeItem('web-sa-sstv-auto');
-	} catch { /* storage disabled */ }
-}
+try {
+	const auto = localStorage.getItem('web-sa-sstv-auto');
+	if (auto !== null && localStorage.getItem('web-sa-sdr-sstv-mode') === null) {
+		const raw = localStorage.getItem('web-sa-sstv-mode');
+		const pin = raw !== null && raw.trim() !== '' ? Number(raw) : NaN;
+		localStorage.setItem('web-sa-sdr-sstv-mode', String(auto === '0' && Number.isInteger(pin) && pin >= 0 ? pin : -1));
+	}
+	localStorage.removeItem('web-sa-sstv-auto');
+} catch { /* storage disabled */ }
 
 /** Primary SSTV decoder mode: -1 lets the VIS header choose, >=0 pins a mode index. */
 export const sdrSstvMode = createParam<number>('sdr.sstvMode', {
@@ -396,7 +394,6 @@ export const SDR_PREF_KEYS = [
  * has their own setup, that setup wins (a mode switch is not a reset).
  */
 export function hasStoredSdrPrefs(): boolean {
-	if (typeof localStorage === 'undefined') return false;
 	try {
 		return SDR_PREF_KEYS.some((key) => localStorage.getItem(key) !== null);
 	} catch {
@@ -425,7 +422,6 @@ export function resetSdrState(): void {
 	sdrLocateMode.set('free');
 	sdrChannelStepHz.set(25_000);
 	sdrChannelAnchorHz.set(0);
-	if (typeof localStorage === 'undefined') return;
 	try {
 		SDR_PREF_KEYS.forEach((key) => localStorage.removeItem(key));
 		localStorage.removeItem('web-sa-sdr-step-bw');

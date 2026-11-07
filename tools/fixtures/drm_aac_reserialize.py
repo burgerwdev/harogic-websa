@@ -4,7 +4,7 @@
 Supports ONLY_LONG single-channel frames, including VCB11 section data, HCR
 spectral reordering and DRM CRC generation. Other window sequences are outside
 the parser's supported input contract. Used by gen_drm_aac_fixture.py; see
-docs/en/DRM_AAC_RESERIALIZATION.md for the format and codec constraints.
+docs/en/reference/DRM.md for the format and codec constraints.
 """
 from __future__ import annotations
 
@@ -71,14 +71,18 @@ def parse_frame(data: bytes) -> dict:
     """Parse an ONLY_LONG AAC-LC single-channel frame."""
     br = BitReader(data)
     out = {"id_syn_ele": br.read(3), "element_tag": br.read(4)}
+    if out["id_syn_ele"] != 0:
+        raise ValueError("unsupported AAC element: only a single-channel element is supported")
     out["global_gain"] = br.read(8)
     br.read(1)  # ics_reserved_bit
     window_sequence = br.read(2)
     out["window_sequence"] = window_sequence
     out["window_shape"] = br.read(1)
-    assert window_sequence == 0, "only ONLY_LONG is implemented"
+    if window_sequence != 0:
+        raise ValueError("unsupported AAC window: only ONLY_LONG is implemented")
     out["max_sfb"] = br.read(6)
-    br.read(1)  # predictor_data_present
+    if br.read(1):  # predictor_data_present
+        raise ValueError("AAC prediction is not supported by the re-serializer")
     out["section_data_start"] = br.pos
 
     # Section data: codebook (4 bits) + length (5 bits, escape 31 = "add 31, more").
@@ -118,8 +122,8 @@ def parse_frame(data: bytes) -> dict:
     out["pulse_present"] = br.read(1)
     out["tns_present"] = br.read(1)
     out["gain_present"] = br.read(1)
-    if out["pulse_present"] or out["gain_present"]:
-        raise ValueError("pulse/gain control not supported by the re-serializer")
+    if out["pulse_present"] or out["tns_present"] or out["gain_present"]:
+        raise ValueError("pulse/TNS/gain control not supported by the re-serializer")
 
     # Spectral data (per band, using the 960-sample long-block offsets — DRM uses
     # the 960-sample transform, not the 1024-sample GA default).

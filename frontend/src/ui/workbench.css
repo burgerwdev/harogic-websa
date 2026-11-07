@@ -587,11 +587,16 @@ body:has(#workbench-app) { display:block; }
 .mc-strip-identity { min-width:0; line-height:1.45; }
 .mc-strip-identity>span { display:flex; align-items:center; gap:6px; min-width:0; }
 .mc-strip-identity b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:600; }
+.mc-strip-identity [data-strip-name] { cursor:text; }
+.mc-strip-identity [data-strip-name-edit] { min-width:0; width:100%; height:22px; padding:0 3px; font-size:11px; }
 .mc-strip-identity small { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:10px; font-variant-numeric:tabular-nums; }
 .mc-strip-identity small span { color:var(--label); }
 .mc-strip-level { position:absolute; bottom:0; left:0; right:0; height:5px; cursor:help; background:color-mix(in srgb,var(--text) 20%,var(--panel)); border-radius:0 0 3px 3px; overflow:hidden; }
 .mc-strip-level small { display:none; }
-.mc-strip-level-fill { display:block; width:100%; height:100%; background:linear-gradient(to right,var(--label) 0 60%,var(--text) 60% 82%,var(--sa-norm) 82% 94%,var(--sa-warning) 94% 100%); clip-path:inset(0 calc(100% - var(--level,0%)) 0 0); transition:clip-path .16s linear; mask-image:repeating-linear-gradient(to right,#000 0 5px,transparent 5px 6px); }
+.mc-strip-level-fill { display:block; width:100%; height:100%; background:linear-gradient(to right,#35b874 0 80%,#edc549 80% 95%,#ed5353 95% 100%); clip-path:inset(0 calc(100% - var(--level,0%)) 0 0); transition:clip-path .05s linear; mask-image:repeating-linear-gradient(to right,#000 0 5px,transparent 5px 6px); }
+.mc-strip-level-peak { position:absolute; top:0; bottom:0; left:clamp(0px,calc(var(--peak,0%) - 2px),calc(100% - 2px)); width:2px; background:var(--text); }
+.mc-strip-level[data-clipped=true]::after { content:""; position:absolute; right:0; top:0; bottom:0; width:6px; background:#ed5353; }
+.mc-strip-level[data-available=false] .mc-strip-level-peak { display:none; }
 .mc-strip-level[data-available=false] { background:color-mix(in srgb,var(--label) 12%,var(--panel)); }
 .mc-strip-actions { display:flex; align-items:center; gap:2px; }
 .mc-head .mc-strip-actions button { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:5px; border:1px solid transparent; }

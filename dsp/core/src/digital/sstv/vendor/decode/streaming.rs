@@ -92,8 +92,6 @@ struct RowBuilder {
     values: Vec<u8>,
     /// The finished scans of the current pass.
     scans: Vec<(Channel, Vec<u8>)>,
-    /// Rows of the current pass waiting to be handed out.
-    completed: VecDeque<Vec<RgbPixel>>,
     rows_left: usize,
 }
 
@@ -104,7 +102,6 @@ impl RowBuilder {
             step: 0,
             values: Vec::new(),
             scans: Vec::new(),
-            completed: VecDeque::new(),
             rows_left: mode.resolution().1 as usize,
         }
     }

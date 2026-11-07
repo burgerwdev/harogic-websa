@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { receiverPlugin } from './pluginFixtures';
 
-vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
+vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn(), onCommandReply: vi.fn() }));
 vi.mock('../audio/sdrAudio', () => ({
   nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
@@ -73,7 +73,167 @@ function key(value: string) {
 	expect(event.defaultPrevented).toBe(true);
 }
 
+describe('native queued receiver revisions', () => {
+  const report = (revision: number, mode: string, values: Record<string, unknown> = {}) => ({
+    ...status('sdr', mode, { if_bw: 6000, ...values,
+      control: { service_id: 'radio', receiver_uid: 'owned-c1', revision: String(revision), action_token: 'generation-a' },
+    }), config_version: revision,
+  });
+
+  it('binds direct and queued main-panel tuning to the observed native receiver', async () => {
+    const { controls, send } = await load();
+    controls.syncSdrPanel(report(10, 'am'));
+    document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="98.1">');
+    controls.applySdrTune();
+    const first = vi.mocked(send).mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(first).toMatchObject({ freq: 98.1e6, service_id: 'radio', receiver_uid: 'owned-c1', expected_revision: '10' });
+    document.querySelector<HTMLInputElement>('#input-sdr-listen')!.value = '98.2';
+    controls.applySdrTune();
+    expect(send).toHaveBeenCalledTimes(1);
+    controls.syncSdrPanel({ ...report(11, 'am', { freq: 98.1e6 }),
+      response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(send).mock.calls.at(-1)![0]).toMatchObject({ freq: 98.2e6,
+      service_id: 'radio', receiver_uid: 'owned-c1', expected_revision: '11' });
+  });
+
+  it('advances queued radiofax edits only through their own accepted revision', async () => {
+    const { controls, send } = await load();
+    const { initDecodeWindow } = await import('../ui/decodeWindow');
+    controls.syncSdrPanel(report(10, 'radiofax'));
+    controls.bindActions();
+    const hooks = vi.mocked(initDecodeWindow).mock.calls.at(-1)![0];
+    vi.mocked(send).mockClear();
+    hooks.onRadiofaxConfig!({ radiofax_phase_pixels: 1 });
+    const first = vi.mocked(send).mock.calls.at(-1)![0] as Record<string, unknown>;
+    hooks.onRadiofaxConfig!({ radiofax_phase_pixels: 2 });
+    hooks.onRadiofaxConfig!({ radiofax_new_page: true });
+    expect(send).toHaveBeenCalledTimes(1);
+    controls.syncSdrPanel({ ...report(11, 'radiofax', { radiofax_phase_pixels: 1 }),
+      response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+    expect(send).toHaveBeenCalledTimes(2);
+    const second = vi.mocked(send).mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(second).toMatchObject({ radiofax_phase_pixels: 2, expected_revision: '11',
+      service_id: 'radio', receiver_uid: 'owned-c1', action_token: 'generation-a' });
+    controls.syncSdrPanel({ ...report(12, 'radiofax', { radiofax_phase_pixels: 2 }),
+      response_to: 'SET_SDR_CHANNEL', request_id: second.request_id });
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(send).mock.calls.at(-1)![0]).toMatchObject({ radiofax_new_page: true,
+      radiofax_phase_pixels: 2, expected_revision: '12', action_token: 'generation-a', action_id: expect.any(String) });
+  });
+
+  it('advances a queued filter through the acknowledged receiver revision', async () => {
+    const { controls, send } = await load();
+    controls.syncSdrPanel(report(10, 'am'));
+    controls.selectSdrIfbw(3000);
+    const first = vi.mocked(send).mock.calls.at(-1)![0] as Record<string, unknown>;
+    controls.selectSdrIfbw(4500);
+    expect(send).toHaveBeenCalledTimes(1);
+    controls.syncSdrPanel({ ...report(11, 'am', { if_bw: 3000 }),
+      response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(send).mock.calls.at(-1)![0]).toMatchObject({ ifbw: 4500, expected_revision: '11',
+      service_id: 'radio', receiver_uid: 'owned-c1', action_token: 'generation-a' });
+  });
+
+  it('does not borrow an unrelated newer revision for an older queued filter', async () => {
+    const { controls, send } = await load();
+    controls.syncSdrPanel(report(10, 'am'));
+    controls.selectSdrIfbw(3000);
+    const first = vi.mocked(send).mock.calls.at(-1)![0] as Record<string, unknown>;
+    controls.selectSdrIfbw(4500);
+    controls.syncSdrPanel(report(12, 'am', { if_bw: 12000 }));
+    controls.syncSdrPanel({ ...report(11, 'am', { if_bw: 3000 }),
+      response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+    const queued = vi.mocked(send).mock.calls.slice(1).map(([command]) => command as Record<string, unknown>);
+    expect(queued.every(command => command.expected_revision !== '12')).toBe(true);
+    expect(queued.every(command => command.service_id === 'radio' && command.receiver_uid === 'owned-c1')).toBe(true);
+  });
+
+  it('settles a stale radiofax acknowledgement without borrowing another edit revision', async () => {
+    const { controls, send } = await load();
+    const { initDecodeWindow } = await import('../ui/decodeWindow');
+    controls.syncSdrPanel(report(10, 'radiofax'));
+    controls.bindActions();
+    const hooks = vi.mocked(initDecodeWindow).mock.calls.at(-1)![0];
+    vi.mocked(send).mockClear();
+    hooks.onRadiofaxConfig!({ radiofax_phase_pixels: 1 });
+    const first = vi.mocked(send).mock.calls.at(-1)![0] as Record<string, unknown>;
+    hooks.onRadiofaxConfig!({ radiofax_phase_pixels: 2 });
+    controls.syncSdrPanel(report(12, 'radiofax', { radiofax_phase_pixels: 7 }));
+    controls.syncSdrPanel({ ...report(11, 'radiofax', { radiofax_phase_pixels: 1 }),
+      response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(send).mock.calls.at(-1)![0]).toMatchObject({ radiofax_phase_pixels: 2,
+      expected_revision: '11', service_id: 'radio', receiver_uid: 'owned-c1' });
+  });
+});
+
 describe('SDR zoom follows confirmed tuning', () => {
+  it('does not target a retired identity when the receiver directory clears before the next STATUS', async () => {
+    const { controls, send } = await load();
+    const { confirmSdrReceiverNumbers } = await import('../ui/sdrChannels');
+    confirmSdrReceiverNumbers([1]);
+    controls.syncSdrPanel(status('sdr', 'am', {
+      control: { service_id: 'radio', receiver_uid: 'retired-c1', revision: '7', action_token: 'token' },
+    }));
+    confirmSdrReceiverNumbers([], { service_id: 'radio', action_token: 'new-token', receivers: [] });
+    document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="98.12">');
+    vi.mocked(send).mockClear(); controls.applySdrTune();
+    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ receiver_uid: 'retired-c1' }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ service_id: 'radio', receiver_uid: null, freq: 98.12e6 }));
+    confirmSdrReceiverNumbers(null);
+  });
+
+  it('uses directory replacements despite an older STATUS and releases the directory with its owner', async () => {
+    const { controls, send } = await load();
+    const { channelControlContext, confirmSdrReceiverNumbers } = await import('../ui/sdrChannels');
+    const old = status('sdr', 'am', { control: { service_id: 'old-service', receiver_uid: 'retired-c1', revision: '7' } });
+    controls.syncSdrPanel(old);
+    confirmSdrReceiverNumbers([1], { service_id: 'new-service', action_token: 'current-token',
+      receivers: [{ display_number: 1, receiver_uid: 'replacement-c1', revision: '11' }] });
+    controls.syncSdrPanel(old);
+    document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="98.12">');
+    vi.mocked(send).mockClear(); controls.applySdrTune();
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ service_id: 'new-service', receiver_uid: 'replacement-c1',
+      expected_revision: '11', action_token: 'current-token' }));
+    confirmSdrReceiverNumbers(null);
+    expect(channelControlContext()).toMatchObject({ service_id: 'old-service', receiver_uid: 'retired-c1', expected_revision: '7' });
+  });
+
+  it('cancels a queued empty-slot intent when its predecessor creates a receiver', async () => {
+    const { controls, send } = await load();
+    const { confirmSdrReceiverNumbers } = await import('../ui/sdrChannels');
+    controls.syncSdrPanel({ ...status(), config_version: 7 });
+    confirmSdrReceiverNumbers([], { service_id: 'radio', receivers: [] });
+    document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="98.12">');
+    controls.applySdrTune();
+    const first = vi.mocked(send).mock.calls.at(-1)![0] as Record<string, unknown>;
+    document.querySelector<HTMLInputElement>('#input-sdr-listen')!.value = '98.13'; controls.applySdrTune();
+    confirmSdrReceiverNumbers([1], { service_id: 'radio', action_token: 'current-token',
+      receivers: [{ display_number: 1, receiver_uid: 'new-c1', revision: '8' }] });
+    controls.syncSdrPanel({ ...status('sdr', 'am', { freq: 98.12e6,
+      control: { service_id: 'radio', receiver_uid: 'new-c1', revision: '8' } }),
+      config_version: 8, response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(first).toMatchObject({ freq: 98.12e6, service_id: 'radio', receiver_uid: null });
+    expect(first).not.toHaveProperty('expected_revision');
+    confirmSdrReceiverNumbers(null);
+  });
+
+  it('retains the latest confirmed revision of the same UID until the directory catches up', async () => {
+    const { controls, send } = await load();
+    const { confirmSdrReceiverNumbers } = await import('../ui/sdrChannels');
+    confirmSdrReceiverNumbers([1], { service_id: 'radio', action_token: 'directory-token',
+      receivers: [{ display_number: 1, receiver_uid: 'same-c1', revision: '10' }] });
+    controls.syncSdrPanel({ ...status('sdr', 'am', { control: { service_id: 'radio', receiver_uid: 'same-c1', revision: '11' } }), config_version: 11 });
+    document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="98.12">');
+    vi.mocked(send).mockClear(); controls.applySdrTune();
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ service_id: 'radio', receiver_uid: 'same-c1',
+      expected_revision: '11', action_token: 'directory-token' }));
+    confirmSdrReceiverNumbers(null);
+  });
+
   it('switches the main receiver without retuning C1, then sends edits to C2', async () => {
     const { controls, state, send } = await load();
     const snapshot = status();
@@ -128,7 +288,7 @@ describe('SDR zoom follows confirmed tuning', () => {
     expect(vi.mocked(send).mock.calls.every(([command]) => (command as Record<string, unknown>).channel !== 2)).toBe(true);
     confirmSdrReceiverNumbers(null);
   });
-  it('does not rebind mode settings to a retired UID on a delayed acknowledgement', async () => {
+  it('does not rebind audio-rate shortcuts to a retired UID on a delayed acknowledgement', async () => {
     document.body.insertAdjacentHTML('beforeend', '<div><div id="sdr-ifbw-group"></div></div>');
     const { controls, send } = await load();
     const report = (version: number, uid: string | null) => ({ ...status('sdr', 'am', {
@@ -139,17 +299,16 @@ describe('SDR zoom follows confirmed tuning', () => {
     controls.syncSdrPanel(report(1, 'old-c1'));
     controls.syncSdrPanel(report(3, 'new-c1'));
     controls.syncSdrPanel({ ...report(2, 'old-c1'), response_to: 'SET_SDR_CHANNEL', request_id: 'late-edit' });
-    const form = document.querySelector<HTMLFormElement>('#sdr-mode-controls')!;
-    expect(JSON.parse(form.dataset.context!).receiver_uid).toBe('new-c1');
+    const button = document.querySelector<HTMLButtonElement>('[data-sdr-audio-rate="24000"]')!;
     const { sharedReceiverModeMemory } = await import('../ui/receiverModeMemory');
     expect(sharedReceiverModeMemory.get('new-c1', 'am')?.bandwidth_hz).toBe(6000);
     expect(sharedReceiverModeMemory.get('old-c1', 'am')).toBeUndefined();
-    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    button.click();
     expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ receiver_uid: 'new-c1', expected_revision: '3' }));
     controls.syncSdrPanel(report(4, null));
-    expect(document.querySelector('#sdr-mode-settings')).toBeNull();
+    expect(document.querySelector('#sdr-audio-rate-row')).toBeNull();
     vi.mocked(send).mockClear();
-    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    button.click();
     expect(send).not.toHaveBeenCalled();
   });
   it.each([98, 125])('sets capture and listening together when entering center %s MHz', async center => {

@@ -4,6 +4,26 @@ import type { RecordingTask } from '../core/multichannel';
 
 afterEach(() => { document.body.innerHTML = ''; vi.unstubAllGlobals(); });
 describe('offline recording processing lifecycle', () => {
+  it.each(['missing length', 'excess streamed bytes'])('cancels file rendering responses with %s before buffering an unbounded body', async scenario => {
+    const body = document.createElement('div'); document.body.append(body);
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; value.enqueue(new Uint8Array(1025)); }, cancel });
+    const headers = scenario === 'missing length' ? undefined : { 'Content-Length': '1024' };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, { headers })));
+    const dispose = mountRecordingDemod(body, { task: { task_id: 'bounded-render' } as RecordingTask, modes: ['am'],
+      selection: () => ({ query: new URLSearchParams({ segment: 's', start: '0', count: '2' }),
+        segment: { samples: '2', actual_rate_hz: 6000 } as RecordingTask['tracks'][number]['segments'][number] }) });
+    try {
+      body.querySelector<HTMLButtonElement>('[data-demod-run]')!.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(stream.locked).toBe(false);
+      expect(body.querySelector<HTMLButtonElement>('[data-demod-run]')!.disabled).toBe(false);
+      expect(body.querySelector<HTMLAudioElement>('audio')!.hasAttribute('src')).toBe(false);
+    } finally { dispose(); if (!cancel.mock.calls.length) controller.close(); }
+  });
+
   it('hides file DSP on an older service and cancels old range requests without reviving a disposed player', async () => {
     const body = document.createElement('div'); document.body.append(body);
     const selection = () => ({ query: new URLSearchParams({ segment: 'old-stream', start: '9007199254740993', count: '1000' }),

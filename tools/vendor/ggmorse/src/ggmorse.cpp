@@ -526,6 +526,21 @@ bool GGMorse::decode(const CBWaveformInp & cbWaveformInp) {
             }
         }
 
+        // Local integration fix: high input rates can require more samples
+        // than the fixed analysis buffers (for example 6144 at 192 kHz).
+        // Grow the raw and converted input buffers before the capture callback;
+        // the analysis frame size and resampling sequence remain unchanged.
+        if (m_impl->sampleSizeBytesInp > 0) {
+            const size_t inputSamples = (size_t(nBytesNeeded) + m_impl->sampleSizeBytesInp - 1)
+                / m_impl->sampleSizeBytesInp;
+            if (m_impl->waveformTmp.size() < nBytesNeeded) {
+                m_impl->waveformTmp.resize(nBytesNeeded);
+            }
+            if (m_impl->waveformResampled.size() < inputSamples) {
+                m_impl->waveformResampled.resize(inputSamples);
+            }
+        }
+
         uint32_t nBytesRecorded = 0;
 
         switch (m_impl->sampleFormatInp) {

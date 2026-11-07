@@ -37,7 +37,6 @@ mod tests {
         let report=prepare(&configs,IQ_FS).unwrap();
         assert!(report["accepted"].as_bool().unwrap());assert!(report["worker_limit_ns_per_second"].is_null());
         assert_eq!(configs,settings);assert_eq!(websa_channelizer::model_preparation::snapshot(),before);
-        let legacy=[908464826.1974062,628974609.3750001];assert!(legacy[0]>800000000.0);
         assert_eq!(report["channels"].as_array().unwrap().len(),MAX_CHANNELS);
     }
     #[test]

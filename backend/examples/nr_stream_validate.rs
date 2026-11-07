@@ -15,7 +15,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     for id in ["dfn","gtcrn","ul-unas","fastenhancer"] {
         let algorithm=NrAlgorithm::parse(id).unwrap();let mut nr=NoiseReduction::new(48000);
         nr.configure(48000,algorithm,0.25,atten);
-        if nr.status().effective!=algorithm {return Err(format!("{id}: {:?}",nr.status()).into());}
+        if nr.status().effective!=Some(algorithm) {return Err(format!("{id}: {:?}",nr.status()).into());}
         let delay=nr.latency_samples().unwrap() as usize;
         let mut padded=input.clone();padded.resize(input.len()+delay+4096,0.0);
         let mut pcm=Vec::new();let mut block=Vec::new();let mut times=Vec::new();let started=Instant::now();

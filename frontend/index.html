@@ -312,9 +312,7 @@
               <!-- Common modes, search and the full catalog share the receiver selection action. -->
               <div id="sdr-demod-group"></div></div>
             <div class="param-row"><label data-i18n="decode">Decode</label>
-              <!-- The decode window (ui/decodeWindow.ts) shows what the demodulator decoded: the
-                   FT8 table or the CW text, depending on the mode. One toggle for both, enabled
-                   only while a mode that decodes is selected. -->
+              <!-- The Decode window renders the selected mode's results and signal telemetry. -->
               <div class="ft8-line" style="flex:1;">
                 <button class="btn" id="btn-decode-window" data-action="toggle-decode-window" data-i18n-title="decode_window_tip" data-i18n-attr="title" disabled data-i18n="off">Off</button>
                 <span id="sdr-receiver-error" role="status" aria-live="polite" hidden></span>
@@ -332,7 +330,7 @@
                 <button class="btn" data-sdr-deemph="75">75µs</button>
                 <button class="btn" data-sdr-deemph="300">300µs</button>
               </div></div>
-            <div class="param-row sdr-volume-row"><label data-i18n="sdr_pcm_gain" data-i18n-title="sdr_pcm_gain_tip" data-i18n-attr="title">Audio Gain</label>
+            <div class="param-row sdr-volume-row"><label data-i18n="sdr_pcm_gain" data-i18n-title="sdr_pcm_gain_tip">Audio Gain</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05">
               <button class="btn active" id="btn-sdr-agc" type="button" data-action="toggle-sdr-agc" aria-pressed="true" data-i18n="agc_on" data-i18n-title="agc_tip" data-i18n-attr="title" title="Automatically adjusts listening level; Off uses fixed gain. Does not change RF gain or squelch.">AGC On</button>
               <button class="btn active" id="btn-sdr-audio" data-action="toggle-sdr-audio" aria-pressed="true" data-i18n="sdr_mute_on" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Toggle mute (Space)">Mute On</button></div>
@@ -899,7 +897,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.12.9 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.12.10 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

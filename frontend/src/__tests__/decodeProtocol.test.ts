@@ -105,6 +105,15 @@ describe('native decoded stream boundaries', () => {
       type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data,
     } }))).toThrow(/structure limit/);
   });
+  it('rejects a decoder result kind array before advancing the stream', () => {
+    const stream = new DecodeSequence(); stream.accept(frame({ mode: 'ism' }));
+    const event: DecodeEnvelope['event'] = {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data: { temperature_C: 21 },
+    };
+    expect(() => stream.accept(frame({ mode: 'ism', seq: 1,
+      event: { ...event, kind: ['table'] } as unknown as DecodeEnvelope['event'] }))).toThrow(/decoder result/);
+    expect(stream.accept(frame({ mode: 'ism', seq: 1, event })).event).toEqual(event);
+  });
   it('retains eight independent clocks including the eighth stream and rejects invalid wire numbers', () => {
     const stream = new DecodeSequence();
     for (let channel = 1; channel <= 8; channel++) stream.accept(frame({ channel, channel_id: channel }));
@@ -308,6 +317,14 @@ describe('native decoded stream boundaries', () => {
     }
     expect(stream.accept(frame({ mode: 'radiofax', seq: 2,
       event: { ...event, meta: { ...meta, transmissionId: '18446744073709551615' } } })).event.meta!.transmissionId).toBe('18446744073709551615');
+  });
+  it.each(['stage', 'clockStatus', 'clockSource'] as const)('rejects a radiofax %s array before advancing the stream', key => {
+    const stream = new DecodeSequence(); stream.accept(frame({ mode: 'radiofax' }));
+    const event: DecodeEnvelope['event'] = { type: 'radiofax-state', running: true, stage: 'searching', lines: 0,
+      clockStatus: 'nominal', clockSource: 'nominal', modulation: 'fm', polarity: 'normal', clockConfidence: 0, reason: null };
+    expect(() => stream.accept(frame({ mode: 'radiofax', seq: 1,
+      event: { ...event, [key]: [event[key]] } as unknown as DecodeEnvelope['event'] }))).toThrow(key);
+    expect(stream.accept(frame({ mode: 'radiofax', seq: 1, event })).event).toEqual(event);
   });
   it('accepts radiofax rows and NR status together while keeping DRM text rows strict', () => {
     const stream = new DecodeSequence();
@@ -563,6 +580,66 @@ describe('native decoded stream boundaries', () => {
       expect(host.clearTimeout).toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); }
   });
+  it.each(['receiver retired', 'receiver stopped'])('ends decoded %s without retry after delivering its accepted FIFO tail', async reason => {
+    const messages: Array<{ type: string; reason?: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: typeof messages[number]) => messages.push(message),
+      setTimeout: vi.fn(), clearTimeout: vi.fn() };
+    class Socket {
+      static instances: Socket[] = [];
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      onclose: ((event: { code: number; reason: string }) => void) | null = null;
+      send = vi.fn(); close = vi.fn();
+      constructor() { Socket.instances.push(this); }
+    }
+    vi.resetModules(); vi.stubGlobal('self', host); vi.stubGlobal('WebSocket', Socket);
+    try {
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?receiver_uid=uid-a' } });
+      const old = Socket.instances[0];
+      old.onmessage!({ data: frame({ event: { type: 'start', snapshotAck: true } }) });
+      old.onmessage!({ data: frame({ seq: 1, event: { type: 'cw', text: 'queued' } }) });
+      old.onclose!({ code: 1000, reason });
+      expect(messages.some(message => message.type === 'ended')).toBe(false);
+      expect(host.setTimeout).not.toHaveBeenCalled();
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(old.send).not.toHaveBeenCalled();
+      expect(messages.at(-1)?.envelopes?.map(envelope => envelope.event)).toEqual([{ type: 'cw', text: 'queued' }]);
+      const count = messages.length;
+      old.onmessage!({ data: frame({ seq: 2, event: { type: 'cw', text: 'late' } }) });
+      expect(messages).toHaveLength(count);
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(messages.at(-1)).toEqual({ type: 'ended', reason });
+      expect(old.send).not.toHaveBeenCalled();
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?receiver_uid=uid-b' } });
+      expect(Socket.instances).toHaveLength(2);
+      old.onclose!({ code: 1011, reason: 'receiver failed' });
+      Socket.instances[1].onmessage!({ data: frame({ channel_id: 18 }) });
+      expect(messages.at(-1)?.envelopes).toHaveLength(1);
+      expect(messages.at(-1)?.envelopes?.[0].channel_id).toBe(18);
+      expect(messages.some(message => message.type === 'error')).toBe(false);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it.each([[1000, ''], [1005, 'receiver retired'], [1011, 'receiver stopped'], [1013, 'receiver retired']] as const)
+    ('does not classify decode close %s/%s as normal receiver end', async (code, reason) => {
+      const messages: Array<{ type: string }> = [];
+      const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+        postMessage: (message: { type: string }) => messages.push(message), setTimeout: vi.fn(), clearTimeout: vi.fn() };
+      class Socket {
+        static current: Socket;
+        onclose: ((event: { code: number; reason: string }) => void) | null = null;
+        constructor() { Socket.current = this; }
+        close(): void {}
+      }
+      vi.resetModules(); vi.stubGlobal('self', host); vi.stubGlobal('WebSocket', Socket);
+      try {
+        await import('../sdr/decodeWorker');
+        host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?receiver_uid=uid-a' } });
+        Socket.current.onclose!({ code, reason });
+        expect(messages.some(message => message.type === 'ended')).toBe(false);
+        expect(['closed', 'error']).toContain(messages.at(-1)?.type);
+      } finally { vi.unstubAllGlobals(); }
+    });
   it.each(['stop', 'error'])('clears in-flight delivery on %s and ignores the old socket callbacks', async (type) => {
     const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,

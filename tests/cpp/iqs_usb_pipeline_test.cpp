@@ -5,6 +5,8 @@
 #include <deque>
 #include <set>
 #include <unordered_map>
+#include <string>
+#include <unistd.h>
 using namespace websa_iqs_usb;
 struct Fake {
     std::deque<libusb_transfer*> pending;
@@ -14,6 +16,7 @@ struct Fake {
     int allocated=0,released=0,submissions=0,callbacks=0,bulk_calls=0,max_pending=0;
     int allocation_fail=-1,submission_fail=-1,event_error=0;
     int bad_sequence=-1,partial_sequence=-1;
+    int bad_length=0,callback_delay_ms=0;
     libusb_transfer_status bad_status=LIBUSB_TRANSFER_TIMED_OUT;
 } fake;
 static int LIBUSB_CALL init(libusb_context**) {return 0;}
@@ -43,14 +46,20 @@ static int LIBUSB_CALL events(libusb_context*,timeval*,int*) {
         const auto sequence=fake.sequences.at(transfer);fake.sequences.erase(transfer);
         transfer->status=LIBUSB_TRANSFER_COMPLETED;transfer->actual_length=transfer->length;
         if (fake.cancelled.erase(transfer)) {transfer->status=LIBUSB_TRANSFER_CANCELLED;transfer->actual_length=0;}
-        else if (static_cast<int64_t>(sequence)==fake.bad_sequence) {transfer->status=fake.bad_status;transfer->actual_length=0;}
         else {
-            if (static_cast<int64_t>(sequence)==fake.partial_sequence) transfer->actual_length=127;
-            std::memcpy(transfer->buffer,&sequence,sizeof(sequence));
-            std::memset(transfer->buffer+8,(sequence*7)&255,transfer->actual_length-8);
+            if (static_cast<int64_t>(sequence)==fake.bad_sequence) {
+                transfer->status=fake.bad_status;transfer->actual_length=fake.bad_length;
+            }else if (static_cast<int64_t>(sequence)==fake.partial_sequence) transfer->actual_length=127;
+            if (transfer->actual_length) {
+                assert(transfer->actual_length>=8 && transfer->actual_length<=transfer->length);
+                std::memcpy(transfer->buffer,&sequence,sizeof(sequence));
+                std::memset(transfer->buffer+8,(sequence*7)&255,transfer->actual_length-8);
+            }
         }
         ++fake.callbacks;transfer->callback(transfer);
     }
+    // A completed callback may precede the pump's return from event handling.
+    if (fake.callback_delay_ms) std::this_thread::sleep_for(std::chrono::milliseconds(fake.callback_delay_ms));
     return 0;
 }
 static int LIBUSB_CALL bulk(libusb_device_handle*,unsigned char,unsigned char* data,int length,int* actual,unsigned) {
@@ -65,6 +74,24 @@ static int read(Pipeline& pipeline,int* actual,unsigned endpoint=0x81,int length
 static uint64_t sequence() {uint64_t result;std::memcpy(&result,bytes.data(),8);return result;}
 static void reset() {assert(fake.pending.empty() && fake.sequences.empty());fake=Fake{};}
 static void released() {assert(fake.pending.empty() && fake.sequences.empty());assert(fake.allocated==fake.released);}
+struct CaptureStderr {
+    FILE* file=std::tmpfile();
+    int saved=dup(STDERR_FILENO);
+    CaptureStderr() {assert(file && saved>=0);std::fflush(stderr);assert(dup2(fileno(file),STDERR_FILENO)>=0);}
+    std::string finish() {
+        std::fflush(stderr);assert(dup2(saved,STDERR_FILENO)>=0);close(saved);saved=-1;
+        std::rewind(file);std::string output;std::array<char,4096> buffer{};
+        while (const auto count=std::fread(buffer.data(),1,buffer.size(),file)) output.append(buffer.data(),count);
+        std::fclose(file);file=nullptr;return output;
+    }
+    ~CaptureStderr() {if (saved>=0) {dup2(saved,STDERR_FILENO);close(saved);}if (file) std::fclose(file);}
+};
+static uint64_t diagnostic_value(const std::string& log,const char* key) {
+    const std::string marker=std::string(key)+"=";const auto position=log.find(marker);
+    assert(position!=std::string::npos);char* end=nullptr;
+    const auto value=std::strtoull(log.c_str()+position+marker.size(),&end,10);
+    assert(end!=log.c_str()+position+marker.size());return value;
+}
 int main() {
     {
         reset();Pipeline pipeline(api());int actual=0;
@@ -89,6 +116,34 @@ int main() {
         assert(read(pipeline,&actual)==0 && actual==127 && sequence()==0);
         assert(read(pipeline,&actual)==0 && actual==65536 && sequence()==1);
         pipeline.stop();released();
+    }
+    {
+        // Preserve the successful prefix and the original partial USB error,
+        // report its bounded timing tail, then retire every buffer before reopen.
+        reset();fake.bad_sequence=6;fake.bad_length=49152;fake.callback_delay_ms=3;
+        Pipeline pipeline(api());pipeline.context(nullptr);assert(pipeline.start(true));int actual=0;
+        CaptureStderr capture;
+        for (unsigned i=0;i<6;++i) assert(read(pipeline,&actual)==0 && actual==65536 && sequence()==i);
+        assert(read(pipeline,&actual)==LIBUSB_ERROR_TIMEOUT && actual==49152 && sequence()==6);
+        for (int n=8;n<actual;++n) assert(bytes[n]==42);
+        released();assert(!pipeline.enabled() && !pipeline.handoff_overflow());
+        assert(pipeline.stats().delivered==6 && pipeline.stats().failed==1);
+        const auto log=capture.finish();std::fputs(log.c_str(),stderr);
+        assert(log.find("status=2 bytes=49152 timeout=250")!=std::string::npos);
+        assert(log.find("SDK IQS USB tail:")!=std::string::npos);
+        assert(log.find("callback_clock=userspace_monotonic")!=std::string::npos);
+        assert(diagnostic_value(log,"pump_gap_max_ns")>=4000000);
+        assert(diagnostic_value(log,"events_max_ns")>=4000000);
+        assert(diagnostic_value(log,"submit_callback_max_ns")>=1000000);
+        assert(diagnostic_value(log,"callback_resubmit_max_ns")>=3000000);
+        assert(diagnostic_value(log,"awaiting_callback")<=Pipeline::transfer_count());
+        assert(diagnostic_value(log,"completed_unhandled")<=Pipeline::transfer_count());
+        unsigned tails=0;std::string::size_type at=0;
+        while ((at=log.find("SDK IQS USB tail:",at))!=std::string::npos) {++tails;++at;}
+        assert(tails>=1 && tails<=64);
+        fake.next=1000;fake.bad_sequence=-1;fake.callback_delay_ms=0;
+        assert(pipeline.start(true));assert(read(pipeline,&actual)==0 && actual==65536 && sequence()==1000);
+        pipeline.stop();released();assert(fake.cancelled.empty());
     }
     for (auto [status,expected]:{std::pair{LIBUSB_TRANSFER_TIMED_OUT,LIBUSB_ERROR_TIMEOUT},
             {LIBUSB_TRANSFER_STALL,LIBUSB_ERROR_PIPE},{LIBUSB_TRANSFER_NO_DEVICE,LIBUSB_ERROR_NO_DEVICE},

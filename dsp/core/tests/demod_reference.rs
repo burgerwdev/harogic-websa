@@ -153,6 +153,9 @@ fn cross_check(case: &Case) -> Result<f64, String> {
     let mut worst = 0.0_f64;
     let mut at = 0;
     for (index, (got, want)) in audio.iter().zip(reference.iter()).enumerate() {
+        if !got.is_finite() || !want.is_finite() {
+            return Err(format!("{}: non-finite sample {index}: {got} vs {want}", case.mode));
+        }
         let diff = (*got as f64 - *want as f64).abs();
         if diff > worst {
             worst = diff;

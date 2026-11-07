@@ -14,8 +14,9 @@ use std::{
 };
 
 use crate::hardware_swp::{
-    owner_slot_free, park_stuck_owner, read_defaults, FrontEnd, GnssInfo, SdkFailure, SwpDefaults,
-    LINK_LOST_STATUS, OPEN_TIMEOUT, SDK_DLOPEN_FLAGS, register_sdk_session, release_sdk_mode,
+    call_owner, finish_owner, owner_slot_free, park_stuck_owner, read_defaults, FrontEnd, GnssInfo,
+    SdkFailure, SwpDefaults, LINK_LOST_STATUS, OPEN_TIMEOUT, OWNER_STOP_TIMEOUT, SDK_DLOPEN_FLAGS,
+    register_sdk_session, release_sdk_mode,
 };
 
 #[link(name = "dl")]
@@ -271,10 +272,15 @@ fn request_of(params: &RtaParams) -> RtaRequest {
 }
 
 fn geometry_of(actual: &RtaActual) -> Result<RtaGeometry, String> {
-    if actual.points < 2
+    let span = actual.stop_hz - actual.start_hz;
+    if !(2..=65_536).contains(&actual.points)
         || !actual.start_hz.is_finite()
         || !actual.stop_hz.is_finite()
-        || actual.start_hz >= actual.stop_hz
+        || !span.is_finite() || span <= 0.0
+        || !actual.ref_dbm.is_finite()
+        || !actual.rbw_hz.is_finite() || actual.rbw_hz <= 0.0
+        || !actual.vbw_hz.is_finite() || actual.vbw_hz < 0.0
+        || !actual.refclk_hz.is_finite() || actual.refclk_hz < 0.0
     {
         return Err(format!(
             "SDK RTA geometry rejected points={}",
@@ -582,6 +588,7 @@ impl HardwareRta {
         let (geometry, device_info) = match meta_rx.recv_timeout(OPEN_TIMEOUT) {
             Ok(value) => value?,
             Err(_) => {
+                stop.store(true, Ordering::Release);
                 park_stuck_owner(owner);
                 return Err("SDK RTA startup timed out; owner outcome unknown".into());
             }
@@ -600,9 +607,7 @@ impl HardwareRta {
         make: impl FnOnce(SyncSender<T>) -> OwnerCommand,
         timeout: Duration,
     ) -> Option<T> {
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.tx.send(make(reply_tx)).ok()?;
-        reply_rx.recv_timeout(timeout).ok()
+        call_owner(&self.tx, &self.stop, make, timeout).ok()
     }
 
     /// In-place profile change on the open handle (Python rta.py _configure_locked).
@@ -653,17 +658,84 @@ impl HardwareRta {
 impl Drop for HardwareRta {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Join the owner before allowing another SDK open; fetch/close must not
-        // overlap a new session.
         if let Some(owner) = self.owner.take() {
-            let _ = owner.join();
+            finish_owner(owner, OWNER_STOP_TIMEOUT);
         }
     }
 }
 
 #[cfg(test)]
+#[path = "hardware_rta_geometry_tests.rs"]
+mod geometry_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware_swp::owner_tests;
+
+    fn test_hardware(tx: SyncSender<OwnerCommand>, stop: Arc<AtomicBool>, owner: Option<JoinHandle<()>>) -> HardwareRta {
+        HardwareRta { geometry: RtaGeometry::default(), device_info: None, tx, stop, owner }
+    }
+
+    #[test]
+    fn reported_geometry_bounds_all_allocations_and_numeric_readback() {
+        let valid = || RtaActual {
+            start_hz: 90e6, stop_hz: 110e6, points: 65_536, ref_dbm: -10.0,
+            rbw_hz: 1000.0, vbw_hz: 1000.0, refclk_hz: 10e6, ..RtaActual::default()
+        };
+        assert!(geometry_of(&valid()).is_ok());
+        let mut accepted_invalid = Vec::new();
+        for points in [0, 1, 65_537, u32::MAX] {
+            let mut actual = valid();
+            actual.points = points;
+            if geometry_of(&actual).is_ok() { accepted_invalid.push(format!("point count {points}")); }
+        }
+        let fields: [fn(&mut RtaActual, f64); 6] = [
+            |g, n| g.start_hz = n, |g, n| g.stop_hz = n, |g, n| g.ref_dbm = n,
+            |g, n| g.rbw_hz = n, |g, n| g.vbw_hz = n, |g, n| g.refclk_hz = n,
+        ];
+        for (field, set) in fields.into_iter().enumerate() {
+            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let mut actual = valid();
+                set(&mut actual, invalid);
+                if geometry_of(&actual).is_ok() { accepted_invalid.push(format!("field {field} = {invalid}")); }
+            }
+        }
+        let mut overflowing = valid();
+        overflowing.start_hz = -f64::MAX;
+        overflowing.stop_hz = f64::MAX;
+        if geometry_of(&overflowing).is_ok() { accepted_invalid.push("overflowing span".into()); }
+        for field in [3, 4, 5] {
+            let mut negative = valid();
+            fields[field](&mut negative, -1.0);
+            if geometry_of(&negative).is_ok() { accepted_invalid.push(format!("negative field {field}")); }
+        }
+        let mut zero_rbw = valid();
+        zero_rbw.rbw_hz = 0.0;
+        if geometry_of(&zero_rbw).is_ok() { accepted_invalid.push("zero RBW".into()); }
+        assert!(accepted_invalid.is_empty(), "accepted unsafe RTA geometry: {accepted_invalid:?}");
+    }
+
+    #[test]
+    fn full_mailbox_obeys_request_deadline_and_stops_owner() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (reply, _received) = mpsc::sync_channel(1);
+        tx.send(OwnerCommand::Gnss(reply)).ok().unwrap();
+        let hardware = test_hardware(tx, Arc::new(AtomicBool::new(false)), None);
+        owner_tests::full_mailbox(rx, move || {
+            let timed_out = hardware.call(OwnerCommand::Gnss, Duration::from_millis(20)).is_none();
+            (timed_out, hardware.stop.load(Ordering::Acquire))
+        });
+    }
+
+    #[test]
+    fn blocked_owner_retirement_excludes_replacement_until_recovery() {
+        if !owner_tests::isolated("hardware_rta::tests::blocked_owner_retirement_excludes_replacement_until_recovery") { return; }
+        owner_tests::blocked_owner(|owner, stop| {
+            let (tx, _rx) = mpsc::sync_channel(1);
+            test_hardware(tx, stop, Some(owner))
+        });
+    }
 
     fn params() -> RtaParams {
         RtaParams {

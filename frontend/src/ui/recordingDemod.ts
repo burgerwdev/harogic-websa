@@ -1,6 +1,7 @@
 import { getLang, onLangChange } from '../core/i18n';
 import type { RecordingTask, RecordingTrack } from '../core/multichannel';
 import { downloadResult } from './receiverExport';
+import { readRecordingResponse } from './recordingResponse';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const MAX_TAR = 20 * 1024 * 1024;
@@ -97,8 +98,7 @@ export function mountRecordingDemod(body: HTMLElement, options: {
       run.disabled = true; cancel.hidden = false; status.textContent = l('Processing file…', '正在处理文件…');
       const response = await fetch(`/api/sdr/recordings/${encodeURIComponent(options.task.task_id)}/demodulate?${query}`, { signal: controller.signal });
       if (!response.ok) { const error = await response.json(); throw new Error(error.error ?? `HTTP ${response.status}`); }
-      if (Number(response.headers.get('Content-Length')) > MAX_TAR) throw new Error('File render exceeds 20 MiB');
-      const bytes = await response.arrayBuffer();
+      const bytes = await readRecordingResponse(response, 1024, MAX_TAR);
       if (disposed || abort !== controller || controller.signal.aborted) return;
       const wav = demodWav(bytes);
       archive = new Blob([bytes], { type: 'application/x-tar' });

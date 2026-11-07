@@ -16,6 +16,7 @@ import wave
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+from viewport_baseline import wait_ui_ready
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 SPEECH = ROOT / 'tools' / 'bench' / 'audio' / 'speech.wav'
@@ -55,19 +56,29 @@ def make_stereo_wav(out: Path) -> None:
         audio.writeframes(bytes(stereo))
 
 
-def start_tx(scenario: str, freq_hz: float, gain_db: float) -> subprocess.Popen | None:
+def start_tx(scenario: str, freq_hz: float, gain_db: float, artifacts: Path) -> subprocess.Popen | None:
     spec = TX_ARGS[scenario]
     if spec is None:
         return None
-    tmp = Path('/tmp/rig_stereo.wav')
+    tmp = artifacts / 'stereo-source.wav'
     if '__STEREO_WAV__' in spec:
         make_stereo_wav(tmp)
         spec = [str(tmp) if a == '__STEREO_WAV__' else a for a in spec]
     cmd = [sys.executable, str(ROOT / 'tools' / 'pluto_tx.py'), *spec,
            '--lo', str(freq_hz), '--gain', str(gain_db)]
     print(f'TX: {" ".join(cmd)}', flush=True)
-    with open('/tmp/wfm_rig_tx.log', 'w') as log:
+    with (artifacts / 'transmitter.log').open('w') as log:
         return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+
+
+def stop_tx(process):
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
 
 
 def post(url: str, payload: dict) -> dict:
@@ -163,17 +174,20 @@ def main() -> int:
     parser.add_argument('--scenario', choices=('hold', 'retune', 'signal-loss'), default='hold')
     parser.add_argument('--seconds', type=float, default=20.0)
     parser.add_argument('--out', default='')
+    parser.add_argument('--artifacts', type=Path, default=Path('/tmp/websa-wfm-rig'))
     parser.add_argument('--check-ui', action='store_true')
     parser.add_argument('--viewport', default='1280x720')
     args = parser.parse_args()
     if args.scenario == 'signal-loss' and args.tx not in ('stereo', 'rds'):
         parser.error('signal-loss requires an RDS transmitter (--tx stereo or rds)')
-    tx = start_tx(args.tx, args.freq, args.gain)
+    args.artifacts.mkdir(parents=True, exist_ok=True)
+    tx_log = args.artifacts / 'transmitter.log'
+    tx = start_tx(args.tx, args.freq, args.gain, args.artifacts)
     report = {'scenario': args.scenario, 'tx': args.tx, 'freq': args.freq}
     try:
         time.sleep(2)
         if tx and tx.poll() is not None:
-            raise RuntimeError(f'Pluto TX exited {tx.returncode}: ' + Path('/tmp/wfm_rig_tx.log').read_text()[-1200:])
+            raise RuntimeError(f'Pluto TX exited {tx.returncode}: ' + tx_log.read_text()[-1200:])
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
         post(args.url, {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True, 'mode': 'wfm', 'ifbw': 180000, 'stereo': True})
         with sync_playwright() as pw:
@@ -184,7 +198,7 @@ def main() -> int:
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.on('dialog', lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
             page.goto(args.url, wait_until='networkidle')
-            page.evaluate("document.getElementById('btn-mode-sdr').click()")
+            wait_ui_ready(page, 'sdr')
             page.wait_for_selector('[data-sdr-demod="wfm"]', state='attached')
             page.evaluate("document.querySelector('[data-sdr-demod=\"wfm\"]').click()")
             page.wait_for_timeout(300)
@@ -290,8 +304,7 @@ def main() -> int:
                 timeline = sample(page, 8)
                 check('RDS locked before RF loss', latest_wfm(page).get('rdsLocked') is True)
                 report['signalStoppedAt'] = page.evaluate('Date.now()')
-                tx.terminate()
-                tx.wait(timeout=10)
+                stop_tx(tx)
                 tx = None
                 timeline += sample(page, args.seconds, 'transmitter-off')
                 state = latest_wfm(page)
@@ -330,16 +343,14 @@ def main() -> int:
             check('browser has no page errors, dialogs or protocol errors', not errors and not dialogs and not protocol_errors,
                   str({'errors': errors, 'dialogs': dialogs, 'protocol': protocol_errors}))
             if args.check_ui:
-                page.screenshot(path=f'/tmp/wfm_ui_{args.tx}_{args.viewport}.png')
-            page.evaluate('window.__rigNative.socket.close()')
+                page.screenshot(path=str(args.artifacts / f'ui-{args.tx}-{args.viewport}.png'))
+            page.evaluate('window.__rigNative.socket.close();window.__rigNative.audioSocket.close()')
             browser.close()
     finally:
         if tx:
             if tx.poll() is not None:
-                check('Pluto TX stayed on air', False, f'exit={tx.returncode} ' + Path('/tmp/wfm_rig_tx.log').read_text()[-600:])
-            else:
-                tx.terminate()
-                tx.wait(timeout=10)
+                check('Pluto TX stayed on air', False, f'exit={tx.returncode} ' + tx_log.read_text()[-600:])
+            stop_tx(tx)
     print(json.dumps(report.get('summary'), indent=2))
     if args.out:
         Path(args.out).write_text(json.dumps(report))

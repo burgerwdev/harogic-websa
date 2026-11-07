@@ -51,6 +51,56 @@ function nativeWorkspace(quota?: ServiceSnapshot['recording_resources']): void {
 }
 
 describe('per-channel audio settings', () => {
+  it.each([
+    { geometry: {}, hidden: false, collapsed: false },
+    { geometry: [0, 0, 400, 300], hidden: false, collapsed: false },
+    { geometry: { x: 0, y: 0, w: 400, h: 300 }, hidden: 'false', collapsed: 'false' },
+  ])('ignores malformed saved floating-window geometry and visibility %#', saved => {
+    ui.dispose();
+    localStorage.setItem('websa-workbench-layout:overview-follow', JSON.stringify(saved));
+    ui = mountWorkbench(session, document.body);
+    overview = document.querySelector<HTMLElement>('[data-view-id="overview-follow"]')!;
+    expect(overview.hidden).toBe(false);
+    expect(overview.classList.contains('mc-collapsed')).toBe(false);
+    expect(Number.parseFloat(overview.style.width)).toBeGreaterThan(0);
+    expect(Number.isFinite(Number.parseFloat(overview.style.left))).toBe(true);
+  });
+
+  it.each([false, true])('preserves reviewed preset continuity through the regular form (restore draft: %s)', async restore => {
+    nativeWorkspace();
+    session.snapshot.capabilities.receiver_presets = true; session.snapshot.receivers[0].confirmed.continuity = 'continuous'; session.notify();
+    const settings = { ...clone(session.snapshot.receivers[0].confirmed), continuity: 'strict' as const };
+    settings.baseband.frequency_hz += 0.25;
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ version: 1, revision: '1', presets: [{ name: 'Strict reception', settings }] }) } as Response);
+    const presets = element<HTMLDetailsElement>('[data-receiver-presets]'); presets.open = true; presets.dispatchEvent(new Event('toggle'));
+    await settle();
+    const list = presets.querySelector<HTMLSelectElement>('[data-preset-list]')!; list.value = 'Strict reception'; list.dispatchEvent(new Event('change'));
+    presets.querySelector<HTMLButtonElement>('[data-preset-load]')!.click();
+    expect(element('[data-preview] button')).not.toBeNull();
+    if (restore) { session.select('fixture-c2'); session.select('fixture-c1'); }
+    // Independent changes after review remain confirmed state, outside the preset.
+    session.snapshot.receivers[0].confirmed.enabled = false; session.snapshot.receivers[0].confirmed.color = '#ff0000'; session.notify();
+    edit('name', 'Reviewed receiver');
+    const configure = vi.spyOn(session, 'configure'); submit(); await settle();
+    expect(configure).toHaveBeenCalledWith('fixture-c1', expect.objectContaining({ name: 'Reviewed receiver', continuity: 'strict', enabled: false, color: '#ff0000',
+      baseband: expect.objectContaining({ frequency_hz: settings.baseband.frequency_hz }) }));
+    expect(session.snapshot.receivers[0].confirmed.continuity).toBe('strict');
+    expect(fetch).toHaveBeenCalled();
+  });
+
+  it('discards hidden reviewed settings when the local draft is reset', async () => {
+    nativeWorkspace();
+    session.snapshot.capabilities.receiver_presets = true; session.snapshot.receivers[0].confirmed.continuity = 'continuous'; session.notify();
+    const settings = { ...clone(session.snapshot.receivers[0].confirmed), continuity: 'strict' as const };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ version: 1, revision: '1', presets: [{ name: 'Strict', settings }] }) } as Response);
+    const presets = element<HTMLDetailsElement>('[data-receiver-presets]'); presets.open = true; presets.dispatchEvent(new Event('toggle')); await settle();
+    const list = presets.querySelector<HTMLSelectElement>('[data-preset-list]')!; list.value = 'Strict'; list.dispatchEvent(new Event('change'));
+    presets.querySelector<HTMLButtonElement>('[data-preset-load]')!.click(); click('cancel');
+    edit('name', 'Name only');
+    const configure = vi.spyOn(session, 'configure'); submit(); await settle();
+    expect(configure).toHaveBeenCalledWith('fixture-c1', expect.objectContaining({ name: 'Name only', continuity: 'continuous' }));
+  });
+
   it('shows the service recording quota and keeps existing stops usable when all slots are held', async () => {
     const started = adapter.dispatch({ type: 'record_start', request_id: 'existing-iq', receiver_uid: 'fixture-c1', kinds: ['iq'] });
     await settle();
@@ -144,6 +194,87 @@ describe('per-channel audio settings', () => {
 });
 
 describe('channel workspace workflows', () => {
+  it.each(['name', 'frequency'])('replaces the focused %s draft when Preset cancels local edits', name => {
+    nativeWorkspace();
+    const selector = name === 'name' ? '[data-channel-name]' : '[data-config] [name=frequency]';
+    const input = element<HTMLInputElement>(selector);
+    input.focus(); edit(name, name === 'name' ? 'Discard on preset' : '7.123456');
+    const confirmed = session.snapshot.receivers[0].confirmed;
+    document.dispatchEvent(new Event('websa:preset-applied'));
+    expect(element<HTMLInputElement>(selector).value).toBe(name === 'name' ? confirmed.name : (confirmed.baseband.frequency_hz / 1e6).toFixed(6));
+    expect(element<HTMLButtonElement>('[data-config] [type=submit]').disabled).toBe(true);
+    session.select('fixture-c2'); session.select('fixture-c1');
+    expect(element<HTMLInputElement>(selector).value).toBe(name === 'name' ? confirmed.name : (confirmed.baseband.frequency_hz / 1e6).toFixed(6));
+  });
+  it('restores valid saved views despite malformed entries and never applies a duplicate entry to another window', () => {
+    ui.dispose();
+    localStorage.setItem('websa-workbench-views-v1', JSON.stringify([
+      null, {}, { kind: 'results', binding: { type: 'fixed', receiver_uid: 123 } },
+      { kind: 'detail', binding: { type: 'fixed', receiver_uid: 'fixture-c1' }, tab: 'output' },
+      { kind: 'detail', binding: { type: 'fixed', receiver_uid: 'fixture-c2' }, tab: 'receive' },
+      { kind: 'detail', binding: { type: 'fixed', receiver_uid: 'fixture-c1' }, tab: 'recording' },
+    ]));
+    ui = mountWorkbench(session, document.body);
+    expect(document.querySelectorAll('[data-view-id="detail-fixture-c1"]')).toHaveLength(1);
+    const first = document.querySelector('[data-view-id="detail-fixture-c1"]')!;
+    const second = document.querySelector('[data-view-id="detail-fixture-c2"]')!;
+    expect(first.querySelector('[data-action=tab-output]')!.getAttribute('aria-pressed')).toBe('true');
+    expect(second.querySelector('[data-action=tab-receive]')!.getAttribute('aria-pressed')).toBe('true');
+  });
+  it('selects the receiver created by each queued duplicate command', async () => {
+    const duplicate = element<HTMLButtonElement>('[data-uid="fixture-c1"] [data-action=duplicate]');
+    duplicate.click(); duplicate.click();
+    await settle();
+    expect(session.snapshot.receivers).toHaveLength(5);
+    expect(session.selected).toBe(session.snapshot.receivers[4].receiver_uid);
+    expect(session.snapshot.receivers[3].receiver_uid).not.toBe(session.snapshot.receivers[4].receiver_uid);
+  });
+  it('releases workspace and pane handlers on disposal and does not reopen through stale controls', () => {
+    const host = document.querySelector<HTMLElement>('.mc-desktop')!.parentElement!;
+    const opener = host.querySelector<HTMLButtonElement>('[data-action=workbench]')!;
+    const select = element<HTMLButtonElement>('[data-uid="fixture-c2"] [data-action=select]');
+    const selected = session.selected;
+    ui.dispose();
+    opener.click(); select.click(); ui.showOverview(); ui.recall(); ui.dispose();
+    expect(document.querySelector('[data-view-id]')).toBeNull();
+    expect(session.selected).toBe(selected);
+    ui = mountWorkbench(session, host);
+    host.querySelector<HTMLButtonElement>('[data-action=workbench]')!.click();
+    expect(document.querySelectorAll('[data-view-id="overview-follow"]')).toHaveLength(1);
+  });
+  it.each(['selection', 'service'])('keeps a deferred form submission bound to its displayed owner after a %s change', async change => {
+    nativeWorkspace();
+    const configure = vi.spyOn(session, 'configure');
+    const other = clone(session.snapshot.receivers[1].confirmed);
+    edit('name', 'Original channel');
+    const form = element<HTMLFormElement>('[data-config]');
+    form.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    if (change === 'selection') session.select('fixture-c2');
+    else { session.snapshot = { ...session.snapshot, service_id: 'replacement' }; session.notify(); }
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    if (change === 'selection') expect(configure.mock.calls.map(([uid]) => uid)).toEqual(['fixture-c1']);
+    else expect(configure).not.toHaveBeenCalled();
+    document.dispatchEvent(new Event('pointerup')); await settle();
+    expect(session.snapshot.receivers[1].confirmed).toEqual(other);
+    expect(session.snapshot.receivers[0].confirmed.name === 'Original channel').toBe(change === 'selection');
+  });
+  it.each(['selection', 'service'])('does not carry a focused name into another owner after a %s change', change => {
+    nativeWorkspace();
+    const name = element<HTMLInputElement>('[data-channel-name]');
+    name.focus(); edit('name', 'Local draft');
+    if (change === 'selection') session.select('fixture-c2');
+    else {
+      session.snapshot = clone(session.snapshot); session.snapshot.service_id = 'replacement';
+      session.snapshot.receivers[0].confirmed.name = 'Replacement channel'; session.notify();
+    }
+    const displayed = session.snapshot.receivers.find(r => r.receiver_uid === session.selected)!;
+    expect(element('[data-channel-name]')).not.toBe(name);
+    expect(element<HTMLInputElement>('[data-channel-name]').value).toBe(displayed.confirmed.name);
+    if (change === 'selection') {
+      session.select('fixture-c1');
+      expect(element<HTMLInputElement>('[data-channel-name]').value).toBe('Local draft');
+    } else expect(element('[data-draft-status]').textContent).not.toContain('Unapplied');
+  });
   it('keeps every workbench dropdown and its options stable across snapshot refreshes', () => {
     click('follow-results');
     element('[data-uid="fixture-c1"] [data-action=detail]').click();
@@ -157,6 +288,74 @@ describe('channel workspace workflows', () => {
     expect(selects.every(select => select.isConnected)).toBe(true);
     expect(observer.takeRecords()).toEqual([]); observer.disconnect();
     for (const setter of setters) expect(setter).not.toHaveBeenCalled();
+  });
+  it('renames a collapsed pinned channel on Enter and cancels drafts on Escape or blur', async () => {
+    element('[data-uid="fixture-c1"] [data-action=detail]').click();
+    const detail = document.querySelector<HTMLElement>('[data-view-id="detail-fixture-c1"]')!;
+    detail.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    const begin = (): HTMLInputElement => {
+      detail.querySelector('[data-strip-name]')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return detail.querySelector<HTMLInputElement>('[data-strip-name-edit]')!;
+    };
+    const input = begin(); expect(document.activeElement).toBe(input);
+    input.value = '  Evening radio  '; input.dispatchEvent(new Event('input', { bubbles: true }));
+    session.select('fixture-c2'); session.notify();
+    expect(detail.querySelector('[data-strip-name-edit]')).toBe(input); expect(input.value).toBe('  Evening radio  ');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
+    expect(detail.querySelector('[data-strip-name-edit]')).toBe(input);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await settle();
+    expect(session.snapshot.receivers.find(r => r.receiver_uid === 'fixture-c1')!.confirmed.name).toBe('Evening radio');
+    expect(session.snapshot.receivers.find(r => r.receiver_uid === 'fixture-c2')!.confirmed.name).not.toBe('Evening radio');
+    for (const cancel of ['Escape', 'blur']) {
+      const draft = begin(); draft.value = 'Discard'; draft.dispatchEvent(new Event('input', { bubbles: true }));
+      if (cancel === 'blur') draft.blur();
+      else draft.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(detail.querySelector('[data-strip-name-edit]')).toBeNull();
+      expect(detail.querySelector('[data-strip-name]')!.textContent).toBe('Evening radio');
+    }
+  });
+  it.each(['binding', 'service', 'preset'])('discards a compact name draft after a %s change', async change => {
+    const configure = vi.spyOn(session, 'configure');
+    click('follow-results');
+    const detail = document.querySelector<HTMLElement>('[data-view-id="results-follow"]')!;
+    detail.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    detail.querySelector('[data-strip-name]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    const input = detail.querySelector<HTMLInputElement>('[data-strip-name-edit]')!;
+    input.value = 'Stale name'; input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (change === 'binding') session.select('fixture-c2');
+    else if (change === 'service') {
+      input.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      session.snapshot = { ...session.snapshot, service_id: 'replacement' }; session.notify();
+      // The pointer gesture can defer rendering, so submit must also validate its owner.
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      document.dispatchEvent(new Event('pointerup')); await vi.advanceTimersByTimeAsync(0);
+    } else document.dispatchEvent(new Event('websa:preset-applied'));
+    expect(detail.querySelector('[data-strip-name-edit]')).toBeNull();
+    expect(configure).not.toHaveBeenCalled();
+    expect(session.snapshot.receivers.every(r => r.confirmed.name !== 'Stale name')).toBe(true);
+  });
+  it('keeps the playback meter on its displayed receiver until an active gesture permits rebinding', async () => {
+    ui.dispose(); localStorage.clear();
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const playback = (uid: string) => ({ enabled: true, playing: true, contextState: 'running', meterAt: Date.now(),
+      rms: uid === 'fixture-c1' ? 0.1 : 0.8, peak: uid === 'fixture-c1' ? 0.2 : 0.9 });
+    ui = mountWorkbench(session, document.body, { results: () => ({ entries: [], evicted: 0 }), playback, status: () => '', retry: () => {} });
+    overview = document.querySelector<HTMLElement>('[data-view-id="overview-follow"]')!;
+    click('follow-results');
+    const detail = document.querySelector<HTMLElement>('[data-view-id="results-follow"]')!;
+    detail.querySelector<HTMLButtonElement>('[data-collapse]')!.click();
+    detail.querySelector<HTMLButtonElement>('[data-action=strip-volume]')!.click();
+    detail.querySelector('[data-strip-gain]')!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    session.select('fixture-c2');
+    await vi.advanceTimersByTimeAsync(50);
+    const strip = detail.querySelector<HTMLElement>('.mc-channel-strip')!;
+    const meter = strip.querySelector<HTMLElement>('[role=meter]')!;
+    expect(strip.dataset.receiverUid).toBe('fixture-c1');
+    expect(Number(meter.getAttribute('aria-valuenow'))).toBeCloseTo(-20);
+    expect(meter.title).toContain('Playing audio (before monitor volume)');
+    document.dispatchEvent(new Event('pointerup')); await vi.advanceTimersByTimeAsync(0);
+    expect(strip.dataset.receiverUid).toBe('fixture-c2');
+    expect(Number(meter.getAttribute('aria-valuenow'))).toBeCloseTo(20 * Math.log10(0.8));
   });
   it('updates the collapsed AM meter with programme audio while the carrier stays steady', async () => {
     ui.dispose(); localStorage.clear();
@@ -181,7 +380,7 @@ describe('channel workspace workflows', () => {
     expect(detail.querySelector('.mc-strip-level')).toBe(meter);
     expect(meter.style.getPropertyValue('--level')).toBe('80%');
     expect(meter.getAttribute('aria-valuenow')).toBe('-12');
-    expect(meter.title).toContain('Audio');
+    expect(meter.title).toContain('Demodulated audio (not playing)');
   });
   it('keeps monitor and result-binding dropdown selections untouched by periodic refreshes', () => {
     click('follow-results');
@@ -334,6 +533,16 @@ describe('channel workspace workflows', () => {
     expect(session.snapshot.receivers[0].confirmed.baseband.frequency_hz).toBe(7123456);
     expect(element('[data-draft-status]').textContent).toBe('Settings accepted');
     expect(element('[data-preview]').textContent).toBe('');
+  });
+
+  it.each([false, true])('keeps an explicit whole-Hz draft over a fractional original (restore: %s)', async restore => {
+    const config = clone(session.snapshot.receivers[0].confirmed); config.baseband.frequency_hz = 7_100_000.25;
+    void session.configure('fixture-c1', config); await settle();
+    edit('frequency', '7.1');
+    if (restore) { session.select('fixture-c2'); session.select('fixture-c1'); }
+    const configure = vi.spyOn(session, 'configure'); submit(); await settle();
+    expect(configure).toHaveBeenCalledWith('fixture-c1', expect.objectContaining({ baseband: expect.objectContaining({ frequency_hz: 7_100_000 }) }));
+    expect(session.snapshot.receivers[0].confirmed.baseband.frequency_hz).toBe(7_100_000);
   });
 
   it('keeps separate drafts across channels and tabs and resets only the current channel', () => {

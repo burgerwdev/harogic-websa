@@ -2,6 +2,7 @@
 // Build with the official htra_api.h and libhtraapi.so.0.55.100: make sdk-shim.
 #include "htra_api.h"
 #include "htra_api_pnm.h"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -403,7 +404,9 @@ static int san90_iqs_configure(San90Device* state, double center_hz, const San90
     if (status) return status;
     // PacketSamples is fixed at 16240 samples per packet at every decimate
     // (measured); the sample RATE scales with the device decimate factor.
-    if (stream.PacketSamples != 16240 || stream.IQSampleRate <= 0.0 ||
+    if (stream.PacketSamples != 16240 || stream.PacketDataSize != 16240 * 4 ||
+        configured.DataFormat != Complex16bit || !std::isfinite(stream.IQSampleRate) ||
+        stream.IQSampleRate <= 0.0 ||
         std::fabs(stream.IQSampleRate * device_decimate - 62500000.0) > 1.0)
         return -102;
     if (!std::isfinite(stream.Bandwidth) || stream.Bandwidth < 300000.0 ||
@@ -496,7 +499,6 @@ extern "C" int san90_iqs_arm_v1(San90Device* state) {
     return 0;
 }
 
-// Retune or re-level the live IQS stream without Device_Close/Device_Open.
 // Retune, re-level or re-rate the live IQS stream without Device_Close/Device_Open.
 extern "C" int san90_iqs_reconfig_v2(San90Device* state, double center_hz,
                                        const San90FrontEnd* fe, int device_decimate,
@@ -511,6 +513,15 @@ extern "C" int san90_iqs_reconfig_v2(San90Device* state, double center_hz,
     int status = san90_iqs_configure(state, center_hz, *fe, usable_bandwidth, configured_center,
                                     device_decimate);
     return status ? status : san90_iqs_arm_v1(state);
+}
+
+// All production IQ entry points share the same fixed CS16 packet contract.
+// Check the SDK's byte count and width before copying from its borrowed pointer.
+static bool san90_valid_iqs_packet(const IQStream_TypeDef& stream, uint32_t capacity) {
+    return stream.IQS_StreamInfo.PacketSamples == 16240 && capacity >= 16240 &&
+        stream.IQS_StreamInfo.PacketDataSize == 16240 * 4 &&
+        stream.IQS_Profile.DataFormat == Complex16bit && stream.AlternIQStream &&
+        std::isfinite(stream.IQS_ScaleToV);
 }
 
 extern "C" int san90_next(San90Device* state, int16_t* dest, uint32_t capacity,
@@ -528,8 +539,7 @@ extern "C" int san90_next(San90Device* state, int16_t* dest, uint32_t capacity,
     int status = IQS_GetIQStream_PM1(&state->handle, &stream);
     if (status && status != APIRETVAL_WARNING_IFOverflow) return status;
     auto n = stream.IQS_StreamInfo.PacketSamples;
-    if (n != 16240 || n > capacity || !stream.AlternIQStream ||
-        !std::isfinite(stream.IQS_ScaleToV)) return -103;
+    if (!san90_valid_iqs_packet(stream, capacity)) return -103;
     std::memcpy(dest, stream.AlternIQStream, n * 2 * sizeof(int16_t));
     info->stamp = stream.IQS_TriggerInfo.SysTimerCountOfFirstDataPoint;
     info->samples = n;
@@ -579,8 +589,7 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
     state->timing.measured |= 2;
     if (status && status != APIRETVAL_WARNING_IFOverflow) return status;
     auto n = stream.IQS_StreamInfo.PacketSamples;
-    if (n != 16240 || n > capacity || !stream.AlternIQStream ||
-        !std::isfinite(stream.IQS_ScaleToV)) return -103;
+    if (!san90_valid_iqs_packet(stream, capacity)) return -103;
     int warning = (status == APIRETVAL_WARNING_IFOverflow || stream.DeviceState.IFOverflow)
         ? APIRETVAL_WARNING_IFOverflow : 0;
     const auto copy_started = San90Clock::now();
@@ -624,7 +633,10 @@ struct San90DisplayFft { void* dsp = nullptr; uint32_t size = 0, points = 0; };
 extern "C" int san90_display_fft_open_v1(void** out, uint32_t size, uint32_t* points, double* rbw) {
     if (!out || !points || !rbw || (size != 32768 && size != 65536 && size != 16240)) return -120;
     *out = nullptr;
-    auto* s = new San90DisplayFft;
+    // This independent worker bypasses San90Session's exception barrier.
+    // Report allocation failure through the C ABI instead of throwing into Rust.
+    auto* s = new (std::nothrow) San90DisplayFft;
+    if (!s) return -101;
     int status = DSP_Open(&s->dsp);
     DSP_FFT_TypeDef in{}, actual{};
     if (!status) status = DSP_FFT_DeInit(&in);
@@ -750,6 +762,48 @@ struct San90RtaDevice {
     std::vector<float> capture_power;
 };
 
+// This is a host-buffer budget, not a device capability. Include all three
+// arrays and retained capacities; a profile change may exchange a large trace
+// for a large density bitmap. Widen SDK counts before adding vendor headroom.
+static int san90_rta_prepare_buffers(San90RtaDevice* state, bool accumulate) {
+    const auto& info = state->info;
+    const uint64_t width = info.FrameWidth;
+    const uint64_t height = info.FrameHeight;
+    const double span = info.StopFrequency_Hz - info.StartFrequency_Hz;
+    if (width < 2 || width > 65536 || height == 0 || height > 65536 ||
+        info.PacketValidPoints < width || !std::isfinite(info.StartFrequency_Hz) ||
+        !std::isfinite(info.StopFrequency_Hz) || !std::isfinite(span) || span <= 0.0)
+        return -102;
+    const uint64_t trace = static_cast<uint64_t>(std::max(info.PacketValidPoints, info.PacketSamplePoints)) + 4096;
+    const uint64_t bitmap = width * height + 65536;
+    const uint64_t capture = accumulate ? width : 0;
+    constexpr uint64_t budget = 64u * 1024u * 1024u;
+    if (trace + bitmap * sizeof(uint16_t) + capture * sizeof(float) > budget)
+        return -102;
+    const uint64_t retained = std::max<uint64_t>(trace, state->trace.capacity())
+        + std::max<uint64_t>(bitmap, state->bitmap.capacity()) * sizeof(uint16_t)
+        + std::max<uint64_t>(capture, state->capture_power.capacity()) * sizeof(float);
+    if (retained > budget) {
+        std::vector<uint8_t>().swap(state->trace);
+        std::vector<uint16_t>().swap(state->bitmap);
+        std::vector<float>().swap(state->capture_power);
+    }
+    // vector::assign may allocate before freeing its old storage. Release each
+    // growing buffer first so replacement also obeys the peak live-byte budget.
+    if (state->trace.capacity() < trace) std::vector<uint8_t>().swap(state->trace);
+    if (state->bitmap.capacity() < bitmap) std::vector<uint16_t>().swap(state->bitmap);
+    if (state->capture_power.capacity() < capture) std::vector<float>().swap(state->capture_power);
+    try {
+        state->trace.assign(static_cast<size_t>(trace), 0);
+        state->bitmap.assign(static_cast<size_t>(bitmap), 0);
+        state->capture_power.assign(static_cast<size_t>(capture), -1.0e30f);
+    } catch (const std::bad_alloc&) {
+        // Return through reconfig_v2 so it can attempt its normal rollback.
+        return -101;
+    }
+    return 0;
+}
+
 extern "C" int san90_rta_open_v1(San90RtaDevice** out, double center_hz, double span_hz,
                                    double* start_hz, double* stop_hz, uint32_t* points) {
     SAN90_DISPATCH(nullptr, san90_rta_open_v1(out, center_hz, span_hz, start_hz, stop_hz, points));
@@ -786,18 +840,11 @@ extern "C" int san90_rta_open_v1(San90RtaDevice** out, double center_hz, double 
         in.BusTimeout_ms = 250;
         status = RTA_Configuration(&state->handle, &in, &configured, &state->info);
         if (status) goto fail;
-        const uint32_t width = state->info.FrameWidth;
-        const uint32_t height = state->info.FrameHeight;
-        const uint32_t valid = state->info.PacketValidPoints;
-        if (width < 2 || valid < width || width > 65536 || height == 0 || height > 65536) {
-            status = -102;
-            goto fail;
-        }
-        state->trace.resize(std::max(valid, state->info.PacketSamplePoints) + 4096);
-        state->bitmap.resize(static_cast<size_t>(width) * height + 65536);
+        status = san90_rta_prepare_buffers(state, false);
+        if (status) goto fail;
         *start_hz = state->info.StartFrequency_Hz;
         *stop_hz = state->info.StopFrequency_Hz;
-        *points = width;
+        *points = state->info.FrameWidth;
     }
     status = RTA_BusTriggerStart(&state->handle);
     if (status) goto fail;
@@ -925,20 +972,12 @@ static int san90_rta_configure(San90RtaDevice* state, const San90RtaRequest& r,
     status = san90_retry_bus(
         [&] { return RTA_Configuration(&state->handle, &in, &configured, &state->info); });
     if (status) return status;
-    const uint32_t width = state->info.FrameWidth;
-    const uint32_t height = state->info.FrameHeight;
-    const uint32_t valid = state->info.PacketValidPoints;
-    if (width < 2 || valid < width || width > 65536 || height == 0 || height > 65536)
-        return -102;
-    // Fresh buffers for the new frame geometry (Python rta.py: stale buffers caused GPF).
-    state->trace.assign(std::max(valid, state->info.PacketSamplePoints) + 4096, 0);
-    state->bitmap.assign(static_cast<size_t>(width) * height + 65536, 0);
-    if (configured.TriggerMode == FixedPoints && configured.TriggerSource == Level && !configured.EnableReTrigger)
-        state->capture_power.assign(width, -1.0e30f);
-    else state->capture_power.clear();
+    status = san90_rta_prepare_buffers(state,
+        configured.TriggerMode == FixedPoints && configured.TriggerSource == Level && !configured.EnableReTrigger);
+    if (status) return status;
     actual->start_hz = state->info.StartFrequency_Hz;
     actual->stop_hz = state->info.StopFrequency_Hz;
-    actual->points = width;
+    actual->points = state->info.FrameWidth;
     actual->ref_dbm = configured.RefLevel_dBm;
     actual->rbw_hz = configured.RBW_Hz;
     actual->vbw_hz = configured.VBW_Hz;
@@ -1088,14 +1127,9 @@ extern "C" int san90_rta_reconfig_v2(San90RtaDevice* state, const San90RtaReques
     int restored = RTA_BusTriggerStop(&state->handle);
     RTA_Profile_TypeDef configured{};
     if (!restored) restored = RTA_Configuration(&state->handle, &previous, &configured, &state->info);
-    if (!restored) {
-        state->trace.assign(std::max(state->info.PacketValidPoints, state->info.PacketSamplePoints) + 4096, 0);
-        state->bitmap.assign(static_cast<size_t>(state->info.FrameWidth) * state->info.FrameHeight + 65536, 0);
-        if (previous.TriggerMode == FixedPoints && previous.TriggerSource == Level && !previous.EnableReTrigger)
-            state->capture_power.assign(state->info.FrameWidth, -1.0e30f);
-        else state->capture_power.clear();
-        restored = RTA_BusTriggerStart(&state->handle);
-    }
+    if (!restored) restored = san90_rta_prepare_buffers(state,
+        previous.TriggerMode == FixedPoints && previous.TriggerSource == Level && !previous.EnableReTrigger);
+    if (!restored) restored = RTA_BusTriggerStart(&state->handle);
     state->configured = previous;
     state->actual = previous_actual;
     if (!restored) ++state->actual.generation;

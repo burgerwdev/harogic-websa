@@ -6,7 +6,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path as FsPath, PathBuf},
-    sync::{Condvar, Mutex},
+    sync::{Condvar, Mutex, OnceLock},
     thread::JoinHandle,
     time::Instant,
 };
@@ -63,12 +63,17 @@ fn add(value: &mut Value, amount: u64) {
 }
 fn persist(path: &FsPath, task: &Value) -> io::Result<()> {
     let temporary = path.join("task.json.tmp");
-    let mut file = File::create(&temporary)?;
-    file.write_all(&serde_json::to_vec(task)?)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-    fs::rename(temporary, path.join("task.json"))?;
-    File::open(path)?.sync_all()
+    // Only the file created by this attempt is ours to replace or clean up.
+    let mut file = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+    let result = (|| {
+        file.write_all(&serde_json::to_vec(task)?)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        fs::rename(&temporary, path.join("task.json"))?;
+        File::open(path)?.sync_all()
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temporary); }
+    result
 }
 fn set_fault(task: &mut Value, code: &str, message: &str) {
     task["state"] = json!("failed");
@@ -114,6 +119,7 @@ struct Queue {
 struct Lane {
     uid: String,
     kind: String,
+    owned_path: OnceLock<PathBuf>,
     task: Mutex<Value>,
     queue: Mutex<Queue>,
     wake: Condvar,
@@ -235,6 +241,16 @@ impl StartTicket {
         }
     }
 }
+struct StoredTask {
+    task: Value,
+    // Failed directory claims remain visible diagnostics, but never authorize file access.
+    path: Option<PathBuf>,
+}
+impl Lane {
+    fn stored(&self) -> StoredTask {
+        StoredTask { task: self.snapshot(), path: self.owned_path.get().cloned() }
+    }
+}
 struct Handle {
     lane: Arc<Lane>,
     thread: Option<JoinHandle<()>>,
@@ -242,7 +258,7 @@ struct Handle {
 pub(super) struct Manager {
     root: PathBuf,
     _lock: File,
-    history: Vec<Value>,
+    history: Vec<StoredTask>,
     lanes: Vec<Handle>,
     next: u64,
 }
@@ -259,8 +275,9 @@ impl Manager {
             .map_err(|e| io_error(format!("recording directory already owned: {e}")))?;
         let mut history = Vec::new();
         for entry in fs::read_dir(&root)? {
-            let path = entry?.path();
-            if !path.is_dir() || entry_file_hidden(&path) {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_dir() || entry_file_hidden(&path) {
                 continue;
             }
             let manifest = path.join("task.json");
@@ -274,6 +291,9 @@ impl Manager {
                     manifest.display()
                 )));
             }
+            if task["task_id"].as_str().is_none_or(|id| id.is_empty() || Some(id) != path.file_name().and_then(|name| name.to_str())) {
+                return Err(io_error(format!("recording task identity does not match its directory: {}", manifest.display())));
+            }
             // Completion is committed only after archive footers and IQ indexes
             // have been synced. Reuse them without reading payloads or rewriting
             // sidecars. Range readers / exporters validate content on demand.
@@ -283,9 +303,9 @@ impl Manager {
                     set_fault(&mut task, "RECORDING_RECOVERY", &error.to_string());
                 }
             }
-            history.push(task);
+            history.push(StoredTask { task, path: Some(path) });
         }
-        history.sort_by_key(|task| task["task_id"].as_str().unwrap_or("").to_owned());
+        history.sort_by_key(|stored| stored.task["task_id"].as_str().unwrap_or("").to_owned());
         Ok(Self {
             root,
             _lock: lock,
@@ -297,7 +317,7 @@ impl Manager {
     pub(super) fn snapshots(&self) -> Vec<Value> {
         self.history
             .iter()
-            .cloned()
+            .map(|stored| stored.task.clone())
             .chain(self.lanes.iter().map(|h| h.lane.snapshot()))
             .collect()
     }
@@ -309,12 +329,12 @@ impl Manager {
     }
     /// Finished tasks have immutable indexes. A failed live lane must finish draining first.
     pub(super) fn readable_task(&self, id: &str) -> Result<(PathBuf, Value), &'static str> {
-        if let Some(task) = self.history.iter().find(|t| t["task_id"] == id) {
-            return Ok((self.root.join(id), task.clone()));
+        if let Some(stored) = self.history.iter().find(|stored| stored.task["task_id"] == id) {
+            return Ok((stored.path.clone().ok_or("recording storage was not acquired")?, stored.task.clone()));
         }
         if let Some(handle) = self.lanes.iter().find(|h| h.lane.task.lock().unwrap()["task_id"] == id) {
             if handle.lane.done.load(Ordering::Acquire) {
-                return Ok((self.root.join(id), handle.lane.snapshot()));
+                return Ok((handle.lane.owned_path.get().cloned().ok_or("recording storage was not acquired")?, handle.lane.snapshot()));
             }
             return Err("recording must finish before reading");
         }
@@ -386,6 +406,7 @@ impl Manager {
         let lane = Arc::new(Lane {
             uid: uid.into(),
             kind: kind.into(),
+            owned_path: OnceLock::new(),
             task: Mutex::new(task),
             done: AtomicBool::new(false),
             wake: Condvar::new(),
@@ -424,7 +445,7 @@ impl Manager {
             handle.lane.seal("record_stopped", None);
             return Ok(());
         }
-        if self.history.iter().any(|task| task["task_id"] == id) {
+        if self.history.iter().any(|stored| stored.task["task_id"] == id) {
             return Ok(());
         }
         Err("recording task not found".into())
@@ -544,7 +565,7 @@ impl Manager {
             if self.lanes[i].lane.done.load(Ordering::Acquire) {
                 let mut handle = self.lanes.remove(i);
                 let _ = handle.thread.take().unwrap().join();
-                self.history.push(handle.lane.snapshot());
+                self.history.push(handle.lane.stored());
             } else {
                 i += 1;
             }
@@ -552,9 +573,11 @@ impl Manager {
     }
     fn managed(&mut self, id: &str, task: Option<Value>) {
         self.reap();
-        self.history.retain(|t| t["task_id"] != id);
-        if let Some(task) = task { self.history.push(task); }
-        self.history.sort_by_key(|t| t["created_at_ms"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0));
+        if let Some(index) = self.history.iter().position(|stored| stored.task["task_id"] == id) {
+            if let Some(task) = task { self.history[index].task = task; }
+            else { self.history.remove(index); }
+        }
+        self.history.sort_by_key(|stored| stored.task["created_at_ms"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0));
     }
     pub(super) fn shutdown(&mut self) {
         for handle in &self.lanes {
@@ -571,7 +594,7 @@ impl Manager {
             }
         }
         self.history
-            .extend(self.lanes.drain(..).map(|h| h.lane.snapshot()));
+            .extend(self.lanes.drain(..).map(|h| h.lane.stored()));
     }
 }
 
@@ -655,7 +678,12 @@ impl Volume {
     }
 }
 fn run(lane: Arc<Lane>, path: PathBuf) {
-    let result = match lane.kind.as_str() { "results" => results::work(&lane, &path), "audio" => audio::work(&lane, &path), _ => work(&lane, &path) };
+    let result = (|| {
+        fs::create_dir(&path)?;
+        let _ = lane.owned_path.set(path.clone());
+        File::open(path.parent().ok_or_else(|| io_error("recording directory has no parent"))?)?.sync_all()?;
+        match lane.kind.as_str() { "results" => results::work(&lane, &path), "audio" => audio::work(&lane, &path), _ => work(&lane, &path) }
+    })();
     let mut task = lane.task.lock().unwrap().clone();
     let mut queue = lane.queue.lock().unwrap();
     // Seal immediately on worker exit, before any final manifest I/O can block.
@@ -685,12 +713,10 @@ fn run(lane: Arc<Lane>, path: PathBuf) {
         last["end_reason"] = json!(if failed { "failed" } else { reason.as_str() });
     }
     task["updated_at_ms"] = json!(millis());
-    if let Err(error) = persist(&path, &task) {
-        set_fault(
-            &mut task,
-            "RECORDING_IO",
-            &format!("cannot persist task: {error}"),
-        );
+    if lane.owned_path.get().is_some() {
+        if let Err(error) = persist(&path, &task) {
+            set_fault(&mut task, "RECORDING_IO", &format!("cannot persist task: {error}"));
+        }
     }
     *lane.task.lock().unwrap() = task;
     let mut queue = lane.queue.lock().unwrap();
@@ -703,12 +729,6 @@ fn run(lane: Arc<Lane>, path: PathBuf) {
     lane.done.store(true, Ordering::Release);
 }
 fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
-    fs::create_dir(path)?;
-    File::open(
-        path.parent()
-            .ok_or_else(|| io_error("recording directory has no parent"))?,
-    )?
-    .sync_all()?;
     let mut task = lane.task.lock().unwrap().clone();
     persist(path, &task)?;
     let mut volume = Volume::new(path, 0)?;
@@ -914,20 +934,26 @@ fn recover(path: &FsPath, task: &mut Value) -> io::Result<()> {
     let mut incomplete = files.is_empty();
     for file in files {
         let temporary = file.with_extension("jsonl.tmp");
-        let mut rebuilt = File::create(&temporary)?;
-        let scanned = v2::scan(&mut File::open(&file)?, |index, _| {
-            if index.meta.service_id != task["service_id"]
-                || index.meta.clock.receiver_uid != task["receiver_uid"]
-                || index.meta.clock.track_id != task["tracks"][0]["track_id"]
-            {
-                return Err(io_error("archive task identity mismatch"));
-            }
-            update_block(task, index)?;
-            serde_json::to_writer(&mut rebuilt, index)?;
-            rebuilt.write_all(b"\n")
-        });
-        rebuilt.sync_all()?;
-        fs::rename(temporary, file.with_extension("jsonl"))?;
+        let mut rebuilt = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+        let replacement = (|| -> io::Result<io::Result<_>> {
+            let scanned = v2::scan(&mut File::open(&file)?, |index, _| {
+                if index.meta.service_id != task["service_id"]
+                    || index.meta.clock.receiver_uid != task["receiver_uid"]
+                    || index.meta.clock.track_id != task["tracks"][0]["track_id"]
+                {
+                    return Err(io_error("archive task identity mismatch"));
+                }
+                update_block(task, index)?;
+                serde_json::to_writer(&mut rebuilt, index)?;
+                rebuilt.write_all(b"\n")
+            });
+            rebuilt.sync_all()?;
+            fs::rename(&temporary, file.with_extension("jsonl"))?;
+            // A corrupt suffix still commits the index of its verified prefix.
+            Ok(scanned)
+        })();
+        if replacement.is_err() { let _ = fs::remove_file(&temporary); }
+        let scanned = replacement?;
         let (complete, valid) = match scanned {
             Ok(s) => (s.complete, Some(s.valid_bytes.to_string())),
             Err(error) => {
@@ -1027,6 +1053,10 @@ pub(super) async fn index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct CleanupDirectory(PathBuf);
+    impl Drop for CleanupDirectory {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
     fn directory() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
@@ -1081,6 +1111,88 @@ mod tests {
             },
         }
     }
+
+    #[test]
+    fn storage_boundary_failed_directory_claim_preserves_existing_recording() {
+        for kind in ["iq", "results", "audio"] {
+            let root = directory();
+            let _cleanup = CleanupDirectory(root.clone());
+            let mut manager = Manager::open(root.clone()).unwrap();
+            let path = root.join(format!("{kind}-collision-service-1"));
+            fs::create_dir(&path).unwrap();
+            let original = b"original user manifest; must survive a failed directory claim";
+            fs::write(path.join("task.json"), original).unwrap();
+            fs::write(path.join("user-recording.bin"), b"user samples").unwrap();
+            let result = manager.start_configured("new-owner", "collision-service", "collision", kind, "wav", "new task")
+                .unwrap().wait();
+            manager.shutdown();
+            assert!(result.is_err(), "an existing task directory cannot be claimed");
+            assert_eq!(fs::read(path.join("task.json")).unwrap(), original, "{kind} failure overwrote an unowned manifest");
+            assert_eq!(fs::read(path.join("user-recording.bin")).unwrap(), b"user samples");
+            assert!(manager.readable_task(&format!("{kind}-collision-service-1")).is_err(),
+                "an unowned failed task must not expose old files for reading or deletion");
+        }
+    }
+
+    #[test]
+    fn storage_boundary_manifest_identity_cannot_escape_its_directory() {
+        let root = directory();
+        let _cleanup = CleanupDirectory(root.clone());
+        let mut manager = Manager::open(root.clone()).unwrap();
+        manager.start("uid-A", "service-A", "prepare").unwrap().wait().unwrap();
+        let id = manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        manager.stop(&id).unwrap();
+        manager.shutdown();
+        let mut task = manager.snapshots()[0].clone();
+        drop(manager);
+        let path = root.join(&id).join("task.json");
+        for malformed in ["../outside", "/tmp/outside", "other-task", ""] {
+            task["task_id"] = json!(malformed);
+            let bytes = serde_json::to_vec(&task).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(Manager::open(root.clone()).is_err(), "trusted manifest task_id {malformed:?}");
+            assert_eq!(fs::read(&path).unwrap(), bytes, "bad metadata must not be recovered into another task");
+        }
+    }
+
+    #[test]
+    fn storage_boundary_manifest_temp_symlink_preserves_original_and_link() {
+        let root = directory();
+        let _cleanup = CleanupDirectory(root.clone());
+        fs::create_dir(&root).unwrap();
+        let path = root.join("task.json");
+        let original = b"original committed manifest";
+        fs::write(&path, original).unwrap();
+        let temporary = root.join("task.json.tmp");
+        std::os::unix::fs::symlink(&path, &temporary).unwrap();
+        let result = persist(&root, &json!({"new":"candidate"}));
+        assert!(result.is_err(), "an unowned temporary path cannot be overwritten");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_link(&temporary).unwrap(), path);
+    }
+    #[test]
+    fn storage_boundary_recovery_index_temp_collision_preserves_user_files() {
+        let root = directory();
+        let _cleanup = CleanupDirectory(root.clone());
+        let mut manager = Manager::open(root.clone()).unwrap();
+        manager.start("uid-A", "service-A", "prepare").unwrap().wait().unwrap();
+        let id = manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        manager.stop(&id).unwrap();
+        manager.shutdown();
+        let mut task = manager.snapshots()[0].clone();
+        drop(manager);
+        let path = root.join(&id);
+        let original = fs::read(path.join("task.json")).unwrap();
+        let samples = path.join("user-samples.bin");
+        fs::write(&samples, b"user samples").unwrap();
+        let temporary = path.join("iq-000000.jsonl.tmp");
+        std::os::unix::fs::symlink(&samples, &temporary).unwrap();
+        assert!(recover(&path, &mut task).is_err(), "recovery must claim its index temporary before writing");
+        assert_eq!(fs::read(&samples).unwrap(), b"user samples");
+        assert_eq!(fs::read_link(&temporary).unwrap(), samples);
+        assert_eq!(fs::read(path.join("task.json")).unwrap(), original);
+    }
+
     fn wait(manager: &mut Manager) {
         let until = Instant::now() + Duration::from_secs(10);
         while manager
@@ -1245,6 +1357,7 @@ mod tests {
         let lane = Arc::new(Lane {
             uid: "uid-batch".into(),
             kind: "iq".into(),
+            owned_path: OnceLock::new(),
             task: Mutex::new(json!({"task_id":"batch", "receiver_uid":"uid-batch",
                 "state":"recording", "tracks":[{"state":"recording"}]})),
             queue: Mutex::new(Queue {

@@ -587,9 +587,6 @@ impl ReceiverWorkers {
         if (self.shared.branches[slot].lifecycle.load(Ordering::Acquire)==2 || self.threads[slot].as_ref().is_some_and(JoinHandle::is_finished))
             && [slot,WORKERS+slot].iter().all(|&index|self.threads[index].as_ref().is_none_or(JoinHandle::is_finished)) {
             if let Some(handle)=self.threads[slot].take() {let _=handle.join();}
-            if self.threads[WORKERS+slot].as_ref().is_some_and(|h|!h.is_finished()) {
-                return Err(format!("channel {} search still retiring; retry after completion",slot+1));
-            }
             if let Some(handle)=self.threads[WORKERS+slot].take() {let _=handle.join();}
             let (tx,rx)=mpsc::sync_channel(INPUT_CAPACITY);self.inputs[slot]=tx;self.input_rxs[slot]=Some(rx);
             let (tx,rx)=mpsc::sync_channel(SEARCH_CAPACITY);self.search_inputs[slot]=tx;self.search_rxs[slot]=Some(rx);
@@ -721,7 +718,7 @@ impl ReceiverWorkers {
         }
         Ok(())
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "bench-instrument"))]
     pub(super) fn channel_stats(&self,channel:u32)->serde_json::Value {self.shared.metrics.snapshot_for(channel,None)}
     pub(super) fn uid_stats(&self,channel:u32,uid:&str)->serde_json::Value {self.shared.metrics.snapshot_for(channel,Some(uid))}
 
@@ -1705,6 +1702,47 @@ mod tests {
     }
 
     #[test]
+    fn configuration_repair_rejects_busy_owner_before_mutating_any_channel() {
+        let (golden, schema) = super::super::load_golden();
+        let mut state = super::super::DevState::new(golden, schema);
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        state.sdr_demod = "am".into();
+        state.sdr_if_bw = 6000.0;
+        state.sdr_channels[0].nr = true;
+        state.sdr_channels[0].nr_algorithm = "dfn".into();
+        let before = state.channel_configs();
+        let mut workers = ReceiverWorkers::new().unwrap();
+        workers.configure(&before).unwrap();
+        workers.fail_source(1, "injected model failure");
+        let generation = workers.shared.generations[0].load(Ordering::Acquire);
+        let fault = workers.channel_failure(1).unwrap().error;
+        // Stand in for a native call that still owns its state after cancellation.
+        let (release, blocked) = mpsc::channel();
+        workers.threads[0] = Some(thread::spawn(move || { let _ = blocked.recv(); }));
+        state.receiver_workers = Some(workers);
+        state.remember_receiver_streams();
+        state.advance_reception_recovery();
+        let revision = state.config_version;
+        let reception = state.reception.snapshot(1);
+        let result = state.apply_channel_config(&serde_json::json!({"channel":1,"nr":false}));
+        release.send(()).unwrap();
+        let workers = state.receiver_workers.as_mut().unwrap();
+        workers.threads[0].take().unwrap().join().unwrap();
+        assert!(result.is_err(), "a second owner must not be admitted while the failed owner is running");
+        assert!(result.unwrap_err().contains("still retiring"));
+        assert_eq!(*workers.configs[0], before[0]);
+        assert_eq!(*workers.configs[1], before[1]);
+        assert_eq!(workers.shared.generations[0].load(Ordering::Acquire), generation);
+        assert_eq!(workers.channel_failure(1).unwrap().error, fault);
+        assert_eq!(state.channel_configs(), before);
+        assert_eq!(state.config_version, revision);
+        assert_eq!(state.reception.snapshot(1), reception);
+        assert!(state.receiver_failure.is_none());
+    }
+
+    #[test]
     fn live_retirement_fences_queued_iq_before_restarting_unchanged_demodulator() {
         let mut workers=ReceiverWorkers::new().unwrap();
         let shared=workers.shared.clone();
@@ -1989,7 +2027,7 @@ mod tests {
             let (input, queued) = mpsc::sync_channel(INPUT_CAPACITY);
             let (output, _received) = mpsc::sync_channel(RESULT_CAPACITY);
             let (search, _jobs) = mpsc::sync_channel(SEARCH_CAPACITY);
-            // Channels one and three share a worker; channel one fails with IQ still queued.
+            // A failed owner must release every retained entry, including this deliberately mixed-slot mailbox.
             for slot in [0, 2, 0, 2] {
                 input.try_send(PendingWork {
                     work: Work::Packet(Packet {

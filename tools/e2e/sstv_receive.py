@@ -3,7 +3,8 @@
 
 Requires the native websad release binary and built frontend assets.
 Asserts: completed pictures, partial progress and populated thumbnails.
-The fixture path also checks first decode < 2 s.
+The fixture path checks that the opened pane shows SSTV within 2 s. It may use
+already retained decoder data; this is a UI readiness gate, not RF acquisition latency.
 Use --url for an already configured hardware service and external RF transmitter.
 
     python3 tools/e2e/sstv_receive.py
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import subprocess
 import sys
@@ -59,6 +61,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.pictures < 1:
         parser.error('--pictures must be positive')
+    if not math.isfinite(args.seconds) or args.seconds <= 0:
+        parser.error('--seconds must be finite and positive')
     if not args.url and args.mode != 'Robot 36':
         parser.error('the fixture sends Robot 36; other modes require --url')
     modes = json.loads((ROOT / 'tests/fixtures/sstv/modes.json').read_text())
@@ -85,18 +89,17 @@ def main() -> int:
                 page.goto(origin, wait_until='domcontentloaded')
                 page.wait_for_selector('[data-sdr-demod="sstv"]', state='attached', timeout=30000)
                 page.wait_for_timeout(2000)
+                start_mono = time.monotonic()
                 if page.evaluate("() => document.getElementById('btn-decode-window').disabled") is False:
                     page.click('#btn-decode-window')
-                page.wait_for_timeout(1000)
 
                 print(f'READY: waiting for {args.pictures} {args.mode} pictures', flush=True)
-                start_mono = time.monotonic()
                 deadline = start_mono + args.seconds
                 first_decode_at = None
                 completed_ids: set[str] = set()
                 saw_progress = False
                 diag = ''
-                # Phase 1: sub-300 ms polling until the first decode (latency gate: < 2 s).
+                # Phase 1: view readiness from the actual open action (< 2 s).
                 while not cancelled and time.monotonic() < min(deadline, start_mono + (args.seconds if args.url else 10.0)):
                     page.wait_for_timeout(250)
                     mode = page.evaluate("() => document.getElementById('sstv-mode-name').textContent")
@@ -104,9 +107,9 @@ def main() -> int:
                         first_decode_at = time.monotonic() - start_mono
                         gate_ok = first_decode_at < 2.0
                         gate = '' if args.url else f' gate_ok={gate_ok}'
-                        print(f'FIRST DECODE {mode} latency={first_decode_at:.2f}s{gate}', flush=True)
+                        print(f'PANE READY {mode} elapsed={first_decode_at:.2f}s{gate}', flush=True)
                         if not args.url and not gate_ok:
-                            failures.append(f'first decode latency {first_decode_at:.2f}s >= 2s')
+                            failures.append(f'pane readiness {first_decode_at:.2f}s >= 2s')
                         break
                 else:
                     failures.append(f'no {args.mode} decode before timeout')

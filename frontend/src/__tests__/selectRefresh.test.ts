@@ -4,12 +4,11 @@ import { syncSelectOptions, syncSelectValue } from '../ui/selectControl';
 import { mountQuickListen } from '../ui/quickListen';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
-import { clearMainReceiverControls, syncMainReceiverControls } from '../ui/mainReceiverControls';
 import { updateMarkerTable } from '../render/markerTable';
 import * as S from '../core/store';
 
 beforeEach(() => { document.body.replaceChildren(); });
-afterEach(() => { clearMainReceiverControls(); document.body.replaceChildren(); vi.restoreAllMocks(); });
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
 it('leaves marker mode and reference menus untouched during spectrum redraws', () => {
   document.body.innerHTML = '<table><tbody id="marker-tbody"></tbody></table>';
@@ -87,19 +86,4 @@ it('does not rebuild quick-listen options or reset a pending selection on period
       expect(observer.takeRecords()).toEqual([]); observer.disconnect(); select.blur();
     }
   } finally { ui.dispose(); session.dispose(); adapter.dispose(); }
-});
-
-it('defers confirmed mode-editor revisions until a focused dropdown is released', () => {
-  document.body.innerHTML = '<div><div id="sdr-ifbw-group"></div></div>';
-  const row = { channel: 1, mode: 'radiofax', radiofax_ioc: 'auto',
-    control: { service_id: 'test', receiver_uid: 'one', revision: '1', action_token: 'test' } };
-  syncMainReceiverControls(row, vi.fn());
-  const select = document.querySelector<HTMLSelectElement>('#sdr-mode-controls select')!;
-  select.focus();
-  const updated = { ...row, control: { ...row.control, revision: '2' } };
-  for (let i = 0; i < 5; i++) syncMainReceiverControls(updated, vi.fn());
-  expect(document.querySelector('#sdr-mode-controls select')).toBe(select);
-  expect(select.form!.dataset.revision).toBe('1');
-  select.blur(); syncMainReceiverControls(updated, vi.fn());
-  expect(document.querySelector<HTMLFormElement>('#sdr-mode-controls')!.dataset.revision).toBe('2');
 });

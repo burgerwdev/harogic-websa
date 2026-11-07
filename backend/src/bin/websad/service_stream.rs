@@ -275,6 +275,20 @@ pub(super) fn publish_receiver_failure(state:&mut DevState,app:&App)->Option<Val
     Some(json!({"cmd":"RECEIVER_ERROR","error":error,"failed":true,"scope":"all_receivers"}))
 }
 
+/// Only a confirmed logical stop on a healthy capture is a normal end. Empty
+/// closes and transport/receiver failures keep their existing failure semantics.
+pub(super) fn receiver_end_frame(state:&DevState,channel:Option<u32>,uid:Option<&str>)->Message {
+    let reason=channel.zip(uid).and_then(|(slot,uid)| {
+        if !state.link_up || state.swp.mode!="sdr" || state.ddc_error.is_some() || state.receiver_failure.is_some() {
+            return None;
+        }
+        if state.receiver_uid_for_slot(slot)!=Some(uid) {return Some("receiver retired");}
+        state.channel_config(slot).filter(|config|!config.enabled||!config.processing_enabled)
+            .map(|_|"receiver stopped")
+    });
+    Message::Close(reason.map(|reason|CloseFrame {code:1000,reason:reason.into()}))
+}
+
 pub(super) fn deliver_retiring(state:&mut DevState,app:&App) {
     let output=std::mem::take(&mut state.pending_receiver);
     deliver_receiver(state,app,output,true);
@@ -283,7 +297,7 @@ pub(super) fn deliver_retiring(state:&mut DevState,app:&App) {
     for client in app.clients.lock().iter().filter(|c|c.receiver_uid.is_some()&&(c.audio||c.decode)) {
         if client.channel.is_some_and(|slot|!configs.iter().any(|c|c.channel==slot&&c.enabled&&c.processing_enabled)
             && !state.receiver_workers.as_ref().is_some_and(|workers|workers.retiring_tail(slot))) {
-            enqueue(client,Outbound {epoch:app.epoch.load(Ordering::Acquire),message:Message::Close(None).into(),
+            enqueue(client,Outbound {epoch:app.epoch.load(Ordering::Acquire),message:receiver_end_frame(state,client.channel,client.receiver_uid.as_deref()).into(),
                 identity:None,status_revision:None,display_version:None});
         }
     }
@@ -345,7 +359,7 @@ pub(super) fn deliver_receiver(state:&DevState,app:&App,mut output:receiver_work
         if !still_active {
             for client in app.clients.lock().iter().filter(|client|(client.audio||client.decode)&&client.channel==Some(channel)
                 && client.receiver_uid.as_deref().is_none_or(|client_uid|Some(client_uid)==uid)) {
-                enqueue(client,Outbound {epoch:app.epoch.load(Ordering::Acquire),message:Message::Close(None).into(),
+                enqueue(client,Outbound {epoch:app.epoch.load(Ordering::Acquire),message:receiver_end_frame(state,client.channel,client.receiver_uid.as_deref()).into(),
                     identity:None,status_revision:None,display_version:None});
             }
         }
@@ -648,6 +662,32 @@ pub(super) async fn decode_ws_handler(ws:WebSocketUpgrade,State(app):State<Arc<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logical_end_reasons_do_not_mask_capture_or_receiver_faults() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.swp.mode="sdr".into();state.link_up=true;
+        state.remember_receiver_streams();
+        let uid=state.receiver_uid_for_slot(1).unwrap().to_owned();
+        let reason=|state:&DevState,uid:Option<&str>| match receiver_end_frame(state,Some(1),uid) {
+            Message::Close(Some(frame))=>{assert_eq!(frame.code,1000);Some(frame.reason.to_string())},
+            Message::Close(None)=>None,
+            _=>panic!("expected close frame"),
+        };
+        assert_eq!(reason(&state,Some(&uid)),None,"active receiver is not a normal stop");
+        assert_eq!(reason(&state,Some("retired-uid")),Some("receiver retired".into()));
+        state.sdr_channels[0].enabled=false;
+        assert_eq!(reason(&state,Some(&uid)),Some("receiver stopped".into()));
+        assert_eq!(reason(&state,None),None,"legacy subscriptions retain their close semantics");
+        state.link_up=false;
+        assert_eq!(reason(&state,Some(&uid)),None);
+        state.link_up=true;state.ddc_error=Some("capture failed".into());
+        assert_eq!(reason(&state,Some("retired-uid")),None);
+        state.ddc_error=None;state.receiver_failure=Some("receiver failed".into());
+        assert_eq!(reason(&state,Some(&uid)),None);
+        state.receiver_failure=None;state.swp.mode="std".into();
+        assert_eq!(reason(&state,Some("retired-uid")),None);
+    }
 
     #[test]
     fn relatched_failure_retires_recovery_replacement_workers() {

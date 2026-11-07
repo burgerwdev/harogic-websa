@@ -7,7 +7,7 @@ import type { WorkbenchSession } from './workbenchSession';
 
 /** One browser consumer per logical source. Views never own workers, sockets or the speaker graph. */
 export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
-  const release = claimNativeAudio();
+  const release = claimNativeAudio(session.snapshot);
   const toggleMute = (): void => { session.masterMuted = !session.masterMuted; session.notify(); };
   const playbackStatus = (): void => session.notify();
   document.addEventListener('websa:monitor-toggle-mute', toggleMute);
@@ -23,7 +23,8 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   });
   // A main-panel restart after Stop all restores that receiver's local route. Keep
   // the single UID speaker owner and the user's gain/pan/master preferences.
-  // audible() opens the consumer only after a healthy service confirmation.
+  // Playback opens only after a healthy service confirmation; local output gain
+  // does not pause the PCM clock or its pre-gain meter.
   const stopMainCommands = onCommandSent(command => {
     if (command.cmd === 'SET_PRESET' || command.cmd === 'DISCONNECT'
       || command.cmd === 'SET_MODE' && command.mode !== 'sdr'
@@ -51,12 +52,15 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
     session.monitorMode = 'manual';
     session.monitor(receiver.receiver_uid, { enabled: true });
   });
-  const decoders = new Map<string, { worker: Worker; service: string | undefined }>();
+  const decoders = new Map<string, { worker: Worker; service: string | undefined; ended: boolean }>();
   const processingSources = new Map<string, string>();
   const errors = new Map<string, string>();
   const audioKeys = new Map<string, string>();
   let service = session.snapshot.service_id;
-  const stopDecoder = (uid: string): void => { decoders.get(uid)?.worker.terminate(); decoders.delete(uid); processingSources.delete(uid); };
+  const stopDecoder = (uid: string): void => {
+    const owner = decoders.get(uid); if (owner && !owner.ended) owner.worker.terminate();
+    decoders.delete(uid); processingSources.delete(uid);
+  };
   const sync = (): void => {
     const snapshot = session.snapshot;
     if (pendingMainMonitor) {
@@ -87,16 +91,27 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
       const uid = receiver.receiver_uid, config = receiver.confirmed;
       const key = `${snapshot.service_id}:${receiver.stream?.epoch}:${receiver.stream?.channel_id}:${receiver.processing_runtime?.processing_generation}:${config.processors[0]?.mode}`;
       const restart = audioKeys.has(uid) && audioKeys.get(uid) !== key;
-      if (restart) {errors.delete(uid);stopDecoder(uid);endDecoderRasters(uid);}
-      setNativeAudioRoute(uid, config.processors[0]?.mode ?? '', !receiver.fault && session.audible(uid), session.route(uid).gain, session.route(uid).pan, restart);
+      if (restart) {
+        errors.delete(uid); endDecoderRasters(uid);
+        // A disabled receiver loses its stream and removing a processor loses
+        // its mode before the old subscription's accepted tail is delivered.
+        if (receiver.state === 'running' && config.processors.length) stopDecoder(uid);
+      }
+      setNativeAudioRoute(uid, config.processors[0]?.mode ?? '', session.playbackActive(uid), session.route(uid).gain, session.route(uid).pan, restart);
       audioKeys.set(uid, key);
       if (receiver.processing_state === 'failed' || receiver.reception && receiver.reception.state!=='receiving') {stopDecoder(uid);continue;}
-      if (receiver.state !== 'running' || !config.processors.length || receiver.fault || decoders.has(uid) || errors.has(uid)) continue;
+      if (receiver.state !== 'running' || !config.processors.length || receiver.fault) {
+        // STATUS can precede the socket's accepted FIFO tail. Only an ended
+        // owner is ready to release on this observation.
+        if (decoders.get(uid)?.ended) stopDecoder(uid);
+        continue;
+      }
+      if (decoders.has(uid) || errors.has(uid)) continue;
       const worker = new Worker(new URL('../sdr/decodeWorker.ts', import.meta.url), { type: 'module' });
-      const owner = { worker, service: snapshot.service_id }; decoders.set(uid, owner);
-      const fail = (message: string): void => { if (decoders.get(uid) !== owner) return; endDecoderRasters(uid); errors.set(uid, message); stopDecoder(uid); session.notify(); };
+      const owner = { worker, service: snapshot.service_id, ended: false }; decoders.set(uid, owner);
+      const fail = (message: string): void => { if (decoders.get(uid) !== owner || owner.ended) return; endDecoderRasters(uid); errors.set(uid, message); stopDecoder(uid); session.notify(); };
       worker.onmessage = event => {
-        if (decoders.get(uid) !== owner || session.snapshot.service_id !== owner.service) return;
+        if (decoders.get(uid) !== owner || owner.ended || session.snapshot.service_id !== owner.service) return;
         const message = event.data;
         if (message.type === 'frames') {
           try {
@@ -115,6 +130,12 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
             // A fresh validated delivery confirms this subscription recovered.
             if (errors.delete(uid)) session.notify();
           } catch (error) { fail(String(error)); }
+        } else if (message.type === 'ended') {
+          // Hold this terminated owner while a stale directory still says it is
+          // running; a confirmed stop, new stream or explicit retry releases it.
+          owner.ended = true; worker.terminate(); processingSources.delete(uid);
+          clearDecoderStatuses(uid); clearGpsSnapshots(uid); endDecoderRasters(uid); errors.delete(uid);
+          session.notifyResults(uid); session.notify();
         } else if (message.type === 'error') fail(message.message);
         else if (message.type === 'closed') {
           endDecoderRasters(uid);

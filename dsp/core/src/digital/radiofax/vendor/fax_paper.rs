@@ -1068,11 +1068,12 @@ impl FaxPaperDecoder {
                 lines,
                 partial,
             } => {
-                let Some(capture) = self.capture.take().filter(|capture| {
+                if !self.capture.as_ref().is_some_and(|capture| {
                     capture.detector == detector_index && capture.page_id == page_id
-                }) else {
+                }) {
                     return Ok(0);
-                };
+                }
+                let capture = self.capture.take().expect("matching active capture");
                 *claimed = true;
                 if partial {
                     self.raster = immediate_decoder(
@@ -1284,6 +1285,44 @@ fn same_decode_spec(left: FaxSpec, right: FaxSpec) -> bool {
 mod clock_tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn unrelated_page_completions_preserve_active_capture_identity() {
+        for (other_detector, other_page) in [(1, 11), (0, 12)] {
+            let mut decoder = FaxPaperDecoder::new(12_000, FaxPaperConfig::default()).unwrap();
+            let spec = FaxSpec::standard(FaxIoc::Ioc288, FaxLpm::LPM_120);
+            let mut events = Vec::new();
+            let mut claimed = false;
+            decoder.handle_detector_event(0, FaxDecodeEvent::PageStarted {
+                page_id: 11, spec, clock: FaxClockCalibrationPoint::default(),
+            }, &mut claimed, &mut |event: FaxPaperEventRef<'_>| events.push(event.to_owned())).unwrap();
+            let boundary_id = decoder.active_boundary_id;
+            events.clear();
+            claimed = false;
+            assert_eq!(decoder.handle_detector_event(other_detector, FaxDecodeEvent::PageCompleted {
+                page_id: other_page, lines: 50, partial: false,
+            }, &mut claimed, &mut |event: FaxPaperEventRef<'_>| events.push(event.to_owned())).unwrap(), 0);
+            assert!(events.is_empty());
+            assert!(!claimed);
+
+            // A row from the actual owner must still be emitted on the original boundary.
+            assert_eq!(decoder.handle_detector_event(0, FaxDecodeEvent::LineReady {
+                page_id: 11, line_index: 0, pixels: vec![91; spec.width() as usize],
+                basis: FaxRasterBasis::Calibrated,
+            }, &mut claimed, &mut |event: FaxPaperEventRef<'_>| events.push(event.to_owned())).unwrap(), 1);
+            assert!(matches!(&events[0], FaxPaperEvent::LineReady {
+                boundary_id: row_boundary, line_index: 0, pixels, ..
+            } if *row_boundary == boundary_id && pixels.iter().all(|value| *value == 91)));
+            events.clear();
+            assert_eq!(decoder.handle_detector_event(0, FaxDecodeEvent::PageCompleted {
+                page_id: 11, lines: 1, partial: false,
+            }, &mut claimed, &mut |event: FaxPaperEventRef<'_>| events.push(event.to_owned())).unwrap(), 2);
+            assert!(matches!(&events[0], FaxPaperEvent::TransmissionCompleted {
+                boundary_id: completed_boundary, start_line: 0, end_line: 1, lines: 1, ..
+            } if *completed_boundary == boundary_id));
+            assert!(decoder.capture.is_none());
+        }
+    }
 
     #[test]
     fn image_timing_recovers_midstream_phase_and_small_clock_error() {

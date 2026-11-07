@@ -34,15 +34,19 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
   dialog.className = 'mc-create-dialog sdr-replace-dialog'; dialog.dataset.replaceChannel = '';
   dialog.innerHTML = '<form><header><strong data-title></strong><button type="button" data-dismiss>×</button></header><p data-frequency></p><div data-targets></div><p data-error class="mc-error" role="alert"></p><footer><button type="button" data-dismiss></button><button type="submit" class="mc-primary"></button></footer></form>';
   host.append(dialog);
-  let candidate: ReceiverConfig | null = null, busy = false, disposed = false;
+  let candidate: { config: ReceiverConfig; service?: string; lifecycle: number } | null = null, busy = false, disposed = false;
   const revisions = new Map<string, string>();
   const selected = () => dialog.querySelector<HTMLInputElement>('[name=replace]:checked:not(:disabled)')?.value;
   const error = dialog.querySelector<HTMLElement>('[data-error]')!;
   const submit = dialog.querySelector<HTMLButtonElement>('[type=submit]')!;
+  const currentCandidate = (): boolean => !!candidate && candidate.service === session.snapshot.service_id
+    && candidate.lifecycle === session.lifecycleVersion;
   const update = () => {
-    if (!dialog.open || busy) return;
+    if (disposed) return;
+    if (candidate && !currentCandidate()) { candidate = null; revisions.clear(); dialog.close(); }
+    if (!dialog.open || busy || !candidate) return;
     dialog.querySelector('[data-title]')!.textContent = l('Choose a channel to replace', '选择要覆盖的信道');
-    dialog.querySelector('[data-frequency]')!.textContent = `${l('Channels full · add', '信道已满 · 加入')} ${formatFreqHz(candidate!.baseband.frequency_hz)} · ${candidate!.processors[0].mode.toUpperCase()}`;
+    dialog.querySelector('[data-frequency]')!.textContent = `${l('Channels full · add', '信道已满 · 加入')} ${formatFreqHz(candidate.config.baseband.frequency_hz)} · ${candidate.config.processors[0].mode.toUpperCase()}`;
     const targets = dialog.querySelector('[data-targets]')!, known = new Set<string>();
     for (const receiver of session.snapshot.receivers) {
       const uid = receiver.receiver_uid; known.add(uid);
@@ -71,36 +75,40 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
     });
     submit.textContent = l('Replace channel', '覆盖信道'); submit.disabled = !selected();
   };
-  const apply = async (config: ReceiverConfig, target?: ReceiverState): Promise<void> => {
+  const apply = async (config: ReceiverConfig, target?: ReceiverState): Promise<boolean> => {
+    if (disposed) return false;
+    const service = session.snapshot.service_id, lifecycle = session.lifecycleVersion;
     const capture = session.snapshot.capture, bb = config.baseband;
     if (capture.state !== 'running' || capture.usable_bandwidth_hz === null || capture.parameters_state === 'unknown')
       throw new Error(l('Start or recover capture first.', '请先启动或恢复采集。'));
     if (Math.abs(bb.frequency_hz - capture.center_hz) + bb.passband_hz / 2 + bb.transition_hz > capture.usable_bandwidth_hz / 2)
       throw new Error(l('The full passband exceeds capture. Adjust the shared capture first.', '完整通带超出采集范围，请先调整采集中心或 IQ 带宽。'));
-    const previous = new Set(session.snapshot.receivers.map(r => r.receiver_uid));
-    const reply = await session.send(target ? { type: 'configure', request_id: session.requestId(), receiver_uid: target.receiver_uid,
-      expected_revision: target.revision, config } : { type: 'create', request_id: session.requestId(), config });
+    const reply = target ? await session.send({ type: 'configure', request_id: session.requestId(), receiver_uid: target.receiver_uid,
+      expected_revision: target.revision, config }) : await session.create(config);
+    if (disposed || service !== session.snapshot.service_id || lifecycle !== session.lifecycleVersion) return false;
     if (reply.fault) throw new Error(reply.fault.message);
-    const receiver = target ? reply.snapshot.receivers.find(r => r.receiver_uid === target.receiver_uid)
-      : reply.snapshot.receivers.find(r => !previous.has(r.receiver_uid) && r.confirmed.processors[0]?.id === config.processors[0]?.id);
+    const uid = target?.receiver_uid ?? ('receiver_uid' in reply ? reply.receiver_uid : null);
+    const receiver = session.snapshot.receivers.find(r => r.receiver_uid === uid);
     if (!receiver) throw new Error(l('Channel state changed. Try again.', '信道状态已变化，请重试。'));
     if (receiverHasAudio(session.snapshot, receiver.confirmed)) session.monitor(receiver.receiver_uid, { enabled: true });
     doc.dispatchEvent(new CustomEvent('websa:sdr-channels-changed'));
+    return true;
   };
-  const close = () => { if (!busy) dialog.close(); };
+  const close = () => { if (!busy) { candidate = null; revisions.clear(); dialog.close(); } };
   dialog.querySelectorAll('[data-dismiss]').forEach(button => button.addEventListener('click', close));
   dialog.addEventListener('keydown', event => event.stopPropagation());
   dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
   dialog.addEventListener('change', update);
   dialog.addEventListener('submit', event => {
-    event.preventDefault(); if (busy || !candidate) return;
+    event.preventDefault(); if (busy || disposed || !candidate) return;
+    if (!currentCandidate()) { update(); return; }
     const target = session.snapshot.receivers.find(r => r.receiver_uid === selected());
     if (!target || session.edits.get(target.receiver_uid)?.pending || session.retiring(target.receiver_uid)) return;
     if (target.revision !== revisions.get(target.receiver_uid)) { update(); return; }
     busy = true; error.textContent = '';
     dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => { control.disabled = true; });
     submit.textContent = l('Applying…', '正在覆盖…');
-    void apply(clone(candidate), target).then(() => { if (!disposed) dialog.close(); })
+    void apply(clone(candidate.config), target).then(applied => { if (applied && !disposed) { candidate = null; dialog.close(); } })
       .catch(reason => { if (!disposed) error.textContent = String(reason.message ?? reason); })
       .finally(() => {
         busy = false; if (disposed) return;
@@ -111,7 +119,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
   const stop = session.subscribe(update), stopLang = onLangChange(update);
   return {
     async add(): Promise<string | null> {
-      if (busy) return null;
+      if (disposed || busy) return null;
       if (dialog.open) { dialog.focus(); return null; }
       const config = currentChannelConfig(session);
       // C1/current receiver is the tuning source. Repeated saves reuse an existing independent copy.
@@ -125,12 +133,12 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
       }
       if (session.snapshot.receivers.length < session.snapshot.capabilities.max_channels) {
         busy = true;
-        try { await apply(config); return l('Channel added', '已加入信道'); } finally { busy = false; }
+        try { return await apply(config) ? l('Channel added', '已加入信道') : null; } finally { busy = false; }
       }
-      candidate = config; revisions.clear(); error.textContent = '';
+      candidate = { config, service: session.snapshot.service_id, lifecycle: session.lifecycleVersion }; revisions.clear(); error.textContent = '';
       dialog.querySelectorAll<HTMLInputElement>('[name=replace]').forEach(input => { input.checked = false; });
       dialog.showModal(); update(); return null;
     },
-    dispose() { disposed = true; stop(); stopLang(); dialog.remove(); },
+    dispose() { disposed = true; candidate = null; revisions.clear(); stop(); stopLang(); dialog.remove(); },
   };
 }

@@ -139,7 +139,121 @@ function receiverStatus(freq: number, mode: string, version: number, response: R
 		sdr: { ...snapshot.sdr, listen: freq, demod: mode,
 			...(response.sdr as Record<string, unknown> | undefined) } };
 }
+function nativeEntryStatus(mode: string, version: number, revision: string, extra: Record<string, unknown> = {}) {
+  const center = 9_810_000, listen = 9_660_032;
+  const base = status(mode);
+  return { ...base, config_version: version, ...extra, sdr: { ...base.sdr,
+    receiver_api: 'multichannel-draft-v1', center, listen, decimate: 64,
+    channels: [{ channel: 1, enabled: true, freq: listen, mode: 'am', if_bw: 6000,
+      nr: false, nr_strength: 0.6, nr_algorithm: 'wiener', nr_atten_db: 6,
+      control: { service_id: 'radio', receiver_uid: 'c1', revision, action_token: '100' } }],
+  } };
+}
+
 describe('SDR entry and reload', () => {
+  it.each(['std', 'rta', 'server'].flatMap(mode => [false, true].map(disconnected => ({ mode, disconnected }))))(
+    'restores custom SDR tuning after $mode using the capture acknowledgement revision (disconnected=$disconnected)', async ({ mode, disconnected }) => {
+    const { controls } = await load();
+    const center = 9_810_000, listen = 9_660_032;
+    const report = nativeEntryStatus;
+    receive(report('sdr', 10, '10'));
+    controls.setGraphMode(mode);
+    receive(report(mode, 11, '10'));
+    socket.sent.length = 0;
+    controls.setGraphMode('sdr');
+    if (disconnected) {
+      receive(report('sdr', 12, '12', { connected: false }));
+      expect(socket.sent.filter(command => ['SET_SDR', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+    }
+    receive(report('sdr', 12, '12'));
+    const capture = socket.sent.find(command => command.cmd === 'SET_SDR')!;
+    expect(capture).toMatchObject({ center, decimate: 64 });
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toEqual([]);
+    // Polling and an unrelated capture acknowledgement cannot release the receiver edit.
+    receive(report('sdr', 13, '13', { response_to: 'STATUS' }));
+    receive(report('sdr', 13, '13', { response_to: 'SET_SDR', request_id: 'another-browser' }));
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toEqual([]);
+    receive(report('sdr', 14, '14', { response_to: 'SET_SDR', request_id: capture.request_id }));
+    const edits = socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL');
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toMatchObject({ service_id: 'radio', receiver_uid: 'c1', expected_revision: '14',
+      freq: listen, mode: 'am', ifbw: 6000, nr: false, nr_strength: 0.6 });
+    receive(report('sdr', 15, '15', { response_to: 'SET_SDR_CHANNEL', request_id: edits[0].request_id }));
+    receive(report('sdr', 15, '15'));
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toHaveLength(1);
+    const state = await import('../ui/sdrState');
+    expect(state.sdrCenterHz.get()).toBe(center);
+    expect(state.sdrListenHz.get()).toBe(listen);
+  });
+
+  it.each(['leave', 'disconnect', 'preset', 'tune', 'replacement', 'restart', 'stale', 'rejection', 'timeout'])(
+    'cancels an unsent SDR entry restore after %s', async reason => {
+    const { controls } = await load();
+    const report = nativeEntryStatus;
+    receive(report('sdr', 10, '10'));
+    controls.setGraphMode('rta');
+    receive(report('rta', 11, '10'));
+    controls.setGraphMode('sdr');
+    receive(report('sdr', 12, '12'));
+    const capture = socket.sent.find(command => command.cmd === 'SET_SDR')!;
+    expect(capture).toBeDefined();
+    const ack = report('sdr', 13, '13', { response_to: 'SET_SDR', request_id: capture.request_id });
+    if (reason === 'leave') controls.setGraphMode('rta');
+    if (reason === 'disconnect') socket.onclose!();
+    if (reason === 'preset') controls.presetAll();
+    if (reason === 'tune') controls.listenAtFreq(9_700_000);
+    if (reason === 'replacement') ack.sdr.channels[0].control.receiver_uid = 'replacement';
+    if (reason === 'restart') ack.sdr.channels[0].control.service_id = 'restarted';
+    if (reason === 'stale') receive(report('sdr', 14, '14'));
+    if (reason === 'rejection') receive({ cmd: 'ERROR', code: 'bad_parameter', msg: 'capture rejected',
+      response_to: 'SET_SDR', request_id: capture.request_id });
+    if (reason === 'timeout') vi.advanceTimersByTime(30_000);
+    socket.sent.length = 0;
+    receive(ack);
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toEqual([]);
+  });
+
+  it('finishes confirmed mode rendering when saved graph mode cannot be written', async () => {
+    await load();
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError'); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      receive(status('rta'));
+      expect(document.body.classList.contains('rta-mode')).toBe(true);
+      expect(error).not.toHaveBeenCalled();
+    } finally { write.mockRestore(); error.mockRestore(); }
+  });
+
+  it('adopts the first native receiver status when saved graph preferences are unreadable', async () => {
+    const postMessage = vi.fn();
+    // This test uses real STATUS handling; jsdom supplies no browser Worker.
+    vi.stubGlobal('Worker', class {
+      postMessage = postMessage;
+      terminate = vi.fn();
+      onmessage = null;
+      onerror = null;
+    });
+    const { controls } = await load();
+    const S = await import('../core/store');
+    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('Storage blocked', 'SecurityError');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const live = status('sdr');
+      receive({ ...live, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1', ref: -45, ref_set: true } });
+      expect(S.deviceConnected).toBe(true);
+      expect(controls.currentGraphMode()).toBe('sdr');
+      expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'start' }));
+      expect(socket.sent.filter(command => ['SET_MODE', 'SET_SDR', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      controls.disconnectSdrSession();
+      read.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('fits the display after adopting native SDR with a retained applied result but no target', async () => {
     const { fit } = await load();
     const { getDisplayRef } = await import('../ui/displayRef');

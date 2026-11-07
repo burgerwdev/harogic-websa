@@ -24,14 +24,15 @@ def input_stride(input_rate, output_rate):
 
 
 class StreamMonitor:
-    def __init__(self, origin, snapshot):
+    def __init__(self, origin, snapshot, *, all_iq=False):
         self.origin, self.snapshot = origin.replace('http', 'ws'), snapshot
         self.rows, self.errors = {}, []
         self.lock, self.ready = threading.Lock(), threading.Event()
         self.loop = self.finished = None
         self.thread = None
         self.started = time.monotonic()
-        self.expected_connections = sum(bool(r['confirmed']['processors']) for r in snapshot['receivers']) + 1
+        self.iq_receivers = snapshot['receivers'] if all_iq else snapshot['receivers'][-1:]
+        self.expected_connections = sum(bool(r['confirmed']['processors']) for r in snapshot['receivers']) + len(self.iq_receivers)
         self.expected_connections += sum(r['confirmed']['purpose'] == 'digital' for r in snapshot['receivers'])
 
     def __enter__(self):
@@ -72,7 +73,7 @@ class StreamMonitor:
                 tasks.append(asyncio.create_task(self.consume(receiver, 'audio')))
             if receiver['confirmed']['purpose'] == 'digital':
                 tasks.append(asyncio.create_task(self.consume(receiver, 'decode')))
-        tasks.append(asyncio.create_task(self.consume(self.snapshot['receivers'][-1], 'iq')))
+        tasks.extend(asyncio.create_task(self.consume(receiver, 'iq')) for receiver in self.iq_receivers)
         try:
             await self.finished.wait()
         finally:

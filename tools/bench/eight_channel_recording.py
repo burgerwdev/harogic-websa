@@ -127,7 +127,8 @@ def start_eight(origin, key, choices=None):
     choices = choices or [(0, 'iq'), (0, 'audio'), (0, 'results'), (1, 'iq'), (1, 'audio'),
         (2, 'audio'), (3, 'audio'), (7, 'iq')]
     requests = [{'type': 'record_start', 'request_id': f'{key}-{index}',
-        'receiver_uid': uids[channel], 'kinds': [kind]} for index, (channel, kind) in enumerate(choices)]
+        'receiver_uid': uids[channel], 'kinds': [kind], **({'audio_format': 'wav'} if kind == 'audio' else {})}
+        for index, (channel, kind) in enumerate(choices)]
     with ThreadPoolExecutor(max_workers=8) as pool:
         replies = list(pool.map(lambda request: api(origin, payload=request), requests))
     assert all(r['fault'] is None for r in replies), replies

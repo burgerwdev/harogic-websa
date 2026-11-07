@@ -2196,9 +2196,7 @@ mod tests {
     #[ignore = "live capture /tmp/live30.f32 required; run with --ignored --nocapture"]
     fn receiver_locks_the_long_live_capture() {
         let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        assert!(std::path::Path::new(path).exists(), "original live capture required: {path}");
         let raw = std::fs::read(path).expect("capture file");
         let iq: Vec<f32> = raw
             .chunks_exact(4)

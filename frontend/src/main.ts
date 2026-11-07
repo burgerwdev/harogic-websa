@@ -34,9 +34,12 @@ function init() {
   initUiScale();
   initStore();   // bind the canvas before the first render
   // Theme/language (restored from localStorage)
-  const savedTheme = localStorage.getItem('web-sa-theme');
+  let savedTheme: string | null = null, savedLang: string | null = null;
+  try {
+    savedTheme = localStorage.getItem('web-sa-theme');
+    savedLang = localStorage.getItem('web-sa-lang');
+  } catch { /* Optional preferences must not prevent controls from starting. */ }
   initTheme(savedTheme === 'light' ? 'light' : 'dark');
-  const savedLang = localStorage.getItem('web-sa-lang');
   setLang(savedLang === 'zh' ? 'zh' : 'en');
   applyI18n();
 
@@ -64,7 +67,7 @@ function init() {
     btnTheme.textContent = S_getTheme() === 'dark' ? t('dark') : t('light');
     btnTheme.addEventListener('click', () => {
       const th = toggleTheme();
-      localStorage.setItem('web-sa-theme', th);
+      try { localStorage.setItem('web-sa-theme', th); } catch { /* session only */ }
       btnTheme.textContent = th === 'dark' ? t('dark') : t('light');
       requestRender();
     });
@@ -75,7 +78,7 @@ function init() {
     btnLang.addEventListener('click', () => {
       const l = getLang() === 'en' ? 'zh' : 'en';
       setLang(l);
-      localStorage.setItem('web-sa-lang', l);
+      try { localStorage.setItem('web-sa-lang', l); } catch { /* session only */ }
       applyI18n();
       updateInfoBar();
       syncToggleTexts();

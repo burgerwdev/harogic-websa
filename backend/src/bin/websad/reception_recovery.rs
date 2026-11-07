@@ -175,15 +175,14 @@ impl Supervisor {
             self.positions.remove(&slot);
         }
     }
-    pub fn configured(&mut self, slot: u32) {
-        if let Some(r) = self
-            .lanes
-            .get_mut(&slot)
-            .filter(|r| r.phase == "stopped" || r.phase == "recovering")
-        {
-            r.phase = "preparing";
-            r.shared = false;
-            r.last_error = None;
+    pub fn configured(&mut self, slot: u32, needs_processing: bool) {
+        if let Some(r) = self.lanes.get_mut(&slot) {
+            r.needs_processing = needs_processing;
+            if r.phase == "stopped" || r.phase == "recovering" {
+                r.phase = "preparing";
+                r.shared = false;
+                r.last_error = None;
+            }
         }
     }
     pub fn known(&self, slot: u32) -> bool {
@@ -193,6 +192,11 @@ impl Supervisor {
         self.lanes
             .get(&slot)
             .is_some_and(|r| r.source && r.phase == "stopped")
+    }
+    pub fn source_interrupted(&self, slot: u32) -> bool {
+        self.lanes
+            .get(&slot)
+            .is_some_and(|r| r.source && r.phase != "receiving")
     }
     fn observe(
         &mut self,
@@ -276,16 +280,19 @@ impl Supervisor {
         if let Some(r) = self
             .lanes
             .get_mut(&slot)
-            .filter(|r| r.phase == "preparing" && r.source && r.interruption.after.is_none())
+            .filter(|r| r.phase == "preparing" && (r.source || !r.needs_processing)
+                && r.interruption.after.is_none())
         {
-            if r.interruption
+            // Removing a failed processor leaves the healthy IQ source intact.
+            // Its next real packet confirms IQ-only reception, not PCM recovery.
+            if !r.source || r.interruption
                 .before
                 .as_ref()
                 .is_none_or(|old| old.channel_id != id || old.epoch != epoch)
             {
                 r.interruption.after = Some(current.clone());
                 // An epoch belongs to one capture. Never subtract clocks across it.
-                if !r.shared {
+                if r.source && !r.shared {
                     if let Some(old) = r
                         .interruption
                         .before
@@ -296,15 +303,21 @@ impl Supervisor {
                         r.interruption.precision = "input_sample_boundary";
                     }
                 }
-                if !r.needs_processing {
-                    r.phase = "receiving";
-                    r.interruption.recovered_at_ms = Some(now_ms());
-                    r.stable = Some(Instant::now());
-                }
             }
         }
+        // The new source may already have arrived while a processor was still
+        // preparing. Removing that processor needs a subsequent packet from the
+        // confirmed source; an old identity cannot complete this transition.
         if let Some(r) = self.lanes.get_mut(&slot).filter(|r| {
-            r.source
+            r.phase == "preparing" && !r.needs_processing && r.interruption.after.as_ref()
+                .is_some_and(|after| after.channel_id == id && after.epoch == epoch)
+        }) {
+            r.phase = "receiving";
+            r.interruption.recovered_at_ms = Some(now_ms());
+            r.stable = Some(Instant::now());
+        }
+        if let Some(r) = self.lanes.get_mut(&slot).filter(|r| {
+            (r.source || !r.needs_processing)
                 && r.phase == "receiving"
                 && r.interruption
                     .after
@@ -498,6 +511,7 @@ impl DevState {
                 let progress = self
                     .receiver_workers
                     .as_ref()
+                    .filter(|_| lane.needs_processing)
                     .and_then(|w| w.recovery_progress(slot));
 
                 if let Some((count, position)) = progress {
@@ -541,7 +555,7 @@ impl DevState {
                     }
                     lane.progress = count;
                 }
-                if lane.source {
+                if lane.source || !lane.needs_processing {
                     lane.note_progress(now, false);
                 }
                 continue;
@@ -682,6 +696,32 @@ mod tests {
         assert_eq!(lane.attempts, 0);
         s.bind(1, "replacement-uid");
         assert!(s.snapshot(1).is_null());
+    }
+    #[test]
+    fn configuration_repair_iq_only_keeps_the_already_observed_source_identity() {
+        let mut s = Supervisor::default();
+        fault(&mut s, 1, Policy::Continuous, FaultKind::SourceGap);
+        s.configured(1, true);
+        s.observe_iq(1, 1, 5, 110, 120);
+        assert!(s.snapshot(1)["last_interruption"]["after"].is_null(), "old IQ cannot establish source recovery");
+        s.observe_iq(1, 2, 5, 140, 150);
+        let observed = s.snapshot(1);
+        assert_eq!(observed["state"], "preparing", "new IQ does not establish processor recovery");
+        assert_eq!(observed["last_interruption"]["after"]["channel_id"], 2);
+        assert_eq!(observed["last_interruption"]["missing_input_samples"], "40");
+
+        s.configured(1, false);
+        assert_eq!(s.snapshot(1)["state"], "preparing", "removal itself is not observed reception");
+        s.observe_iq(1, 1, 5, 160, 170);
+        assert_eq!(s.snapshot(1)["state"], "preparing", "a late old-source packet cannot complete recovery");
+        s.observe_iq(1, 2, 5, 180, 190);
+        let resumed = s.snapshot(1);
+        assert_eq!(resumed["state"], "receiving");
+        assert_eq!(resumed["interruptions"], observed["interruptions"]);
+        assert_eq!(resumed["last_interruption"]["after"], observed["last_interruption"]["after"]);
+        assert_eq!(resumed["last_interruption"]["missing_input_samples"], "40");
+        assert!(resumed["last_interruption"]["resumed_processing_stream"].is_null());
+        assert!(resumed["last_interruption"]["recovered_at_ms"].is_u64());
     }
     #[test]
     fn failed_source_does_not_finish_closed_mailboxes_or_claim_pcm_from_iq_alone() {

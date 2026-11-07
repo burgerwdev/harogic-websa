@@ -20,7 +20,7 @@ from native_multichannel import api
 from native_multichannel_processing import assert_receivers_continue, setup
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, start_service, stop
-from viewport_baseline import wait_ui_ready
+from viewport_baseline import wait_async_condition, wait_ui_ready
 
 
 class TransportProxy:
@@ -185,7 +185,7 @@ def browser_gate(proxy, snapshot, artifacts):
         preview = overview.locator('[data-preview] button')
         if preview.count():
             preview.click()
-        page.wait_for_function('(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid).confirmed.baseband.frequency_hz===100001000)', arg=first)
+        wait_async_condition(page, '(uid) => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.receiver_uid===uid).confirmed.baseband.frequency_hz===100001000)', arg=first)
         page.wait_for_function('(uid) => window.websaAudioStatus().some(r=>r.channel===uid&&r.playing&&!r.error)', arg=first)
         assert_receivers_continue(before['receivers'][1:], api(origin)['receivers'][1:])
         page.screenshot(path=str(artifacts / 'desktop-clean-workbench.png'))

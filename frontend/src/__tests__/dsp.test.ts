@@ -2,9 +2,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sgSmooth } from '../dsp/smooth';
 import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
-import { resampleTrace } from '../dsp/traces';
 import { applyTraceMode, processTraces } from '../dsp/traces';
-import { AVG_COUNTS, accumulateTrace, applyMode, setAverageCount } from '../dsp/accumulator';
+import { AVG_COUNTS, accumulateTrace, applyMode, resampleTrace, setAverageCount } from '../dsp/accumulator';
 import { buildReferenceTable } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import {
@@ -136,6 +135,13 @@ describe('findExtremesOrdered 寻谷(带通场景)', () => {
 });
 
 describe('resampleTrace 保峰重采样', () => {
+  it('preserves the exact maxima and minima of the destination intervals', () => {
+    // Five source points become three: intervals [0,2], [2,4], and final point [4].
+    const source = Float32Array.from([2, 9, 1, 4, 7]);
+    expect([...resampleTrace(source, 3, true)]).toEqual([9, 7, 7]);
+    expect([...resampleTrace(source, 3, false)]).toEqual([1, 1, 7]);
+  });
+
   it('MAX_HOLD 降采样保留峰值', () => {
     const src = new Float32Array(100);
     for (let i = 0; i < 100; i++) src[i] = -80;
@@ -391,6 +397,10 @@ describe('共享累积模块 (SWP/RTA 共用)', () => {
 
 
 describe('RTA 帧合理性门限', () => {
+  it.each([NaN, Infinity, -Infinity])('rejects a frame with no finite observations (%s)', value => {
+    expect(plausibleSpectrum(new Float32Array(100).fill(value))).toBe(false);
+  });
+
   it('丢弃饱和/无效帧，接受正常噪底帧', () => {
     const good = new Float32Array(100).fill(-95);
     good[50] = -30;

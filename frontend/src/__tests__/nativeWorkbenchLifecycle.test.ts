@@ -12,6 +12,7 @@ vi.mock('../audio/sdrAudio', () => ({ claimNativeAudio: () => vi.fn(), forgetNat
 class Worker {
   static instances: Worker[] = [];
   onmessage: ((event: { data: unknown }) => void) | null = null;
+  onerror: ((event: { message: string }) => void) | null = null;
   postMessage = vi.fn(); terminate = vi.fn();
   constructor() { Worker.instances.push(this); }
   result(service: string | undefined = undefined): void {
@@ -32,6 +33,70 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.clearAllMocks();
 });
 describe('UID consumer lifecycle', () => {
+  it.each(['receiver retired', 'receiver stopped'])('holds ended %s until confirmed ownership changes', reason => {
+    const old = Worker.instances[0], neighbor = Worker.instances[1];
+    old.result();
+    const text = clone(decoderLog('fixture-c1').entries.filter(entry => entry.kind === 'text'));
+    old.onmessage!({ data: { type: 'ended', reason } });
+    expect(old.terminate).toHaveBeenCalledOnce();
+    expect(streams.status('fixture-c1')).toBe('');
+    expect(streams.results('fixture-c1').source).toBeNull();
+    const count = Worker.instances.length;
+    session.notify();
+    expect(Worker.instances).toHaveLength(count);
+    old.result(); old.onmessage!({ data: { type: 'error', message: 'late error' } });
+    old.onerror!({ message: 'late terminated worker error' });
+    expect(decoderLog('fixture-c1').entries.filter(entry => entry.kind === 'text')).toEqual(text);
+    expect(decoderLog('fixture-c1').entries.some(entry => entry.kind === 'status')).toBe(false);
+    expect(streams.status('fixture-c1')).toBe('');
+    expect(neighbor.terminate).not.toHaveBeenCalled();
+    session.snapshot = clone(session.snapshot);
+    session.snapshot.receivers[0].state = 'stopped'; session.notify();
+    session.snapshot.receivers[0].state = 'running'; session.notify();
+    expect(Worker.instances).toHaveLength(count + 1);
+    old.onmessage!({ data: { type: 'ended', reason } });
+    expect(Worker.instances.at(-1)!.terminate).not.toHaveBeenCalled();
+    expect(old.terminate).toHaveBeenCalledOnce();
+  });
+  it.each(['manual', 'follow'] as const)('keeps selected %s playback consuming before local gain while retaining output mute', mode => {
+    session.monitorMode = mode; session.select('fixture-c1');
+    session.routes.set('fixture-c1', { ...session.route('fixture-c1'), enabled: true });
+    session.notify();
+    for (const [localGain, masterGain] of [[0, 1], [0.7, 0]]) {
+      session.routes.set('fixture-c1', { ...session.route('fixture-c1'), gain: localGain });
+      session.masterGain = masterGain;
+      vi.mocked(setNativeAudioRoute).mockClear(); session.notify();
+      expect(session.audible('fixture-c1')).toBe(false);
+      expect(setNativeAudioRoute).toHaveBeenCalledWith('fixture-c1', 'nfm', true, localGain, 0, false);
+      expect(setNativeAudioRoute).not.toHaveBeenCalledWith('fixture-c2', expect.anything(), true, expect.anything(), expect.anything(), expect.anything());
+    }
+    session.routes.set('fixture-c1', { ...session.route('fixture-c1'), gain: 0.7 }); session.masterGain = 1;
+    vi.mocked(setNativeAudioRoute).mockClear(); session.notify();
+    expect(session.audible('fixture-c1')).toBe(true);
+    expect(setNativeAudioRoute).toHaveBeenCalledWith('fixture-c1', 'nfm', true, 0.7, 0, false);
+    session.snapshot = clone(session.snapshot); session.snapshot.receivers[0].state = 'stopped';
+    vi.mocked(setNativeAudioRoute).mockClear(); session.notify();
+    expect(setNativeAudioRoute).toHaveBeenCalledWith('fixture-c1', 'nfm', false, 0.7, 0, false);
+  });
+
+  it('keeps one muted consumer for duplicate sources and releases the old UID after selection and retirement', () => {
+    session.snapshot = clone(session.snapshot);
+    const [first, second] = session.snapshot.receivers;
+    second.confirmed = clone(first.confirmed); second.confirmed.processors[0].id = 'independent-processor';
+    for (const receiver of [first, second])
+      session.routes.set(receiver.receiver_uid, { enabled: true, gain: 0, pan: 0, solo: false });
+    session.monitorMode = 'manual';
+    vi.mocked(setNativeAudioRoute).mockClear(); session.notify();
+    expect(vi.mocked(setNativeAudioRoute).mock.calls.filter(call => call[2]).map(call => call[0])).toEqual(['fixture-c1']);
+    session.monitorMode = 'follow'; session.selected = 'fixture-c2';
+    vi.mocked(setNativeAudioRoute).mockClear(); session.notify();
+    expect(vi.mocked(setNativeAudioRoute).mock.calls.filter(call => call[2]).map(call => call[0])).toEqual(['fixture-c2']);
+    session.snapshot.receivers = session.snapshot.receivers.filter(r => r.receiver_uid !== 'fixture-c2');
+    vi.mocked(setNativeAudioRoute).mockClear(); session.notify();
+    expect(forgetNativeAudio).toHaveBeenCalledWith('fixture-c2');
+    expect(vi.mocked(setNativeAudioRoute).mock.calls.filter(call => call[2])).toEqual([]);
+  });
+
   it('restarts only the recovered UID when its processing generation changes with the same IQ source', () => {
     session.snapshot = clone(session.snapshot);
     const receiver = session.snapshot.receivers[0];
@@ -237,5 +302,26 @@ describe('UID consumer lifecycle', () => {
     old.onmessage?.({ data: { type: 'closed', message: 'stopped' } });
     expect(old.terminate).toHaveBeenCalledOnce(); expect(Worker.instances).toHaveLength(2);
     old.result(); expect(streams.results('fixture-c1').entries.filter(entry => entry.kind === 'text')).toHaveLength(1);
+  });
+  it.each(['disabled receiver', 'removed processor'])('drains the accepted tail when the directory reports a %s before its socket end', change => {
+    const old = Worker.instances[0], neighbor = Worker.instances[1];
+    session.snapshot = clone(session.snapshot);
+    const receiver = session.snapshot.receivers[0];
+    if (change === 'disabled receiver') {
+      receiver.confirmed.enabled = false; receiver.state = 'stopped'; receiver.stream = null; receiver.clock = null;
+    } else receiver.confirmed.processors = [];
+    receiver.processing_state = 'disabled';
+    receiver.processing_runtime = { state: 'disabled', processing_generation: '2', oldest_input_wait_ns: 0,
+      input_held_bytes: 0, input_held_media_ns: 0, fault: null };
+    session.notify();
+    expect(old.terminate).not.toHaveBeenCalled(); expect(neighbor.terminate).not.toHaveBeenCalled();
+    old.result();
+    expect(streams.results('fixture-c1').entries.filter(entry => entry.kind === 'text')).toHaveLength(1);
+    expect(old.postMessage).toHaveBeenCalledWith({ type: 'ack' });
+    old.onmessage!({ data: { type: 'ended', reason: 'receiver stopped' } });
+    expect(old.terminate).toHaveBeenCalledOnce(); expect(Worker.instances).toHaveLength(2);
+    session.notify(); old.result();
+    expect(streams.results('fixture-c1').entries.filter(entry => entry.kind === 'text')).toHaveLength(1);
+    expect(Worker.instances).toHaveLength(2);
   });
 });

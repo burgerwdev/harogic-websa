@@ -47,6 +47,16 @@ function click(id: string): void { (document.getElementById(id) as HTMLButtonEle
 const commands = (cmd: string) => socket.sent.filter(command => command.cmd === cmd);
 
 describe('Server mode', () => {
+  it('binds server controls when optional motion preferences cannot be read', async () => {
+    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('Blocked', 'SecurityError'); });
+    try {
+      await load();
+      receive('server');
+      click('btn-server-start');
+      expect(commands('SET_SERVER')).toMatchObject([{ action: 'start' }]);
+    } finally { read.mockRestore(); }
+  });
+
   it('allows Start to recheck dependencies after the host installation is repaired', async () => {
     await load();
     receive('server', { state: 'failed', driver_available: false, dependency_error: 'Install SoapySDRServer on this host' });

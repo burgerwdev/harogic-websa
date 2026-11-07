@@ -2,20 +2,14 @@
 //! controls never benchmark kernels or reserve a fixed fraction of one CPU.
 use super::*;
 
-pub(super) struct PreparedCosts;
 pub(super) fn prepare_service(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:usize,
-    selected:usize,extra_bin:bool)->Result<PreparedCosts,String> {
+    selected:usize,extra_bin:bool)->Result<(),String> {
     admit_service(configs,fs,taps,selected)?;
     if extra_bin {admit_service(configs,fs,taps,selected+1)?;}
-    Ok(PreparedCosts)
+    Ok(())
 }
 pub(super) fn admit_service(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:usize,selected:usize)->Result<(),String> {
     service_cost_report(configs,fs,taps,selected).map(|_|())
-}
-pub(super) fn admit_service_cached(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:usize,selected:usize)->Result<(),String> {
-    // Kept as an interface name for capture-boundary callers. There is no
-    // predictive cache prerequisite, calibration or resource refusal.
-    admit_service(configs,fs,taps,selected)
 }
 fn service_cost_report(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:usize,selected:usize)->Result<Value,String> {
     if !fs.is_finite()||fs<=0.0||!matches!(taps,4|8|16) {return Err("fine/framer: invalid input geometry".into());}
@@ -42,7 +36,7 @@ mod tests {
             mode:"wfm".into(),freq:100e6,if_bw:250000.0,..Default::default()}).collect();
         let before=websa_channelizer::model_preparation::snapshot();
         prepare_service(&configs,IQ_FS,16,8,true).unwrap();
-        admit_service_cached(&configs,IQ_FS,16,9).unwrap();
+        admit_service(&configs,IQ_FS,16,9).unwrap();
         let report=service_cost_report(&configs,IQ_FS,16,9).unwrap();
         assert!(report["limit_ns_per_second"].is_null());assert_eq!(before,websa_channelizer::model_preparation::snapshot());
         assert!(admit_service(&configs,IQ_FS,3,8).is_err());

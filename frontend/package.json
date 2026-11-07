@@ -1,6 +1,6 @@
 {
   "name": "web-sa",
-  "version": "1.12.9",
+  "version": "1.12.10",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.2",
+    "ajv": "8.20.0",
     "jsdom": "^30.0.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",

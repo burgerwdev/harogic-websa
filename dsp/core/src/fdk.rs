@@ -6,8 +6,22 @@
 #[cfg(target_arch = "wasm32")]
 use std::alloc::{alloc, dealloc, Layout};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(test, target_arch = "wasm32"))]
 const HEADER: usize = 16;
+
+// Kept separate from allocation so malformed FFI sizes can be tested without
+// handing an invalid Layout or a huge request to the native allocator.
+#[cfg(any(test, target_arch = "wasm32"))]
+fn allocation_total(size: usize) -> Option<usize> {
+    let total = size.checked_add(HEADER)?.checked_add(HEADER - 1)? & !(HEADER - 1);
+    // Rust allocations and pointer offsets must fit isize even if usize arithmetic fits.
+    (total <= isize::MAX as usize).then_some(total)
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn calloc_total(n: usize, size: usize) -> Option<usize> {
+    n.checked_mul(size)
+}
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
@@ -16,9 +30,8 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
     // and the size stored for `free`/`realloc` agree exactly (a non-aligned size
     // makes dlmalloc round up internally and its `psize <= size + max_overhead`
     // sanity check fails on the next allocation).
-    let total = size.saturating_add(HEADER).max(1);
-    let total = (total + HEADER - 1) & !(HEADER - 1);
-    let layout = Layout::from_size_align_unchecked(total, HEADER);
+    let Some(total) = allocation_total(size) else { return std::ptr::null_mut() };
+    let Ok(layout) = Layout::from_size_align(total, HEADER) else { return std::ptr::null_mut() };
     let p = alloc(layout);
     if p.is_null() {
         return p;
@@ -41,7 +54,7 @@ pub unsafe extern "C" fn free(ptr: *mut u8) {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn calloc(n: usize, size: usize) -> *mut u8 {
-    let total = n.saturating_mul(size);
+    let Some(total) = calloc_total(n, size) else { return std::ptr::null_mut() };
     let p = malloc(total);
     if !p.is_null() {
         std::ptr::write_bytes(p, 0, total);
@@ -203,6 +216,28 @@ impl Drop for AacDecoder {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocator_geometry_rejects_overflow_without_allocating() {
+        for size in [usize::MAX, usize::MAX - HEADER, isize::MAX as usize] {
+            assert_eq!(allocation_total(size), None, "payload size {size}");
+        }
+        let largest_payload = isize::MAX as usize - (2 * HEADER - 1);
+        assert_eq!(allocation_total(largest_payload), Some(largest_payload + HEADER));
+        assert_eq!(allocation_total(largest_payload + 1), None);
+        assert_eq!(allocation_total(0), Some(HEADER));
+        assert_eq!(allocation_total(1), Some(2 * HEADER));
+        assert_eq!(allocation_total(HEADER), Some(2 * HEADER));
+        assert_eq!(allocation_total(HEADER + 1), Some(3 * HEADER));
+    }
+
+    #[test]
+    fn calloc_geometry_rejects_product_overflow_without_allocating() {
+        assert_eq!(calloc_total(usize::MAX, 2), None);
+        assert_eq!(calloc_total(usize::MAX / 2 + 1, 2), None);
+        assert_eq!(calloc_total(0, usize::MAX), Some(0));
+        assert_eq!(calloc_total(7, 9), Some(63));
+    }
 
     #[test]
     fn drm_aac_fixture_and_malformed_access_unit() {

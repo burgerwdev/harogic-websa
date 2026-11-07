@@ -20,10 +20,9 @@ Key points:
   * POWR is forced to float32 and FREQ stays float64: np.interp would otherwise widen the
     frontend buffer and misalign the TS parse.
   * The 20-byte RTAF head after the magic keeps startHz 8-byte aligned (24-byte header).
-  * IQBF carries the *channelized* baseband (the DSP_DDC output after the fine-tuning NCO), so
-    the browser's demodulator sees exactly what the Python demodulator would. The coarse
-    decimation and the tuning stay on this side, which is what keeps the browser's cost and the
-    wire traffic independent of the device's raw IQ rate.
+  * IQBF is the compatibility channelized baseband after fine tuning and DDC. Native receiver
+    processing is owned by Rust; offline tools and optional browser diagnostics can subscribe
+    to this wire format. It does not describe every native receiver's processing state.
   * IQBF stores the baseband rate as f64 (it is an IQS rate divided by a power of two, rarely an
     integer), and puts both f64 fields before the payload so the f32 block starts 4-byte aligned.
   * The TypeScript counterpart is frontend/src/core/frames.ts; the two are held
@@ -46,7 +45,7 @@ MAGIC_BASEBAND = b'IQBF'
 #: it only to sockets that subscribed (?iqaux=1) and the browser demodulator never sees it.
 MAGIC_AUX = b'IQAX'
 
-#: Wire version of the IQBF payload (the demodulator-input format the browser worker parses).
+#: Wire version of the compatibility IQBF payload.
 BASEBAND_VERSION = 2
 
 HEADER = struct.Struct('<IIf')          # version, points, sweep_ms (12 bytes after the magic)

@@ -4,7 +4,7 @@
 // its own and follows a language switch automatically. Collapsing is delegated to the
 // group's own toggle button, keeping a single owner for the collapse state.
 import { hasKey, onLangChange, t } from '../core/i18n';
-import { getUiScale } from '../core/uiScale';
+import { getUiScale, onUiScaleChange } from '../core/uiScale';
 import { activeIndex } from './railMath';
 
 interface RailItem { el: HTMLButtonElement; group: HTMLElement; }
@@ -70,13 +70,19 @@ function jumpTo(group: HTMLElement): void {
     const toggle = group.querySelector('.group-head .panel-toggle') as HTMLElement | null;
     toggle?.click();
   }
-  // expanding changes the layout, so position after the next frame.
-  // scrollIntoView() would also scroll the page (it acts on every scrollable ancestor),
-  // so drive the panel's own scrollTop instead: only the control area moves.
+  // Expanding changes the layout, so position after the next frame. In the stacked
+  // layout the panel has its full natural height and the document owns scrolling.
+  // The desktop layout keeps the plot fixed while only the panel moves.
   requestAnimationFrame(() => {
     const p = panel();
     const idx = items.findIndex((it) => it.group === group);
-    if (p && idx >= 0) p.scrollTo({ top: Math.max(0, groupTops(p)[idx]), behavior: 'smooth' });
+    if (p && idx >= 0) {
+      if (document.documentElement.classList.contains('ui-stacked')) {
+        group.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'smooth' });
+      } else {
+        p.scrollTo({ top: Math.max(0, groupTops(p)[idx]), behavior: 'smooth' });
+      }
+    }
     group.classList.add('rail-flash');
     window.setTimeout(() => group.classList.remove('rail-flash'), 700);
     // The last groups can never reach the viewport top, so the scroll spy would move the
@@ -160,7 +166,11 @@ function syncActive(): void {
     return;
   }
   lockedGroup = null;
-  const idx = activeIndex(groupTops(p), p.scrollTop);
+  const stacked = document.documentElement.classList.contains('ui-stacked');
+  // Document scrolling is already reflected in viewport-relative rects. Keep the
+  // existing eight-local-pixel tolerance at either scale and for either owner.
+  const tops = stacked ? items.map((it) => it.group.getBoundingClientRect().top / getUiScale()) : groupTops(p);
+  const idx = activeIndex(tops, stacked ? 0 : p.scrollTop);
   items.forEach((it, i) => it.el.classList.toggle('active', i === idx));
 }
 
@@ -272,11 +282,14 @@ export function initControlRail(): void {
   try { setPanelHidden(localStorage.getItem(PANEL_LS_KEY) === 'hidden'); }
   catch { setPanelHidden(false); }
   syncLabels();
-  p.addEventListener('scroll', () => {
+  const onScroll = () => {
     if (scrollRaf) return;
     scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; syncActive(); });
-  }, { passive: true });
+  };
+  p.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('resize', syncActive);
+  onUiScaleChange(syncActive);
   onLangChange(syncLabels);
   syncActive();
 }

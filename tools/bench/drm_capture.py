@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Capture the channelized baseband that the browser DSP worker receives.
+"""Capture one continuous channelized baseband stream for offline DRM diagnostics.
 
-Why this exists: the DRM receiver runs in the browser over the app's ``?iq=1`` WebSocket.
-That stream carries the channelized baseband (the DSP_DDC output after the fine-tuning
-NCO). This is the worker's exact input. A capture of it makes a live failure reproducible
-offline, where a Rust test can iterate in seconds.
+The app's compatibility ``?iq=1`` WebSocket carries IQBF after fine tuning and DDC.
+Production receivers run in Rust. This capture is an offline reference input;
+it is not a recording of every native receiver or its processing state.
 
 The tool does not open the device. It subscribes to the running SDR session, so the
 service and the browser keep their settings. Set the app up first (SDR mode, demodulator,
@@ -12,7 +11,7 @@ center, listen, decimate), then capture.
 
 Usage:
     python3 tools/bench/drm_capture.py --seconds 12 \\
-        --out tests/fixtures/drm/drm_live.f32 --json /tmp/drm_live.json
+        --out /tmp/drm_live.f32 --json /tmp/drm_live.json
 
 Exit status is non-zero when no frame arrives, so the command can gate a script.
 """
@@ -21,8 +20,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,21 +38,40 @@ from tools.reference.framer import BASEBAND_HEADER, MAGIC_BASEBAND  # noqa: E402
 IQ_PATH = '/ws?iq=1&noaudio=1'
 
 
-def decode_baseband(buf: bytes) -> tuple[int, int, float, float, np.ndarray] | None:
-    """Decode one IQBF frame into (version, seq, rate Hz, center Hz, interleaved IQ).
+@dataclass(frozen=True)
+class BasebandFrame:
+    seq: int
+    rate: float
+    center_hz: float
+    channel_id: int
+    epoch: int
+    input_index: int
+    delay_samples: float
+    iq: np.ndarray
+
+
+def decode_baseband(buf: bytes) -> BasebandFrame | None:
+    """Decode and validate one IQBF frame, preserving its identity and timing.
 
     Layout (see `tools/reference/framer.py`): 56-byte IQ wire v2 header,
     followed by float32[2 * samples].
     """
-    if len(buf) < 4 or buf[:4] != MAGIC_BASEBAND or len(buf) < 4 + BASEBAND_HEADER.size:
+    if buf[:4] != MAGIC_BASEBAND:
         return None
-    (version, seq, samples, rate, center_hz, _channel_id, _epoch,
-     _input_index, _group_delay) = BASEBAND_HEADER.unpack_from(buf, 4)
     payload = 4 + BASEBAND_HEADER.size
-    if version != 2 or len(buf) != payload + samples * 8:
-        return None
+    if len(buf) < payload:
+        raise ValueError('truncated IQBF header')
+    (version, seq, samples, rate, center_hz, channel_id, epoch,
+     input_index, group_delay) = BASEBAND_HEADER.unpack_from(buf, 4)
+    if version != 2 or len(buf) != payload + samples * 8 or (seq == 0) != (samples == 0):
+        raise ValueError('invalid IQBF version, sample count or boundary')
+    if (not all(math.isfinite(v) for v in (rate, center_hz, group_delay))
+            or rate < 0 or (samples and rate == 0) or group_delay < 0):
+        raise ValueError('invalid IQBF sample rate, frequency or delay')
     iq = np.frombuffer(buf, dtype='<f4', offset=payload, count=samples * 2)
-    return int(version), int(seq), float(rate), float(center_hz), iq
+    if not np.isfinite(iq).all():
+        raise ValueError('nonfinite IQBF samples')
+    return BasebandFrame(seq, rate, center_hz, channel_id, epoch, input_index, group_delay, iq)
 
 
 def level_db(iq: np.ndarray) -> dict[str, float]:
@@ -70,18 +90,16 @@ def level_db(iq: np.ndarray) -> dict[str, float]:
 async def capture(url: str, seconds: float, max_bytes: int, settle: float = 1.0) -> dict:
     """Capture `seconds` of baseband after a `settle` drain.
 
-    The drain matters: the backend sends the frames it queued while the socket was
-    opening, so a capture that starts counting at once counts a burst as signal. The
-    burst inflates the sample count by about 1.8x and makes the rate look wrong.
+    Drain startup traffic, then reject any stream change or sequence discontinuity.
+    Wall duration measures receipt time; signal duration comes from sample count.
     """
+    if (not math.isfinite(seconds) or seconds <= 0 or not math.isfinite(settle)
+            or settle < 0 or not isinstance(max_bytes, int) or max_bytes < 8):
+        raise ValueError('capture requires positive finite duration and byte budget')
     chunks: list[np.ndarray] = []
-    rates: list[float] = []
-    centers: list[float] = []
-    seqs: list[int] = []
+    first: BasebandFrame | None = None
+    previous: BasebandFrame | None = None
     samples = 0
-    started = time.monotonic()
-    drain_until = started + settle
-    deadline = drain_until + seconds
     drained = 0
     ws_url = url.replace('http://', 'ws://').replace('https://', 'wss://').rstrip('/') + IQ_PATH
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=10)
@@ -89,6 +107,8 @@ async def capture(url: str, seconds: float, max_bytes: int, settle: float = 1.0)
         aiohttp.ClientSession(timeout=timeout) as session,
         session.ws_connect(ws_url, heartbeat=None) as ws,
     ):
+        drain_until = time.monotonic() + settle
+        deadline = drain_until + seconds
         while time.monotonic() < deadline:
             try:
                 message = await asyncio.wait_for(ws.receive(), timeout=max(
@@ -99,29 +119,44 @@ async def capture(url: str, seconds: float, max_bytes: int, settle: float = 1.0)
                 frame = decode_baseband(message.data)
                 if frame is None:
                     continue
-                _version, seq, rate, center_hz, iq = frame
                 if time.monotonic() < drain_until:
                     drained += 1
                     continue
-                chunks.append(iq)
-                rates.append(rate)
-                centers.append(center_hz)
-                seqs.append(seq)
-                samples += iq.size // 2
-                if samples * 8 >= max_bytes:
+                if frame.seq == 0:
+                    if first is not None:
+                        raise ValueError('IQBF reset during capture')
+                    continue
+                if previous is not None:
+                    geometry = ('channel_id', 'epoch', 'rate', 'center_hz', 'delay_samples')
+                    if any(getattr(frame, key) != getattr(previous, key) for key in geometry):
+                        raise ValueError('IQBF identity or geometry changed during capture')
+                    if frame.seq != previous.seq + 1:
+                        raise ValueError('IQBF sequence gap or duplicate during capture')
+                    unknown = (1 << 64) - 1
+                    if (frame.input_index != unknown and previous.input_index != unknown
+                            and frame.input_index <= previous.input_index):
+                        raise ValueError('IQBF input clock moved backwards during capture')
+                if samples * 8 + frame.iq.nbytes > max_bytes:
                     break
-            elif message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                chunks.append(frame.iq)
+                samples += frame.iq.size // 2
+                if first is None:
+                    first = frame
+                previous = frame
+                if samples * 8 == max_bytes:
+                    break
+            elif message.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break
     stopped = time.monotonic()
     wall = stopped - drain_until
-    if not chunks:
+    if first is None or previous is None:
         raise SystemExit(
             f'no IQ frame arrived in {seconds:.1f} s from {ws_url}\n'
             'The app publishes baseband only in SDR mode with a running session. '
             'Check `./status.sh` (mode must be `sdr`) and retry.'
         )
     iq = np.concatenate(chunks)
-    rate = float(np.mean(rates))
+    rate = first.rate
     result = {
         'source': ws_url,
         'captured_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
@@ -131,12 +166,16 @@ async def capture(url: str, seconds: float, max_bytes: int, settle: float = 1.0)
         'seconds_of_signal': round(samples / rate, 3) if rate else 0.0,
         'wall_seconds': round(wall, 2),
         'rate_hz_mean': round(rate, 4),
-        'rate_hz_min': round(min(rates), 4),
-        'rate_hz_max': round(max(rates), 4),
-        'center_hz': round(float(np.mean(centers)), 3),
-        'seq_first': seqs[0],
-        'seq_last': seqs[-1],
-        'seq_gaps': sum(1 for a, b in zip(seqs, seqs[1:], strict=False) if b > a + 1),
+        'rate_hz_min': round(rate, 4),
+        'rate_hz_max': round(rate, 4),
+        'center_hz': first.center_hz,
+        'channel_id': first.channel_id,
+        'epoch': first.epoch,
+        'input_index_first': str(first.input_index),
+        'delay_samples': first.delay_samples,
+        'seq_first': first.seq,
+        'seq_last': previous.seq,
+        'seq_gaps': 0,
         'format': 'interleaved float32 I,Q (little-endian)',
     }
     result.update(level_db(iq))

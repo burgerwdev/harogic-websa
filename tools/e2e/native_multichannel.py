@@ -295,7 +295,7 @@ async def processed_protocol(origin, channels):
         await asyncio.gather(*tasks, return_exceptions=True)
     assert len(traces) == channels
     return {'source_kind': 'fixture', 'streams': traces,
-        'checks': ['all processed audio and result subscriptions', 'exact audio source clocks', 'logical UID and service fencing', 'eighth result channel number']}
+        'checks': ['all processed audio and result subscriptions', 'exact audio source clocks', 'logical UID and service fencing', f'{channels} result channel numbers']}
 
 
 async def capture_boundary(origin):

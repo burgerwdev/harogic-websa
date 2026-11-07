@@ -29,6 +29,30 @@ afterEach(() => {
 });
 
 describe('receiver audio recovery', () => {
+  it.each(['receiver retired', 'receiver stopped'])('releases ended %s playback without reviving it from stale state', async reason => {
+    vi.resetModules(); PlaybackWorker.instances = [];
+    vi.stubGlobal('Worker', PlaybackWorker); vi.stubGlobal('AudioContext', PlaybackContext);
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const audio = await import('../audio/sdrAudio');
+    audio.setSdrAudioEnabled(true);
+    const old = PlaybackWorker.instances[0];
+    old.onmessage!({ data: { type: 'stats', playing: true, bufferedSamples: 100 } });
+    old.onmessage!({ data: { type: 'meter', generation: 0, rms: .5, peak: .75, playing: true } });
+    old.onmessage!({ data: { type: 'ended', reason } });
+    expect(old.terminate).toHaveBeenCalledOnce();
+    expect(audio.getSdrAudioStatus()[0]).toMatchObject({ error: '', playing: false, rms: 0, peak: 0,
+      meterAt: 0, bufferedFrames: 0, connectionState: 'stopped' });
+    audio.setSdrAudioEnabled(true); audio.resumeNativeAudio();
+    expect(PlaybackWorker.instances).toHaveLength(1);
+    old.onmessage!({ data: { type: 'meter', generation: 0, rms: 1, peak: 1, playing: true } });
+    expect(audio.getSdrAudioStatus()[0]).toMatchObject({ playing: false, rms: 0 });
+    expect(quiet).not.toHaveBeenCalled();
+    audio.setSdrAudioEnabled(false); audio.setSdrAudioEnabled(true);
+    expect(PlaybackWorker.instances).toHaveLength(2);
+    old.onerror!({ message: 'late retired owner' });
+    expect(audio.getSdrChannelAudioError(1)).toBe('');
+    audio.setSdrAudioEnabled(false);
+  });
   it('silences the failed receiver, ignores stale worker stats, and recreates playback on recovery', async () => {
     vi.resetModules();
     PlaybackWorker.instances = [];
@@ -39,10 +63,12 @@ describe('receiver audio recovery', () => {
     audio.setSdrAudioMode(1, 'drm');
     audio.setSdrAudioEnabled(true);
     const old = PlaybackWorker.instances[0];
-    old.onmessage!({ data: { type: 'stats', rms: 0.5, playing: true, bufferedSamples: 100 } });
+    old.onmessage!({ data: { type: 'stats', playing: true, bufferedSamples: 100 } });
+    old.onmessage!({ data: { type: 'meter', generation: 0, rms: .5, peak: .75, playing: true } });
     audio.setSdrReceiverAudioError(1, 'receiver queue full');
     expect(old.terminate).toHaveBeenCalledOnce();
-    old.onmessage!({ data: { type: 'stats', rms: 1, playing: true, bufferedSamples: 999 } });
+    old.onmessage!({ data: { type: 'stats', playing: true, bufferedSamples: 999 } });
+    old.onmessage!({ data: { type: 'meter', generation: 0, rms: 1, peak: 1, playing: true } });
     expect(audio.getSdrAudioStatus()[0]).toMatchObject({ error: 'receiver queue full', rms: 0, playing: false, bufferedFrames: 0 });
     audio.setSdrAudioEnabled(false);
     audio.setSdrAudioEnabled(true);
@@ -51,7 +77,12 @@ describe('receiver audio recovery', () => {
     expect(audio.getSdrChannelAudioError(1)).toBe('receiver queue full');
     audio.setSdrReceiverAudioError(1, null);
     expect(PlaybackWorker.instances).toHaveLength(2);
-    PlaybackWorker.instances[1].onmessage!({ data: { type: 'stats', rms: 0.25, playing: true, bufferedSamples: 24 } });
+    const recovered = PlaybackWorker.instances[1];
+    recovered.onmessage!({ data: { type: 'stats', playing: true, bufferedSamples: 24 } });
+    recovered.onmessage!({ data: { type: 'meter-reset', generation: 2 } });
+    recovered.onmessage!({ data: { type: 'meter', generation: 1, rms: 1, peak: 1, playing: true } });
+    expect(audio.getSdrAudioStatus()[0]).toMatchObject({ rms: 0, peak: 0, playing: false });
+    recovered.onmessage!({ data: { type: 'meter', generation: 2, rms: .25, peak: .5, playing: true } });
     expect(audio.getSdrAudioStatus()[0]).toMatchObject({ error: '', enabled: true, rms: 0.25, playing: true, bufferedFrames: 24 });
   });
   it('recreates failed playback on an explicit mode change and rejects stale worker callbacks', async () => {

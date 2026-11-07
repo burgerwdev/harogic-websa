@@ -14,7 +14,7 @@ from native_multichannel import api
 from native_multichannel_processing import assert_receivers_continue, setup
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, start_service, stop
-from viewport_baseline import wait_ui_ready
+from viewport_baseline import wait_async_condition, wait_ui_ready
 
 
 def watch_controls(surface):
@@ -55,18 +55,36 @@ def browser_gate(origin, snapshot, artifacts):
         assert overview.locator('[name=mode]').count() == 1
         assert overview.locator('[data-action=tab-processing],[data-action=tab-results]').count() == 0
         assert first_row.locator('[data-action=listen]').count() == 1
-        assert overview.locator('.mc-monitor [data-action=listen]').count() == 0
+        monitor = overview.locator('.mc-monitor [data-action=listen]')
+        expect(monitor).to_have_count(1)
+        expect(monitor).to_have_attribute('aria-pressed', first_row.locator('[data-action=listen]').get_attribute('aria-pressed'))
         missing_tips = overview.locator('button:visible').evaluate_all('buttons=>buttons.filter(b=>!b.title.trim()).map(b=>b.outerHTML)')
         assert not missing_tips, missing_tips
         # AM uses actual native signal/audio telemetry, with no message-search controls.
+        first_row.locator('.mc-row-more > summary').click()
         first_row.locator('[data-action=results]').click()
         signal = page.locator(f'[data-view-id="results-{uid}"]')
         expect(signal.locator('[data-audio-scope]')).to_be_visible()
         expect(signal.locator('[data-decode-search]')).not_to_be_visible()
         expect(signal.locator('[data-decode-action=clear]')).not_to_be_visible()
-        assert signal.locator('[data-audio-scope]').evaluate('c=>c.getContext("2d").getImageData(0,0,c.width,c.height).data.some(v=>v>0)')
+        # The centre grid line alone is painted even for silence. Require waveform
+        # pixels outside it, so an empty or flat scope cannot satisfy this gate.
+        page.wait_for_function('''uid => {
+          const c = document.querySelector(`[data-view-id="results-${uid}"] [data-audio-scope]`);
+          if (!c) return false;
+          const pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+          return pixels.some((value, index) => index % 4 === 3 && value > 0
+            && Math.abs(Math.floor(index / 4 / c.width) - c.height / 2) > 2);
+        }''', arg=uid)
         signal.screenshot(path=str(artifacts / 'am-signal-info.png'))
         signal.locator('[data-close]').click()
+        # The selected-channel monitor and its list row control the same route.
+        # Establish a deliberate stopped route before testing the held mouse click;
+        # native startup may already have selected the main listening channel.
+        if monitor.get_attribute('aria-pressed') == 'true':
+            monitor.click()
+        expect(monitor).to_have_attribute('aria-pressed', 'false')
+        expect(first_row.locator('[data-action=listen]')).to_have_attribute('aria-pressed', 'false')
         watch_controls(overview)
         # Native mouse press crosses several status/decoder updates.
         control = first_row.locator('[data-action=listen]')
@@ -74,6 +92,7 @@ def browser_gate(origin, snapshot, artifacts):
         page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
         page.mouse.down(); page.wait_for_timeout(1500); page.mouse.up()
         expect(control).to_have_attribute('aria-pressed', 'true')
+        expect(monitor).to_have_attribute('aria-pressed', 'true')
         held_mouse = assert_controls(overview)
         # Space activates on keyup; no pointer guard protects this button.
         output_tab = overview.locator('[data-action=tab-output]')
@@ -88,6 +107,7 @@ def browser_gate(origin, snapshot, artifacts):
         output_controls = assert_controls(overview)
         assert overview.locator('.mc-content').evaluate('element=>element.scrollTop===window.uxScroll')
         overview.locator('[data-action=tab-receive]').click()
+        overview.locator('[data-frequency-unit=Hz]').click()
         frequency = overview.locator('[name=frequency]')
         frequency.fill('100001234'); frequency.press('ArrowLeft'); frequency.press('Shift+ArrowLeft')
         draft = frequency.input_value(); watch_controls(overview); page.wait_for_timeout(1200)
@@ -103,6 +123,7 @@ def browser_gate(origin, snapshot, artifacts):
         search.fill(''); overview.locator('[data-action=cancel]').click()
         assert_receivers_continue(before['receivers'], api(origin)['receivers'])
         # Actual replay decodes use one familiar message table, not one card per event.
+        overview.locator(f'[data-uid="{second}"] .mc-row-more > summary').click()
         overview.locator(f'[data-uid="{second}"] [data-action=results]').click()
         results = page.locator(f'[data-view-id="results-{second}"]')
         expect(results.locator('.mc-message-table tbody tr')).not_to_have_count(0, timeout=35000)
@@ -116,9 +137,14 @@ def browser_gate(origin, snapshot, artifacts):
         expect(results.locator('.mc-message-table thead')).to_contain_text('UTC')
         decode_controls = assert_controls(results)
         # On this same FT8 receiver, speakers, backend IQ recording and result exports coexist.
-        results.locator('[data-action=listen]').click()
-        results.locator('[data-action=rec-iq]').click()
-        page.wait_for_function('uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&t.state==="recording"))', arg=second)
+        result_controls = results.locator('.mc-decode-binding')
+        listen = result_controls.locator('[data-action=listen]')
+        if listen.get_attribute('aria-pressed') != 'true':
+            listen.click()
+        expect(listen).to_have_attribute('aria-pressed', 'true')
+        expect(overview.locator(f'[data-uid="{second}"] [data-action=listen]')).to_have_attribute('aria-pressed', 'true')
+        result_controls.locator('[data-action=rec-iq]').click()
+        wait_async_condition(page, 'uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&t.state==="recording"))', arg=second)
         page.wait_for_function('uid=>window.websaAudioStatus().some(r=>r.channel===uid&&r.playedFrames>1000&&!r.error)', arg=second)
         results.locator('[data-export-format]').select_option('csv')
         with page.expect_download() as download:
@@ -137,15 +163,16 @@ def browser_gate(origin, snapshot, artifacts):
         simultaneous = api(origin)
         assert any(task['receiver_uid'] == second and task['state'] == 'recording' for task in simultaneous['recordings'])
         assert_receivers_continue(before['receivers'], simultaneous['receivers'])
-        results.locator('[data-action=rec-iq]').click()
-        page.wait_for_function('uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&t.state==="completed"))', arg=second)
+        result_controls.locator('[data-action=rec-iq]').click()
+        wait_async_condition(page, 'uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&t.state==="completed"))', arg=second)
         page.screenshot(path=str(artifacts / 'decode-messages-desktop.png'))
         results.locator('[data-decode-search]').fill('')
         # Create a backend IQ task via the real list control. View operations must preserve it.
         page.locator('[data-action=sdr-workbench]').click()
         third_row = overview.locator(f'[data-uid="{third}"]')
+        third_row.locator('.mc-row-more > summary').click()
         third_row.locator('[data-action=rec-iq]').click()
-        page.wait_for_function('uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&["preparing","recording"].includes(t.state)))', arg=third)
+        wait_async_condition(page, 'uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&["preparing","recording"].includes(t.state)))', arg=third)
         target = api(origin)['receivers'][1]; candidate = copy.deepcopy(target['confirmed'])
         candidate['processors'][0].update(mode='sstv', bandwidth_hz=3000)
         candidate['baseband'].update(passband_hz=6000, transition_hz=500, minimum_rate_hz=8000)
@@ -206,14 +233,14 @@ def browser_gate(origin, snapshot, artifacts):
         assert any(task['receiver_uid'] == third and task['state'] == 'recording' for task in after['recordings'])
         assert_receivers_continue([before['receivers'][0], before['receivers'][2]], [after['receivers'][0], after['receivers'][2]])
         third_row.locator('[data-action=rec-iq]').click()
-        page.wait_for_function('uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&t.state==="completed"))', arg=third)
+        wait_async_condition(page, 'uid=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.recordings.some(t=>t.receiver_uid===uid&&t.state==="completed"))', arg=third)
         page.screenshot(path=str(artifacts / 'workbench-product-zh-light.png'))
         report = {'source': 'isolated synthetic AM/IQ and committed FT8/SSTV replay; no RF hardware',
             'held_mouse': held_mouse, 'output_controls': output_controls, 'draft_controls': draft_controls,
             'search_controls': search_controls, 'decode_controls': decode_controls, 'image_controls': image_controls,
             'csv_rows': len(exported_csv), 'jsonl_entries': len(exported_jsonl), 'png_size': exported_size,
             'live_nonzero_components': live_pixels, 'compact_horizontal_overflow': overflow, 'errors': errors,
-            'checks': ['1500ms real mouse press', '1300ms Space key release activation', 'no removed live controls during status updates',
+            'checks': ['row and selected monitor share one listening route', '1500ms real mouse press', '1300ms Space key release activation', 'no removed live controls during status updates',
                 'draft/focus/search selection/scroll retention', 'real merged FT8 messages/filter/sort/UTC', 'same-UID listening + backend IQ recording + filtered CSV/JSONL downloads',
                 'real AM audio waveform with no search/clear tools', 'actual SSTV PNG download in 420px popup', 'all visible buttons have hover tips',
                 'live SSTV pixels update the same canvas', '420px Pop out/Dock preserves canvas and controls',

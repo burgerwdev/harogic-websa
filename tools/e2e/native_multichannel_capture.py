@@ -51,6 +51,7 @@ def browser_gate(origin, artifacts):
         before = until(origin, lambda s: all(r['stream'] for r in s['receivers']))
         first, second, third = before['receivers']
         overview.locator(f'[data-uid="{second["receiver_uid"]}"] [data-action=select]').click()
+        overview.locator('[data-frequency-unit=Hz]').click()
         expect(overview.locator('[name=frequency]')).to_have_value(str(int(second['confirmed']['baseband']['frequency_hz'])))
         # Main Center explicitly tunes C1; selecting C2 in Channels cannot redirect it.
         overview.locator('[data-close]').click()
@@ -88,17 +89,15 @@ def browser_gate(origin, artifacts):
         assert requests and all(request['cmd'] == 'SET_SDR' and request['listen'] == 100_020_000 for request in requests), requests
         first = shared['receivers'][0]
         page.locator('[data-action=sdr-workbench]').click()
-        expect(overview.locator('[data-capture-status]')).to_contain_text('100.02 MHz')
+        expect(overview.locator('[data-capture-status]')).to_contain_text('100.020000 MHz')
         frequency = second['confirmed']['baseband']['frequency_hz'] + 1234.25
         overview.locator('[name=frequency]').fill(str(frequency))
         overview.locator('[data-config] button[type=submit]').click()
-        page.screenshot(path=str(artifacts / 'c2-review.png'))
-        (artifacts / 'c2-review.json').write_text(json.dumps({
+        page.screenshot(path=str(artifacts / 'c2-edit.png'))
+        (artifacts / 'c2-edit.json').write_text(json.dumps({
             'uid': overview.get_attribute('data-receiver-uid'), 'page_errors': errors,
             'invalid_fields': overview.locator('[data-config]').evaluate('form=>Array.from(form.querySelectorAll(":invalid")).map(e=>({name:e.name,value:e.value,error:e.validationMessage}))'),
             'preview': overview.locator('[data-preview]').inner_text(), 'snapshot': api(origin)}, indent=2) + '\n')
-        expect(overview.locator('[data-preview] button')).to_be_enabled()
-        overview.locator('[data-preview] button').click()
         edited = until(origin, lambda s: s['receivers'][1]['confirmed']['baseband']['frequency_hz'] == frequency)
         assert edited['receivers'][0]['confirmed'] == first['confirmed']
         assert edited['receivers'][0]['stream'] == shared['receivers'][0]['stream']

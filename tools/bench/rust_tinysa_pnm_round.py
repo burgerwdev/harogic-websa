@@ -69,8 +69,7 @@ def run_websad_side(url, rx, seconds, level):
     done_msg = rx.await_text(lambda m: m.get('cmd') == 'PNM' and m.get('done') is True, 120)
     restart = rx.await_text(
         lambda m: m.get('cmd') == 'PNM' and m.get('done') is False
-        and done_msg is not None and m is not done_msg
-        and (m.get('progress') or 0) < 100, 30)
+        and (m.get('progress') or 0) < 100, 30, after=done_msg) if done_msg else None
     result['pnm_done'] = done_msg
     result['pnm_restarted'] = restart is not None
     st = get_state(url)

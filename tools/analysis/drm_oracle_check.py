@@ -131,7 +131,7 @@ def main() -> int:
                 tail, _ = proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                tail = ''
+                tail, _ = proc.communicate()
 
     if not messages:
         print('FAIL: dream sent no status message')

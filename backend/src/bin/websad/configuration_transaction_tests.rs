@@ -1,6 +1,83 @@
 mod configuration_transactions {
     use super::*;
 
+    #[test]
+    fn owner_recovery_rta_trigger_readback_failure_during_wait() {
+        for status in [-8, -9, -110] {
+            let source = FAKE_RTA_SHIM.replace("*out = dev->trigger; return 0;", &format!(
+                "if (dev->trigger.last_sdk_status == -10) return {status}; *out = dev->trigger; return 0;"
+            ));
+            let mut state = hardware_state(Some(compile_fake_swp_source(
+                &format!("rta_query_wait_{status}"), &source,
+            )));
+            state.swp.mode = "rta".into();
+            assert!(state.step_rta().is_empty());
+            assert!(state.rta_hw.is_none(), "failed trigger readback retained the RTA owner: {status}");
+            assert_eq!(state.link_up, !LINK_LOST_STATUS.contains(&status));
+            assert_eq!(state.rta_trigger_actual["valid"], false);
+            assert!(state.rta_completed_frame.is_none());
+            assert_eq!(state.auto.observation_status, status);
+            let error = state.rta_error.clone().expect("query failure must remain visible");
+            assert!(error.contains(&format!("trigger readback status={status}")), "{error}");
+            assert!(state.rta_retry_at.is_some());
+            state.hardware_shim = Some(compile_fake_swp_source("rta_trigger", FAKE_RTA_SHIM));
+            assert!(state.step_rta().is_empty());
+            assert!(state.rta_hw.is_none(), "cooldown must prevent an immediate reopen");
+            state.rta_retry_at = None;
+            state.step_rta();
+            assert!(state.rta_hw.is_some() && state.link_up, "retired owner must release the device");
+            assert_eq!(state.rta_trigger_actual["valid"], true);
+            assert!(state.rta_error.is_none());
+        }
+    }
+
+    #[test]
+    fn owner_recovery_rta_trigger_readback_failure_after_profile_rejection() {
+        let source = FAKE_RTA_SHIM.replace("*out = dev->trigger; return 0;",
+            "if (dev->trigger.last_sdk_status == -7) return -9; *out = dev->trigger; return 0;");
+        let mut state = hardware_state(Some(compile_fake_swp_source("rta_query_rollback", &source)));
+        state.swp.mode = "rta".into();
+        state.step_rta();
+        let requested = state.rta_params();
+        let version = state.config_version;
+        let error = dispatch(&mut state, "SET_TRIGGER", &json!({"level":-123.0})).unwrap_err();
+        assert!(error.message.contains("-7"), "original command rejection: {}", error.message);
+        assert_eq!(state.rta_params(), requested);
+        assert_eq!(state.config_version, version);
+        assert!(state.rta_hw.is_none(), "failed rollback readback cannot retain a disconnected owner");
+        assert!(!state.link_up);
+        assert_eq!(state.rta_trigger_actual["valid"], false);
+        assert!(state.rta_error.as_deref().unwrap().contains("trigger readback status=-9"));
+        assert!(state.rta_retry_at.is_some());
+        state.rta_retry_at = None;
+        state.step_rta();
+        assert!(state.rta_hw.is_some() && state.link_up);
+        assert_eq!(state.rta_params(), requested);
+        assert!(state.rta_error.is_none());
+    }
+
+    #[test]
+    fn owner_recovery_phase_noise_acquisition_failure_respects_retry_cooldown() {
+        let source = FAKE_PNM_SHIM.replace("dev->i += 1;", "return -110;");
+        let mut state = hardware_state(Some(compile_fake_swp_source("pnm_next_failure", &source)));
+        state.swp.mode = "pnm".into();
+        state.pnm_session_id = Some("retry-same-request".into());
+        assert!(state.step_pnm().is_empty());
+        assert!(state.pnm_hw.is_none() && !state.link_up);
+        assert!(state.pnm_error.as_deref().unwrap().contains("-110"));
+        assert!(state.pnm_retry_at.is_some(), "acquisition failures must throttle reopening as startup failures do");
+        state.hardware_shim = Some(compile_fake_pnm_shim());
+        assert!(state.step_pnm().is_empty());
+        assert!(state.pnm_hw.is_none());
+        state.pnm_retry_at = None;
+        let frames = state.step_pnm();
+        assert_eq!(frames.len(), 1, "retry must be able to acquire the retired device");
+        assert_eq!(frames[0]["session_id"], "retry-same-request");
+        assert_eq!(frames[0]["progress"], 25);
+        assert!(state.pnm_hw.is_some() && state.link_up);
+        assert!(state.pnm_error.is_none());
+    }
+
     fn rejecting_swp_state() -> DevState {
         let source = FAKE_SWP_SHIM.replace(
             "if (fake_config_status) return fake_config_status;",
@@ -54,6 +131,69 @@ mod configuration_transactions {
             assert!(axis.is_none(), "{cmd}: rejected change republished an axis");
             assert_eq!(decode_header(&power).0, "POWR", "{cmd}: stream stopped");
             assert_eq!(state.swp_open_count, opens, "{cmd}: recreated handle");
+        }
+    }
+
+    #[test]
+    fn rejected_phase_noise_window_preserves_the_running_cycle_and_next_cycle() {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        dispatch(&mut state, "SET_MODE", &json!({"mode":"pnm"})).unwrap();
+        dispatch(&mut state, "SET_PNM", &json!({"center":100e6,"threshold":-60.0,
+            "traceavg":8,"start":100.0,"stop":1e6,"session_id":"accepted"})).unwrap();
+        let first = state.step_pnm().remove(0);
+        let error = dispatch(&mut state, "SET_PNM", &json!({"center":200e6,"threshold":-30.0,
+            "traceavg":2,"start":1e6,"stop":100.0,"session_id":"rejected"})).unwrap_err();
+        assert_eq!(error.code, "bad_parameter");
+        for progress in [50, 75, 100, 25] {
+            let observed = state.step_pnm().remove(0);
+            for field in ["carrier_freq", "ref", "traceavg", "offset", "session_id"] {
+                assert_eq!(observed[field], first[field], "rejected request changed {field}");
+            }
+            assert_eq!(observed["progress"], progress, "rejection must not restart the cycle");
+        }
+    }
+
+    #[test]
+    fn rta_configuration_link_loss_retires_owner_and_recovers_previous_request() {
+        for status in [-8, -9] {
+            for command in ["SET_TRIGGER", "SET_RTA"] {
+                let source = FAKE_RTA_SHIM
+                    .replace("if (r->trigger_level_dbm == -123.0)", "if (true)")
+                    .replace("return -7;", &format!("return {status};"));
+                let mut state = hardware_state(Some(compile_fake_swp_source(
+                    &format!("rta_link_loss_{command}_{status}"), &source,
+                )));
+                state.swp.mode = "rta".into();
+                state.step_rta();
+                let previous = state.rta_params();
+                let version = state.config_version;
+                let generation = state.rta_trigger_generation;
+                state.rta_completed_frame = Some(vec![1, 2, 3]);
+                let request = if command == "SET_TRIGGER" {
+                    json!({"source":"external", "level":-50.0})
+                } else {
+                    json!({"center":200e6,"span":10e6})
+                };
+                let error = dispatch(&mut state, command, &request).unwrap_err();
+                assert_eq!(error.code, "device_error");
+                assert!(!state.link_up, "{command}: link loss must be visible immediately");
+                assert!(state.rta_hw.is_none(), "{command}: disconnected owner must retire");
+                assert!(state.rta_retry_at.is_some());
+                assert_eq!(state.rta_params(), previous, "rejected request must not commit");
+                assert_eq!(state.config_version, version);
+                assert_eq!(state.rta_trigger_actual["valid"], false);
+                assert!(state.rta_completed_frame.is_none());
+                assert!(state.step_rta().is_empty());
+                assert!(state.rta_hw.is_none(), "retry cooldown must prevent immediate reopen");
+                state.rta_retry_at = None;
+                state.step_rta();
+                assert!(state.link_up && state.rta_hw.is_some());
+                assert_eq!(state.rta_params(), previous);
+                assert!(state.rta_trigger_generation > generation);
+                assert_eq!(state.rta_trigger_actual["valid"], true);
+                assert!(state.rta_error.is_none());
+            }
         }
     }
 

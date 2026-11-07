@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep the version in one place.
 
-`pyproject.toml` is the single source of truth (report finding P0-5); the two files that
+`pyproject.toml` is the single source of truth; the three files that
 must display it are rewritten from it:
 
   frontend/package.json       "version"

@@ -4,5 +4,3 @@
 [data-mode-controls] [hidden], [data-mode-controls][hidden] { display:none !important; }
 [data-mode-controls] [data-mode-field] input:not([type=checkbox]), [data-mode-controls] select { width:130px; max-width:48%; min-width:70px; }
 [data-mode-actions] { display:flex; flex-wrap:wrap; gap:6px; }
-#sdr-mode-settings { margin:6px 0; font-size:11px; }
-#sdr-mode-settings summary { cursor:pointer; color:var(--label); }

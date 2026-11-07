@@ -22,7 +22,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.route(
         "**/api/sdr/receiver-presets",
-        lambda route: route.fulfill(json={"revision": "1", "presets": []}),
+        lambda route: route.fulfill(json={"version": 1, "revision": "1", "presets": []}),
     )
     page.goto(args.origin + "/static/dist/workbench.html")
     page.locator("[data-view-id=overview-follow]").wait_for()
@@ -55,6 +55,11 @@ with sync_playwright() as p:
     view.locator("[data-section=iq] summary").click()
     view.locator("[data-receiver-presets] summary").click()
     expect(view.locator("[data-preset-name]")).to_be_visible()
+    # Rendering the panel alone also succeeds when the response is rejected.
+    # A save is available only after the preset document was validated and loaded.
+    expect(view.locator("[data-preset-save]")).to_be_enabled()
+    expect(view.locator("[data-preset-status]")).to_have_text("")
+    expect(view.locator("[data-preset-list] option")).to_have_count(1)
     page.screenshot(path=str(out / "settings-en-dark.png"))
     view.locator("[data-action=cancel]").click()
 

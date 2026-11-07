@@ -437,7 +437,11 @@ impl ChanEst {
             // estimate the noise, while average cell power and the actual carrier span
             // account for boosted pilots and the useful bandwidth (as in Dream's readout).
             let signal_bw = self.n_car as f64 * self.mode.carrier_spacing_hz();
-            let nominal_bw = map.occupancy().bandwidth_khz() * 1000.0;
+            let nominal_bw = if self.mode == RobustnessMode::E {
+                f64::from(self.mode.nominal_bandwidth_hz())
+            } else {
+                map.occupancy().bandwidth_khz() * 1000.0
+            };
             let correction = map.avg_power_per_symbol / self.n_car as f64
                 * signal_bw / nominal_bw;
             let snr = correction / e.max(1e-12);
@@ -487,6 +491,37 @@ mod tests {
     use crate::digital::drm::params::SpectrumOccupancy;
     use crate::digital::drm::sync::timesync::TimeSync;
     use crate::ddc::resampler::ComplexResampler;
+
+    #[test]
+    fn fac_snr_uses_the_modes_actual_nominal_bandwidth() {
+        // Integrating the same noise spectral density over a nominal bandwidth B
+        // scales FAC MER by total transmitted carrier power * carrier spacing / B.
+        // DRM+ reuses occupancy code zero but its B is 100 kHz, not DRM30's 4.5 kHz.
+        for (mode, occupancy, bandwidth_hz) in [
+            (RobustnessMode::B, SpectrumOccupancy::SO_0, 4_500.0),
+            (RobustnessMode::B, SpectrumOccupancy::SO_3, 10_000.0),
+            (RobustnessMode::E, SpectrumOccupancy::SO_0, 100_000.0),
+        ] {
+            let map = CellMap::new(mode, occupancy).unwrap();
+            let mut estimator = ChanEst::new(&map);
+            let q = 1.0 / 2.0f64.sqrt();
+            for symbol in 0..3 * mode.symbols_per_frame() {
+                let symbol = symbol % mode.symbols_per_frame();
+                let cells: Vec<_> = (0..map.num_carriers).map(|carrier| {
+                    let pilot = map.pilot(symbol, carrier);
+                    if pilot.norm_sqr() > 0.0 { pilot } else { Cplx::new(q + 0.01, q - 0.01) }
+                }).collect();
+                estimator.process(&cells, symbol, 0, &map);
+            }
+            let mer_db = estimator.stats.fac_mer_db.unwrap();
+            let snr_db = estimator.stats.snr_db.unwrap();
+            let expected_db = mer_db + 10.0 * (map.avg_power_per_symbol
+                * mode.carrier_spacing_hz() / bandwidth_hz).log10();
+            assert!(expected_db > 3.0, "reference must be above the SNR floor");
+            assert!((snr_db - expected_db).abs() < 1e-9,
+                "{mode:?}/{occupancy:?}: SNR {snr_db}, bandwidth reference {expected_db}");
+        }
+    }
 
     fn load_iq_f64(path: &str) -> Vec<Cplx> {
         let raw = std::fs::read(path).expect("capture file");
@@ -648,261 +683,6 @@ mod tests {
         (mer, est.freq_int, est.time_int)
     }
 
-    /// One-dimensional search: with the timing the chain chose, how does the FAC MER depend on
-    /// the residual carrier offset alone? If no offset reaches a usable MER, the residual is not
-    /// a pure frequency error (a timing or sample-rate drift contributes the same per-symbol
-    /// rotation) and the next step is timing tracking rather than more frequency precision.
-    #[test]
-    #[ignore = "diagnostic sweep; run with --ignored --nocapture"]
-    fn sweep_residual_offset_with_timing_fixed() {
-        let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        let base = resample_to_core(path, 48_828.125);
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
-        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
-        for v in &base {
-            flat.push(v.re);
-            flat.push(v.im);
-        }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
-        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
-        let mut out = String::new();
-        for step in -12..=12 {
-            let extra = step as f64 * 0.5;
-            let mut iq = base.clone();
-            let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse + extra, 48_000.0);
-            nco.process(&mut iq);
-            let mut est = ChanEst::new(&map);
-            let (rows, syms, shifts) = rows_and_syms(&map, &iq);
-            let mut mer = f64::NAN;
-            for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
-                if est.process(row, *sym, *shift, &map).is_some() {
-                    if let Some(m) = est.stats().fac_mer_db {
-                        mer = m;
-                    }
-                }
-            }
-            out.push_str(&format!("{extra:+.1}:{mer:.1} "));
-        }
-        eprintln!("[sweep] coarse {coarse:.1} Hz -> MER(dB) by extra offset: {out}");
-    }
-
-    /// Is a sample-rate error what defeats the live capture? Resample it as if the source rate
-    /// were off by a few tens of ppm and read the FAC MER: a peak near the reference's 17.8 dB
-    /// would confirm the sample-rate offset (SRO) as the cause and size the tracking's range.
-    #[test]
-    #[ignore = "diagnostic sweep; run with --ignored --nocapture"]
-    fn sweep_sample_rate_error_on_the_live_capture() {
-        let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        let mut out = String::new();
-        for ppm in [-200.0f64, -100.0, -50.0, -20.0, -5.0, 0.0, 5.0, 20.0, 50.0, 100.0, 200.0] {
-            let rate = 48_828.125 * (1.0 + ppm * 1e-6);
-            let iq = resample_to_core(path, rate);
-            let (mer, _, _) = run(&iq);
-            out.push_str(&format!("{ppm:+.0}ppm:{:.1} ", mer.unwrap_or(f64::NAN)));
-        }
-        eprintln!("[sro] MER(dB) by assumed source-rate error: {out}");
-    }
-
-    /// Is the FAC mask misaligned? Sweep every frame phase on the live capture and read the
-    /// FAC MER: if one phase stands out, the estimator is fine and the frame alignment (the
-    /// frame-sync stage's choice) is what fails on a real signal.
-    #[test]
-    #[ignore = "diagnostic sweep; run with --ignored --nocapture"]
-    fn sweep_frame_phase_on_the_live_capture() {
-        let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
-        let base = resample_to_core(path, 48_828.125);
-        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
-        for v in &base {
-            flat.push(v.re);
-            flat.push(v.im);
-        }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
-        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
-        let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
-        nco.process(&mut corrected);
-        let (rows, _, shifts) = rows_and_syms(&map, &corrected);
-        let spf = RobustnessMode::B.symbols_per_frame();
-        let mut out = String::new();
-        for phase in 0..spf {
-            let mut est = ChanEst::new(&map);
-            let mut mer = f64::NAN;
-            for (i, row) in rows.iter().enumerate() {
-                let sym = (i % spf + phase) % spf;
-                if est.process(row, sym, shifts[i], &map).is_some() {
-                    if let Some(m) = est.stats().fac_mer_db {
-                        mer = m;
-                    }
-                }
-            }
-            out.push_str(&format!("{phase}:{mer:.1} "));
-        }
-        eprintln!("[phase] FAC MER(dB) by frame phase: {out}");
-    }
-
-    /// The clean fixture's FAC must decode through the whole chain — acquisition, NCO,
-    /// Measure the residual frequency offset and timing offset directly from the pilots on the
-    /// live capture, symbol by symbol, to see whether they drift (a drifting residual is what the
-    /// reference's continuous frequency/SRO tracking removes and a one-shot fine correction
-    /// cannot). The reference reports MER 17.8 dB / delay 0.8 ms on the same file.
-    #[test]
-    #[ignore = "live diagnostic; run with --ignored --nocapture"]
-    fn diagnose_live_residual_errors() {
-        let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
-        let base = resample_to_core(path, 48_828.125);
-        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
-        for v in &base {
-            flat.push(v.re);
-            flat.push(v.im);
-        }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
-        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
-        let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
-        nco.process(&mut corrected);
-        let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
-
-        // 1. Residual frequency offset from the three continuous pilots, per symbol
-        //    (the reference's `freq_delta_hz`): cur * old.conj() averaged over pilots.
-        let freq_pil: Vec<usize> = (0..map.num_carriers)
-            .filter(|&c| map.cell(syms[0], c).is_freq_pilot())
-            .collect();
-        let tsym = map.mode().symbol_len() as f64 / 48_000.0;
-        let mut prev: Option<Vec<Cplx>> = None;
-        let mut freq_line = String::new();
-        let mut phase_acc = 0.0f64;
-        for (i, row) in rows.iter().enumerate() {
-            if let Some(prev) = prev.take() {
-                let mut acc = Cplx::zero();
-                for &c in &freq_pil {
-                    acc += row[c] * prev[c].conj();
-                }
-                let e = acc.arg();
-                phase_acc += e;
-                let f = e / (2.0 * core::f64::consts::PI * tsym);
-                if i % 100 == 0 {
-                    freq_line.push_str(&format!("{}:{:+.2} ", i, f));
-                }
-            }
-            prev = Some(row.clone());
-        }
-        let mean_f = phase_acc / (rows.len().saturating_sub(1)) as f64 / (2.0 * core::f64::consts::PI * tsym);
-        eprintln!("[live-dx] coarse {coarse:.1} Hz; per-symbol residual freq (Hz) at every 100 syms: {freq_line}");
-        eprintln!("[live-dx] mean residual freq {mean_f:+.3} Hz over {} symbols", rows.len());
-
-        // 1b. Sample-rate offset from the pilot phase slope (the reference's `sro_estimate`):
-        // the per-symbol phase advance grows linearly with the carrier index. The common
-        // (frequency) part is removed, so only the slope between the pilots matters.
-        let sro_lambda = (-1.0 / (0.5 * map.mode().symbol_len() as f64 / 48_000.0)).exp();
-        let mut pil_ph_diff = [Cplx::zero(); 3];
-        let mut sro_count = 0usize;
-        let mut prev2: Option<Vec<Cplx>> = None;
-        for row in rows.iter() {
-            if let Some(prev) = prev2.take() {
-                for (i, &c) in freq_pil.iter().enumerate() {
-                    let prod = row[c] * prev[c].conj();
-                    pil_ph_diff[i] = pil_ph_diff[i] * sro_lambda + prod * (1.0 - sro_lambda);
-                }
-                sro_count += 1;
-                if sro_count == 40 || sro_count == 400 || sro_count == rows.len() - 1 {
-                    let k: Vec<f64> = freq_pil.iter().map(|&c| (map.kmin + c as i32) as f64).collect();
-                    let ph: Vec<f64> = pil_ph_diff.iter().map(|v| v.arg()).collect();
-                    let wrap = |d: f64| (d + core::f64::consts::PI).rem_euclid(2.0 * core::f64::consts::PI) - core::f64::consts::PI;
-                    let slope = (wrap(ph[1] - ph[0]) / (k[1] - k[0]) + wrap(ph[2] - ph[0]) / (k[2] - k[0])) / 2.0;
-                    // eps = slope · N / (2π · symbol_len_samples), the reference's `sro_estimate`.
-                    let eps = slope * map.mode().fft_size() as f64
-                        / (2.0 * core::f64::consts::PI * map.mode().symbol_len() as f64);
-                    eprintln!("[live-dx] sro_estimate @{} syms: slope {:.3e} eps {:.2} ppm ({:+.3} Hz)", sro_count, slope, eps * 1e6, eps * 48_000.0);
-                }
-            }
-            prev2 = Some(row.clone());
-        }
-
-        // 2. Timing offset per symbol from the scattered-pilot phase slope (reuse sym_offset).
-        let mut first: Vec<f64> = Vec::new();
-        let mut last: Vec<f64> = Vec::new();
-        for i in 0..rows.len().min(20) {
-            first.push(sym_offset(&map, &rows, &syms, i));
-        }
-        for i in rows.len().saturating_sub(20)..rows.len() {
-            last.push(sym_offset(&map, &rows, &syms, i));
-        }
-        eprintln!("[live-dx] timing offset (samples) first 20: {first:?}");
-        eprintln!("[live-dx] timing offset (samples) last 20: {last:?}");
-        eprintln!("[live-dx] window shifts (samples) first/last: {:?} / {:?}", &shifts[..20.min(shifts.len())], &shifts[shifts.len().saturating_sub(20)..]);
-    }
-
-    /// Compare the three time-interpolation paths on the live capture: linear (the default
-    /// until a FAC decodes), time-Wiener with fixed σ (the reference's initial state), and
-    /// time-Wiener with Doppler adaptation (the reference's tracking state). The reference
-    /// uses the time-Wiener from the very first symbol; this port starts linear, which is the
-    /// difference the measurements below isolate.
-    #[test]
-    #[ignore = "live diagnostic; run with --ignored --nocapture"]
-    fn compare_time_interpolation_paths_on_live() {
-        let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
-        let base = resample_to_core(path, 48_828.125);
-        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
-        for v in &base {
-            flat.push(v.re);
-            flat.push(v.im);
-        }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
-        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
-        let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
-        nco.process(&mut corrected);
-        let (rows, syms, _) = rows_and_syms(&map, &corrected);
-        let mut fine = 0.0;
-        if let Some(f) = crate::digital::drm::sync::finefreq::estimate_residual_hz(&map, &rows, &syms) {
-            fine = f;
-            let mut nco2 = crate::digital::drm::sync::nco::Nco::new(f, 48_000.0);
-            nco2.process(&mut corrected);
-        }
-        let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
-        eprintln!("[live-ti] coarse {coarse:.1} fine {fine:+.2} rows {}", rows.len());
-        let ir_ms = map.mode().fft_size() as f64 / 35.0 / 6.0 / 48_000.0 * 1000.0;
-
-        for (label, use_tw, tracking) in [("linear", false, false), ("wiener-fixed-sigma", true, false), ("wiener-doppler", true, true)] {
-            let mut est = ChanEst::new(&map);
-            est.use_tw = use_tw;
-            est.tw.tracking = tracking;
-            let mut mer = None;
-            for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
-                if est.process(row, *sym, *shift, &map).is_some() {
-                    if let Some(m) = est.stats().fac_mer_db {
-                        mer = Some(m);
-                    }
-                }
-            }
-            eprintln!(
-                "[live-ti] {label}: FAC MER {:?} dB  pds_len={:.1} ir ({:.2} ms)  sigma={:.3} Hz",
-                mer,
-                est.last_track.pds_len,
-                est.last_track.pds_len * ir_ms,
-                est.tw.sigma()
-            );
-        }
-    }
-
     /// Count the live capture's FAC blocks that pass and fail their CRC through the
     /// tracked chain, against the reference's 64 ok / 9 bad. The tracked MER (16.3 dB) is
     /// well above the FAC decode threshold, so the error count should be in the same range.
@@ -913,9 +693,7 @@ mod tests {
         use crate::digital::drm::fec::mlc::{MlcDecoder, MlcParams};
         use crate::digital::drm::tables::fac_cell_count;
         let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        assert!(std::path::Path::new(path).exists(), "original live capture required: {path}");
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
         let base = resample_to_core(path, 48_828.125);
         let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
@@ -977,9 +755,7 @@ mod tests {
         use crate::digital::drm::fec::qam::Mapping;
         use crate::digital::drm::sdc::{parse_entities, parse_sdc_block, Entity};
         let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        assert!(std::path::Path::new(path).exists(), "original live capture required: {path}");
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
         let base = resample_to_core(path, 48_828.125);
         let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
@@ -1096,9 +872,7 @@ mod tests {
         use crate::digital::drm::fec::qam::Mapping;
         use crate::digital::drm::interleave::CellDeinterleaver;
         let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        assert!(std::path::Path::new(path).exists(), "original live capture required: {path}");
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
         let base = resample_to_core(path, 48_828.125);
         let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
@@ -1206,7 +980,7 @@ mod tests {
 
     /// Demultiplex the live MSC frames and parse each audio super frame, counting the valid
     /// ones against the reference's 40. A valid super frame is the reference's precondition
-    /// for a frame to count "ok" (its FDK decode succeeds); the FDK decode itself is task-7.
+    /// for a frame to count "ok"; AAC decoding is covered by the receiver tests.
     #[test]
     #[ignore = "live diagnostic; run with --ignored --nocapture"]
     fn live_msc_demux_valid_frames() {
@@ -1217,9 +991,7 @@ mod tests {
         use crate::digital::drm::interleave::CellDeinterleaver;
         use crate::digital::drm::sdc::{parse_entities, parse_sdc_block, Entity, MultiplexDescription};
         let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        assert!(std::path::Path::new(path).exists(), "original live capture required: {path}");
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
         let base = resample_to_core(path, 48_828.125);
         let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
@@ -1542,19 +1314,18 @@ mod tests {
         eprintln!("[sdc] stream len_a={} len_b={}", m.streams[0].len_a, m.streams[0].len_b);
     }
 
-    /// The clean fixture's MSC must decode bit-exact: the MSC payload is a deterministic
-    /// xorshift stream, the manifest records 8390 information bits per multiplex frame and the
-    /// long (depth-5) cell interleaver delays by four frames.
-    #[test]
-    fn msc_decodes_bit_exact() {
+    /// The fixture has 8390 information bits per multiplex frame and depth-5
+    /// cell interleaving. Both raw and pilot-corrected rows must use the same
+    /// complete super-frame boundaries and acquisition warm-up.
+    fn decode_fixture_msc(
+        map: &CellMap,
+        rows: &[Vec<Cplx>],
+        syms: &[usize],
+        shifts: &[i64],
+    ) -> Vec<Vec<u8>> {
         use crate::digital::drm::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
         use crate::digital::drm::fec::qam::Mapping;
         use crate::digital::drm::interleave::CellDeinterleaver;
-
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
-        let iq = load_iq_f64(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/drm/drm_modeB_so3_48k.f32"));
-        let (rows, syms, shifts) = rows_and_syms(&map, &iq);
-
         let mut est = ChanEst::new(&map);
         let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
         let mut fac_cells: Vec<EqCell> = Vec::new();
@@ -1649,6 +1420,10 @@ mod tests {
         }
         decode_super(&mut super_msc, &mut msc_frames);
 
+        msc_frames
+    }
+
+    fn assert_fixture_msc_frames(msc_frames: &[Vec<u8>]) {
         let n = 8390usize;
         let stream = xorshift_bits(12 * n);
         eprintln!("[msc] decoded {} frames", msc_frames.len());
@@ -1670,25 +1445,19 @@ mod tests {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-    /// Confirm the timing-correction recipe: resample the fixture at its true clock error and
-    /// remove the residual window-offset phase ramp, then the MSC must decode bit-exact.
     #[test]
-    #[ignore = "timing-correction confirmation; run with --ignored --nocapture"]
+    fn msc_decodes_bit_exact() {
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let iq = load_iq_f64(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/drm/drm_modeB_so3_48k.f32"));
+        let (rows, syms, shifts) = rows_and_syms(&map, &iq);
+        assert_fixture_msc_frames(&decode_fixture_msc(&map, &rows, &syms, &shifts));
+    }
+
+    /// Removing a measured pilot phase ramp must preserve the fixture's exact
+    /// MSC payload. The old diagnostic assembled at FAC frame 1 and compared
+    /// against frame 0, mixing two different super frames and ignoring warm-up.
+    #[test]
     fn msc_decodes_with_timing_correction() {
-        use crate::digital::drm::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
-        use crate::digital::drm::fec::qam::Mapping;
-        use crate::digital::drm::interleave::CellDeinterleaver;
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
         let iq = load_iq_f64(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/drm/drm_modeB_so3_48k.f32"));
         let (mut rows, syms, _shifts) = rows_and_syms(&map, &iq);
@@ -1706,59 +1475,8 @@ mod tests {
         let first = sym_offset(&map, &rows, &syms, 0);
         let last = sym_offset(&map, &rows, &syms, rows.len() - 1);
         eprintln!("[msc/fix] offset after correction: first {first:+.2} last {last:+.2}");
-        let mut est = ChanEst::new(&map);
-        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
-        let mut fac_cells: Vec<EqCell> = Vec::new();
-        let mut bits = Vec::new();
-        let mut emitted: Vec<(usize, Vec<EqCell>)> = Vec::new();
-        let mut frame_indices: Vec<u8> = Vec::new();
-        for i in 0..rows.len() {
-            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], 0, &map) else { continue };
-            if out_sym == 0 { fac_cells.clear(); }
-            for &c in &map.fac_carriers[out_sym] { fac_cells.push(cells[c as usize]); }
-            if fac_cells.len() == 65 {
-                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
-                    crate::digital::drm::fac::Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
-                } else { 0xFF };
-                frame_indices.push(idx);
-                fac_cells.clear();
-            }
-            emitted.push((out_sym, cells));
-        }
-        let params = MlcParams::msc(Mapping::Qam64Sm, map.msc_cells_per_frame, MscProtection { part_a: 0, part_b: 1, hierarchical: 0 }, 0);
-        let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
-        let mut msc_dec = MlcDecoder::new(params, 1);
-        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
-        let mut frames: Vec<Vec<u8>> = Vec::new();
-        let mut in_partial = true;
-        let mut complete_frame = 0usize;
-        for (out_sym, cells) in &emitted {
-            if *out_sym == 0 && in_partial { in_partial = false; complete_frame = 0; }
-            else if *out_sym == 0 { complete_frame += 1; }
-            if in_partial { continue; }
-            let Some(&fidx) = frame_indices.get(complete_frame) else { continue };
-            if fidx == 0xFF { continue; }
-            let super_sym = fidx as usize * 15 + *out_sym;
-            if *out_sym == 0 && fidx == 1 {
-                let mut all: Vec<EqCell> = Vec::new();
-                for c in super_msc.iter() { all.extend_from_slice(c); }
-                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
-                    if let Some(d) = de.push(frame) {
-                        if d.iter().all(|c| c.chan > 0.0) {
-                            let mut b = Vec::new();
-                            if msc_dec.decode(&d, &mut b) { frames.push(b); }
-                        }
-                    }
-                }
-                for c in super_msc.iter_mut() { c.clear(); }
-            }
-            for &c in &map.msc_carriers[super_sym] { super_msc[super_sym].push(cells[c as usize]); }
-        }
-        let nn = 8390usize;
-        let stream = xorshift_bits(12 * nn);
-        let matched: Vec<usize> = frames.iter().zip(stream.chunks(nn)).take(8).map(|(b, s)| b.iter().zip(s).filter(|(a, z)| a == z).count()).collect();
-        eprintln!("[msc/fix] decoded {} frames, bit match per frame (of {nn}): {matched:?}", frames.len());
-        assert!(frames.iter().zip(stream.chunks(nn)).all(|(b, s)| b == s), "timing correction must make the MSC bit-exact");
+        let shifts = vec![0; rows.len()];
+        assert_fixture_msc_frames(&decode_fixture_msc(&map, &rows, &syms, &shifts));
     }
 
     /// Deterministic bit stream the fixture's MSC payload carries (the old chain's fixture
@@ -1774,8 +1492,6 @@ mod tests {
             })
             .collect()
     }
-
-
 
     /// Measure the sub-sample timing offset: on the flat clean fixture the channel estimate at
     /// a scattered pilot is `H·e^{j2πkδ/N}`, so the phase difference between two pilots yields
@@ -1925,56 +1641,14 @@ mod tests {
         assert!(mer > 20.0, "clean fixture FAC MER {mer:.1} dB must be high");
     }
 
-    /// Search the residual carrier offset and timing on the live capture: if a residual
-    /// explains the low MER, the fix is a finer acquisition or a residual tracking loop.
+    /// Preserve the original live-capture MER criterion independently of the
+    /// committed clean fixture. The source recording is not a checked-in fixture;
+    /// this test needs that recording and does not certify arbitrary fresh RF.
     #[test]
-    #[ignore = "diagnostic search; run with --ignored --nocapture"]
-    fn search_residual_offset_and_timing_on_the_live_capture() {
-        let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        let base = resample_to_core(path, 48_828.125);
-        // Coarse acquisition on the whole capture, then remove its offset.
-        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
-        for v in &base {
-            flat.push(v.re);
-            flat.push(v.im);
-        }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
-        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
-        eprintln!("[search] coarse offset {coarse:.1} Hz");
-        let mut best = (0.0f64, 0i32, f64::NEG_INFINITY);
-        for residual in [-4.0f64, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 4.0] {
-            for shift in [-3i32, -2, -1, 0, 1, 2, 3] {
-                let mut iq = base.clone();
-                let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse + residual, 48_000.0);
-                nco.process(&mut iq);
-                let iq = if shift > 0 { &iq[shift as usize..] } else { &iq[..] };
-                let (mer, _, _) = run(iq);
-                if let Some(m) = mer {
-                    if m > best.2 {
-                        best = (residual, shift, m);
-                    }
-                }
-            }
-        }
-        eprintln!("[search] best residual {:.1} Hz shift {} -> MER {:.1} dB", best.0, best.1, best.2);
-    }
-
-    /// OPEN: on the live capture the same chain reports MER -1.4 dB while the reference reports
-    /// 17.8 dB, so a real signal still defeats the estimator. The clean fixture reaching 42 dB
-    /// says the structure is right; the difference is what a real channel adds — a residual
-    /// carrier/timing error after acquisition (the acquisition resolves 7.8 Hz, the timing a
-    /// quarter sample) and the three-symbol-span time interpolation on a channel that moves.
-    /// Next: measure the residual with the framesync phase and the FAC decisions over time.
-    #[test]
-    #[ignore = "live capture: MER -1.4 dB against the reference's 17.8 dB (see the comment)"]
+    #[ignore = "original live capture /tmp/live30.f32 required"]
     fn estimates_the_live_capture_near_the_reference() {
         let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return; // a fresh capture is a bonus, never a fixture
-        }
+        assert!(std::path::Path::new(path).exists(), "original live capture required: {path}");
         let iq = resample_to_core(path, 48_828.125);
         let (mer, freq_int, time_int) = run(&iq);
         eprintln!("[chanest/live] lattice: freq_int={freq_int} time_int={time_int} FAC MER={mer:?}");
@@ -1983,80 +1657,12 @@ mod tests {
         assert!(mer > 12.0, "live FAC MER {mer:.1} dB is below the reference's 17.8 dB band");
     }
 
-
-    /// Diagnostic: close the timing loop — feed the tracker's `timing_adjust` back into the
-    /// TimeSync's window positions on a second pass — and see whether the live MER moves. Result:
-    /// −10.4 dB (the open loop reads −8.6), so the simple timing loop is not the deficit; the
-    /// remaining gap to the reference's 17.8 dB is the time-Wiener (Doppler-adapted) time
-    /// interpolation, which this port still replaces with a fixed linear interpolation.
-    #[test]
-    #[ignore = "live timing-loop diagnostic; run with --ignored --nocapture"]
-    fn live_capture_with_closed_timing_loop() {
-        use crate::digital::drm::sync::timesync::TimeSync;
-        use crate::digital::drm::ofdm::OfdmDemod;
-        let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
-        let base = resample_to_core(path, 48_828.125);
-        // Coarse + fine exactly as `run` does.
-        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
-        for v in &base { flat.push(v.re); flat.push(v.im); }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
-        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
-        let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
-        nco.process(&mut corrected);
-        let (rows, syms, _) = rows_and_syms(&map, &corrected);
-        let mut fine = 0.0;
-        if let Some(f) = crate::digital::drm::sync::finefreq::estimate_residual_hz(&map, &rows, &syms) {
-            fine = f;
-            let mut nco2 = crate::digital::drm::sync::nco::Nco::new(f, 48_000.0);
-            nco2.process(&mut corrected);
-        }
-        let (rows, _syms, _) = rows_and_syms(&map, &corrected);
-        let phase = crate::digital::drm::framesync::FrameSync::new(&map).search(&rows).phase;
-        let spf = RobustnessMode::B.symbols_per_frame();
-        eprintln!("[closeloop] coarse {coarse:.1} fine {fine:+.2} phase {phase}");
-
-        // Second pass, interleaved: demodulate, feed the estimator, feed timing_adjust back.
-        let mut ts = TimeSync::new(RobustnessMode::B);
-        let mut demod = OfdmDemod::new(&map);
-        let mut est = ChanEst::new(&map);
-        let mut cells = Vec::new();
-        let mut mer = None;
-        let mut n = 0usize;
-        for block in corrected.chunks(3248) {
-            let _ = ts.push(block);
-            while let Some(w) = ts.next_window() {
-                if w.guard_corr.unwrap_or(0.0) < 0.5 { continue; }
-                demod.demodulate(&w.samples, &mut cells);
-                let sym = (n % spf + phase) % spf;
-                if n == 45 { est.start_time_wiener_tracking(); }
-                if n == 300 { est.start_timing_tracking(); }
-                if est.process(&cells, sym, w.shift, &map).is_some() {
-                    let ta = est.last_track.timing_adjust;
-                    let sro = est.last_track.sro_delta_hz;
-                    if ta != 0 { ts.adjust_timing(ta as f64); }
-                    if sro != 0.0 { ts.adjust_sro(sro); }
-                    if n % 90 == 0 {
-                        eprintln!("[closeloop] n={n} ta={ta} sro={sro:+.3} pds_off={:.1} pds_len={:.1} mer={:?}", est.last_track.pds_offset, est.last_track.pds_len, est.stats().fac_mer_db);
-                    }
-                    if let Some(m) = est.stats().fac_mer_db { mer = Some(m); }
-                }
-                n += 1;
-            }
-        }
-        eprintln!("[closeloop] MER {mer:?} after {n} symbols");
-    }
-
 }
 
 /// At a low in-band SNR the estimator must stay above the previous chain's per-symbol linear
 /// equaliser. That equaliser measured **18.8 dB** FAC MER on this impairment while the ported
-/// estimator reaches **20.2 dB** (`docs/en/DRM_HANDOFF.md`, task-4), so the documented previous
-/// value is the bar: the earlier comparison can no longer be re-run now that the previous
+/// estimator reached **20.2 dB** in the original comparison. The previous value remains
+/// the regression bar: the earlier comparison can no longer be re-run now that the previous
 /// receiver is deleted, but the bar it set is what the regression checks.
 #[cfg(test)]
 mod low_snr_tests {
@@ -2144,8 +1750,8 @@ mod low_snr_tests {
 /// The "fading" acceptance item: a single echo one millisecond behind the direct path — the
 /// delay spread the reference measures on the bench capture, whose coherence bandwidth (~160 Hz)
 /// is narrower than the scattered pilots' 281 Hz lattice spacing. The previous equaliser measured
-/// **10.9 dB** FAC MER under it while the ported estimator reaches **14.9 dB**
-/// (`docs/en/DRM_HANDOFF.md`, task-4).
+/// **10.9 dB** FAC MER under it; the ported estimator measured **14.9 dB** in that
+/// original comparison. The unchanged 10.9 dB baseline remains the regression bar.
 #[cfg(test)]
 mod fading_tests {
     use super::*;

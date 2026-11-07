@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn acquires_the_committed_live_fixture_at_the_documented_offset() {
-        // The committed bench capture is the regression base: `docs/en/DRM_BENCH.md` and the
+        // The committed bench capture is the regression base: `docs/en/reference/DRM.md` and the
         // receiver's own comments record its carrier at +121 Hz (2.58 carrier spacings of
         // 46.875 Hz). Acquisition measures the DC carrier, so allow one carrier.
         let iq = to_core_rate(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/drm/drm_live_modeB_so3_48828.f32"), 48_828.125);

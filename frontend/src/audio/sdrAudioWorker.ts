@@ -1,7 +1,7 @@
 import { AUDIO_QUEUE_SECONDS } from '../sdr/streamLimits';
 // One worker owns one backend audio subscription and its playback port.
 import { StreamingFloatResampler } from './sdrResampler';
-import { StreamRetry } from '../sdr/streamRetry';
+import { receiverEndReason, StreamRetry } from '../sdr/streamRetry';
 
 interface Fraction { num: bigint; den: bigint }
 interface Identity {
@@ -38,7 +38,6 @@ let sentFrames = 0;
 let sinkLimit = 0;
 const resampler = new StreamingFloatResampler();
 let packets = 0;
-let rms = 0;
 function post(message: Record<string, unknown>, transfer: Transferable[] = []): void {
   // DOM declares the Window overload; workers accept a transfer list as the second argument.
   const scope = self as unknown as { postMessage: (m: unknown, t: Transferable[]) => void };
@@ -74,6 +73,7 @@ function flush(): void {
   sentFrames = 0;
   sinkLimit = 0;
   generation++;
+  post({ type: 'meter-reset', generation });
   output({ type: 'reset', generation, playbackMode, stereo: identity?.channels === 2 });
 }
 function fail(reason: string): void {
@@ -100,6 +100,10 @@ function disconnected(delay: number): void {
   retry = setTimeout(() => { retry = null; connect(); }, delay);
 }
 function acceptStatus(data: Record<string, unknown>): void {
+  if (data.type === 'meter') {
+    if (data.generation === generation && identity) post(data);
+    return;
+  }
   if (data.type === 'credit') {
     if (data.generation === generation && typeof data.limit === 'number' && Number.isSafeInteger(data.limit) && data.limit >= 0) {
       sinkLimit = data.limit;
@@ -114,7 +118,7 @@ function acceptStatus(data: Record<string, unknown>): void {
     fail(String(data.message || 'Audio playback consumer failed'));
   } else if ((data.type === 'status' || data.type === 'gate-transition') && data.generation === generation && identity) {
     const channels = identity.channels;
-    post({ ...data, type: 'stats', frames: packets, rms, bufferedSamples: Number(data.available) / channels,
+    post({ ...data, type: 'stats', frames: packets, bufferedSamples: Number(data.available) / channels,
       streamKey: `${identity.epoch}:${identity.channel}`, inputIndex: (previousSource.num / previousSource.den).toString(), audioIndex: audioIndex.toString(),
       totalDelayUnknown: Boolean(identity.flags & 0x10000), causalPresentation: Boolean(identity.flags & 0x20000) });
   }
@@ -218,12 +222,10 @@ function receive(buffer: ArrayBuffer): void {
     throw new Error('AUD2 source or audio index discontinuity');
   }
   const samples = new Float32Array(frames * next.channels);
-  let sum = 0;
   for (let i = 0; i < samples.length; i++) {
     const sample = view.getFloat32(96 + i * 4, true);
     if (!Number.isFinite(sample)) throw new Error('Non-finite AUD2 PCM sample');
     samples[i] = sample;
-    sum += sample * sample;
   }
   sequence = seq;
   recovery.progress();
@@ -231,12 +233,11 @@ function receive(buffer: ArrayBuffer): void {
   previousSource = position;
   source = fraction(position.num * sourceStep.den + BigInt(frames) * sourceStep.num * position.den, position.den * sourceStep.den);
   identity = next;
-  rms = Math.sqrt(sum / samples.length);
   packets++;
   if (enabled && !muted && !modeBoundaryPending) {
     deliver(resampler.process(samples, next.channels, next.rate, targetRate), next.channels);
   }
-  if (packets % 25 === 0) post({ type: 'stats', frames: packets, rms, totalDelayUnknown: Boolean(next.flags & 0x10000),
+  if (packets % 25 === 0) post({ type: 'stats', frames: packets, totalDelayUnknown: Boolean(next.flags & 0x10000),
     causalPresentation: causal, delaySeconds: next.delay, inputIndex: inputIndex.toString(), audioIndex: index.toString() });
 }
 function connect(): void {
@@ -259,6 +260,14 @@ function connect(): void {
   current.onclose = (event) => {
     if (socket !== current) return;
     socket = null;
+    const reason = receiverEndReason(event.code, event.reason);
+    if (reason !== null) {
+      cancelRetry(); enabled = false;
+      flush(); identity = null; modeBoundaryPending = false;
+      output({ type: 'enabled', value: false });
+      post({ type: 'ended', reason });
+      return;
+    }
     const delay = reconnect && enabled && !failed ? recovery.delay(event.code, event.reason) : null;
     if (delay !== null) { disconnected(delay); return; }
     fail(event.code === 1011 && event.reason === 'receiver failed'

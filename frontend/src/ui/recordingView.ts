@@ -4,10 +4,13 @@ import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { downloadResult } from './receiverExport';
 import { mountRecordingDemod } from './recordingDemod';
 import { mountRecordingDelete } from './recordingDelete';
+import { readRecordingResponse } from './recordingResponse';
 import type { WorkbenchSession } from './workbenchSession';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const MAX_SAMPLES = 1_048_576n;
+// 8 MiB CF32 + 4 MiB source metadata + tar headers/padding.
+const MAX_RANGE_ARCHIVE = 16 * 1024 * 1024;
 
 /** Offsets are relative to one recorded segment, never JS approximations of source u64s. */
 export function recordingRange(total: string, start: string, count: string, limit = MAX_SAMPLES): URLSearchParams {
@@ -144,11 +147,12 @@ export function mountRecordingView(options: { session?: WorkbenchSession; demodu
         get('[data-status]').textContent = l('Reading and verifying…', '正在读取并校验…');
         try {
           if (download) {
-            const response = await request('sigmf'), blob = await response.blob(); if (disposed) return;
+            const response = await request('sigmf'), bytes = await readRecordingResponse(response, 1024, MAX_RANGE_ARCHIVE); if (disposed) return;
+            const blob = new Blob([bytes], { type: 'application/x-tar' });
             downloadResult(body.ownerDocument, blob, `${task.task_id}-${segmentSelect.value}-${start.value}-${count.value}.sigmf`);
           } else {
-            clear(); const response = await request('cf32'), bytes = await response.arrayBuffer(); if (disposed) return;
-            if (bytes.byteLength !== Number(count.value) * 8 || bytes.byteLength > Number(MAX_SAMPLES) * 8) throw new Error(l('Unexpected IQ range size', 'IQ 范围大小不符'));
+            clear(); const expectedBytes = Number(count.value) * 8;
+            const response = await request('cf32'), bytes = await readRecordingResponse(response, expectedBytes, expectedBytes); if (disposed) return;
             samples = new DataView(bytes); loadedStart = start.value; loadedRate = segments[Number(segmentSelect.value)].actual_rate_hz!;
             position.max = String(bytes.byteLength / 8 - 1); position.disabled = false; play.disabled = false;
             get('[data-info]').textContent = `${loadedRate} S/s · ${count.value} samples · ${(Number(count.value) / loadedRate).toFixed(3)} s`;

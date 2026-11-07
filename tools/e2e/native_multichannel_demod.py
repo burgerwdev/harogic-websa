@@ -28,7 +28,7 @@ import numpy as np
 from native_multichannel import api
 from native_multichannel_processing import assert_receivers_continue, setup
 from native_multichannel_recording import finish, read_archive, start, task, until
-from native_multichannel_stream_export import get
+from native_multichannel_stream_export import get, read_http_head
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, start_service, stop
 from scipy.io import wavfile
@@ -116,18 +116,14 @@ def pressure_gate(origin, saved, offset_hz=None):
     # Do not repeatedly queue large DSP jobs while the previous body is draining.
     time.sleep(0.2)
     until(released)
-    stalled = socket.socket(); stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-    stalled.connect((host.hostname, host.port))
-    stalled.settimeout(30)
-    stalled.sendall(f'GET {path} HTTP/1.1\r\nHost: {host.netloc}\r\nConnection: close\r\n\r\n'.encode())
-    head = b''
-    while not head.endswith(b'\r\n\r\n'):
-        head += stalled.recv(1)
-    assert b'200 OK' in head, head
-    # A real TCP consumer stops reading; bounded producer timeout releases its work.
-    time.sleep(2.3)
-    get(origin, url(saved, count=100, offset_hz=offset_hz), 429).close()
-    stalled.close()
+    with socket.socket() as stalled:
+        stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024); stalled.settimeout(30)
+        stalled.connect((host.hostname, host.port))
+        stalled.sendall(f'GET {path} HTTP/1.1\r\nHost: {host.netloc}\r\nConnection: close\r\n\r\n'.encode())
+        head = read_http_head(stalled); assert b'200 OK' in head, head
+        # A real TCP consumer stops reading; bounded producer timeout releases its work.
+        time.sleep(2.3)
+        get(origin, url(saved, count=100, offset_hz=offset_hz), 429).close()
     until(released)
     return {'cancelled_http_releases_lease': True, 'concurrent_status': 429, 'tcp_stall_releases_lease': True}
 
@@ -184,13 +180,9 @@ def browser_gate(origin, saved, raw, out, frequency=731, bandwidth=1500, tuning_
         page.goto(origin); wait_ui_ready(page, 'sdr')
         page.locator('[data-action=sdr-workbench]').click()
         overview = page.locator('[data-view-id=overview-follow]')
-        overview.locator('[data-action=tab-recording]').click()
-        # Recovered/old UID tasks are reachable through the history disclosure.
-        if any(r['receiver_uid'] == saved['receiver_uid'] for r in api(origin)['receivers']):
-            overview.locator(f'.mc-row[data-uid="{saved["receiver_uid"]}"] [data-action=select]').click()
-        else:
-            overview.locator('[data-section=recording-history] summary').click()
-        overview.locator('[data-action=archive][data-archive-task="' + saved['task_id'] + '"]').click(delay=1100)
+        # Saved files retain the original UID; the Files library includes retired owners.
+        overview.locator('.mc-workspace-actions [data-action=recording-files]').click()
+        page.locator('[data-view-id=recording-library] [data-action=archive][data-archive-task="' + saved['task_id'] + '"]').click(delay=1100)
         view = page.locator('[data-view-id=iq-recording]')
         view.locator('[name=start]').fill('137'); view.locator('[name=count]').fill('20000')
         view.locator('[data-file-demod] summary').click()

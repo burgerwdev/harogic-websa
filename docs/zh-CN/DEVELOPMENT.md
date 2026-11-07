@@ -1,369 +1,140 @@
 # 开发指南
 
-信道容量由 `contracts/service-capacity.json` 统一定义，浏览器模拟环境直接导入，`backend/build.rs` 为 Rust 生成常量；`receiver_limits.rs` 重新导出，录制共享池由同一信道上限派生。原生浏览器读取服务能力。容量变更须通过准入、名额与 schema 测试；接口 schema、槽位准入、执行线程／订阅游标数和聚合快照预算均从它派生。浏览器与工具读取服务能力或公布的信道表。旧 AUX/DDC 命令有意仅保留 2／3 槽，不能当作通用信道上限。`contracts/stream-limits.json` 是 Rust／浏览器共用的 SDE2 大小与 ACK 额度契约：Cargo 生成 Rust 常量，Vite 直接导入 JSON。源码分发须包含此文件，`make build` 无需额外生成步骤。后台处理恢复策略归属 `reception_recovery.rs`，浏览器订阅重试／缓冲策略归属 `frontend/src/sdr/streamLimits.ts`；录制名额、DSP 队列预算及 AudioWorklet 延迟目标分别独立设限。容量回归覆盖最后一个合法槽、全部信道图像快照交付与交错解码游标。
+[文档目录](INDEX.md) · [架构](ARCHITECTURE.md)
 
-信道工作台主悬浮窗底部工具栏提供可记忆的默认音频录制格式下拉菜单，初始为 Opus。WAV／FLAC／Opus 均在录制时编码，每个任务固定使用启动时选择的格式，下载原样复制已保存文件。WAV 保留原始 Float32，FLAC 无损保存量化后的 24 位 PCM，Opus 使用体积较小的有损编码。Opus 需服务器安装含 `libopus` 的 FFmpeg。仅旧版日志录制保留下载时转换格式。顶部“结果窗口”旁的“录制文件”统一管理全部信道，提供搜索、类型／状态筛选、试听／下载、重命名及单项／批量确认删除；全选仅包含当前筛选列表中已结束的录制，大小按 B／KB／MB／GB／TB 友好显示。旧服务的删除入口会说明需更新服务。门禁：构建前后端后执行 `python tools/e2e/native_audio_formats.py --artifacts /tmp/websa-audio-formats`，验证实际编码、录制期间生成文件、下载字节一致、有界试听、重启历史、浏览器设置记忆及 Preset 重置。
+## 源码构建
 
-工作台界面回归：在 `frontend` 启动 `npm run dev:workbench`，再执行 `python tools/e2e/workbench_polish.py --artifacts /tmp/websa-workbench-polish`。使用模拟原生快照验证 1 Hz 格式、当前频点历史、带单位频率／信道名搜索、模式设置、预设、深浅主题、中英文、420px 布局与弹出／停靠，不发送设备命令。
+要求 Linux、Rust ≥1.95、C++17 编译器、pkg-config 和 FDK AAC ≥2.0.3。
+前端使用已提交的 npm lockfile，以及测试栈支持的 Node（22.22+、24.15+ 或 ≥26）。
+基础 Python 工具要求 ≥3.10；完整开发环境和下述锁定依赖安装使用 Python ≥3.12（CI 为 3.12／3.13）。
+测试和浏览器台架使用较新的异步接口，不能把基础工具的最低版本当作测试环境要求。
+硬件另需专有 SDK；Soapy 和外部解码器可选。参见本页[依赖与许可](#依赖与许可)。
 
-实收准备可运行 `python tools/bench/sdr_capture_observe.py --origin http://127.0.0.1:8080 --expect-service-id <当前服务ID> --seconds 300 --artifacts <新目录>`，先 GET `/api/sdr/receivers` 核对身份。工具只发 GET，拒绝服务身份变化与已有证据目录，保存源时钟／样本推进／告警／录制／负载，不打开 WebSocket 或启动采集；须另有已授权的浏览器／录制消费者。报告仅为观察证据，连接正常或计数前进均不单独证明 RF 接收或物理听感。
-
-设备窗口前完成新版 release 构建；既有进程在明确重启前仍运行旧二进制。替换硬件进程前确认目标实例、N90 占用释放与 RF 来源，另一端口不能隔离同一设备。先恢复一个真实信号，连续观察至少五分钟，检查频谱／调谐、实际输入率、源 epoch／位置及实际听感；逐路增加至八路，完整通带和过渡带须位于同一真实采集范围，再组合 IQ／发布音频／结果录制观察五分钟。停止后独立读取文件，核对 UID／实际率／源边界和接纳／落盘字节。无真实协议源或未试听的项目准确标记未验。合成 `native_multichannel*.py` 会创建／重配自己的服务，不得指向既有硬件实例。
-
-
-结束的音频任务在 `audio_archive_read` 可用时提供**音频试听**。选择源片段和样本帧起点／长度，载入后使用原生播放／定位／音量控件，也可下载同份 Float32 WAV 与来源快照。立体声一帧包括两个声道；最多 1,048,576 帧／60 秒。WAV 录制和旧版日志保留原始 Float32 样本；已保存的 FLAC／Opus 通过 FFmpeg 试听，并声明量化、损失及重采样。实时监听控件独立；隐藏或编辑会释放文件播放。校验器在载入前扫描完整任务，但不会累积全部样本。`native_audio_formats.py` 覆盖直接录制，录制单元测试保留旧版日志试听及恢复检查。连续长文件及数字文件解码仍单独推进。
-
-文件调谐：展开“文件重新解调”，输入相对原中心的“频偏 / Hz”，选择模式／滤波后生成音频；频率读数为原中心加频偏，整个边带须由原IQ保留。`python tools/e2e/native_multichannel_tuning.py --artifacts /tmp/websa-file-tuning --sigmf-python /path/to/sigmf-venv/bin/python` 验证四种模式正负分数频偏、双卷相位连续、官方SigMF读取器核对原精确时钟、WAV音调、频带边界、取消／背压及真实420px试听／下载。微小非零频偏和分块无关性另有原生回归。旧服务隐藏频偏控件。
-
-已录 IQ → 波形回放／SigMF → 文件重新解调，可将选区按 AM、USB、LSB 或 NFM 生成音频，用原生音频控件试听，并下载同份 Float32 WAV 与精确 IQ 来源。选择最多60秒及已录通带内的滤波带宽；USB／LSB为单边带宽。48 kHz单声道结果使用从零开始的原生滤波器，关闭AGC／降噪／静噪，原文件与实时接收独立。门禁：`python tools/e2e/native_multichannel_demod.py --artifacts /tmp/websa-file-demod`；使用独立CRC／WBIQ及SciPy WAV读取器、非整数IQ率的合成已知音调、原生实际AM记录、真实鼠标／键盘媒体操作、420px Pop out／Dock及实时录制隔离。执行前构建前后端。本模拟模式切片不包含数字文件解码或连续长文件播放。
-
-录制开始前选择 **FLAC**，即可按实际采样率保存量化后的有符号 24 位 PCM；下载直接复制已完成的 `.flac` 文件及定标／饱和计数元数据。纯 Rust `flacenc` 编码无需外部运行时程序，已保存文件试听使用 FFmpeg。旧版 Float32 日志在 `audio_flac_export` 可用时仍提供 FLAC 导出。源语义和转换规则见 [API](API.md)。
-
-已发布音频持续录制：工作台 → 录制 →“录制音频”，停止后“下载音频”。后端将实际 AUD2 PCM 编码为所选格式，浏览器退出后继续；按实际音频输出能力开放，包含数字模式伴随音频。下载包保留已保存音频片段及逐帧时钟／原头／配置，浏览器音量、声像和总静音不改变文件。`recording_audio_files.rs` 负责直接音频文件及恢复，`recording_audio.rs` 保留旧版 CRC／Zstd 日志支持；`receiver_workers.rs` 将实际包配置随 PCM 传到发布点，避免迟到旧帧串用新设置。源／配置变化或约 60 秒文件边界会完成当前片段，中断恢复保留已完成文件。完整限额与语义见 [API](API.md)。旧有 `native_multichannel_audio.py`、`native_multichannel_audio_playback.py`、`native_multichannel_flac.py`、`native_recording_library.py` 及导入其日志读取器的工作流假定旧版存储，迁移后才能作为当前格式门禁。
-
-持续结果录制：信道工作台 → 录制，对实际具有文字／表格／图像／状态输出的处理器使用“录制结果”。同一 UID 的 IQ 与结果可各自独立录制。停止后“下载结果”流式下载包含任务信息和原发布事件 JSONL 的 tar，保存增量图像像素；从录制启动开始保存，已在接收中的图像可能只有部分。浏览器退出后仍继续。门禁：`python tools/e2e/native_multichannel_results.py --artifacts /tmp/websa-results`，验证实际 FT8／SSTV 回放、独立 CRC／Zstd 与 JSONL／tar 读取、420px 浏览器真实操作／下载及 SIGKILL 恢复。不是硬件 RF 或后端音频录制验收。
-
-本指南覆盖原生 Rust 服务、共享 DSP、浏览器控制界面和开发工具。
-组件边界见[架构](ARCHITECTURE.md)，通信协议见 [API](API.md)。
-
-单信道预设：信道工作台 → 信号设置 → **频点预设**。保存服务器已确认的频点、IQ、处理设置及连续性策略，选择已保存项后预览并确认载入；同名替换和删除需确认。草稿、启停、监听与录制任务不写入预设。预设跨浏览器及服务重启保留，但重启不会自动应用。门禁：`python tools/e2e/native_multichannel_presets.py --artifacts /tmp/websa-presets`，验证持久保存、冲突／过期预览拒绝、原生录制隔离及420px Pop out／Dock。存储协议见 [API](API.md)。多路原子场景仍未交付。
-
-模式记忆：各信道按模式（含仅 IQ）恢复最近确认的 IQ 通带／过渡带／最低率、解调带宽、共享 PCM 增益、AGC 和静噪。首次使用某模式采用其音频默认值。恢复只更新表单，保留频率／名称／接收启停，仍需检查并显式应用；不记忆草稿或被拒绝的变更。同一标签页刷新后仍保留，其工作台窗口与 Pop out／Dock 共用记忆；删除 UID、更换服务代次或 Preset 成功恢复默认时清除。这不是服务器持久化或跨标签页同步。预览后编辑表单会移除旧应用按钮，需重新检查。
-
-默认音频录制格式、扬声器总音量及监听规则保存在本地存储，刷新和浏览器／服务重启后恢复。顶部 Preset 成功后恢复 Opus、70% 总音量及手动混听，清除模式记忆和工作台未应用草稿，并重置瀑布图映射、测量偏好及峰值数量（20）。当前扬声器开关保持不变。被拒绝或不相关的命令回执不会重置设置。
-
-多路频点须同时落入共享采集，完整通带和过渡带也须留在范围内。工作台的越界拒绝／预览会显示当前采集范围和该信道所需范围，指引先在主 SDR 面板调整共享中心或采集带宽，再重试；重试本身不会扩大采集。例如101.7MHz中心、3.125MHz采集仅覆盖100.1375–103.2625MHz，无法接收105MHz FM；显式将共享中心设为103.35MHz、可用带宽设为6.25MHz后可覆盖这两个频点。共享采集变更影响全部信道，主面板的中心输入还会调谐C1；只调整共享窗口时使用省略`listen`的`SET_SDR`，并核对各UID频率。
-
-三路日常工作流门禁：`python tools/e2e/native_multichannel_workflow.py --artifacts /tmp/websa-daily-workflow`。组合 AM 音频录制、FT8 结果录制、健康 IQ 录制、本地监听、确认模式记忆／刷新、预设复用、启停、复制与窗口／页面关闭，再用独立 CRC／Zstd 与 WAV 读取器验证实际文件。来源为合成／回放；RF、物理音频和长期运行仍须另验。
-
-
-八路验收将构建、浏览器与持续实收分开进行。同一采集提供八个定义；停用保留名额，删除释放名额，编号复用产生新逻辑身份。选台、本地监听与后端录制相互独立。浏览器解码历史每路至多二百项／二十四兆字节，全局至多一百二十八兆字节。复数样本、发布音频和结果共用十六个录制名额，同一路三种内容占三个名额。
-
-每次在持久存储中选择新证据目录，并将 `TMPDIR` 指向该目录或磁盘缓存。清理旧测试数据前核对活动进程引用，尤其避免内存盘 `/tmp` 积累。保留上文原三路回归入口。下列实机门禁要求录制空闲及已保存的单路原始配置，每次重新核对当前服务身份，退出恢复进入时设备及信号源配置。`--known-source` 要求配置好的 Pluto 台架源；合成门禁不能证明真实射频内容或吞吐。
-
-```sh
-export TMPDIR="$HOME/.cache/harogic-websa/test-tmp"
-mkdir -p "$TMPDIR" "$HOME/.cache/harogic-websa/eight-channel"
-# 在实机阶段前构建，保留用户原安装适配库。
-make sdk-shim SDK_SHIM="$HOME/.cache/harogic-websa/eight-channel/libwebsa_san90_sdk_session.so"
-export WEBSA_RUST_IQS_SHIM="$HOME/.cache/harogic-websa/eight-channel/libwebsa_san90_sdk_session.so"
-# 每次调用重新读取当前身份，并使用新的证据目录。
-python tools/bench/eight_channel_workflow.py --expect-service-id <current-service-id> --gate controls --artifacts <new-controls-directory>
-python tools/bench/eight_channel_workflow.py --expect-service-id <current-service-id> --gate mixed-ui --artifacts <new-browser-directory>
-python tools/bench/eight_channel_recording.py --hardware --known-source --profile mixed --seconds 1800 --record-seconds 600 --skip-browser --gain -10 --lo-correction -100 --expect-service-id <current-service-id> --artifacts <new-mixed-directory>
-python tools/bench/eight_channel_recording.py --hardware --known-source --profile analog --consume-streams --seconds 1800 --record-seconds 600 --skip-browser --gain -10 --lo-correction -100 --expect-service-id <current-service-id> --artifacts <new-ordinary-directory>
+```bash
+make native                     # release Rust 服务，单构建任务
+make frontend                   # 类型检查及 Vite 构建，不构建 WASM
+make sdk-shim SDK_ROOT=/opt/htraapi
+./run.sh                        # 或 ./run.sh --fake
 ```
 
-两组持续场景均要求五十兆赫可用采集窗口、每秒六千二百五十万个实际输入样本及每相十六抽头。两组射频源均保留进入时的采样时钟及滤波器，默认使用原有四缓冲发送接口；混合组合周期保存在磁盘，退出删除该临时周期。两组台架均先用上下边带导频测量共同射频频偏，要求跨一分钟的三次观测相差不超过两赫兹后再校准；有界预热不计入验收时长，持续漂移会明确失败。正式计时前必须收到正确数字文本，运行中持续检查文本到达。普通场景验证八路调幅／窄带调频／上下边带音频；混合场景验证六路模拟信号、已知数字文本和第八路仅样本接收。每组八个共享录制任务至少运行十分钟，全部订阅流持续三十分钟，分别保留网络顺序、精确源时钟、文件校验与压缩、强制终止前缀、五分钟资源窗口及配置恢复证据。控制门禁还逐一检查原十二个采集档位的合法八路几何与越界拒绝。重处理组合为独立短时准入及运行观察，不能据此宣称八路宽带或神经模式可持续运行。无头浏览器证明实际音频播放数据，物理扬声器听感另行记录。仅模拟组合可选 `--cyclic-source`，用已有短硬件周期避免主机持续发送开销；其IQ8频率参考调整发射源硬件LO，不承诺源的相位连续。流式源仍使用连续相位修正，并在参考更新之间复用相位斜坡。两种方式均记录修正，保留相同射频音调及接收连续性检查。
+重构建分别执行，不使用无限制 `make -j`。以下 Rust 命令采用一个构建任务和一个测试线程，
+前端 Vitest 限两个 worker。Python 工具使用虚拟环境：
 
-两组持续台架均从第八路实际复数样本测量参考频率：混合场景使用已知的正两千赫兹导频，普通场景使用已知的负一千八百赫兹下边带音调。在发射波形上施加相位连续的共同频率补偿；保留设备时钟和调制内容，每次调整保存到 `source-frequency-lock.jsonl`。这一发射端闭环只使用导频频率，不使用解码结果；接收路径保持原始样本，并继续独立检查射频音调、稳定性及正确数字文本。
-
-原生接收滤波器在支持向量指令的处理器上并行计算四个输出，保留每个输出原有的双精度乘加顺序、系数和跨块尾部；其他平台沿用标量路径。`ddc::fir::tests::parallel_outputs_match_scalar_bits_across_short_and_long_blocks` 验证不同长度滤波器及短、长块与独立标量卷积的位模式相同。局部滤波基准只用于定位与比较，不能代替全带宽持续实收。
-
-粗信道化的重叠历史任务复用各工作线程的滤波器与 FFT 工作区，每包仅携带必要的原始历史样本；串行参考策略仍保存完整状态。各工作线程使用独立有界输入，按包序轮流投递，避免加锁接收端的额外唤醒；每个已有 PFB 工作线程允许一个在途作业，结果继续按源序交付。`pfb_pool::tests::reused_worker_history_matches_serial_bits_at_partial_boundaries` 在不同采样率、抽头数及部分块边界上比较连续串行处理的逐样本位模式。混合界面门禁在浏览器启动前关闭预热订阅，避免重复消费；操作重叠窗口时用真实关闭按钮隐藏总览，并检查监听继续。
-
-全速硬件采集且没有原始 IQ 直接路由时，每个 PFB/fine 作业合并四个物理包，减少跨线程交接，保留每秒六千二百五十万个输入样本及每相十六抽头。`sixteen_channel_tests::full_band_four_packet_batches_match_individual_packets_through_retune` 在十六路及中途重调下，与逐包处理比较全部输出字节，包括时钟和序号。其他采集率、直接路由及模拟源仍逐包处理。USB 交接上限保持原值；短基准不能证明持续实收通过。
-
-历史 RF 验收仅适用于证据中的二进制和宿主条件。2026年11月6日 fine 独立执行与发布队列变更必须保存新 RF 证据，不能沿用旧通过标记，也不能通过调整无关桌面进程或亲和性制造通过。`tools/bench/channelizer_scaling.py` 显式选择原版／候选版，对比八路与三十二路内部信道化。它验证原始输入夹具的 PFB／fine／IQ 吞吐，不代表产品容量、解调或 RF 验收。fine／framer 墙钟汇总现在包含并行执行者，判断串行瓶颈须查看逐路与逐线程测量。
-
-服务支持十六个接收定义；录制独立限制为八个任务。十六路门禁覆盖 C16 准入、C17 拒绝、独立接收线程、所有采集档位、已知原始 ADC 音调、源时钟，以及 C16 重调时其余十五路保持不变。历史八路射频结果不代表十六路持续射频容量。
-
-使用 `python tools/bench/eight_channel_bench.py --channels 16 --seconds 30 --warmup 5 --artifacts <新的磁盘目录>` 运行全带宽模拟基准。它生成十六路 AM/NFM/USB/LSB 载波，检查 IQ/PCM 时钟及已知音频音调，不保存原始 IQ 或音频。在内存受限宿主上，Rust 门禁使用 `-j 1` 和 `--test-threads=1`，前端测试使用 `--maxWorkers=1`；编译与基准分开执行。保留小型验证报告后清理基准临时适配库和资源日志。模拟结果不能替代硬件接收验证。
-
-[2026-11-06 模拟验证报告](../validation/sdr16-2026-11-06.json) 记录了全带宽十六路三十秒通过、浏览器十六路播放及回归结果；它不构成硬件射频验收。
-
-## 1. 环境、构建与运行
-
-服务使用原生 Rust PFB/DDC；Python 与保留的浏览器 WASM 产物仅用于离线工具和可选诊断，
-不承载生产后端。运行仓库随附产物使用 `./run.sh` 或 `./run.sh --fake`，依赖见
-[发布运行要求](../../README.zh-CN.md#运行随附发布产物)。随附内容为
-`runtime/linux-x86_64/websad`、本项目 SDK 适配库和 `runtime/frontend/dist/`。
-运行要求为 Linux x86_64、glibc 2.44、GLIBCXX 3.4.30、CXXABI 1.3.15 和动态 FDK AAC
-（`libfdk-aac.so.2`）。硬件还需要用户自行提供 HAROGIC SDK；SDK 及其依赖均不随附。
-较旧发行版或其他架构须重新构建，不承诺跨平台二进制兼容性。
-
-使用 `make build sdk-shim && make package-runtime` 重建并打包发布产物。
-单独运行 `make package-runtime` 只复制并 strip 现有产物，不执行编译。服务、适配库和前端产物必须
-来自同一发布版本。启动脚本优先使用本地重建结果，其次使用仓库随附产物；
-`WEBSA_BIN` 和 `WEBSA_STATIC` 可覆盖相应选择。
-数字模式的合成回放还需要仓库中已跟踪的 `tests/fixtures/`；仅复制 `runtime/` 不包含这些
-fixture。根目录启动脚本设置工作目录；fixture 默认从该目录下的 `tests/fixtures` 读取，
-可通过 `WEBSA_FIXTURES` 覆盖目录。
-
-可选外部接收器通过
-`tools/setup-sdr-decoders.sh --prefix "$HOME/.local/share/websa/decoders"` 独立安装。
-脚本固定并校验 multimon-ng、rtl_433 和 OnAir，串行构建前两者，保留源码与许可证，
-不更改系统软件包或运行中的服务。启动自己的 WebSA 实例前加载生成的 `env.sh`，其中导出
-`WEBSA_MULTIMON_PATH`、`WEBSA_RTL433_PATH` 和 `WEBSA_ONAIR_SERVER`。
-提供者探测结果在服务生命周期内缓存；更改依赖后须重启该实例。
-主 runtime 包不包含这些 GPL 工具。OnAir portable 仅限 Linux x86_64；脚本在二进制
-许可证说明旁记录对应源码 URL 与校验和。
-验证 fixture 时，将规范化的交错 f32le IQ 放在
-`$WEBSA_FIXTURES/external/<mode>.f32`，采样率须等于模式目录声明的精确输入速率。
-缺少文件时拒绝配置。FT4/WSPR 需要与 UTC 对齐的实时输入，拒绝无时间对齐信息的文件及循环
-fixture 回放；仅按实时速率播放录音不能证明时隙对齐。
-
-GPS L1 C/A 的独立 GNSS-SDR 进程通过 `tools/setup-gnss-decoder.sh` 安装；原生 Rust 桥接器
-通过 `cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websa-gnss` 构建，
-将其安装到解码器前缀的 `bin` 目录后加载 `gnss-env.sh`。安装脚本支持 `--dependency-prefix`
-指定本地依赖开发文件，支持 `--python` 指定仅用于构建的 Python/Mako 虚拟环境；生产桥接器
-不依赖 Python。输入是 SDR IQ，不是设备 SDK 内置 GNSS 状态。参见
-[GPS 安装和真实录音来源](../../tools/README.md#gps-l1-ca-from-sdr-iq)。
-
-GPS 在适配前要求至少 2.6 MSps，提供者 FIFO 输入则为精确 4 MSps；居中的
-3.90625 MSps 采集可在保留配置带宽和滤波过渡带的前提下适配。CTTC 真实录音回放
-已经验证。435 MHz Pluto/SAN-90 冷启动台架以 gain −30 dB、3.90625 MSps 采集，
-在 63.41 秒后得到四颗卫星支持的有效 PVT，与合成目标的水平误差为 3.653 m，
-未报告接收器错误。该结果验证了所测试的 GPS 频移台架路径；被动天空接收仍未验证。
-正常与反向 RTTY
-均已由独立 OnAir 伴随程序实现：运行 `tools/setup-rtty-decoder.sh` 后重启服务，
-默认解码器目录会被自动发现；自定义 `--prefix` 需加载其 `rtty-env.sh` 或设置
-`WEBSA_DECODERS_PREFIX`。两种 45.45 baud/170 Hz 模式均已通过离线 fixture
-和 435 MHz Pluto/SAN-90 台架解出已知文本。参见
-[RTTY 安装与回放](../../tools/README.md#independent-rtty-companion)。
-
-源码重建使用 Linux、Rust stable ≥1.95、C/C++ 工具链、CMake、pkg-config
-和 Node.js 22.22+、24.15+ 或 ≥26（前端测试栈的最低要求；单独 Vite 构建接受 22.12+）。
-Python 3.12 或 3.13 用于测试、fixture 和台架工具，不承载生产后端。原生音频解码在构建时
-需要 FDK AAC ≥2.0.3，运行时需要其动态库；[工作流](../../.github/workflows/ci.yml)记录了
-固定源码版本和安装方法。硬件运行需要用户自行提供厂商 SDK。
-
-在仓库根目录依次执行：
-
-```sh
-python3 -m pip install -r requirements-dev.txt -c requirements-lock.txt
-make frontend
-make native
-./run.sh --fake --port 8099 --instance websad-dev
-./status.sh --instance websad-dev
-./stop.sh --instance websad-dev
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-dev.txt -c requirements-lock.txt
+python -m playwright install chromium
 ```
 
-`make frontend` 调用 `build.sh`，生成 `frontend/dist/`。前端修改后须重新构建，
-服务提供的是构建后的资源。`make build` 构建前端和原生服务；`make wasm` 用于显式构建
-离线 DSP 产物，不是产品前端构建的前置步骤。
+`make wasm` 仅重建可选诊断产物。`make soapy-driver` 将固定版本、应用补丁的驱动构建至用户目录。
+provider／模型安装见[工具指南](../../tools/README.md)。
 
-原生 release profile 使用优化级别 3、16 个 codegen unit 和增量编译，关闭 LTO。
-保留 `backend/target/` 可复用编译缓存。profile 或工具链变更会重建依赖；
-release 二进制和测试 harness 使用不同的 panic 策略。
+## 按职责测试
 
-保持 `make build` 无 warning，并保留编译器和 Vite 的默认诊断。
-CSS 字体路径使用 `frontend/public/` 对应的 `/fonts/`，由 Vite 加上 `/static/dist/`
-基础路径。翻译资源生成独立且立即加载的 `i18n` 分块，使主包低于 Vite 默认大小阈值，
-同时保持语言初始化行为不变。
+| 命令 | 验证职责 |
+|---|---|
+| `./test.sh` | 原生服务契约、Python 工具、Ruff 和前端行为 |
+| `make wasm-test` | 原生共享 DSP 内核测试，不运行浏览器 WASM |
+| `make ci` | 上述测试、样本／版本／文档／架构检查、Soapy 补丁及前端构建 |
+| `make e2e-fake` | 独立模拟服务：浏览器 smoke、状态回归及视口几何 |
+| `make hw-test` | SAN 硬件、tinySA 和浏览器测量检查 |
+| `make bench` | 将运行中服务与已有性能基线比较 |
 
-硬件运行先安装厂商 SDK，再执行 `make sdk-shim` 和 `./run.sh`。
-`SDK_ROOT`、`SDK_SHIM` 配置 shim 构建，`WEBSA_RUST_IQS_SHIM` 选择运行时 shim。
-构建适配库还需要 libusb 开发头文件（Debian/Ubuntu：`libusb-1.0-0-dev`；Arch：`libusb`）。全速连续采集使用独立收包线程的四个总线传输及固定一千零二十四包／六十四兆字节交接（约二百六十六毫秒，覆盖实测约二百三十三毫秒的调度尾部）。收包线程仅处理原始字节，厂商调用仍属于原设备线程，按提交顺序交付，交接满载明确失败。采集消费者取走数据后立即唤醒等待队列空位的设备线程，保留有界队列、控制处理和积压超时。停止或重配置先取消并回收回调，再等待线程退出和释放缓冲。回调完成状态使用同步发布，因为总线库可能在其他事件线程分派回调，见[总线库线程说明](https://libusb.sourceforge.io/api-1.0/libusb_mtasync.html)。其他采样率保持原读取方式。`tests/test_iqs_usb_pipeline.py` 使用模拟回调验证顺序、字节、取消、部分读取和失败，无需厂商库或设备。
-默认实例为 `websad`，地址为 `127.0.0.1:8080`。用 `WEBSA_INSTANCE` 或 `--instance`
-选择实例；status 和 stop 自动读取保存的端点及所有权信息。设备只允许一个进程持有。
-服务与硬件配置见[FAQ 说明](FAQ_NOTES.md)和[工具指南](../../tools/README.md)。
+托管工作流是 `.github/workflows/ci.yml`，另运行专项工作台／录制浏览器检查。
+本地 `make ci` 不表示所有托管或硬件任务都已执行。
+小内存主机串行执行重构建、解码器／降噪测试和性能测量。确认内存余量后，独立轻量浏览器测试可有限并行；
+真实 RF 持续测量独占运行，避免测试负载影响结果。
 
-Pluto 台架统一入口支持 `radiofax` 和 `wefax`，两者使用同一个流式发射脚本。无需硬件时运行 `python3 tools/pluto_tx.py radiofax --dry-run`；发送图片可加 `--image chart.png --ioc 576 --lpm 120`。图片默认按比例调整高度，`--lines` 可指定行数。AM、反相极性、协议头时长、音频偏移、重复与间隔均见该模式的 `--help`。默认 FM 包含 APT、30 秒定相、1500–2300 Hz 图像音调及 APT 停止；180 LPM 需手动配置接收器。完整页面按设备实际接受的采样率分固定块发送，dry-run 只合成短片头。示例见[工具指南](../../tools/README.md)。
+针对单个原生回归：
 
-`tools/pluto_tx.py` 还分派 DTMF/APRS/AIS/FT4/WSPR 和合成 GPS。数字模式与 GPS
-使用共享 `pluto_radio.Radio` 的 `open_stream`、`prime_stream`、`push_chunk`
-和 `drain_stream` 流式 API，队列包含四个缓冲区。GPS 源通过
-`tools/setup-gps-simulator.sh` 安装。共享发射层会在发射前开启被关闭的 TX 本振，
-退出时先销毁发射缓冲，再恢复原本振电源状态。GPS CLI 只允许请求 435 MHz 载波，LO 回读
-与其偏差不得超过 100 Hz。波形生成前先协商实际采样率，要求回读值与请求值相差
-不超过 20 Hz 且能被十整除，随后严格按该实际速率生成。默认 TX 采样率为
-2.6 MSps，与接收提供者的精确 4 MSps 输入分开。GPS gain 默认仍为 −70 dB；
-所选台架值须显式传入 `--gain -30`。发射完成本身不能证明 GPS 射频解码通过。
-合成场景、接收端显式启用方式和连续性限制见
-[发射指南](../../tools/README.md#rf-transmit-and-capture)。
-
-**内存受限主机必须串行、隔离构建。** Rust 构建、Rust 测试和浏览器套件依次运行，
-不要使用并行 Make。Cargo `-j 1` 只限制当前调用，不能限制其他构建或浏览器。
-Rust 测试保留 `--test-threads=1`。使用主机可用的资源控制和明确的内存上限隔离构建与设备进程。
-启动脚本使用脱离终端的后台进程，无需服务管理器。
-
-多信道开发原型通过 `npm --prefix frontend run dev:workbench` 启动，打开
-`http://127.0.0.1:5186/static/dist/workbench.html`。此独立 Vite 页面使用 fixture adapter，
-不连接原生服务、不启动音频或记录文件，生产构建不包含该入口。状态契约与后端离线实验见
-[MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md)。浏览器回归：
-`python tools/e2e/multichannel_workbench.py`（需可用的 Playwright Python 环境）。
-
-原型支持在频谱/瀑布右键选点加入监听，也可点右侧“＋ 监听频点”输入 MHz/kHz/Hz。
-有空位可新建听音信道，满路数时显式选择已有听音信道；预览记录分段影响，服务确认后才开启本地路由。
-同频复用不重新配置接收，当前编辑目标保持不变。该入口仍为 fixture，不产生真实声音。
-
-无硬件原生实验（默认 0.05 秒合成输入；不是容量验收）：
-
-```sh
-cargo run --offline --release -j 1 --manifest-path backend/Cargo.toml --features iq-experiments --bin multichannel_experiment -- /tmp/websa-multichannel-experiment 0.05
+```bash
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib TEST_NAME -- --test-threads=1
 ```
 
-产出 `report.json` 和实验 `.wbiq` 文件，保留 CF32 位模式与实际速率。依赖 Zstd 已在本机缓存时可使用 `--offline`。
+即使输入相似，只要职责不同就应保留：数值正确性、序列化、源时钟、状态转换、消费者取消和真实
+浏览器接线分别捕获不同故障。删除测试前先明确替代覆盖。能够验证可观察行为时，避免源码字符串
+断言。硬件测试和合成 probe 保持独立标签与前置条件。
 
-生产 SDR → **信道工作台** 打开原生接收工作台。构建前端/原生后，可运行 `./run.sh --fake --port 18139 --instance p3-dev` 启动独立合成服务，以 `./stop.sh --instance p3-dev` 仅清理该实例。`python tools/e2e/native_multichannel.py` 自行启动/清理独立服务，验证实际 IQ 协议和窗口生命周期；需要 Playwright 与 websockets。硬件 RF 实收须单独验证。
+浏览器异步条件须等待实际解析结果，并验证持续为假的条件会超时；不能把 Promise 对象本身当成成功。
+依赖额外采集输入的手工用例应显式标为跳过，显式运行但缺少输入时须报错，不能直接返回并计作通过。
 
-P4 监听/解码门禁：`python tools/e2e/native_multichannel_processing.py --artifacts /tmp/websa-p4-processing`。
-脚本拥有独立合成/回放服务，检查实际浏览器 PCM 的本地增益/声像、Solo/跟随、FT8 结果、SSTV 像素和窗口生命周期。
-生产工作台的“信号设置”页使用实际模式/provider 能力；“本地扬声器”控件不修改共享 PCM。原有后端音量通过“共享音频增益”显式配置。
+## 扩展实现
 
-连接恢复与紧凑布局门禁：`python tools/e2e/native_multichannel_recovery.py --artifacts /tmp/websa-p4-recovery`。
-Chromium 真实切断并重连 UID 音频 socket，确认实际输出 PCM 恢复，并操作表单、窄屏弹窗、Dock、信道退役及槽复用。
-生产工作台按实际能力开放 IQ 记录，隐藏未开放的预设/场景操作，IQ 参数和共享音频设置可展开；窄窗仍可编辑。跟随模式下直接点“监听”切换为手动混听，保留编辑目标。
-主面板“信道工作台”入口只聚焦工作台，保留其他独立弹窗；召回全部窗口和 Dock 仍是明确的布局操作。
+控制遵循[状态归属](reference/STATE.md)，传输改动遵循[接口](reference/API.md)。后端能力是权威来源，
+前端不硬编码限制。容量源位于 `contracts/service-capacity.json`，版本源位于 `pyproject.toml`。
 
-主面板在监听标签旁显示当前信道；工作台旁的左右按钮切换接收信道，调谐与解调控件跟随该信道，切换本身不改频率。`＋` 将当前频点与解调设置复制到独立信道；路数已满时先选择要覆盖的信道。每路独立保留降噪算法、增益和 AGC；神经降噪不再限制为全局一路，而是按实际信道采样率测量本地解调与降噪耗时（含立体声），保留两倍处理余量。外部解码与协议处理仍有独立的保守预算。超出负载时拒绝请求，保留各路请求设置和已有接收。主频谱和瀑布以不同色通带标出其他信道，以浅色虚线显示同步鼠标预览，离开图面即清除。验证：`python tools/e2e/sdr_channel_shortcuts.py --artifacts /tmp/websa-channel-shortcuts`。
+新增模式需要目录描述、准入／采样率约束、处理所有权、输出／时钟行为和失败路径。
+复用共享 DSP 内核，避免并行维护浏览器版本。UI 控制需要复用 intent／receipt 流程、提供双语文本、
+可访问焦点行为，以及对应边界的回归测试。
 
-`python tools/e2e/native_multichannel_nr.py` 使用独立的模拟服务，验证两路同时运行 DFN，以及 DFN 与其他各神经降噪算法并行运行；检查实际模型状态、非静音且数值有限的连续 AUD2，以及修改一路增益/AGC 时另一路配置和流保持不变。工具记录测量所得的处理预算；这项短期验证不代表硬件持续接收容量认证。
-完整语义及尚未完成的共享样本块迁移见 [MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md)。
+注释解释单位、归属、不变量、数值推导和不直观的取舍。删除过时迁移叙述及只是重复代码的注释。
+保留第三方源码出处和许可证。文档双语在同一变更中同步。
 
-进入 SDR 自动开启瀑布图，频谱与瀑布各占一半；Preset 恢复此布局并选中 C1。瀑布点选调谐当前信道，开启放大后可拖框选择两张图共享的显示范围。工作台将接收开关、复制、删除整齐排在一行，各信道“更多操作”也提供复制、删除。频率、接收音频参数、本地音量和声像相同的信道只播放一路；主面板调到其他频点后，自动恢复两路独立混听。此本地规则不合并接收或录制任务。
+源码审查分别记录人工阅读、全库静态检查和行为回归的范围；文件清单或结构扫描不能代替逐段阅读。
+故障注入先证明原实现失败，再验证修复后的拒绝、释放和恢复；Python 参考、Soapy 和生产 SDK shim 的结论分别说明。
 
-工作台提供“信号设置、录制、实时输出”三个页签。唯一模式选择包括“不解调 · 仅接收 IQ”；监听与 IQ 录制是独立操作。点击信道名称在原处编辑，“独立窗口”打开固定设置；“信号信息／查看结果”查看已运行处理器的读数。按钮提供用途提示。“实时输出”列出实际 WebSocket 连接，折叠的本页 IQ 检查只统计传输，不保存文件。
+## 样本与验证证据
 
-工作台/Decode 实时交互门禁：`python tools/e2e/native_multichannel_ui.py --artifacts /tmp/websa-multichannel-ui`。
-脚本拥有独立合成/回放服务与记录目录。Chromium 跨状态更新实际按住鼠标和 Space，检查控件未脱离 DOM、草稿/搜索选区/滚动保留、实际 FT8 消息与 SSTV 像素，并在后端 IQ 记录继续时操作 420px Pop out/Dock。还验证真实 AM 波形、同 UID 同时监听／IQ 录制／筛选 CSV 与 JSONL 下载，以及弹窗内真实解码 PNG 下载；不构成 RF 硬件验收。
+`tests/fixtures/` 的 golden 帧和 DSP 样本连接 Python 参考生成器、Rust 内核和 TypeScript 解码器。
+生成器的 `--check` 是 CI 契约。主动重新生成并审查数值变化，不能仅为使测试通过而更新样本。
 
-P5 IQ 记录门禁：`python tools/e2e/native_multichannel_recording.py --artifacts /tmp/websa-p5-recording`。脚本隔离存储和服务，独立 CRC32/libzstd 读取器逐块对照实际 IQ 网络字节，验证变率/换频、停止排空、真实鼠标跨轮询点击、420px 弹窗、Dock、关闭浏览器持续记录和 SIGKILL 后恢复。仅为合成源验证，RF 和长期磁盘吞吐须另验。
+十六信道合成验证可使用现有 probe，指定未使用的持久输出目录：
+`python tools/bench/eight_channel_bench.py --channels 16 --seconds 30 --warmup 5 --artifacts <new-directory>`。
+历史文件名不限制信道数量；合成检查不能证明 RF 接收。
 
-`WEBSA_RECORDING_DIR` 指定本实例后端存储根；默认 `$XDG_DATA_HOME/harogic-websa/recordings/<port>`（未设置时使用 `~/.local/share`）。目录有独占文件锁，多实例应使用不同目录。启动时流式恢复中断/失败任务的校验前缀与 JSONL 索引；不自动续录。普通工作台显示 IQ 开始/停止、状态和大小，压缩与时钟详情折叠。服务发布 `iq_archive_read` 后，已完成／失败的 IQ 任务提供“波形回放 / SigMF”，旧服务／退役 UID 的任务在“历史记录任务”中可访问。选择片段及样本范围，可查看 I/Q、定位、按实际率播放波形或下载标准 SigMF。每范围限 1,048,576 个样本、4096 块和 4 MiB 来源元数据。协议输入音频及数字文件解码尚未开放；Opus 导出及模拟文件重新解调见上文。结果窗口可以将已保留消息按筛选条件导出 CSV 或 JSONL（含全部分页），并将选中图像保存为 PNG；它们是有界浏览器会话快照，持续录制仍由后端任务承担。JSONL 区分接收时间与协议 UTC，并保留源位置字符串。未完成图像的文件名带 partial，PNG 导出 RGBA 内存限制为 20 MiB。仅文本／表格模式或已有文本结果显示筛选工具，音频窗口不显示消息筛选或清空操作。AM/WFM 复用旧音频波形绘制器；CW 显示原生速度、音调和调谐偏移；DRM 显示电台／节目及锁定信息。
+SAN90 与 PlutoSDR 已建立可控 RF 耦合时，使用匹配当前源码的 SDK shim，关闭占用设备的服务后运行：
 
-每路滑块控制当前编辑信道在本浏览器中的监听。先开启该路“监听”，音量显示百分比，声像显示左／中／右位置；声像需要立体声输出。编辑另一信道不会切换正在听的组合。未监听、故障或停用时禁用滑块，总静音／独听屏蔽保留明确状态。通用操作说明已移出主要界面，帮助使用悬停提示，来源细节折叠。
+```bash
+python tools/bench/multichannel_rf.py --shim <matching-sdk-shim.so> \
+  --channels 16 --seconds 600 --gain -10 --artifacts <new-external-directory>
+```
 
-已录 IQ 可选“整段下载”，或填写范围后“下载 SigMF”。发布 `iq_archive_export` 的服务采用浏览器原生下载，CF32 数据文件小于 POSIX tar 的 8 GiB 上限，波形预览仍限 1,048,576 个样本；旧服务保留原小范围下载能力。回归入口：`python tools/e2e/native_multichannel_stream_export.py --artifacts /tmp/websa-stream-export --sigmf-python /path/to/sigmf-venv/bin/python`（`sigmf==1.6.1`）。它验证明确重复的离线 32 MiB 素材、真实扬声器控件／PCM、取消、损坏、慢 TCP 消费者、记录隔离和独立 SigMF 解析；不代表 RF 采集或实际声卡验收。
+该工具独占启动服务和发射源，检查十六路 AM／NFM／USB／LSB 的 32 条 IQ／音频流、精确样本连续性、
+身份及首尾已知音调。采集为 62.5 MSps／50 MHz，激励位于 434.85–435.15 MHz；
+因此不能由此推断全 50 MHz 的射频质量或所有解码器组合。发射增益需适合实际耦合，示例值不保证任意台架通过。
+退出会停止自有服务、恢复 Pluto 设置，并在保存摘要后删除音调 PCM。此类测量期间暂停重构建和浏览器测试。
 
-已结束的多片段 IQ 任务在 `iq_archive_collection` 可用时提供“全部片段”，一次下载标准 SigMF 集合，各片段保持独立率、调谐和源时钟。门禁：`python tools/e2e/native_multichannel_collection.py --artifacts /tmp/websa-collection --sigmf-python /path/to/sigmf-venv/bin/python`。覆盖实际原生记录与网络 IQ 比对、两种率的 32 MiB raw／Zstd fixture、解压后官方 `SigMFCollection` 直接载入、SHA-512 元数据引用、逐记录 Schema／样本校验、取消、后段损坏、健康记录、420px 下载和两段 SIGKILL 恢复。官方 1.2.6 集合 JSON Schema 仍只接受旧 tuple，而规范推荐 name／hash 对象，sigmf-python 1.6.1 也直接读取对象。门禁保留此上游 Schema 差异，不修改读取器／Schema；各 Recording 使用官方 Schema 验证，Collection 通过官方读取器直接校验。
+硬件／性能证据必须记录二进制修订或摘要、设备／固件、采集几何、主机负载、时长、预期信号、
+连续性及产物。不要调整无关进程来制造性能通过。将报告保存在 CI 产物或仓库外的测试目录，及时删除本次产生的大型临时采集。
+性能对比工具只将本机回环 HTTP 监听者的 CPU 计入该实例；远程服务或无法唯一确认的监听者没有本地 CPU 测量值。
 
-## 2. 依赖方向与归属
+## 发布与清理
 
-| 区域 | 职责 |
-|---|---|
-| `backend/src/bin/websad.rs` | 服务生命周期、命令、STATUS 与传输 |
-| `backend/sdk/san90_sdk.cpp` | 保留设备 session，串行调用 SDK |
-| `backend/src/` | 原生信道化与接收机 |
-| `dsp/core/`、`dsp/deepfilter/` | 原生/WASM 共享 DSP crate 与显式浏览器诊断 |
-| `tools/reference/` | 离线参考与 fixture 支持 |
-| `frontend/src/core/` | 类型、参数槽、结果、运行状态和协议 |
-| `frontend/src/dsp/` | 纯前端计算 |
-| `frontend/src/render/` | 绘图与重绘接口 |
-| `frontend/src/ui/`、`frontend/src/meas/` | 交互、测量生命周期与注册 |
-| `frontend/src/audio/` | 音频 worker、worklet 与重采样 |
+构建服务后重启目标实例，并检查 `./status.sh` 和进程实际可执行文件。成功重建后，旧进程可能仍持有
+旧 inode。如果暂不重启，交付说明必须明确提醒。
 
-依赖从编排层指向叶子模块。共享类型、参数槽、纯工具和注册接口不能导入使用它们的上层模块。
-前端模块不得存在循环依赖。渲染器只绘图，不写应用状态。采集和计算量大的 DSP 不得阻塞
-HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径；离线 Python 参考不能成为运行时回退。
+`make package-runtime` 复制现有服务／前端／适配器，不执行编译，须先构建匹配产物。
+打包助手按支持范围包含原生降噪依赖及声明；外部 provider 仍独立安装。
+验证实际打包启动及动态库要求，不能以开发机正常代替可移植性验证。
 
-## 3. 参数、结果与显示状态
+`make clean` 删除缓存／dist、保留依赖及 Rust target；`make clean-all` 还删除依赖和 target，
+保留已提交诊断 WASM。不能顺手删除用户录制、排障所需日志或无关缓存。
+文档只维护当前使用说明、接口、构建流程和维护约束。更新时同时修改双语，运行文档链接及结构检查，
+删除已被替代的页面。单次运行的截图、日志和测量报告放到 CI 产物、发布附件或仓库外的测试目录；
+需要长期回归的数据应提炼为有来源说明的 `tests/fixtures/` 样本。旧文档与历史报告通过 Git 查阅。
 
-| 类型 | 归属与规则 |
-|---|---|
-| 用户参数 | `ui/*State.ts` 中的槽：用户动作调用 `set()`，STATUS 调用 `confirm()`，读取调用 `get()` |
-| 仅客户端偏好 | 使用 `authoritative: true` 的槽，不等待后端确认 |
-| 迹线和测量结果 | `core/results.ts`，显式 setter，不使用 desired/confirmed 语义 |
-| 连接、触发和模式运行状态 | `core/store.ts`，通过显式 setter 修改 |
-| 持久化 | 槽的 `persistKey`，不另存 localStorage 副本 |
+## 依赖与许可
 
-后端 STATUS 反映设备实际状态。须区分请求值与实际值，不能用待确认的用户值或私有缓存确认参数。
-重置须使旧的待处理请求失效。未设置的值须有明确表示，不能用合法频率或电平充当哨兵值。
-参数槽应在高频循环外读取一次。模式切换保留偏好，只有明确的交接操作才主动改变偏好。
+- 项目代码（后端 + 前端）：**MIT** 协议
+- 原生监听降噪包含 DeepFilterNet3，以及 GTCRN、UL_UNAS、FastEnhancer。后三项使用官方 MIT 许可 ONNX 权重和原生 ONNX Runtime CPU 库；PCM 处理和流式接收使用 Rust。参见[模型版本、许可、采样率、衰减和延迟](../../backend/models/nr/README.txt)。源码构建可先运行 `bash tools/fetch-nr-runtime.sh` 恢复固定版本库，再执行 `make package-runtime`。
+- `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；随项目附带供配合自有 SDK 使用
+- `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
+- 官方 [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 为 **GNU LGPL v2.1 或更高版本**，在构建时下载，不纳入仓库。`tools/soapy-htra-stream-format.patch` 是本项目的兼容补丁，只应用于私有构建副本。
+- 可选 [multimon-ng](https://github.com/EliasOenal/multimon-ng) 与 [rtl_433](https://github.com/merbanan/rtl_433) 使用 GPL v2；[OnAir](https://github.com/adswill/OnAir) 使用 GPL v3，并有组件各自条款。它们作为独立安装的进程运行，不把解调代码复制进 MIT 主程序。安装脚本保留源码构建工具的固定源码/许可证，以及 OnAir 二进制说明和对应源码信息；再分发须遵守上游各项条款。
+- `tools/companions/rtty/main.cpp` 使用 **GPL-3.0-or-later**，作为独立编译的进程链接 OnAir RTTY 解码器，是主程序 MIT 许可证的明确例外；`backend/src/external/rtty.rs` 通过管道通信。参见 [RTTY 安装与回放](../../tools/README.md#independent-rtty-companion)。
+- `tools/vendor/ggmorse/`：CW（莫尔斯）解码器来自 Georgi Gerganov 的
+  [ggmorse](https://github.com/ggerganov/ggmorse)，**MIT** 协议，保留上游提交
+  `7b4822a8`（见 `tools/vendor/ggmorse/LICENSE`）。`backend/cw_build.rs` 将其与本项目的
+  `backend/native/ggmorse_bridge.cpp` 桥接代码一起编译进原生服务。
 
-信道工作台以服务快照为已确认状态，由会话串行提交信道变更、合并重复删除，并将排队编辑及迟到回复绑定到服务代次。
-删除期间阻止该信道后续启动；服务重启或会话释放使旧任务失效。草稿只属于对应视图与信道。
-主界面恢复监听须同时满足匹配的命令确认与健康快照，后续用户明确选择的监听状态优先。
-`tools/e2e/multichannel_audio_settings.py` 在独立模拟服务中验证这些控件、连续删除、紧凑布局及播放恢复。
+## 维护优先级
 
-手动显示 Ref、设备请求与 SDK 实际回读须分别保存。本地窗口为 -200 至 +100 dBm 加 Offset；
-设备请求将 Ref 减 Offset 限制在 -160 至 +40 dBm。匹配原始回读不能覆盖所选窗口；同一限幅目标
-复用待确认或已接受的硬件请求。待确认编辑不能被过期 STATUS 覆盖，拒绝或超时后恢复已接受的窗口。显式 Auto 是有界操作，手动编辑、
-频率或模式变更以及 Preset 须取消旧决策。进入 SDR 时的拟合仅调整显示，不得配置 IQS；
-溢出恢复与放置规则见 [FAQ 说明](FAQ_NOTES.md)。幅度偏移只在显示边界应用一次。
-实际增益按当前 SDK 模式读取，缺失回读保留为 null；前置放大器 Auto/Off 表示请求策略，
-不代表物理开关状态。每个共享显示位置只设一个所有者，独占测量结束后恢复用户原先的选择。
-即使采集没有帧，状态变化也必须请求重绘。瀑布映射变化须清空历史，即使已暂停；
-电平范围非有限或无效时，须在修改状态前拒绝请求。
-
-## 4. 扩展实现
-
-- 命令与参数：实现原生校验、模式归属和状态转换，同步更新 HTTP/WS 契约及
-  `tests/fixtures/contract/schema.json`。前端使用参数槽和现有命令发送器。
-  设备限制只通过能力信息发布一份。
-- 模式与测量：明确生命周期、采集、恢复和结果归属。通过现有 registry 注册渲染器和
-  测量页签，确保入口导入注册模块。断言进入模式后产生可见结果。
-- 帧：同步更新原生编码器、保留策略、`core/frames.ts` 解码器和共享黄金 fixture。
-  两端都验证布局；`tools/reference/framer.py` 仅提供离线支持。
-- 面板：动作放在 `ui/panels/`，使用现有绑定，两种 i18n 语言同时补齐。
-  字段与输入框标识通过 `inputForField()`、`fieldForInput()` 解析。
-- DSP：使用共享 Rust 内核或纯前端 DSP 模块。保留样本核算、顺序和有界队列。
-  SDK 调用留在保留 session 的线程，handle 存储保持稳定；有线程约束的运行库在所属线程初始化。
-
-文档与实现同步更新。注释说明不变量、单位、归属或约束，不记录会话过程、尝试或评审问题编号。
-
-## 5. 测试、fixture 与 CI
-
-断言必须能发现行为错误，覆盖数值关系、边界、状态转换、协议字节和可见结果。
-避免照搬实现，或仅通过计数证明渲染器被调用。使用间接指标时，须注明依据及其能证明的范围。
-真实采集数据、基准 fixture、模型及厂商来源信息只要仍有使用方就须保留；可重新生成的 fixture
-通过现有生成器更新。
-
-生命周期测试需要本机构建的 `backend/target/release/websad`；Python CI 作业与 `./test.sh` 均在 pytest 前构建它。随附 runtime 有独立的宿主 ABI 要求，不作为 CI 的测试可执行文件。原生录制测试需要支持 libopus 的 FFmpeg；CI 会显式安装 FFmpeg。
-
-| 层次 | 入口与证据 |
-|---|---|
-| 原生服务与工具 | `./test.sh`：release 模式的后端库与全部二进制、标准 test profile 的集成测试，Python 工具测试、Ruff 和前端 Vitest |
-| DSP 内核 | `make wasm-test`：release 模式的原生 Rust 内核测试，包含需优化构建的 FT8 路径 |
-| Soapy 补丁 | `make soapy-check-patch`：helper shell 语法及固定版本的补丁适用性；需要 curl + patch，无需 SDK |
-| Soapy 流 | `make soapy-check-stream SDK_ROOT=/opt/htraapi`：使用真实厂商头文件、SoapySDR 开发文件及 HTRA 桩检查实际补丁驱动；无需厂商库或设备 |
-| 本地聚合 | `make ci`：内核、服务、工具、前端测试，无 SDK 的 Soapy 补丁检查，版本与 fixture 检查，DOM、注册、文档、架构守卫及前端构建 |
-| 浏览器 fixture | `make e2e-fake`：原生 fixture 服务、UI smoke、状态回归和视口几何门禁 |
-| 硬件 | `make hw-test`：tinySA 驱动的 smoke、命令遍历和 UI 状态回归 |
-| 性能 | `make bench`：与 `tools/bench/bench_baseline.json` 比较 |
-
-DSP ABI 文本消息只在当前 push 的结果列表中有效，应在返回消息数后立即读取。后续 push 会替换列表；累计解码计数不会保存消息内容。
-后端库、二进制和集成测试分别调用 Cargo，依次运行；合并选择这些目标可能导致共享库产物冲突。集成测试使用标准 test profile，与测试 harness 的 unwind 策略一致；生产 release 产物仍使用 abort。
-
-使用 `python3 -m playwright install --with-deps chromium` 安装浏览器支持，运行浏览器检查前
-先构建前端。Fixture 模式证明无 SDK 的应用行为，不证明 RF 正确性、持续采集或硬件恢复。
-
-密度 smoke 场景先打开“迹线 → 更多”，再操作 Persist。检查 Off 关闭密度层、
-保存 `rta-halflife`，并在切换模式后保留；余辉设置值以秒为单位表示半衰期。
-
-`make ci` 与 GitHub Actions 是不同入口。工作流分别运行 native、Python tools
-（3.12 和 3.13）、frontend、UI smoke 和 architecture job，明确执行
-`npx tsc --noEmit`，并在干净环境安装依赖。工作流的浏览器 job 运行 `ui_smoke.py`、
-`state_regression.py`、`multichannel_audio_settings.py`、`native_audio_formats.py` 和
-`workbench_polish.py`。最后一项启动临时 Vite 服务并在退出时清理；本地 `make e2e-fake` 还运行 `viewport_baseline.py`。
-实际门禁以 [Makefile](../../Makefile)、[test.sh](../../test.sh) 和
-[ci.yml](../../.github/workflows/ci.yml) 为准。本地聚合或单个 CI job 都不能代替硬件验证。
-
-`make ci` 和托管 CI 均运行 `soapy-check-patch`，对 helper 执行 `bash -n`，并检查补丁
-能否应用于固定的上游源码版本。该门禁需要 `curl`、`patch` 和标准 shell 工具。独立的
-`soapy-check-stream` 门禁还需要 `pkg-config`、`realpath`、C++ 编译器、SoapySDR 开发文件
-以及 `SDK_ROOT` 下的真实厂商 SDK 头文件。它只链接 SoapySDR，用桩函数提供 HTRA 符号，
-检查流契约，不能据此认定 RF 采集或客户端应用已通过验证。
-
-## 6. 硬件验证与性能隔离
-
-使用专属设备 session、固定 RF 源及配置、单个预期客户端，停止竞争的构建、基准和
-浏览器套件。记录配置、时长、告警、包与样本连续性，以及完整命令。验证原生服务和
-实际浏览器界面；帧计数不能单独证明迹线、音频或解码结果正确。
-覆盖相关模式切换、重配置和恢复路径。
-
-明确硬件结果的适用范围。合成吞吐、短时捕获和无界面的传输检查不能证明持续 RF 或
-全图层浏览器性能。专项采集和接收机检查见[工具指南](../../tools/README.md)与
-[架构](ARCHITECTURE.md)。不得将旧结果表述为本次重新验证。
-
-比较性能前恢复干净设备状态，移除无关主机负载。避免逐帧分配和重复计算，保留传输
-背压与各流的保留策略。`make bench` 使用保留的基线；解释原生服务结果前须确认其
-工作负载和协议仍然适用。`make bench-record` 会重写基线，只能基于有记录、可比较的
-测量使用，不能掩盖回归。放宽架构基线也必须说明原因并经评审。
-
-## 7. 故障与发布
-
-原生恢复逻辑负责设备链路故障，进程退出后须用 `make restart` 恢复。实例日志保留错误上下文，UI 和脚本
-所需诊断通过 STATUS 暴露。区分告警与采集失败，包括 SDK 告警伴随有效 IQ 的情况。
-不得因可恢复告警静默丢数据，也不得将断开的设备报告为健康。
-
-排障时先查看 `./status.sh`（用 `--instance` 选择命名实例）及其输出的日志文件。
-画布为空时，先检查前端资源是否重新构建、注册模块是否可达及实际绘制的像素。控件未更新时，先检查 STATUS、
-待处理请求和主线程负载。设备忙时，先检查是否被其他程序独占，再考虑重试。
-
-提交信息使用英文 `type(scope): summary`，说明变化及目的。每个提交应独立有效。
-发布前运行适用门禁；设备行为需要硬件验证，未验证范围须明确说明。
-在 `pyproject.toml` 修改版本后执行 `python3 tools/checks/sync_version.py`；
-`--check` 验证前端 package、lockfile 和 HTML 副本。发布验证前重新构建前端。
-合并评审后的修改，为已验证版本打 tag，保持源码、文档和发布产物一致。
+| 优先级 | 工作 | 验收条件 |
+|---|---|---|
+| P2 | 扩展十六信道真实 RF 的频点、模式及主机负载覆盖 | 保留二进制／主机／采集／源／时长／连续性和失败证据；用有界 USB 诊断调查资源压力期间的偶发传输超时，不由单次通过推断其原因已修复 |
+| P2 | 补充 blanker 真实音频与并发模型内存证据 | 保留冷启动／跨块脉冲／阶跃解析参考，记录分块影响；区分进程 RSS 与模型独占成本 |
+| P2 | 可行时用行为测试替代剩余源码字符串断言 | 等价故障覆盖，而非仅减少文件数 |
+| P2 | 验证更多真实 SDK／设备的 Soapy 几何 | 保留分配／坏包注入回归；增加实际位宽／采样率证据，不放宽资源边界 |
+| P2 | 验证真实 SDK 永不返回时的进程退出与恢复 | 保留所有者退役／排他回归；单独验证启动器对厂商调用和静态析构的最终停止期限 |
+| P2 | 提议退役旧归档兼容时专项复审 | 真实保留文件的兼容证据和明确迁移路线 |

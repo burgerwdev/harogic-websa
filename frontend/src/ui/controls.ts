@@ -5,7 +5,7 @@ import { clearMainReceiverControls, syncMainReceiverControls } from './mainRecei
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send as sendRaw } from '../core/wsSend';
-import { confirmSdrChannels, currentSdrChannel, knownSdrChannelNumbers, sdrChannelMarks, setCurrentSdrChannel, type SdrChannel } from './sdrChannels';
+import { advanceQueuedControl, channelControlContext, confirmSdrChannels, currentSdrChannel, knownSdrChannelNumbers, sdrChannelMarks, setCurrentSdrChannel, type SdrChannel, type SdrChannelControl } from './sdrChannels';
 import { setSdrHoverFrequency } from './sdrHoverPassband';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 import { isKeypadOpen } from './keypad';
@@ -180,13 +180,6 @@ function requestSdrAmSync(enabled: boolean): void {
   refreshDecodeWindow();
 }
 let radiofaxSerial = 0;
-/** Freeze logical identity when an edit is created, including queued edits. */
-function channelControlContext(channel = currentSdrChannel()): Record<string, unknown> {
-  const rows = lastSdrPanelReport?.sdr?.channels ?? [];
-  const control = rows.find((row: {channel:number}) => row.channel === channel)?.control;
-  return control?.receiver_uid ? { service_id: control.service_id, receiver_uid: control.receiver_uid,
-    expected_revision: control.revision, action_token: control.action_token } : {};
-}
 const send = (message: Record<string, unknown>): void => {
   if (message.cmd === 'SET_SDR_CHANNEL') {
     const channel = Number(message.channel ?? currentSdrChannel());
@@ -197,7 +190,7 @@ const send = (message: Record<string, unknown>): void => {
 };
 
 
-let pendingRadiofax: { requestId: string; timer: number } | null = null;
+let pendingRadiofax: { requestId: string; timer: number; command: Record<string, unknown> } | null = null;
 let radiofaxQueue: Record<string, unknown>[] = [];
 
 function currentRadiofaxConfig(): Required<Omit<RadiofaxConfigPatch, 'radiofax_new_page' | 'radiofax_reset_correction'>> {
@@ -211,7 +204,7 @@ function currentRadiofaxConfig(): Required<Omit<RadiofaxConfigPatch, 'radiofax_n
 
 function sendRadiofaxConfig(patch: Record<string, unknown>): void {
   const requestId = `sdr-radiofax-${++radiofaxSerial}`;
-  pendingRadiofax = { requestId, timer: window.setTimeout(() => {
+  pendingRadiofax = { requestId, command: patch, timer: window.setTimeout(() => {
     pendingRadiofax = null;
     radiofaxQueue = [];
     sdrRadiofaxAcquisition.reset(); sdrRadiofaxIoc.reset(); sdrRadiofaxLpm.reset();
@@ -245,7 +238,10 @@ function requestRadiofaxConfig(patch: RadiofaxConfigPatch): void {
   refreshDecodeWindow();
 }
 
-function finishRadiofaxConfig(): void {
+function finishRadiofaxConfig(acknowledgement?: SdrChannelControl): void {
+  if (pendingRadiofax) for (const command of radiofaxQueue) {
+    advanceQueuedControl(command, pendingRadiofax.command, acknowledgement);
+  }
   if (pendingRadiofax) window.clearTimeout(pendingRadiofax.timer);
   pendingRadiofax = null;
   const next = radiofaxQueue.shift();
@@ -279,6 +275,7 @@ export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string |
 
 /** A lost control/device connection ends the receiver session and all unconfirmed detector intent. */
 export function disconnectSdrSession(): void {
+  clearSdrEntryReplay();
   clearMainReceiverControls();
   lastSdrPanelReport = null;
   confirmSdrChannels([]);
@@ -322,6 +319,21 @@ let sdrAudioSessionReady = false;
 let pendingSdrEntryHz: number | null = null;
 /** True only after the user (or a saved-mode restore) asks to enter SDR, not after a spontaneous STATUS. */
 let sdrEntryPending = false;
+let sdrEntrySerial = 0;
+let sdrEntryReplay: { requestId: string; receiver: Record<string, unknown>; timer: number } | null = null;
+
+function clearSdrEntryReplay(): void {
+  if (sdrEntryReplay) window.clearTimeout(sdrEntryReplay.timer);
+  sdrEntryReplay = null;
+}
+
+/** New control intent supersedes the unsent part of a mode-entry restore. */
+export function supersedeSdrEntryReplay(command: Readonly<Record<string, unknown>>): void {
+  if (sdrEntryReplay && command.request_id !== sdrEntryReplay.requestId
+      && ['SET_MODE', 'SET_PRESET', 'SET_SDR', 'SET_SDR_CHANNEL', 'SET_SDR_TUNE', 'SET_SDR_DEMOD'].includes(String(command.cmd))) {
+    clearSdrEntryReplay();
+  }
+}
 
 // Transient hint notices. A held notice (a timeout report) must not be overwritten by the
 // high-frequency pending-state refresh, so it owns the field until it expires.
@@ -396,6 +408,7 @@ export function setGraphMode(mode: string, { restore = false, handoffHz }: { res
   const target: 'std' | 'rta' | 'sdr' =
     mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
   if (!restore && pendingGraphMode() === null && target === currentGraphMode()) return;
+  clearSdrEntryReplay();
   if (target !== 'std' && S.measOn) {
     exitMeasModePub(false);
     S.setMeasOn(false);
@@ -465,6 +478,7 @@ function beginSdrEntry(handoffHz?: number) {
 
 /** Drop a pending request (socket loss / command error): the UI follows the backend again. */
 export function releaseGraphModePending() {
+  clearSdrEntryReplay();
   resetGraphMode();
   sdrEntryPending = false;
   pendingSdrEntryHz = null;
@@ -472,7 +486,8 @@ export function releaseGraphModePending() {
   syncResolutionAvailability();
 }
 
-export function syncGraphModeStatus(mode: string) {
+export function syncGraphModeStatus(mode: string, deferSdrEntry = false) {
+  if (mode !== 'sdr') clearSdrEntryReplay();
   const wasServer = deviceMode.get() === 'server';
   // The raw reported mode is recorded FIRST: the measurement sessions are not view modes, but they
   // own the device, and everything mode-gated has to see that (see `deviceMode`).
@@ -509,7 +524,7 @@ export function syncGraphModeStatus(mode: string) {
   // The disconnected confirm already consumed the mode change. The held entry still has
   // to run once, on the later healthy SDR STATUS, and must not repeat after that.
   if (!changed) {
-    if (mode === 'sdr' && S.deviceConnected && sdrEntryPending) finishSdrEntry();
+    if (mode === 'sdr' && S.deviceConnected && sdrEntryPending && !deferSdrEntry) finishSdrEntry();
     applyMeasUI();
     return;
   }
@@ -543,7 +558,7 @@ export function syncGraphModeStatus(mode: string) {
   applyTraceFamilyMode(isSdr);
   // Only a request that began this entry is replayed. A disconnected confirm must not clear
   // that request; a healthy one finishes it. Leaving SDR, or arriving in SDR unasked, does not.
-  if (isSdr && sdrEntryPending && S.deviceConnected) finishSdrEntry();
+  if (isSdr && sdrEntryPending && S.deviceConnected && !deferSdrEntry) finishSdrEntry();
   else if (!isSdr) {
     sdrEntryPending = false;
     pendingSdrEntryHz = null;
@@ -559,7 +574,7 @@ export function syncGraphModeStatus(mode: string) {
   if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
   const sdrButton = document.getElementById('btn-mode-sdr');
   if (sdrButton) sdrButton.classList.toggle('active', isSdr);
-  localStorage.setItem('web-sa-mode', mode);
+  try { localStorage.setItem('web-sa-mode', mode); } catch { /* The confirmed mode must render even without persistence. */ }
   if (isRtaLike) restoreRtaDensityCfg();
 
   document.body.classList.toggle('rta-mode', isRtaLike);
@@ -624,7 +639,7 @@ export function syncGraphModeStatus(mode: string) {
 }
 
 /** One SDR entry: IQ, audio, and the remembered receiver, only while the device is healthy. */
-function finishSdrEntry(): void {
+function finishSdrEntry(nativeReceiver = false): void {
   sdrEntryPending = false;
   // Decode events and receiver telemetry arrive independently of speaker playback.
   setSdrIqEnabled(true);
@@ -636,7 +651,7 @@ function finishSdrEntry(): void {
     sdrNrAtten.set(initialSdrNr.attenuation);
     initialSdrNr = null;
   }
-  sendSdrNr();
+  if (!nativeReceiver) sendSdrNr();
   if (initialSstvMode !== null) {
     sdrSstvMode.set(initialSstvMode);
     setSstvModePin(initialSstvMode < 0 ? null : initialSstvMode, 1);
@@ -644,13 +659,13 @@ function finishSdrEntry(): void {
     refreshDecodeWindow();
   }
   // The service owns the active receiver set; entering SDR must preserve auxiliary lanes.
-  replaySdrEntry();
+  replaySdrEntry(nativeReceiver);
 }
 
 /** Send the centre captured by beginSdrEntry, then the listening setup.
  *  Restored preferences are already confirmed, so set() would not mark them pending and
  *  the SET_SDR would be skipped. Reset first, then set the held centre. */
-function replaySdrEntry(): void {
+function replaySdrEntry(nativeReceiver: boolean): void {
   const held = pendingSdrEntryHz;
   pendingSdrEntryHz = null;
   if (held !== null && held > 0) {
@@ -677,11 +692,25 @@ function replaySdrEntry(): void {
   sdrSpanHz.set(estimatedCaptureSpanHz(decimate));  // estimate until the device reports it
   if (!(sdrListenHz.get() > 0)) sdrListenHz.set(f);
   renderSdrState();
-  send({ cmd: 'SET_SDR', center: f, decimate });
   if (initialSdrAmSync !== null) {
     sdrAmSync.set(initialSdrAmSync);
     initialSdrAmSync = null;
   }
+  if (nativeReceiver) {
+    // Capture fitting can change this receiver's revision. Restore all receiver
+    // settings together, only after our capture acknowledgement supplies it.
+    const requestId = `sdr-entry-${++sdrEntrySerial}`;
+    clearSdrEntryReplay();
+    sdrEntryReplay = { requestId, receiver: { ...channelControlContext(),
+      cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true,
+      freq: sdrListenHz.get(), ...sdrReceiverSettings() }, timer: window.setTimeout(() => {
+        clearSdrEntryReplay();
+        S.setStatusError(t('mode_switch_timeout', { mode: 'SDR' }));
+      }, Math.max(GRAPH_MODE_TTL_MS, modeStartupTimeoutMs(sdrDemod.get()))) };
+    send({ cmd: 'SET_SDR', center: f, decimate, request_id: requestId });
+    return;
+  }
+  send({ cmd: 'SET_SDR', center: f, decimate });
   send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), freq: sdrListenHz.get() });
   applySdrDemod();
   // Entry setup sends SET commands, which cancel older fits. Arm the new one only after
@@ -814,6 +843,13 @@ export function sdrToCenter() {
   send({ cmd: 'SET_SDR', center: listen, decimate: Math.round(sdrDecimate.get()) });
 }
 
+function sdrReceiverSettings(): Record<string, unknown> {
+  return { mode: sdrDemod.get(), ifbw: sdrIfbw.get(), volume: sdrVolume.get(), squelch: sdrSquelch.get(),
+    agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: sdrDeemph.get(), nr: sdrNr.get(),
+    nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
+    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(), ...currentRadiofaxConfig() };
+}
+
 export function applySdrDemod(restoringMode = false, filterOnly = false, remembered?:ReceiverModeSettings) {
   const mode = sdrDemod.get();
   setSdrAudioMode(currentSdrChannel(), mode);
@@ -822,9 +858,6 @@ export function applySdrDemod(restoringMode = false, filterOnly = false, remembe
     sdrIfbw.set(descriptor.defaultBandwidthHz);
   }
   const ifbw = sdrIfbw.get();
-  const deemph = sdrDeemph.get();
-  const volume = sdrVolume.get();
-  const squelch = sdrSquelch.get();
   // Only a demod-mode / IF-bandwidth / de-emphasis change rebuilds the chain and needs the
   // reset handshake. Volume/squelch/AGC are applied live, so muting them would just add a
   // gap. "Changed" is the slot's own pending state now, not a separate copy of the last
@@ -839,10 +872,8 @@ export function applySdrDemod(restoringMode = false, filterOnly = false, remembe
   const restored = remembered ? {...copyModeControls(remembered),volume:remembered.pcm_gain,agc:remembered.agc,squelch:remembered.squelch_dbm,
     nr:remembered.nr,nr_algorithm:remembered.nr_algorithm,nr_strength:remembered.nr_strength,nr_atten_db:remembered.nr_atten_db,
     processing_enabled:true,baseband:null} : {};
-  const payload = filterOnly ? { ...context, ...restored, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw } : { ...context, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw, volume, squelch,
-    agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
-    nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
-    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(), ...currentRadiofaxConfig() };
+  const payload = filterOnly ? { ...context, ...restored, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, mode, ifbw }
+    : { ...context, cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), enabled: true, ...sdrReceiverSettings() };
   if (receiverInFlight) {
     receiverQueued = { payload, mode, ifbw, restoringMode };
   } else if (sdrDemod.pending() || sdrIfbw.pending()) {
@@ -1022,7 +1053,10 @@ function sendReceiverEdit(edit: ReceiverEdit): void {
   send({ ...edit.payload, ...liveAudio, request_id: requestId });
 }
 
-function finishReceiverEdit(accepted: boolean): void {
+function finishReceiverEdit(accepted: boolean, acknowledgement?: SdrChannelControl): void {
+  if (accepted && receiverQueued && receiverInFlight) {
+    advanceQueuedControl(receiverQueued.payload, receiverInFlight.payload, acknowledgement);
+  }
   if (receiverInFlight) window.clearTimeout(receiverInFlight.timer);
   receiverInFlight = null;
   const next = receiverQueued;
@@ -1152,6 +1186,7 @@ function syncSdrChannelButtons(): void {
 }
 
 function resetMainReceiverInteraction(): void {
+  clearSdrEntryReplay();
   cancelSdrCanvasGesture(); cancelSdrTuningEdit(); cancelSdrFilterEdit();
   clearReceiverEdit(); clearAmSyncRequest(); clearRadiofaxRequest(); resetSdrAgcRequest();
   resetSdrTuneSession(); clearPassbandView(); sdrFilterLimits.confirm(null);
@@ -1241,6 +1276,17 @@ export function syncSdrPanel(s: any) {
     confirmSdrChannels(channels);
     lastSdrPanelReport = s;
   }
+  if (currentReport && sdrEntryPending) finishSdrEntry(true);
+  if (sdrEntryReplay && s.response_to === 'SET_SDR' && s.request_id === sdrEntryReplay.requestId) {
+    const { receiver } = sdrEntryReplay;
+    clearSdrEntryReplay();
+    const acknowledged = channels.find((row: { channel: number }) => row.channel === receiver.channel)?.control;
+    if (currentReport && acknowledged && acknowledged.service_id === receiver.service_id
+        && acknowledged.receiver_uid === receiver.receiver_uid) {
+      send({ ...receiver, expected_revision: acknowledged.revision, action_token: acknowledged.action_token });
+      requestSdrEntryFit();
+    }
+  }
   const descriptors = sdrModeIds().map(modeDescriptor).filter((mode): mode is NonNullable<typeof mode> => mode!==undefined);
   if (currentReport && descriptors.length && channels.some((row:any)=>row.control?.receiver_uid)) {
     sharedReceiverModeMemory.observe({service_id:channels.find((row:any)=>row.control?.receiver_uid)?.control.service_id,
@@ -1274,10 +1320,13 @@ export function syncSdrPanel(s: any) {
   const followListen = sdrTuneFollowsViewport(reportedListen, s.request_id);
   const axisOwnsViewport = sdrAxisOwnsViewport(s.request_id);
   if (!confirmSdrTuneReport(reportedListen, s.response_to, s.request_id,
-    s.config_version, { acceptSnapshot, contextChanged, receiverEnabled: primary?.enabled })) {
+    s.config_version, { acceptSnapshot, contextChanged, receiverEnabled: primary?.enabled, control: primary?.control })) {
     // A stale snapshot still completes its exact request; only the confirmed state
     // stays unchanged, and the latest unsent edit can now proceed.
-    if (receiverAck) finishReceiverEdit(true);
+    if (receiverAck) finishReceiverEdit(true, primary?.control);
+    if (pendingRadiofax && s.response_to === 'SET_SDR_CHANNEL' && s.request_id === pendingRadiofax.requestId) {
+      finishRadiofaxConfig(primary?.control);
+    }
     return;
   }
   if (centerTuneRequest && Date.now() - centerTuneRequest.startedAt > 3000) centerTuneRequest = null;
@@ -1374,7 +1423,7 @@ export function syncSdrPanel(s: any) {
   rememberConfirmedFilter(actualMode, actualFilter);
   if (receiverInFlight) {
     const ack = s.response_to === 'SET_SDR_CHANNEL' && s.request_id === receiverInFlight.requestId;
-    if (ack) finishReceiverEdit(true);
+    if (ack) finishReceiverEdit(true, primary?.control);
     else {
       const target = receiverQueued ?? receiverInFlight;
       sdrDemod.set(target.mode);
@@ -1383,7 +1432,12 @@ export function syncSdrPanel(s: any) {
       sdrIfbw.touch(target.ifbw);
     }
   }
-  setSdrAudioMode(currentSdrChannel(), sdrDemod.get());
+  const audioMode = modeDescriptor(actualMode);
+  // Bind main-panel playback to the confirmed logical receiver from the start.
+  // The workbench can then adopt its existing UID consumer without re-priming.
+  setSdrAudioMode(currentSdrChannel(), sdrDemod.get(), primary?.control ? { ...primary.control,
+    available: primary.enabled === true && primary.processing_enabled !== false && audioMode?.available === true
+      && (audioMode.outputs.includes('audio') || audioMode.audioCompanion !== null) } : null);
   renderSdrTuningUi();
   if ('sstv_mode' in receiver) sdrSstvMode.confirm(receiver.sstv_mode == null ? -1 : Number(receiver.sstv_mode));
   if (receiver.radiofax_acquisition === 'auto' || receiver.radiofax_acquisition === 'manual') sdrRadiofaxAcquisition.confirm(receiver.radiofax_acquisition);
@@ -1394,7 +1448,7 @@ export function syncSdrPanel(s: any) {
   if (receiver.radiofax_clock_recovery === 'auto' || receiver.radiofax_clock_recovery === 'off') sdrRadiofaxClockRecovery.confirm(receiver.radiofax_clock_recovery);
   if (typeof receiver.radiofax_phase_pixels === 'number' && Number.isFinite(receiver.radiofax_phase_pixels)) sdrRadiofaxPhasePixels.confirm(receiver.radiofax_phase_pixels);
   if (typeof receiver.radiofax_clock_ppm === 'number' && Number.isFinite(receiver.radiofax_clock_ppm)) sdrRadiofaxClockPpm.confirm(receiver.radiofax_clock_ppm);
-  if (pendingRadiofax && s.response_to === 'SET_SDR_CHANNEL' && s.request_id === pendingRadiofax.requestId) finishRadiofaxConfig();
+  if (pendingRadiofax && s.response_to === 'SET_SDR_CHANNEL' && s.request_id === pendingRadiofax.requestId) finishRadiofaxConfig(primary?.control);
   if (typeof primary?.am_sync === 'boolean') {
     sdrAmSync.confirm(primary.am_sync);
     if (!sdrAmSync.pending()) clearAmSyncRequest();

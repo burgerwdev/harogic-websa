@@ -13,7 +13,6 @@ import pytest
 NEEDS_VENDOR = {
     'test_capability_query.py',
     'test_native_ddc.py',
-    'test_sdr_capture.py',
 }
 
 

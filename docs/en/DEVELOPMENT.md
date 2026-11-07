@@ -1,408 +1,165 @@
-# Development Guide
+# Development
 
-Receiver capacity is defined in `contracts/service-capacity.json`, imported by the browser fixture and generated for Rust by `backend/build.rs`. `receiver_limits.rs` re-exports it; the shared recording pool derives from the same channel limit. Native browser controls use advertised capabilities. Capacity changes must pass admission, quota and schema tests; schema choices, slot admission, worker/cursor counts and aggregate snapshot budgets derive from it. Browser controls and tools read service capabilities or the advertised channel registry. Legacy AUX/DDC commands intentionally retain slots 2/3; they are not the general receiver limit. `contracts/stream-limits.json` is the shared Rust/browser SDE2 size and ACK-credit contract: Cargo generates Rust constants and Vite imports the JSON. Keep this file in source distributions; no additional generation command is needed for `make build`. Backend processor recovery policy lives in `reception_recovery.rs`, browser subscription retry/buffer policy in `frontend/src/sdr/streamLimits.ts`; recording slots, DSP queue budgets and AudioWorklet latency targets remain independently bounded. Capacity regressions cover the final admitted slot, all-channel retained-image delivery, and interleaved decoder cursors.
+[Documentation](INDEX.md) · [Architecture](ARCHITECTURE.md)
 
-The bottom toolbar of the main channel workbench has a persistent default audio recording format selector, initially Opus. WAV, FLAC and Opus are encoded during recording. Each task keeps its selected format; downloads copy the saved files unchanged. WAV preserves Float32 samples, FLAC stores quantized 24-bit PCM losslessly, and Opus uses compact lossy encoding. Opus requires FFmpeg with `libopus`. Only legacy journals retain download-time format conversion. **Recording files**, beside Results window, provides search, type/status filters, playback/download, rename and confirmed single or batch deletion across all channels. Select all applies to finished tasks in the current filtered list; sizes use readable B / KB / MB / GB / TB units. Unsupported delete controls explain the required server update. Gate: `python tools/e2e/native_audio_formats.py --artifacts /tmp/websa-audio-formats` after building frontend and backend. It checks actual codecs, files written during recording, byte-identical downloads, bounded playback, restart history, browser preferences and Preset reset.
+## Build from source
 
-Workbench UI regression: start `npm run dev:workbench` in `frontend`, then run `python tools/e2e/workbench_polish.py --artifacts /tmp/websa-workbench-polish`. Synthetic native snapshots exercise one-Hz formatting, current-frequency history, unit/name search, mode settings, presets, dark/light themes, English/Chinese, 420px layout and Pop out/Dock without device commands.
+Requirements: Linux, Rust ≥1.95, C++17 compiler, pkg-config and FDK AAC ≥2.0.3.
+Frontend development uses the committed npm lockfile and a Node version supported by the installed
+test stack (22.22+, 24.15+ or ≥26). Basic Python tools require ≥3.10; the complete development
+environment and locked dependency installation below require Python ≥3.12 (CI uses 3.12/3.13).
+Tests and browser benches use newer asynchronous APIs, so the basic tool minimum does not define
+the test environment. Hardware adds the proprietary
+SDK; Soapy and external decoders are optional. See [dependencies and notices](#dependencies-and-notices) below.
 
-For RF preparation use `python tools/bench/sdr_capture_observe.py --origin http://127.0.0.1:8080 --expect-service-id <current-service-id> --seconds 300 --artifacts <new-directory>`. Read the identity with GET `/api/sdr/receivers` first. This tool only issues GET, refuses identity changes and existing artifact directories, records source clocks/sample progress/warnings/recordings/load, and never opens a WebSocket or arms capture. Keep an authorized browser/recording consumer running separately. The report is observation evidence; neither device connectivity nor an advancing counter proves RF reception or physical audio.
-
-Prepare the new release build before the device window. Existing processes keep their old binary until explicitly restarted. Confirm the target instance, release of the N90 owner and RF source before replacing a hardware process; another port does not isolate the physical device. Recover one real signal first, observe at least five minutes and check spectrum/tuning, actual input rate, source epoch/positions and physical listening. Add channels within the same actual capture passband including transitions, then combine IQ/published-audio/results recordings for another five minutes. Stop and independently inspect saved files, UID/rate/source boundaries and accepted/persisted bytes. Mark unavailable real protocols and physical listening as untested. Synthetic `native_multichannel*.py` gates create/reconfigure their own service and must never target an existing hardware instance.
-
-
-Finished audio tasks expose **Play audio** when `audio_archive_read` is available. Choose a source segment and start/length in sample frames, Load audio, use the native play/seek/volume controls, or download the same Float32 WAV/provenance snapshot. A stereo frame includes both channels; select at most 1,048,576 frames / 60 seconds. WAV recordings and legacy journals preserve original Float32 samples; saved FLAC/Opus previews use FFmpeg and declare quantization, loss and resampling. Live monitor controls are independent. Hiding or editing releases file playback. The verifier scans the complete task before loading without accumulating its samples. `native_audio_formats.py` covers direct recordings; recording unit tests retain journal playback and recovery checks. Continuous long-file playback and digital file decoding remain separate work.
-
-File tuning: expand Demodulate file, enter Offset / Hz relative to the recorded centre, select mode/filter and Render audio. The frequency readout is the original centre plus that offset. The whole selected sideband must be retained in the original IQ. `python tools/e2e/native_multichannel_tuning.py --artifacts /tmp/websa-file-tuning --sigmf-python /path/to/sigmf-venv/bin/python` verifies signed fractional offsets in all four modes, two-volume phase continuity, unchanged precise original clocks through the official SigMF reader, WAV pitch, boundary rejection, cancellation/backpressure and the real 420px player/download UI. Sub-Hz precision and block partition independence also have native regressions. Old-service controls remain hidden.
-
-Recorded IQ → Waveform / SigMF → Demodulate file renders a selected range as AM, USB, LSB or NFM, offers native audio controls and downloads the same Float32 WAV with exact IQ provenance. Set a range of at most 60 seconds and a filter within the recorded passband; USB/LSB width is one sideband. The 48 kHz mono render starts fresh native filters without AGC/NR/squelch. The source file and live reception remain independent. Gate: `python tools/e2e/native_multichannel_demod.py --artifacts /tmp/websa-file-demod`; uses independent CRC/WBIQ and SciPy WAV readers, synthetic known tones at a noninteger IQ rate, actual native AM recordings, real keyboard/mouse media controls, 420px Pop out/Dock and live recording isolation. Build frontend/native before running. This analogue slice does not implement digital file decoding or continuous long-file playback.
-
-Select **FLAC** before starting a recording to save published audio at its actual rate as quantized signed-24 PCM. Downloads copy completed `.flac` files with fixed-scaling and saturation metadata. The pure Rust `flacenc` dependency adds no runtime executable for encoding; saved-media preview uses FFmpeg. Legacy Float32 journals still offer FLAC export when `audio_flac_export` is present. Source semantics and conversion rules are in [API](API.md).
-
-Published-audio recording: workbench → Recordings → Record audio, then Download audio after stopping. The backend encodes actual AUD2 PCM as the selected format and continues after browser exit. Actual audio capability enables it, including digital companions. Downloads contain saved audio segments and per-frame clocks/original headers/configurations. Browser volume, pan and master mute do not change files. `recording_audio_files.rs` owns direct media files and recovery; `recording_audio.rs` retains legacy CRC/Zstd journal support. `receiver_workers.rs` carries actual packet configuration with PCM so queued old frames cannot acquire new settings. Source/configuration changes and approximately 60-second file boundaries finalize segments; interrupted recovery retains completed files. See [API](API.md) for bounds and semantics. The older `native_multichannel_audio.py`, `native_multichannel_audio_playback.py`, `native_multichannel_flac.py`, `native_recording_library.py` and workflows importing their journal readers assume legacy storage and need migration before use as current-format gates.
-
-Persistent results: in Channels → Recordings, use Record results for a processor with actual text/table/image/status output. IQ and results can run independently on the same UID. After stop, Download results streams a tar with task metadata and original published events as JSONL, including incremental image pixels. It captures from record start, so an image already in progress may remain partial. It continues after browser exit. Regression: `python tools/e2e/native_multichannel_results.py --artifacts /tmp/websa-results`; uses real native FT8/SSTV replay, an independent CRC/Zstd reader and JSONL/tar reader, real 420px browser gestures/downloads and SIGKILL recovery. This does not qualify hardware RF or backend audio recording.
-
-This guide covers the native Rust service, shared DSP, browser controls and development tools.
-See [Architecture](ARCHITECTURE.md) for component boundaries and [API](API.md) for wire contracts.
-
-Single-channel presets: Channel workbench → Signal settings → **Presets**. Save confirmed frequency, IQ, processing settings and continuity policy on the server, then select a saved entry to preview and explicitly apply. Replacement and deletion require confirmation. Drafts, reception enabled state, monitoring and recording tasks are excluded. Presets survive browser and service restarts without being applied automatically. Gate: `python tools/e2e/native_multichannel_presets.py --artifacts /tmp/websa-presets`, covering persistence, conflicts/stale previews, recording isolation and 420px Pop out/Dock. Storage semantics are in [API](API.md). Atomic multi-channel scenes remain unimplemented.
-
-Mode memory: each channel recalls its last confirmed IQ bandwidth/transition/minimum rate, demodulation bandwidth, shared PCM gain, AGC and squelch for each mode, including IQ only. A previously unused mode starts with its audio defaults. Recall changes the form only and keeps frequency/name/reception state; review and apply explicitly. Drafts and rejected changes are excluded. Memory survives reload in the same browser tab and is shared by its workbench windows, including Pop out/Dock; it is cleared for retired UIDs, a new service generation or a successful Preset reset. It is not server persistence or cross-tab synchronization. Editing after a preview removes its Apply button and requires a fresh review.
-
-The default audio recording format, master speaker volume and monitor rule survive browser and service restarts in local storage. A successful top-level Preset restores Opus, 70% master volume and manual mixing, clears mode memories and unapplied workbench drafts, and restores waterfall mapping, measurement preferences and peak count (20). It preserves the current speaker on/off state. Rejected or unrelated command acknowledgements do not reset preferences.
-
-All channel frequencies, full passbands and transitions must fit inside the shared capture. Workbench range rejections and previews show the current capture bounds and the requested channel bounds, directing the user to adjust the shared centre or capture bandwidth in the main SDR panel before retrying; retry alone does not widen capture. For example, a 101.7 MHz centre and 3.125 MHz usable bandwidth cover only 100.1375–103.2625 MHz and cannot receive 105 MHz FM. An explicit 103.35 MHz centre with 6.25 MHz usable bandwidth covers both frequencies. Shared capture changes affect every channel, and the main-panel centre entry also tunes C1; for a capture-only change, use `SET_SDR` without `listen` and verify each UID's frequency.
-
-Three-channel workflow gate: `python tools/e2e/native_multichannel_workflow.py --artifacts /tmp/websa-daily-workflow`. It combines AM audio recording, FT8 result recording, healthy IQ recording, local listening, confirmed mode recall/reload, preset reuse, stop/start, copying and window/page closure, then checks the actual saved files with independent CRC/Zstd and WAV readers. Sources are synthetic/replay; RF, physical audio and sustained operation remain separate acceptance work.
-
-
-Eight-channel acceptance uses separate build, browser and sustained RF phases. The same capture exposes eight definitions; disabled definitions retain a slot, while retiring one releases it and reuse gets a new UID. Receiver selection, local monitoring and backend recording are independent. Browser decoder history is bounded to 200 entries / 24 MiB per route and 128 MiB across routes. Sixteen recording slots are shared by IQ, published audio and results; one UID recording all three uses three slots.
-
-Use a new artifact directory under persistent storage and set `TMPDIR` there or in a disk-backed cache. Review stale test directories and active process references before removal, especially when `/tmp` is memory-backed. Keep the original three-channel gates above. The following owned hardware gates require an idle recording manager and the saved single-receiver setup, freshly verify service identity and restore the entering device/source configuration. `--known-source` requires the configured Pluto bench source; synthetic gates do not establish RF content or throughput.
-
-```sh
-export TMPDIR="$HOME/.cache/harogic-websa/test-tmp"
-mkdir -p "$TMPDIR" "$HOME/.cache/harogic-websa/eight-channel"
-# Build once before hardware phases; keep the user's installed adapter intact.
-make sdk-shim SDK_SHIM="$HOME/.cache/harogic-websa/eight-channel/libwebsa_san90_sdk_session.so"
-export WEBSA_RUST_IQS_SHIM="$HOME/.cache/harogic-websa/eight-channel/libwebsa_san90_sdk_session.so"
-# Replace the identity and each directory with fresh values for every invocation.
-python tools/bench/eight_channel_workflow.py --expect-service-id <current-service-id> --gate controls --artifacts <new-controls-directory>
-python tools/bench/eight_channel_workflow.py --expect-service-id <current-service-id> --gate mixed-ui --artifacts <new-browser-directory>
-python tools/bench/eight_channel_recording.py --hardware --known-source --profile mixed --seconds 1800 --record-seconds 600 --skip-browser --gain -10 --lo-correction -100 --expect-service-id <current-service-id> --artifacts <new-mixed-directory>
-python tools/bench/eight_channel_recording.py --hardware --known-source --profile analog --consume-streams --seconds 1800 --record-seconds 600 --skip-browser --gain -10 --lo-correction -100 --expect-service-id <current-service-id> --artifacts <new-ordinary-directory>
+```bash
+make native                     # release Rust service, one build job
+make frontend                   # type-check and Vite build; no WASM
+make sdk-shim SDK_ROOT=/opt/htraapi
+./run.sh                        # or ./run.sh --fake
 ```
 
-Both sustained profiles require a 50 MHz usable capture, 62.5 MSps actual input and 16 taps per phase. Both RF sources retain their entering sample clock and FIR and default to the existing four-buffer transmitter; the mixed cycle lives on persistent storage and is removed on exit. Both benches first measure the common RF carrier with its USB/LSB pilots and requires three observations spanning a minute to agree within 2 Hz before calibration; this bounded warmup is outside acceptance time. A source that keeps drifting fails explicitly. Correct FT8 text must arrive before timing and continue during the run. The ordinary profile verifies eight AM/NFM/USB/LSB audio routes; the mixed profile verifies six analogue routes, known FT8 text and an IQ-only eighth route. Each runs eight shared recording tasks for at least ten minutes, then continues all subscribed streams for thirty minutes total. Ordered network output, exact source clocks, file CRC/compression, forced-stop prefixes, five-minute resource windows and restored configuration are retained separately. The controls gate also checks legal eight-route geometry and edge rejection at all twelve original capture choices. Expensive combinations are separate short admission/runtime observations, not a claim that eight wideband or neural modes are sustainable. Headless browser output verifies PCM playback; physical loudspeaker listening remains a separate observation. The analog-only `--cyclic-source` option uses the existing short hardware cycle to remove host TX streaming cost; its IQ8 frequency reference adjusts the source hardware LO, with no claim of source phase continuity. Streamed sources retain phase-continuous correction and reuse the phase ramp between reference updates. Both paths log corrections and retain the same RF tone and receive continuity checks.
+Run heavyweight builds separately; do not use unrestricted `make -j`. Rust test/build commands
+below use one build job and one test thread. Frontend Vitest is capped at two workers.
+Install Python tooling in a virtual environment:
 
-Both sustained benches measure an eighth-channel reference from actual IQ: the mixed profile uses its known +2 kHz pilot, and the ordinary profile uses the known −1.8 kHz LSB tone. They apply a common frequency correction with continuous phase to the transmitted waveform. It retains the device clock and modulation, logging every adjustment to `source-frequency-lock.jsonl`. This transmitter loop uses only the pilot frequency, never decoder output. The receive path keeps the acquired samples, and independent RF tone, stability and correct-text checks still apply.
-
-The native receive FIR computes four outputs together on processors with supported vector instructions, retaining each output's original f64 multiply/add order, coefficients and block tail. Other platforms use the scalar path. `ddc::fir::tests::parallel_outputs_match_scalar_bits_across_short_and_long_blocks` compares sample bits with independent scalar convolution across filter lengths and short/long blocks. Isolated FIR timings guide optimization and cannot replace sustained full-band RF reception.
-
-Coarse-channelizer overlap jobs reuse each worker's filters and FFT workspace, carrying only the required raw history samples per packet; the serial reference strategy retains complete state snapshots. Each worker has a bounded private input and receives packets in rotation, avoiding extra wakeups around a locked receiver. Each existing PFB worker may own one in-flight job; completed results retain source order. `pfb_pool::tests::reused_worker_history_matches_serial_bits_at_partial_boundaries` compares sample bits with continuous serial processing across sample rates, tap counts and partial-block boundaries. The mixed UI gate closes warmup subscriptions before starting the browser to avoid duplicate consumption. It hides an overlapping overview using its real close button and checks that listening continues.
-
-Full-rate hardware capture without a direct raw-IQ route batches four physical packets into each PFB/fine job, reducing thread handoffs while preserving 62.5 MSps input and 16 taps per phase. `sixteen_channel_tests::full_band_four_packet_batches_match_individual_packets_through_retune` checks all output bytes, including clocks and sequences, against individual-packet processing across a sixteen-channel retune. Other capture rates, direct routes and fake sources keep single-packet jobs. The USB handoff bound is unchanged; short benchmark results do not certify sustained RF operation.
-
-Historical RF acceptance applies only to its recorded binary and host conditions. The 2026-11-06 fine-owner and publisher changes require fresh RF evidence; do not reuse the earlier pass or modify unrelated desktop processes or CPU affinity to obtain one. `tools/bench/channelizer_scaling.py` compares explicit baseline/candidate binaries at 8 and 32 internal channelizer lanes. It checks raw-fixture PFB/fine/IQ throughput, not product capacity, demodulation or RF. Fine/framer wall-time totals now sum parallel owners; use individual owner/thread measurements to assess serial bottlenecks.
-
-The service admits sixteen receiver definitions; recording remains a separate eight-task quota. The sixteen-channel gates cover C16 admission, C17 rejection, independent receiver owners, all capture choices, known raw-ADC tones, source clocks and retuning C16 without changing the other fifteen streams. The historical eight-channel RF results do not establish sixteen-channel sustained RF capacity.
-
-Run the full-band synthetic probe with `python tools/bench/eight_channel_bench.py --channels 16 --seconds 30 --warmup 5 --artifacts <new-disk-backed-directory>`. It generates sixteen AM/NFM/USB/LSB carriers and checks IQ/PCM clocks and known audio tones without saving raw IQ or audio. Use `-j 1` and `--test-threads=1` for Rust gates and `--maxWorkers=1` for frontend tests on memory-constrained hosts; run builds and probes separately. Remove the probe's temporary adapter and resource logs after retaining the small verification report. No synthetic result substitutes for hardware reception.
-
-The [2026-11-06 synthetic report](../validation/sdr16-2026-11-06.json) records the 30-second full-band sixteen-channel pass, sixteen-channel browser playback and regression results; it is not hardware RF acceptance.
-
-## 1. Environment, build and run
-
-The service uses native Rust PFB/DDC; Python and retained browser WASM artifacts are
-offline tooling and optional diagnostics, not production backends. To run the committed
-bundle, use `./run.sh` or `./run.sh --fake`; see the [release prerequisites](../../README.md#run-the-bundled-release).
-The bundle contains `runtime/linux-x86_64/websad`, the project's SDK adapter and
-`runtime/frontend/dist/`. It requires Linux x86_64 with glibc 2.44, GLIBCXX 3.4.30,
-CXXABI 1.3.15 and dynamic FDK AAC (`libfdk-aac.so.2`). Hardware additionally requires
-the user-provided HAROGIC SDK; neither that SDK nor its dependencies are bundled.
-Rebuild for older distributions or other architectures; no cross-platform portability is claimed.
-
-Rebuild and package release outputs with `make build sdk-shim && make package-runtime`.
-`make package-runtime` alone copies and strips existing outputs without compiling. Keep the service,
-adapter and frontend bundle from the same release. The launcher prefers local rebuilt outputs,
-then the committed runtime; `WEBSA_BIN` and `WEBSA_STATIC` override those selections.
-Synthetic digital-mode playback needs the checkout's tracked `tests/fixtures/` in addition to
-`runtime/`. The root launcher sets the working directory; `WEBSA_FIXTURES` overrides the
-fixture directory, which otherwise defaults to `tests/fixtures` relative to that directory.
-
-Optional external receivers are installed independently with
-`tools/setup-sdr-decoders.sh --prefix "$HOME/.local/share/websa/decoders"`.
-The script pins and verifies multimon-ng, rtl_433 and OnAir, builds the first two serially,
-preserves sources/licenses, and leaves system packages and running services alone.
-Source the generated `env.sh` before launching your WebSA instance; it exports
-`WEBSA_MULTIMON_PATH`, `WEBSA_RTL433_PATH` and `WEBSA_ONAIR_SERVER`.
-Provider discovery is cached for the service lifetime; restart that instance after changing dependencies.
-The main runtime package does not bundle these GPL tools. OnAir's portable build is Linux x86_64;
-the setup script records its corresponding-source URL and checksum with the binary notices.
-For fixture verification, place normalized interleaved f32le IQ in
-`$WEBSA_FIXTURES/external/<mode>.f32` at the mode catalog's exact input rate.
-Missing files reject the configuration. FT4/WSPR require UTC-aligned live input and reject
-unaligned file/looping-fixture replay; pacing a recording alone does not establish slot alignment.
-
-GPS L1 C/A uses `tools/setup-gnss-decoder.sh` for the separately licensed GNSS-SDR
-executable and `cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websa-gnss`
-for the native process bridge. Install that bridge into the decoder prefix's `bin`
-directory and source its `gnss-env.sh`. The installer supports an isolated dependency
-prefix and a build-only Python/Mako virtual environment via `--dependency-prefix`
-and `--python`; the runtime bridge is Rust. See [GPS setup and real-recording provenance](../../tools/README.md#gps-l1-ca-from-sdr-iq).
-
-GPS requires at least 2.6 MSps before adaptation and exactly 4 MSps at the provider
-FIFO; a centered 3.90625 MSps capture can be adapted while preserving the configured
-band and filter transitions. The CTTC real-recording replay is verified. A cold-start
-435 MHz Pluto/SAN-90 run at gain −30 dB and 3.90625 MSps capture produced a valid
-four-satellite PVT solution after 63.41 seconds, with 3.653 m horizontal error
-against the synthetic target and no receiver error. This verifies the tested
-translated GPS bench path; passive sky reception remains unverified.
-Normal and reverse RTTY are implemented by the independent OnAir companion:
-run `tools/setup-rtty-decoder.sh`, then restart the service. The default decoder prefix
-is discovered automatically; a custom `--prefix` needs its `rtty-env.sh` or `WEBSA_DECODERS_PREFIX`.
-Both 45.45-baud/170-Hz modes decoded known text in offline fixtures and over the
-435 MHz Pluto/SAN-90 bench. See [RTTY setup and replay](../../tools/README.md#independent-rtty-companion).
-
-To rebuild, use Linux, Rust stable ≥1.95, a C/C++ toolchain, CMake,
-pkg-config and Node.js 22.22+, 24.15+ or ≥26 (the frontend test stack's floor; a plain Vite
-build accepts 22.12+). Python 3.12 or 3.13 supports tests, fixtures and bench tools; it is
-not a production backend. Native audio decoding requires FDK AAC ≥2.0.3 at build time and
-its shared library at runtime; [the workflow](../../.github/workflows/ci.yml) records the
-pinned source and installation. The user-provided vendor SDK is required for hardware operation.
-
-Run these commands from the repository root, in sequence:
-
-```sh
-python3 -m pip install -r requirements-dev.txt -c requirements-lock.txt
-make frontend
-make native
-./run.sh --fake --port 8099 --instance websad-dev
-./status.sh --instance websad-dev
-./stop.sh --instance websad-dev
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-dev.txt -c requirements-lock.txt
+python -m playwright install chromium
 ```
 
-`make frontend` runs `build.sh` and produces `frontend/dist/`. Rebuild after frontend changes:
-the service serves that bundle. `make build` builds the frontend and native service;
-`make wasm` is an explicit offline DSP artifact build, not a product frontend prerequisite.
+`make wasm` rebuilds optional diagnostic artifacts only. `make soapy-driver` builds the pinned
+patched driver into a user prefix. Provider/model setup is in the [tools guide](../../tools/README.md).
 
-The native release profile uses optimization level 3, 16 codegen units and incremental
-compilation without LTO. Keep `backend/target/` between builds. A profile or toolchain
-change rebuilds dependencies; release binaries and test harnesses have separate panic strategies.
+## Test by responsibility
 
-Keep `make build` warning-free with the default compiler and Vite diagnostics enabled.
-Font URLs in CSS use `/fonts/` from `frontend/public/`; Vite applies the `/static/dist/`
-base. Translations are emitted as a separate, eagerly loaded `i18n` chunk to keep the
-main bundle below Vite's default chunk-size limit without changing language initialization.
+| Command | Responsibility |
+|---|---|
+| `./test.sh` | Native service contracts, Python tools, Ruff and frontend behavior |
+| `make wasm-test` | Native shared DSP kernel tests; does not run browser WASM |
+| `make ci` | Above suites, fixture/version/document/architecture guards, Soapy patch and frontend build |
+| `make e2e-fake` | Isolated fixture service: browser smoke, state regression and viewport geometry |
+| `make hw-test` | SAN hardware plus tinySA and browser measurement checks |
+| `make bench` | Compare a running service to the recorded performance baseline |
 
-For hardware, install the vendor SDK, then run `make sdk-shim` and `./run.sh`.
-`SDK_ROOT` and `SDK_SHIM` configure the shim build; `WEBSA_RUST_IQS_SHIM` selects it at runtime.
-Building the adapter also requires libusb development headers (`libusb-1.0-0-dev` on Debian/Ubuntu; `libusb` on Arch). Full-rate continuous capture uses four USB transfers on a dedicated pump and a fixed 1024-packet / 64 MiB handoff (about 266 ms, covering the measured 233 ms scheduling tail). The pump handles raw bytes; vendor operations stay on the retained SDK owner. Delivery follows submission order, and handoff overflow is terminal. Consuming a capture packet immediately wakes the device owner waiting for queue capacity; queue bounds, control handling and backlog deadlines remain enforced. Stop and reconfiguration cancel and reap callbacks before joining and releasing buffers. Callback completion is synchronized because libusb can dispatch it from another event-handling thread; see [libusb threading](https://libusb.sourceforge.io/api-1.0/libusb_mtasync.html). Other sample rates retain the original read operation. `tests/test_iqs_usb_pipeline.py` checks ordering, bytes, cancellation, partial reads and failures with simulated callbacks, without a vendor library or radio.
-The default instance is `websad` at `127.0.0.1:8080`. Use `WEBSA_INSTANCE` or `--instance`
-to select it; status and stop read saved endpoint/ownership metadata. Keep one process as the device owner.
-See [FAQ notes](FAQ_NOTES.md) and [the tools guide](../../tools/README.md) for service and hardware configuration.
+The hosted workflow is `.github/workflows/ci.yml`; it also runs focused workbench/recording
+browser checks. A local `make ci` is not an assertion that every hosted or hardware job ran.
+On small-memory hosts, serialize heavy builds, decoder/NR tests and performance measurements.
+Independent lightweight browser tests may run with limited concurrency after checking memory headroom;
+sustained real RF measurements run exclusively to avoid contaminating the results with test load.
 
-The Pluto bench dispatcher supports `radiofax` and `wefax` through the same streaming transmitter. Use `python3 tools/pluto_tx.py radiofax --dry-run` without hardware, or add `--image chart.png --ioc 576 --lpm 120` for a page. Image height keeps its aspect ratio unless `--lines` is set. `--modulation am`, `--polarity inverted`, framing durations, offset, repeat and pause follow the mode's help. Default FM uses APT, 30 s phasing, 1500–2300 Hz image tones and APT stop. 180 LPM needs manual receiver settings. Full pages stream at the radio's accepted rate in fixed chunks; dry-run builds only a short head. See the [tools guide](../../tools/README.md) for examples.
+For a focused native regression:
 
-`tools/pluto_tx.py` also dispatches DTMF/APRS/AIS/FT4/WSPR and synthetic GPS.
-Digital and GPS generators use the shared `pluto_radio.Radio` streaming APIs
-`open_stream`, `prime_stream`, `push_chunk` and `drain_stream` with four queued
-buffers. Install the GPS source with `tools/setup-gps-simulator.sh`.
-The shared radio layer enables a powered-down TX LO before transmission and
-restores its original power state after destroying the TX buffer on exit.
-The GPS CLI permits only a requested 435 MHz carrier; LO readback must be within
-100 Hz. Before waveform generation, it negotiates a sample-rate readback within
-20 Hz of the request and divisible by ten, then generates at that exact rate.
-Its default TX rate is 2.6 MSps, independently of the exact 4 MSps receiver-provider
-input. GPS gain defaults to −70 dB; the selected bench setting is explicit
-`--gain -30`. A completed transmission alone does not establish GPS RF decoding.
-See the [transmit guide](../../tools/README.md#rf-transmit-and-capture) for the
-synthetic scenario, receive opt-in and continuity limits.
-
-**Memory-limited hosts: builds must be serial and isolated.** Run Rust builds, Rust tests and
-browser suites sequentially; do not use parallel Make. Cargo `-j 1` limits only one invocation,
-not other builds or browsers. Keep `--test-threads=1` for Rust test runs. Isolate builds from
-the device process with the host's available resource controls and an explicit memory limit.
-The launcher uses a detached background process and does not require a service manager.
-
-Start the multichannel development prototype with `npm --prefix frontend run dev:workbench`, then open
-`http://127.0.0.1:5186/static/dist/workbench.html`. This standalone Vite page uses a fixture adapter,
-connects to no native service, starts no audio and writes no recordings. The production build excludes it.
-See [MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md) for the state contract and native offline experiments.
-Browser regression: `python tools/e2e/multichannel_workbench.py` with a Playwright-enabled Python.
-
-In the prototype, right-click the spectrum/waterfall to listen at that frequency, or use “＋ Listen to frequency” with MHz/kHz/Hz input.
-Create a separate listening receiver when capacity permits, or explicitly choose an existing listening receiver.
-The preview identifies recording boundaries; local routing starts after confirmation and preserves the editing target.
-An already received frequency reuses its stream. This fixture entry produces no real audio.
-
-Hardware-free native experiment (0.05 seconds of synthetic input by default; not capacity acceptance):
-
-```sh
-cargo run --offline --release -j 1 --manifest-path backend/Cargo.toml --features iq-experiments --bin multichannel_experiment -- /tmp/websa-multichannel-experiment 0.05
+```bash
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib TEST_NAME -- --test-threads=1
 ```
 
-Produces `report.json` and experimental `.wbiq` files, retaining CF32 bits and actual rates.
-`--offline` requires cached Zstd dependencies.
+Keep tests that verify distinct contracts even when inputs overlap: numerical correctness,
+serialization, source clocks, state transitions, consumer cancellation and actual browser wiring
+catch different failures. Remove a test only after identifying the replacement coverage. Avoid
+source-string checks where an observable behavioral assertion is practical. Hardware tests and
+synthetic probes must retain separate labels and prerequisites.
 
-Production SDR → **Channels** opens the native receiver workbench. Build frontend/native, then use `./run.sh --fake --port 18139 --instance p3-dev` for an isolated synthetic service. Stop only that instance with `./stop.sh --instance p3-dev`. `python tools/e2e/native_multichannel.py` starts and cleans up its own independent service and checks actual IQ transport plus window lifecycle; it requires Playwright and websockets. Hardware RF validation remains separate.
+Browser asynchronous conditions must wait for their resolved result and verify that a persistently
+false condition times out; a Promise object itself must not count as success. Mark manual cases
+requiring additional captures as ignored, and fail explicit runs when their inputs are missing
+instead of returning and counting them as passes.
 
-The main Listen label shows the selected channel. Arrows beside Channels switch receiving channels; tuning and demodulation controls follow that channel without retuning on selection. The `＋` shortcut copies the current frequency and demodulation settings into an independent channel; at capacity it first asks which channel to replace. Each channel retains its own NR algorithm, gain and AGC. Neural NR has no singleton limit: admission measures local demodulation and NR at the actual channel rate, including stereo, with a twofold processing reserve. External/protocol processing retains its separate conservative budget. A rejected overload leaves all requested settings and running receivers intact. Spectrum and waterfall show other channels with colored passbands and share a faint dashed hover preview that clears on leaving the plots. Gate: `python tools/e2e/sdr_channel_shortcuts.py --artifacts /tmp/websa-channel-shortcuts`.
+## Extend the implementation
 
-`python tools/e2e/native_multichannel_nr.py` owns a separate synthetic service and verifies two simultaneous DFN receivers, then DFN alongside each other neural algorithm. It checks real model status, finite non-silent continuous AUD2, and gain/AGC changes that preserve the other channel's configuration and stream. It records measured processing reservations; this short gate does not certify sustained hardware capacity.
+Follow [state ownership](reference/STATE.md) for controls and [API](reference/API.md) for wire changes.
+Backend capabilities are authoritative; avoid hard-coded frontend limits. Source capacity lives
+in `contracts/service-capacity.json`, and version metadata in `pyproject.toml`.
 
-Entering SDR opens the waterfall with an equal spectrum/waterfall split; Preset restores this layout and selects C1. Waterfall clicks tune the selected receiver, and Zoom drags select the shared display window. The workbench groups reception on/off, duplicate and delete in one row, with duplicate/delete shortcuts in each channel’s More actions. Identical frequency, receiver audio settings, local volume and pan play through one route; moving the scratch receiver restores both independent routes automatically. This local rule leaves reception and recording tasks independent.
+A new receiver mode needs a catalog descriptor, admission/rate constraints, processing ownership,
+output/clock behavior and a failure path. Reuse shared DSP kernels; avoid a parallel browser
+implementation. A UI control needs its existing intent/receipt path, bilingual labels, accessible
+focus behavior and a regression at the appropriate boundary.
 
-P4 monitoring/decoder gate: `python tools/e2e/native_multichannel_processing.py --artifacts /tmp/websa-p4-processing`.
+Keep comments for units, ownership, invariants, numerical derivations and non-obvious tradeoffs.
+Delete obsolete migration narratives and comments that only repeat the code. Preserve third-party
+source provenance and license files. Update both document languages in the same change.
 
-Recovery and compact layout gate: `python tools/e2e/native_multichannel_recovery.py --artifacts /tmp/websa-p4-recovery`.
-Chromium cuts and reconnects a real UID audio socket, checks resumed output PCM, and operates forms, compact popouts, Dock, retirement and slot reuse.
-The production workbench enables IQ recording from actual capabilities and hides unavailable preset/scene actions and folds IQ and shared audio settings into disclosures. Compact windows retain editing controls. Direct Listen during follow switches to manual mixing while preserving the editor target.
-The main Channels entry focuses the workbench while preserving independent popouts; Recall all windows and Dock remain explicit layout actions.
-It owns a synthetic/replay service and checks actual browser PCM gain/pan, Solo/follow, FT8 output, SSTV pixels and
-window lifecycles. The production Signal settings tab uses actual mode/provider capabilities. Local speakers controls
-leave shared PCM unchanged; Shared audio gain explicitly configures backend output. See [MULTICHANNEL_DRAFT](MULTICHANNEL_DRAFT.md)
-for semantics and the remaining shared-sample-block migration.
+Report manual reading, repository-wide static checks and behavioral regression coverage separately;
+a file inventory or structural scan does not replace reading the implementation. Fault injection must
+first fail on the original behavior, then verify rejection, cleanup and recovery after the fix.
+Keep conclusions about the Python reference, Soapy and production SDK shim separate.
 
-The workbench has three settings tabs: Signal settings, Recordings and Live outputs. A single mode selector includes None (IQ only); listening and IQ recording are independent actions. Selecting a channel edits it in place, while Separate window opens fixed settings. Signal info/Results opens an already running processor’s readings. Buttons carry action tooltips. Live outputs lists actual WebSocket connections; the folded IQ preview counts local delivery and does not save files.
+## Fixtures and evidence
 
-Live workbench/Decode interaction gate: `python tools/e2e/native_multichannel_ui.py --artifacts /tmp/websa-multichannel-ui`.
-It owns an isolated synthetic/replay service and recording directory. Chromium holds real mouse and Space presses across updates,
-checks that live controls are never detached, retains drafts/search selection/scroll, reads actual FT8 messages and SSTV pixels,
-and operates a 420px Pop out/Dock while backend IQ recording continues. It also checks actual AM waveforms, same-UID listening + IQ recording + filtered CSV/JSONL downloads and a decoded PNG downloaded from the popup. It does not qualify RF hardware.
+Golden frames and DSP fixtures under `tests/fixtures/` connect Python reference generators, Rust
+kernels and TypeScript decoders. Generator `--check` modes are CI contracts; regenerate intentionally
+and review the changed values instead of updating fixtures merely to make a test pass.
 
-P5 IQ recording gate: `python tools/e2e/native_multichannel_recording.py --artifacts /tmp/websa-p5-recording`. It isolates storage/service and uses an independent CRC32/libzstd reader to compare every archived block against actual network IQ bytes. It checks rate/tuning boundaries, drained stop, real mouse clicks across polling, 420px Pop out, Dock, recording after browser exit and recovery after SIGKILL. This validates synthetic input; RF and sustained disk throughput require separate acceptance.
+For sixteen-channel synthetic coverage, use the existing probe with an unused persistent output
+folder: `python tools/bench/eight_channel_bench.py --channels 16 --seconds 30 --warmup 5 --artifacts <new-directory>`.
+The legacy filename does not limit channel count. Synthetic checks do not certify RF reception.
 
-`WEBSA_RECORDING_DIR` selects backend storage for the instance; the default is `$XDG_DATA_HOME/harogic-websa/recordings/<port>` (falling back to `~/.local/share`). An exclusive file lock prevents shared ownership; separate instances need separate directories. Startup streams checked prefixes and rebuilds JSONL indexes for interrupted/failed tasks without automatic resumption. The workbench exposes IQ start/stop, state and size with collapsible compression/clock details. Completed/failed IQ tasks expose Waveform / SigMF when the service advertises `iq_archive_read`; old-service/retired-UID tasks are accessible under Earlier recording tasks. Select a segment and sample range to inspect I/Q, seek, play the waveform at its actual rate or download standard SigMF. Each range is limited to 1,048,576 samples, 4096 blocks and 4 MiB provenance. Published-audio recording and bounded analogue file playback are available as described above; digital file decoding remains future work. The results window can download retained messages as filtered CSV or JSONL (all pages) and the selected picture as PNG. These are bounded browser-session snapshots; continuous recording remains a backend task. JSONL keeps receipt time separate from protocol UTC and preserves source timing strings. Unfinished pictures carry a partial filename; PNG export bounds RGBA memory to 20 MiB. Text tools appear only for text/table modes or retained text; audio-only modes show signal information without message filters or clear actions. AM/WFM reuse the original audio-scope renderer; CW shows native speed, tone and tuning offset; DRM shows station/programme and lock information.
+With controlled RF coupling between a SAN90 and PlutoSDR, build an SDK shim matching the current
+source, stop services using the device, and run:
 
-Monitor sliders control the selected channel in this browser. Enable its Listen first; volume shows a percentage and pan a left/centre/right position. Pan needs stereo output. Editing another channel does not retarget the audible mix. Inactive, failed or stopped channels disable the sliders, and master/Solo mute remains explicit. Common instructions have moved out of the main workbench; action help is available on hover and source details are collapsed.
+```bash
+python tools/bench/multichannel_rf.py --shim <matching-sdk-shim.so> \
+  --channels 16 --seconds 600 --gain -10 --artifacts <new-external-directory>
+```
 
-For large recorded IQ downloads, select Entire segment or enter a range and Download SigMF. Services advertising `iq_archive_export` use native browser downloads, with CF32 data files below the POSIX tar 8 GiB bound; waveform preview stays limited to 1,048,576 samples. Older services retain their original small-download capability. Regression: `python tools/e2e/native_multichannel_stream_export.py --artifacts /tmp/websa-stream-export --sigmf-python /path/to/sigmf-venv/bin/python` (`sigmf==1.6.1`). It checks an explicitly repeated offline 32 MiB fixture, real speaker gestures/PCM, cancellation, corruption, stalled TCP consumers, recording isolation and independent SigMF parsing. It does not qualify RF capture or the sound device.
+The tool owns its service and transmitter. It checks all 32 IQ/audio streams for sixteen
+AM/NFM/USB/LSB receivers, exact sample continuity, identity, and known tones at the start and end.
+Capture uses 62.5 MSps / 50 MHz; the stimulus occupies 434.85–435.15 MHz. This does not establish
+RF quality across the entire 50 MHz or every decoder combination. Choose TX gain for the actual
+coupling; the example does not guarantee a pass on every bench. On exit, the tool stops its service,
+restores Pluto settings and deletes tone PCM after recording hashes. Pause heavy builds and browser
+tests during this measurement.
 
-Finished IQ tasks with multiple segments expose All segments when `iq_archive_collection` is available. This downloads a standard SigMF Collection archive while keeping each segment's rate, tuning and source clocks separate. Regression: `python tools/e2e/native_multichannel_collection.py --artifacts /tmp/websa-collection --sigmf-python /path/to/sigmf-venv/bin/python`. It checks actual native recordings against network IQ, a two-rate 32 MiB raw/Zstd fixture, direct official `SigMFCollection` loading after extraction, SHA-512 metadata references, per-record schema/sample validation, cancellation, later-member corruption, healthy recording, 420px downloads and two-segment SIGKILL recovery. The official 1.2.6 collection JSON Schema still admits only legacy tuples, whereas the specification recommends name/hash objects and sigmf-python 1.6.1 reads those objects. The gate records this upstream schema discrepancy without modifying the reader/schema; it validates each Recording with the official schema and directly verifies the Collection through the official reader.
+Record binary revision/hash, device/firmware, capture geometry, host load, duration, expected signals,
+continuity and output artifacts for hardware/performance evidence. Do not tune unrelated processes
+to manufacture a benchmark pass. Keep reports in CI artifacts or outside the checkout, and remove owned bulk temporary captures.
+The comparison tool attributes CPU only to the owner of the requested local loopback HTTP listener;
+remote services or ambiguous listeners have no local CPU measurement.
 
-## 2. Dependency direction and ownership
+## Release and cleanup
 
-| Area | Responsibility |
-|---|---|
-| `backend/src/bin/websad.rs` | Service lifecycle, commands, STATUS and transport |
-| `backend/sdk/san90_sdk.cpp` | Retained device session and serialized SDK calls |
-| `backend/src/` | Native channelizer and receivers |
-| `dsp/core/`, `dsp/deepfilter/` | Shared native/WASM DSP crates and explicit browser diagnostics |
-| `tools/reference/` | Offline reference and fixture support |
-| `frontend/src/core/` | Types, parameter slots, results, runtime state and protocol |
-| `frontend/src/dsp/` | Pure frontend calculations |
-| `frontend/src/render/` | Drawing and repaint seams |
-| `frontend/src/ui/`, `frontend/src/meas/` | Interaction, measurement lifecycle and registration |
-| `frontend/src/audio/` | Audio workers, worklet and resampling |
+After building a service executable, restart the intended instance and verify `./status.sh` and
+its process executable. An old process can keep its previous inode after a successful rebuild.
+If restarting is deferred, say so explicitly in the handoff.
 
-Dependencies point from orchestration toward leaves. Shared types, parameter slots, pure
-helpers and registry seams must not import their consumers. Keep frontend module cycles at
-zero. Renderers draw; they do not write application state. Keep acquisition and heavy DSP off
-the HTTP/WS event loop and browser main thread. Production processing uses the native PFB
-path; offline Python references must not become runtime fallbacks.
+`make package-runtime` copies existing native/frontend/adapter outputs; it does not compile.
+Build matching artifacts first. The package includes native NR dependencies/notices as supported
+by the packaging helper; optional external providers remain separate. Verify the packaged launch
+and runtime library requirements rather than assuming a development machine proves portability.
 
-## 3. Parameters, results and display state
+`make clean` removes caches/dist while retaining dependencies and Rust targets. `make clean-all`
+also removes dependencies and targets; committed diagnostic WASM remains. Never remove user
+recordings, logs needed for diagnosis or unrelated caches as incidental cleanup. Documentation
+covers current usage, interfaces, build procedures and maintenance constraints. Update both languages,
+check document links/structure, and remove superseded pages. Keep individual screenshots, logs and
+measurement reports in CI artifacts, release attachments or test directories outside the checkout.
+Turn data needed for regression into documented `tests/fixtures/` inputs. Use Git for old documents
+and historical reports.
 
-| Kind | Owner and rule |
-|---|---|
-| User parameters | Slots in `ui/*State.ts`: user actions call `set()`, STATUS calls `confirm()`, readers call `get()` |
-| Client-only preferences | Slots with `authoritative: true`; backend confirmation is not expected |
-| Traces and measurement results | `core/results.ts`, with explicit setters and no desired/confirmed semantics |
-| Connection, trigger and mode runtime | `core/store.ts`, through explicit setters |
-| Persistence | The slot's `persistKey`; avoid independent localStorage copies |
+## Dependencies and notices
 
-Treat backend STATUS as device truth. Keep requested and actual values distinct; do not
-confirm from a pending user value or a private cache. Reset must invalidate stale intent.
-Use explicit absence rather than a valid frequency or level as an unset sentinel. Read slots
-once outside hot loops. Mode switches preserve preferences; explicit handover actions change
-them deliberately.
+- Project code (backend + frontend): **MIT** licensed
+- Native listening NR includes DeepFilterNet3, GTCRN, UL_UNAS, and FastEnhancer. The latter three use official MIT-licensed ONNX weights and the native ONNX Runtime CPU library; PCM DSP and streaming are implemented in Rust. See [model versions, notices, rates, attenuation and delay](../../backend/models/nr/README.txt). Source builds can restore the pinned library with `bash tools/fetch-nr-runtime.sh` before `make package-runtime`.
+- `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
+- `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
+- Official [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` is **GNU LGPL v2.1 or later** and is downloaded at build time, not vendored. `tools/soapy-htra-stream-format.patch` is this project's compatibility patch and is applied only to a private build copy.
+- Optional [multimon-ng](https://github.com/EliasOenal/multimon-ng) and [rtl_433](https://github.com/merbanan/rtl_433) use GPL v2; [OnAir](https://github.com/adswill/OnAir) uses GPL v3 with component-specific notices. They run as independently installed processes, not copied decoder code in the MIT host. The setup script preserves pinned sources/licenses for source-built tools and OnAir's binary notices plus corresponding-source information; redistributors must retain the applicable upstream terms.
+- `tools/companions/rtty/main.cpp` is **GPL-3.0-or-later**, a separately built companion linked to OnAir's RTTY decoder. It is an explicit exception to the host's MIT license; `backend/src/external/rtty.rs` communicates with that executable through pipes. See [RTTY setup and replay](../../tools/README.md#independent-rtty-companion).
+- `tools/vendor/ggmorse/`: the CW (Morse) decoder is
+  [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at
+  commit `7b4822a8` (see `tools/vendor/ggmorse/LICENSE`). `backend/cw_build.rs` compiles it
+  into the native service with the project's `backend/native/ggmorse_bridge.cpp` bridge.
 
-The channel workbench uses service snapshots as confirmed state. Its session serializes receiver mutations,
-coalesces repeated deletion, and scopes queued edits and late replies to a service generation. Deletion blocks
-later starts for that receiver; restart or disposal invalidates old work. Drafts remain local to each view and
-receiver. Main-panel listening recovery requires the matching command acknowledgment and a healthy snapshot;
-a later explicit monitor choice takes precedence. `tools/e2e/multichannel_audio_settings.py` gates these controls,
-burst deletion, compact layouts and playback recovery on an isolated fixture service.
+## Maintenance priorities
 
-Keep manual display Ref separate from the requested and effective hardware references. The local
-viewport uses -200..+100 dBm plus Offset; wire requests clamp Ref minus Offset to -160..+40 dBm.
-Matching raw reports must retain the chosen viewport. Repeated clamped targets must reuse pending
-or accepted hardware intent. Pending edits survive stale STATUS and roll back on rejection or timeout. Explicit
-Auto is a bounded operation; cancel stale decisions on manual, frequency, mode or Preset changes.
-SDR entry fitting is display-only and must not configure IQS. See [FAQ notes](FAQ_NOTES.md) for
-overflow recovery and placement rules. Apply amplitude offset once at the display boundary.
-Read actual gain from the active SDK mode, preserving missing readbacks as null; preamp Auto/Off
-describes the requested policy, not a physical on/off indication. Give each shared display slot
-one owner; restore the user's prior choice when an exclusive measurement ends. Status changes
-must request a repaint even when acquisition produces no frames. Waterfall mapping changes clear
-history even while paused; reject non-finite or invalid level ranges before changing state.
-
-## 4. Extending the implementation
-
-- Commands and parameters: implement native validation, mode ownership and transitions; update
-  the HTTP/WS contract and `tests/fixtures/contract/schema.json` together. Use frontend slots
-  and the existing command sender. Publish device limits once through capabilities.
-- Modes and measurements: define lifecycle, acquisition, recovery and result ownership. Register
-  renderers and measurement tabs through their existing registries, and ensure the entry point
-  imports registration modules. Assert that entering the mode produces its visible result.
-- Frames: update the native encoder, retention policy, `core/frames.ts` decoder and shared golden
-  fixtures together. Verify the layout on both consumers; `tools/reference/framer.py` is offline support.
-- Panels: put actions in `ui/panels/`, use existing action bindings, and add text in both i18n
-  languages. Resolve field/input identifiers with `inputForField()` and `fieldForInput()`.
-- DSP: use the shared Rust kernels or pure frontend DSP modules. Preserve sample accounting,
-  ordering and bounded queues. Keep SDK calls on the retained session thread, with stable
-  handle storage; initialize thread-sensitive runtimes on their owning thread.
-
-Update affected documentation with the implementation. Comments should explain invariants,
-units, ownership or constraints, not sessions, attempts or review finding identifiers.
-
-## 5. Tests, fixtures and CI
-
-Choose assertions that fail when the behavior is broken: numerical relationships, boundary
-conditions, transitions, protocol bytes and visible results. Avoid implementation copies and
-counters that merely prove a renderer was called. Label proxies and their evidence limits.
-Keep real captures, golden fixtures, models and vendor provenance when they have consumers;
-regenerate only reproducible fixtures with their existing generators.
-
-Lifecycle tests require a locally built `backend/target/release/websad`. The Python CI job and `./test.sh` build it before pytest; the bundled runtime has its own host ABI requirements and is not the CI executable. Native recording tests require FFmpeg with libopus; CI installs FFmpeg explicitly.
-
-| Layer | Entry point and evidence |
-|---|---|
-| Native service and tools | `./test.sh`: release-mode backend library and binaries, standard-profile integration tests, Python tool tests, Ruff and frontend Vitest |
-| DSP kernels | `make wasm-test`: release-mode native Rust kernel tests against reference fixtures, including optimized FT8 paths |
-| Soapy patch | `make soapy-check-patch`: helper shell syntax and pinned patch applicability; requires curl + patch, no SDK |
-| Soapy stream | `make soapy-check-stream SDK_ROOT=/opt/htraapi`: actual patched driver with real vendor headers, SoapySDR development files and stub HTRA; no vendor library or device |
-| Local aggregate | `make ci`: kernel and service/tool/frontend tests, SDK-free Soapy patch check, version and fixture checks, DOM/registration/doc/architecture guards, frontend build |
-| Browser fixtures | `make e2e-fake`: native fixture service, UI smoke, state regression and viewport geometry gate |
-| Hardware | `make hw-test`: tinySA-driven smoke, command sweep and UI state regression |
-| Performance | `make bench`: comparison with `tools/bench/bench_baseline.json` |
-
-Read DSP ABI text messages immediately after the push that reports them. Later pushes replace this result list; the lifetime decode count does not retain message payloads.
-Run backend library, binary and integration targets in separate Cargo invocations. Combining them can collide with this project's shared-library output artifacts. Integration tests use the standard test profile to match the harness's unwind strategy; production release artifacts use abort.
-
-Install browser support with `python3 -m playwright install --with-deps chromium` and build
-the frontend before browser runs. Fixture mode proves application behavior without the SDK;
-it does not prove RF correctness, sustained capture or hardware recovery.
-
-The density smoke scenario opens Trace → More before selecting Persist. It checks that
-Off removes the density layer, saves `rta-halflife`, and survives mode changes; persistence
-values are half-lives in seconds.
-
-`make ci` and GitHub Actions are different entry points. The workflow has separate native,
-Python tools (3.12 and 3.13), frontend, UI smoke and architecture jobs. It explicitly runs
-`npx tsc --noEmit` and installs dependencies in clean environments. Its browser job runs
-`ui_smoke.py`, `state_regression.py`, `multichannel_audio_settings.py`,
-`native_audio_formats.py` and `workbench_polish.py`. The last gate starts a temporary
-Vite server with cleanup on exit; the local `make e2e-fake` also runs
-`viewport_baseline.py`. Consult [Makefile](../../Makefile), [test.sh](../../test.sh) and
-[ci.yml](../../.github/workflows/ci.yml) for the actual gates; neither a local aggregate nor
-one CI job substitutes for hardware validation.
-
-Both `make ci` and hosted CI run `soapy-check-patch`, including `bash -n` for the helper
-and patch applicability against the pinned upstream sources. It requires `curl`, `patch`
-and standard shell utilities. The separate `soapy-check-stream` gate also requires
-`pkg-config`, `realpath`, a C++ compiler, SoapySDR development files and real vendor SDK
-headers under `SDK_ROOT`. It links only SoapySDR and uses stub HTRA functions; it checks
-the stream contract without qualifying RF acquisition or client applications.
-
-## 6. Hardware validation and performance isolation
-
-Use a dedicated device session, fixed RF source and configuration, one intended client and
-no competing builds, benchmarks or browser suites. Record configuration, duration, warnings,
-packet/sample continuity and the exact command. Exercise the native service and actual browser
-surface; frame counters alone do not prove the trace, audio or decoder result is correct.
-Include the relevant mode transitions, reconfiguration and recovery paths.
-
-Keep a hardware result's scope explicit. Synthetic throughput, short captures and headless
-transport checks do not establish sustained RF or full-layer browser performance. Consult
-[the tools guide](../../tools/README.md) and [Architecture](ARCHITECTURE.md)
-for focused capture and receiver checks. Do not present old results as fresh verification.
-
-Before comparing performance, establish a clean device state and remove unrelated host load.
-Avoid per-frame allocation and repeated work; preserve transport backpressure and stream-specific
-retention. `make bench` uses a retained baseline whose workload and protocol applicability must
-be checked before interpreting it for the native service. `make bench-record` rewrites that
-baseline; use it only with documented comparable measurements, not to hide a regression.
-Architecture baselines likewise require an explained, reviewed change when relaxed.
-
-## 7. Failures and releases
-
-Native recovery owns device link failures; process failures require `make restart`. Preserve error
-context in the instance log, and expose UI/script diagnostics through STATUS. Keep warnings distinct
-from failed acquisition, including usable IQ returned with an SDK warning. Do not turn a
-recoverable warning into silent data loss or claim a disconnected device is healthy.
-
-Start diagnosis with `./status.sh` (select a named instance with `--instance`) and read its
-reported log file. For a blank canvas, check the rebuilt bundle, registration reachability and
-visible pixels. For a stale control, inspect STATUS, pending intent and main-thread load.
-For a device-busy failure, inspect exclusive ownership before retrying.
-
-Use English `type(scope): summary` commit messages that explain the change and its purpose.
-Keep commits independently valid. Run applicable gates before release, including hardware
-validation for device behavior, and state any unverified scope explicitly. Update the version
-in `pyproject.toml`, then run `python3 tools/checks/sync_version.py`; `--check` validates the
-frontend package, lockfile and HTML copies. Rebuild the frontend before validating a release.
-Merge reviewed work and tag the validated version; keep source, documentation and release
-artifacts consistent.
+| Priority | Work | Acceptance |
+|---|---|---|
+| P2 | Extend sixteen-channel real RF coverage across frequencies, modes and host loads | Retain binary/host/capture/source/duration/continuity and failure evidence; use bounded USB diagnostics to investigate intermittent transfer timeouts during resource pressure, without treating one successful run as a root-cause fix |
+| P2 | Extend blanker real-audio and concurrent model-memory evidence | Preserve analytic cold-start/cross-block pulse/step references and record partition effects; distinguish process RSS from exclusive model cost |
+| P2 | Replace remaining source-string tests with behavior where practical | Equivalent failure coverage, not merely fewer test files |
+| P2 | Qualify Soapy geometry across real SDK/device combinations | Retain allocation/malformed-packet fault injection; add actual width/rate evidence without relaxing bounds |
+| P2 | Qualify process exit and recovery when a real SDK call never returns | Retain owner retirement/exclusion regressions; separately verify the launcher deadline for vendor calls and static destructors |
+| P2 | Re-audit older archive compatibility when retirement is proposed | Real retained-file compatibility evidence and explicit migration path |

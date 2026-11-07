@@ -171,8 +171,6 @@ pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
     if super::audio_files::is_direct(&lane.task.lock().unwrap()) {
         return super::audio_files::work(lane, path);
     }
-    fs::create_dir(path)?;
-    File::open(path.parent().unwrap())?.sync_all()?;
     let mut task = lane.task.lock().unwrap().clone();
     persist(path, &task)?;
     let mut writer = writer(path, 0)?;
@@ -639,13 +637,27 @@ mod tests {
         let mut task = finish(&mut manager);
         let path = root.join(task["task_id"].as_str().unwrap());
         task["state"] = json!("recording"); task["tracks"][0]["segments"][1]["file_complete"] = json!(false);
-        persist(&path, &task).unwrap(); drop(manager);
-        let reopened = Manager::open(root.clone()).unwrap();
-        let recovered = &reopened.snapshots()[0];
-        assert_eq!(recovered["state"], "failed");
-        assert_eq!(recovered["tracks"][0]["segments"].as_array().unwrap().len(), 1);
-        audio_files::prepare(&path, recovered, None, &AtomicBool::new(false)).unwrap();
-        drop(reopened); fs::remove_dir_all(root).unwrap();
+        drop(manager);
+        // The worker may persist a finalized segment before the admission counter
+        // is checkpointed. A newer checkpoint may also include an unfinished tail.
+        for accepted in [0, 32] {
+            task["accepted_bytes"] = json!(accepted.to_string());
+            persist(&path, &task).unwrap();
+            let reopened = Manager::open(root.clone()).unwrap();
+            let recovered = reopened.snapshots()[0].clone();
+            assert_eq!(recovered["state"], "failed");
+            assert_eq!(recovered["fault"]["code"], "SERVICE_INTERRUPTED");
+            assert_eq!(recovered["tracks"][0]["segments"].as_array().unwrap().len(), 1);
+            assert_eq!(recovered["tracks"][0]["raw_bytes"], "16");
+            assert_eq!(recovered["accepted_bytes"], accepted.max(16).to_string());
+            assert_eq!(recovered["queued_bytes"], "0");
+            audio_files::prepare(&path, &recovered, None, &AtomicBool::new(false)).unwrap();
+            drop(reopened);
+            let reopened = Manager::open(root.clone()).unwrap();
+            assert_eq!(reopened.snapshots()[0], recovered, "recovery must remain stable");
+            drop(reopened);
+        }
+        fs::remove_dir_all(root).unwrap();
 
         let root = directory(); let mut manager = Manager::open(root.clone()).unwrap();
         manager.start_configured("uid", "service", "empty", "audio", "opus", "empty").unwrap().wait().unwrap();

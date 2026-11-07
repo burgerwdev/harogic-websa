@@ -13,6 +13,21 @@ beforeEach(() => { setLang('en'); host = document.createElement('div'); document
 afterEach(() => { vi.restoreAllMocks(); forgetDecoderLog(uid); document.body.replaceChildren(); });
 
 describe('receiver Decode interaction and live results', () => {
+  it('renders a retained long CW transmission without exceeding function argument limits', () => {
+    const view = mountReceiverDecodeView(host);
+    try {
+      for (let i = 0; i < 5; i++) addDecoderResult({ provider: 'native', mode: 'cw', kind: 'text',
+        data: { text: 'E'.repeat(30_000), endsLine: false, share: 1 } }, '1:1', uid);
+      addDecoderResult({ provider: 'native', mode: 'cw', kind: 'text', data: { text: 'TAIL', endsLine: true, share: 0.2 } }, '1:1', uid);
+      const log = decoderLog(uid);
+      expect(log.entries).toHaveLength(1);
+      expect(log.entries[0].bytes).toBeLessThan(24 * 1024 * 1024);
+      expect(() => view.update(log.entries, uid, 'cw', log.evicted, '', '1:1')).not.toThrow();
+      expect(host.querySelector('.cw-text')?.textContent).toBe('E'.repeat(150_000) + 'TAIL');
+      expect(host.querySelector('.cw-ch.weak')?.textContent).toBe('TAIL');
+    } finally { view.dispose(); }
+  });
+
   it('does not reset result filters or export menus while new results arrive', () => {
     const view = mountReceiverDecodeView(host);
     view.update([message(1, 'CQ TEST')], uid, 'ft8', 0, '');

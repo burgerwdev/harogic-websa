@@ -4,7 +4,8 @@ import type { WorkbenchSession } from './workbenchSession';
 export const LISTEN_MODES = ['nfm', 'am', 'usb'] as const;
 export interface ListenRequest { frequency_hz: number; target: string; mode: string }
 export interface ListenPlan {
-  request: ListenRequest; service_revision: U64; command: ConfigureCommand | Extract<ServiceCommand, { type: 'create' }> | null;
+  request: ListenRequest; service_revision: U64; service_id?: string; lifecycle_version: number;
+  command: ConfigureCommand | Extract<ServiceCommand, { type: 'create' }> | null;
   receiver_uid: string | null; affected_tracks: string[]; fault: Fault | null;
 }
 const fault = (code: string, message: string): Fault => ({ scope: 'request', code, message, retryable: true });
@@ -18,6 +19,7 @@ export function defaultListenTarget(session: WorkbenchSession, hz: number): stri
 export function planListen(session: WorkbenchSession, request: ListenRequest): ListenPlan {
   const snapshot = session.snapshot;
   const plan: ListenPlan = { request: { ...request }, service_revision: snapshot.revision,
+    service_id: snapshot.service_id, lifecycle_version: session.lifecycleVersion,
     command: null, receiver_uid: null, affected_tracks: [], fault: null };
   const reject = (code: string, message: string): ListenPlan => { plan.fault = fault(code, message); return plan; };
   if (!Number.isFinite(request.frequency_hz) || request.frequency_hz <= 0) return reject('FREQUENCY', 'Enter a positive frequency');
@@ -61,26 +63,24 @@ export async function applyListen(session: WorkbenchSession, plan: ListenPlan): 
   const reject = (error: Fault) => ({ receiver_uid: null, fault: error });
   if (plan.fault) return reject(plan.fault);
   if (applying.has(session)) return reject(fault('BUSY', 'Listening request pending'));
-  if (plan.service_revision !== session.snapshot.revision) return reject(fault('STALE_PREVIEW', 'State changed; review the updated preview'));
+  const current = (): boolean => plan.service_id === session.snapshot.service_id && plan.lifecycle_version === session.lifecycleVersion;
+  if (!current() || plan.service_revision !== session.snapshot.revision) return reject(fault('STALE_PREVIEW', 'State changed; review the updated preview'));
   applying.add(session);
   try {
     let uid = plan.receiver_uid;
     if (plan.command) {
-      const known = new Set(session.snapshot.receivers.map(r => r.receiver_uid));
       if (plan.command.type === 'configure') {
         if (session.edits.get(plan.command.receiver_uid)?.pending) return reject(fault('BUSY', 'Receiver configuration pending'));
         await session.configure(plan.command.receiver_uid, plan.command.config);
         const error = session.edits.get(plan.command.receiver_uid)?.fault;
         if (error) return reject(error);
       } else {
-        const reply = await session.send(plan.command);
+        const reply = await session.create(plan.command.config);
         if (reply.fault) return reject(reply.fault);
-        const processor = plan.command.config.processors[0]?.id;
-        const created = reply.snapshot.receivers.filter(r => !known.has(r.receiver_uid) && r.confirmed.processors.some(p => p.id === processor));
-        if (created.length !== 1) return reject(fault('IDENTITY', 'Cannot identify the confirmed new receiver'));
-        uid = created[0].receiver_uid;
+        uid = reply.receiver_uid;
       }
     }
+    if (!current()) return reject(fault('STALE_PREVIEW', 'State changed before listening was enabled'));
     const confirmed = session.snapshot.receivers.find(r => r.receiver_uid === uid);
     if (!confirmed || session.retiring(confirmed.receiver_uid) || confirmed.state !== 'running' || confirmed.confirmed.purpose !== 'listen'
       || confirmed.confirmed.baseband.frequency_hz !== plan.request.frequency_hz

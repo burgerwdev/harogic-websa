@@ -88,6 +88,8 @@ def stream_tones(tones: list[tuple[int, int]], rate: int, scale: float, chunk_sa
     Every yielded chunk is exactly `chunk_samples` long, the last one padded with silence, because the
     driver's one-shot `tx()` requires one length for the whole session.
     """
+    if rate <= 0 or chunk_samples <= 0:
+        raise ValueError('sample rate and stream chunk size must be positive')
     buffer = np.empty(chunk_samples, dtype=np.complex64)
     filled = 0
     for hz, ns in tones:
@@ -147,7 +149,7 @@ def transmit(args: argparse.Namespace) -> int:
         head = _truncate(tones, int(limit * 1e9))
         built = 0
         peak = 0.0
-        for chunk in stream_tones(head, int(args.rate), args.scale, int(args.rate * CHUNK_S)):
+        for chunk in stream_tones(head, int(args.rate), args.scale, max(1, int(args.rate * CHUNK_S))):
             built += chunk.size
             peak = max(peak, float(np.max(np.abs(chunk))))
         print(f'\n--dry-run: built {built / args.rate:.2f}s of baseband '

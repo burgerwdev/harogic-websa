@@ -2,18 +2,19 @@
 //!
 //! The JSON comes from the bench rig (`tools/e2e/wfm_rig.py --dump-iq`): the frames the page's
 //! demodulator actually consumed, at the rate the stream reported. A decoder change can then be
-//! measured against a real capture without the radio. Skipped unless the env names one.
+//! inspected against a real capture without the radio. This is a manual diagnostic with
+//! printed measurements, not an asserted decoding regression. Run explicitly with:
+//!
+//! `WEBSA_BROWSER_DUMP=/path.json cargo test --release -j 1 --test browser_dump -- --ignored --nocapture`
 
 use websa_dsp::analog::build;
 use websa_dsp::plugin::{AnalogDemodulator, DemodConfig};
 
 #[test]
+#[ignore = "manual browser-input diagnostic without a decode criterion; requires WEBSA_BROWSER_DUMP"]
 fn browser_dump_replay() {
-    let path = std::env::var("WEBSA_BROWSER_DUMP").unwrap_or_default();
-    if path.is_empty() {
-        eprintln!("skipped: set WEBSA_BROWSER_DUMP");
-        return;
-    }
+    let path = std::env::var("WEBSA_BROWSER_DUMP")
+        .expect("manual replay requires WEBSA_BROWSER_DUMP=/path/to/browser-frames.json");
     let text = std::fs::read_to_string(&path).unwrap();
     // Minimal JSON pulls: rate, then the frames array-of-arrays.
     let rate: f64 = text

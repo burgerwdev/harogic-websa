@@ -126,8 +126,12 @@ impl FirState {
     pub fn process_into(&mut self, x: &[f64], out: &mut Vec<f64>) {
         out.clear();
         let ntaps = self.taps.len();
-        if ntaps <= 1 || x.is_empty() {
+        if ntaps == 0 || x.is_empty() {
             out.extend_from_slice(x);
+            return;
+        }
+        if ntaps == 1 {
+            out.extend(x.iter().map(|sample| sample * self.taps[0]));
             return;
         }
         let tlen = ntaps - 1;
@@ -220,7 +224,8 @@ impl IqFilter {
     }
 
     pub fn is_pass_through(&self) -> bool {
-        self.i.taps().len() <= 1
+        [self.i.taps(), self.q.taps()].iter()
+            .all(|taps| taps.is_empty() || *taps == [1.0])
     }
 
     pub fn reset(&mut self) {
@@ -464,3 +469,28 @@ mod tests {
         }
     }
 }
+    #[test]
+    fn a_single_tap_multiplies_samples_by_its_coefficient() {
+        let input = [2.0, -4.0, 8.0];
+        let mut output = Vec::new();
+        for coefficient in [0.0, 0.5, -2.0] {
+            let mut filter = FirState::new(vec![coefficient]);
+            filter.process_into(&input, &mut output);
+            let expected: Vec<f64> = input.iter().map(|sample| sample * coefficient).collect();
+            assert_eq!(output, expected);
+            let mut iq = IqFilter::new(vec![coefficient]);
+            assert!(!iq.is_pass_through());
+            iq.process_complex_into(&[2.0, -4.0], &mut output);
+            assert_eq!(output, [2.0 * coefficient, -4.0 * coefficient]);
+        }
+        assert!(IqFilter::new(vec![1.0]).is_pass_through());
+    }
+
+    #[test]
+    fn a_single_complex_tap_obeys_complex_multiplication() {
+        let mut filter = ComplexBandFilter::new(vec![0.5], vec![0.25]);
+        let mut output = Vec::new();
+        filter.process_complex_into(&[2.0, -4.0, -8.0, 4.0], &mut output);
+        // (I+jQ)(1/2+j/4) = (I/2-Q/4) + j(I/4+Q/2).
+        assert_eq!(output, [2.0, -1.5, -5.0, 0.0]);
+    }

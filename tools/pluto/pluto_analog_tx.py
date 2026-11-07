@@ -104,78 +104,62 @@ DEFAULT_PM_INDEX = 1.0
 EDGE_MS = 2.0
 
 
-def load_audio(path: str, rate: float, channel: str = 'sum') -> np.ndarray:
-    """Read a PCM WAV at the radio rate as one mono channel.
-
-    Support 8/16/24/32-bit PCM. Mix to mono with `channel` (sum, left or right).
-    """
-    with wave.open(path, 'rb') as w:
-        channels = w.getnchannels()
-        in_rate = w.getframerate()
-        width = w.getsampwidth()
-        raw = w.readframes(w.getnframes())
+def _load_pcm(path: str) -> tuple[np.ndarray, int]:
+    """Read normalized PCM frames once for mono and stereo transmitters."""
+    with wave.open(path, 'rb') as source:
+        channels = source.getnchannels()
+        in_rate = source.getframerate()
+        width = source.getsampwidth()
+        frames = source.getnframes()
+        raw = source.readframes(frames)
+    if not frames:
+        raise ValueError(f'{path}: empty PCM audio')
+    if len(raw) != frames * channels * width:
+        raise ValueError(f'{path}: truncated PCM audio')
     if width == 3:
-        # 24-bit PCM: rebuild each little-endian signed sample from 3 bytes.
         b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
         packed = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
         data = ((packed ^ 0x800000) - 0x800000).astype(np.float64) / float(1 << 23)
     else:
         dtype = {1: np.uint8, 2: '<i2', 4: '<i4'}.get(width)
         if dtype is None:
-            raise SystemExit(f'{path}: unsupported PCM width {width * 8} bits '
-                             f'(need 8/16/24/32-bit)')
+            raise ValueError(f'{path}: unsupported PCM width {width * 8} bits')
         data = np.frombuffer(raw, dtype=dtype).astype(np.float64)
         if width == 1:
-            data = data - 128.0
-        data = data / float(1 << (8 * width - 1))
-    data = data.reshape(-1, channels)
-    if channels == 1 or channel == 'sum':
-        data = data.mean(axis=1)
-    elif channel == 'left':
-        data = data[:, 0]
-    else:  # right
-        data = data[:, min(1, channels - 1)]
-    n_out = int(round(data.size * rate / in_rate))
-    pos = np.arange(n_out, dtype=np.float64) * (in_rate / rate)
-    i0 = np.clip(pos.astype(np.int64), 0, max(0, data.size - 2))
-    fr = (pos - i0).astype(np.float32)
-    return (data[i0] * (1.0 - fr) + data[i0 + 1] * fr).astype(np.float32)
+            data -= 128.0
+        data /= float(1 << (8 * width - 1))
+    return data.reshape(-1, channels), in_rate
+
+
+def _resample_pcm(data: np.ndarray, in_rate: int, rate: float) -> np.ndarray:
+    if not np.isfinite(rate) or rate <= 0:
+        raise ValueError('audio output sample rate must be finite and positive')
+    n_out = int(round(data.shape[0] * rate / in_rate))
+    positions = np.arange(n_out, dtype=np.float64) * (in_rate / rate)
+    # Hold the endpoint: upsampling must not extrapolate past the last PCM frame.
+    positions = np.minimum(positions, data.shape[0] - 1)
+    left = positions.astype(np.int64)
+    right = np.minimum(left + 1, data.shape[0] - 1)
+    fraction = (positions - left)[:, None]
+    return (data[left] * (1.0 - fraction) + data[right] * fraction).astype(np.float32)
+
+
+def load_audio(path: str, rate: float, channel: str = 'sum') -> np.ndarray:
+    """Read 8/16/24/32-bit PCM WAV as one resampled mono channel."""
+    data, in_rate = _load_pcm(path)
+    if channel == 'sum':
+        mono = data.mean(axis=1, keepdims=True)
+    else:
+        index = 0 if channel == 'left' else min(1, data.shape[1] - 1)
+        mono = data[:, index:index + 1]
+    return _resample_pcm(mono, in_rate, rate)[:, 0]
 
 
 def load_audio_two(path: str, rate: float) -> tuple[np.ndarray, np.ndarray]:
-    """Read a stereo PCM WAV as two resampled channels (left, right).
-
-    Mono input is duplicated to both channels. Same formats as `load_audio`.
-    """
-    with wave.open(path, 'rb') as w:
-        channels = w.getnchannels()
-        in_rate = w.getframerate()
-        width = w.getsampwidth()
-        raw = w.readframes(w.getnframes())
-    if channels < 2:
-        mono = load_audio(path, rate, 'sum')
-        return mono, mono
-    if width == 3:
-        b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
-        packed = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
-        data = ((packed ^ 0x800000) - 0x800000).astype(np.float64) / float(1 << 23)
-    else:
-        dtype = {1: np.uint8, 2: '<i2', 4: '<i4'}.get(width)
-        if dtype is None:
-            raise SystemExit(f'{path}: unsupported PCM width {width * 8} bits '
-                             f'(need 8/16/24/32-bit)')
-        data = np.frombuffer(raw, dtype=dtype).astype(np.float64)
-        if width == 1:
-            data = data - 128.0
-        data = data / float(1 << (8 * width - 1))
-    data = data.reshape(-1, channels)
-    n_out = int(round(data.shape[0] * rate / in_rate))
-    pos = np.arange(n_out, dtype=np.float64) * (in_rate / rate)
-    i0 = np.clip(pos.astype(np.int64), 0, max(0, data.shape[0] - 2))
-    fr = (pos - i0).astype(np.float64)
-    left = data[i0, 0] * (1.0 - fr) + data[i0 + 1, 0] * fr
-    right = data[i0, min(1, channels - 1)] * (1.0 - fr) + data[i0 + 1, min(1, channels - 1)] * fr
-    return left.astype(np.float32), right.astype(np.float32)
+    """Read two resampled PCM channels, duplicating a mono input."""
+    data, in_rate = _load_pcm(path)
+    stereo = _resample_pcm(data[:, :2], in_rate, rate)
+    return stereo[:, 0], stereo[:, min(1, stereo.shape[1] - 1)]
 
 
 def fit_length(audio: np.ndarray, rate: float, duration_s: float | None,

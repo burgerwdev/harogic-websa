@@ -5,8 +5,8 @@
 // OFF is handled by the caller (data is retained); Clear uses resetTraceAccum().
 import type { TraceState } from '../core/store';
 
-/** Peak-preserving resample (local copy so this module has no cyclic import). */
-function resamplePeak(src: Float32Array, newLen: number, isMaxHold: boolean): Float32Array {
+/** Peak-preserving resample for retained hold history. */
+export function resampleTrace(src: Float32Array, newLen: number, isMaxHold: boolean): Float32Array {
   const out = new Float32Array(newLen);
   const oldLen = src.length;
   if (oldLen < 2 || newLen < 2) return new Float32Array(src.slice(0, newLen));
@@ -75,7 +75,7 @@ export function accumulateTrace(t: TraceState, data: Float32Array): boolean {
   if (!t.powers || t.powers.length !== data.length) {
     if (t.powers && (t.mode === 'MAX_HOLD' || t.mode === 'MIN_HOLD')
       && t.powers.length > 1 && data.length > 1) {
-      t.powers = resamplePeak(t.powers, data.length, t.mode === 'MAX_HOLD');
+      t.powers = resampleTrace(t.powers, data.length, t.mode === 'MAX_HOLD');
     } else {
       t.avgSum = null;
       t.avgCount = 0;

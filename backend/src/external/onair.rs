@@ -384,7 +384,7 @@ impl OnAirBridge {
         let listener = server.input.try_clone().map_err(io_error)?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_worker = stop.clone();
-        let source: JoinHandle<Result<TcpStream, String>> = thread::spawn(move || accept_source(listener, input_rate, virtual_center, stop_worker));
+        let source: JoinHandle<Result<TcpStream, String>> = thread::spawn(move || accept_source_until(listener, input_rate, virtual_center, stop_worker, deadline));
         // Omitting device makes the remote API pass its internal -1 sentinel;
         // an explicit negative index is rejected by the HTTP validator.
         // refreshDevices() preserves selection by name, avoiding stale indices.
@@ -441,7 +441,7 @@ impl OnAirBridge {
     }
 
     fn check_commands(&mut self) -> Result<(), String> {
-        loop {
+        for _ in 0..128 {
             match self.iq.read(&mut self.command[self.command_len..]) {
                 Ok(0) => return Err("OnAir disconnected from its IQ source".into()),
                 Ok(n) => {
@@ -455,6 +455,7 @@ impl OnAirBridge {
                 Err(e) => return Err(io_error(e)),
             }
         }
+        Err("OnAir IQ control command backlog exceeded its bound".into())
     }
 
     fn drain(&mut self) -> Result<Vec<ExternalDecodeEvent>, String> {
@@ -525,9 +526,8 @@ impl Drop for OnAirBridge {
     fn drop(&mut self) { self.stop(); }
 }
 
-fn accept_source(listener: TcpListener, rate: u32, center: u64, stop: Arc<AtomicBool>) -> Result<TcpStream, String> {
+fn accept_source_until(listener: TcpListener, rate: u32, center: u64, stop: Arc<AtomicBool>, deadline: Instant) -> Result<TcpStream, String> {
     listener.set_nonblocking(true).map_err(io_error)?;
-    let deadline = Instant::now() + START_TIMEOUT;
     let mut stream = loop {
         if stop.load(Ordering::Relaxed) || Instant::now() >= deadline { return Err("OnAir did not connect to the private IQ source".into()); }
         match listener.accept() {
@@ -537,8 +537,7 @@ fn accept_source(listener: TcpListener, rate: u32, center: u64, stop: Arc<Atomic
             Err(e) => return Err(io_error(e)),
         }
     };
-    stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(io_error)?;
-    stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(io_error)?;
+    stream.set_write_timeout(Some(remaining(deadline)?.min(IO_TIMEOUT))).map_err(io_error)?;
     stream.set_nodelay(true).map_err(io_error)?;
     // RTL0 tuner=0 identifies a generic server (250 kHz minimum), not hardware.
     stream.write_all(b"RTL0\0\0\0\0\0\0\0\0").map_err(io_error)?;
@@ -546,11 +545,21 @@ fn accept_source(listener: TcpListener, rate: u32, center: u64, stop: Arc<Atomic
     let mut have_frequency = false;
     while !have_rate || !have_frequency {
         let mut command = [0; 5];
-        stream.read_exact(&mut command).map_err(io_error)?;
+        let mut received = 0;
+        while received < command.len() {
+            if stop.load(Ordering::Relaxed) { return Err("OnAir IQ source preparation cancelled".into()); }
+            stream.set_read_timeout(Some(remaining(deadline)?.min(IO_TIMEOUT))).map_err(io_error)?;
+            let count = stream.read(&mut command[received..]).map_err(io_error)?;
+            if count == 0 { return Err("OnAir disconnected during IQ source preparation".into()); }
+            received += count;
+        }
+        if stop.load(Ordering::Relaxed) { return Err("OnAir IQ source preparation cancelled".into()); }
+        remaining(deadline)?;
         validate_command(&command, rate, center)?;
         have_rate |= command[0] == 2;
         have_frequency |= command[0] == 1;
     }
+    stream.set_write_timeout(Some(remaining(deadline)?.min(IO_TIMEOUT))).map_err(io_error)?;
     stream.write_all(&[127_u8; 8192]).map_err(io_error)?;
     Ok(stream)
 }
@@ -660,7 +669,7 @@ fn http_json_until(port: u16, method: &str, path: &str, body: Option<Value>, tok
 }
 
 fn read_json(ws: &mut WebSocket<TcpStream>) -> Result<Option<Value>, String> {
-    loop {
+    for _ in 0..128 {
         match ws.read() {
             Ok(Message::Text(text)) => return serde_json::from_str(text.as_str()).map(Some).map_err(|e| format!("invalid OnAir Web JSON: {e}")),
             Ok(Message::Ping(_)) => { ws.flush().map_err(ws_error)?; }
@@ -671,6 +680,7 @@ fn read_json(ws: &mut WebSocket<TcpStream>) -> Result<Option<Value>, String> {
             Err(e) => return Err(ws_error(e)),
         }
     }
+    Err("OnAir Web control frame backlog exceeded its bound".into())
 }
 
 fn reject_error(value: &Value) -> Result<(), String> {
@@ -684,6 +694,74 @@ fn ws_error(error: tungstenite::Error) -> String { format!("OnAir Web: {error}")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stalled_handshake(cancel: bool) -> Result<TcpStream, String> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let peer_stop = stop.clone();
+        let peer = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
+            let mut header = [0; 12];
+            stream.read_exact(&mut header).unwrap();
+            if cancel { peer_stop.store(true, Ordering::Relaxed); }
+            else { thread::sleep(Duration::from_millis(100)); }
+            for (command, value) in [(3_u8, 0_u32), (2, 250_000), (1, 162_000_000)] {
+                let mut bytes = [command, 0, 0, 0, 0];
+                bytes[1..].copy_from_slice(&value.to_be_bytes());
+                if stream.write_all(&bytes).is_err() { return; }
+            }
+            let _ = stream.read(&mut [0; 8192]);
+        });
+        let deadline = Instant::now() + if cancel { Duration::from_secs(1) } else { Duration::from_millis(50) };
+        let result = accept_source_until(listener, 250_000, 162_000_000, stop, deadline);
+        peer.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn protocol_boundary_source_handshake_observes_cancellation_after_accept() {
+        assert!(stalled_handshake(true).is_err(), "cancelled startup still accepted IQ geometry");
+    }
+
+    #[test]
+    fn protocol_boundary_source_handshake_keeps_one_total_deadline() {
+        assert!(stalled_handshake(false).is_err(), "late geometry bypassed the startup deadline");
+    }
+
+    #[test]
+    fn protocol_boundary_pong_burst_cannot_bypass_web_control_work_budget() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let peer = listener.accept().unwrap().0;
+        client.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut sender = WebSocket::from_raw_socket(peer, tungstenite::protocol::Role::Server, None);
+        let mut receiver = WebSocket::from_raw_socket(client, tungstenite::protocol::Role::Client, None);
+        for _ in 0..129 { sender.send(Message::Pong(Vec::new().into())).unwrap(); }
+        sender.send(Message::Text("{\"type\":\"status\"}".into())).unwrap();
+        assert!(read_json(&mut receiver).is_err(), "control-only frames bypassed the per-call budget");
+    }
+
+    #[test]
+    fn protocol_boundary_iq_command_burst_cannot_hold_processing_owner() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let iq = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut peer = listener.accept().unwrap().0;
+        iq.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+        let web = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let _web_peer = listener.accept().unwrap().0;
+        let mut bridge = OnAirBridge {
+            server: None, iq,
+            ws: WebSocket::from_raw_socket(web, tungstenite::protocol::Role::Client, None),
+            mode: "ais".into(), subscription: "ais@162000k".into(), rate: 250_000,
+            center: 162_000_000, virtual_center: 162_000_000, bench_status_pending: false,
+            encoded: Vec::new(), command: [0; 5], command_len: 0, next_health: Instant::now(),
+        };
+        for _ in 0..129 { peer.write_all(&[3, 0, 0, 0, 0]).unwrap(); }
+        assert!(bridge.check_commands().is_err(), "a continuous command sender bypassed the processing work budget");
+    }
 
     #[test]
     fn default_frequencies_are_supported_centers() {

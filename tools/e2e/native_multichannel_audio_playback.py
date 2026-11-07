@@ -22,11 +22,18 @@ import urllib.request
 from pathlib import Path
 
 from native_multichannel import api
-from native_multichannel_audio import download, finish_audio, protocol
+from native_multichannel_audio import (
+    download,
+    finalize_audio_prefix,
+    finish_audio,
+    protocol,
+    verify_recovered_prefix,
+)
 from native_multichannel_flac import boundary_fixture
 from native_multichannel_processing import assert_receivers_continue
 from native_multichannel_recording import task, until
 from native_multichannel_results import start, status
+from native_multichannel_stream_export import read_http_head
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, start_service, stop
 from scipy.io import wavfile
@@ -79,7 +86,8 @@ def verify(data, saved, waves, rows, segment='audio-000000', first=500001, count
     assert manifest['selection'] == {'segment': segment, 'start': str(first), 'count': str(count), 'first_audio_index': str(int(source['first_audio_index']) + first)}
     assert manifest['audio']['pcm_sha256'] == hashlib.sha256(expected).hexdigest()
     assert manifest['provenance']['sha256'] == hashlib.sha256(timeline).hexdigest()
-    assert manifest['processing'] == {'resampled': False, 'quantized': False, 'gain_applied': False, 'protocol_input': False, 'local_controls_included': False}
+    assert manifest['processing'] == {'resampled': False, 'quantized': False, 'lossy': False,
+        'gain_applied': False, 'protocol_input': False, 'local_controls_included': False}
     original = [r for r in rows if r['segment_id'] == segment]
     at = 0
     for row in selected:
@@ -114,13 +122,12 @@ def transport_gate(origin, recording, root):
     assert len(immutable) == int(response.headers['Content-Length'])
     status(origin, small, 422); file.write_bytes(original); until(available)
     assert immutable == get(origin, query)
-    stalled = socket.create_connection(('127.0.0.1', port), timeout=20); stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-    stalled.sendall(f'GET {query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'.encode())
-    head = b''
-    while b'\r\n\r\n' not in head:
-        head += stalled.recv(1)
-    assert b'200 OK' in head
-    time.sleep(3); status(origin, small, 429); stalled.close(); until(available)
+    with socket.create_connection(('127.0.0.1', port), timeout=20) as stalled:
+        stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        stalled.sendall(f'GET {query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'.encode())
+        assert b'200 OK' in read_http_head(stalled)
+        time.sleep(3); status(origin, small, 429)
+    until(available)
     return {'cancel_releases_permit': True, 'shared_429': True, 'immutable_bytes': len(immutable), 'corruption_422': True, 'stalled_tcp_body_lease': True}
 
 
@@ -136,11 +143,9 @@ def browser_gate(origin, saved, waves, rows, artifacts, first=500001, count=2000
         if mute.get_attribute('aria-pressed') != 'true':
             mute.click()
         expect(mute).to_have_attribute('aria-pressed', 'true')
-        if any(r['receiver_uid'] == saved['receiver_uid'] for r in api(origin)['receivers']):
-            overview.locator(f'.mc-row[data-uid="{saved["receiver_uid"]}"] [data-action=select]').click()
-        else:
-            overview.locator('[data-section=recording-history] summary').click()
-        overview.locator(f'[data-action=audio-archive][data-archive-task="{saved["task_id"]}"]').click(delay=1100)
+        overview.locator('.mc-workspace-actions [data-action=recording-files]').click()
+        library = page.locator('[data-view-id=recording-library]')
+        library.locator(f'[data-action=audio-archive][data-archive-task="{saved["task_id"]}"]').click(delay=1100)
         view = page.locator('[data-view-id=recorded-audio]'); expect(view).to_be_visible()
         view.locator('[name=start]').fill(str(first)); view.locator('[name=count]').fill(str(count)); baseline = len(writes)
         view.locator('[data-audio-load]').click(delay=1100); expect(view.locator('[data-audio-status]')).to_have_text('Ready')
@@ -219,10 +224,9 @@ def main():
             for query, code in [(url(recording, count=1048577), 400), (url(recording)+'&format=opus', 400), (url(recording, first=-1), 400), (url(recording, segment='missing'), 422), (url(recording, first=1048578, count=2), 422), (url('missing'), 404), (url(healthy), 422)]:
                 status(origin, query, code)
             active = start(origin, uid, 'active-audio-playback', 'audio'); status(origin, url(active), 409)
-            until(lambda: int(task(origin, active)['tracks'][0]['raw_bytes']) > 30000); prior = task(origin, active); proc.kill(); proc.wait(timeout=3)
-            proc, origin = start_service(port, log=log); recovered = task(origin, active)
-            assert recovered['fault']['code'] == 'SERVICE_INTERRUPTED' and recovered['service_id'] == prior['service_id'] and recovered['receiver_uid'] == prior['receiver_uid']
-            _, recovered_rows, recovered_waves = download(origin, active, artifacts / 'recovered-source.tar')
+            prefix = finalize_audio_prefix(origin, root, active); proc.kill(); proc.wait(timeout=3)
+            proc, origin = start_service(port, log=log)
+            recovered, recovered_rows, recovered_waves = verify_recovered_prefix(origin, active, prefix, artifacts / 'recovered-source.tar')
             segment = next(s for s in recovered['tracks'][0]['segments'] if int(s['samples']) > 0)
             count = min(20000, int(segment['samples'])); report['recovered'] = verify(get(origin, url(active, segment['segment_id'], 0, count)), recovered, recovered_waves, recovered_rows, segment['segment_id'], 0, count)
             report['snapshot'] = api(origin); report['source_hashes_unchanged'] = hashes

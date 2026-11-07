@@ -10,7 +10,7 @@ from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, post, start_service, stop
-from viewport_baseline import wait_ui_ready
+from viewport_baseline import wait_async_condition, wait_ui_ready
 
 
 def api(origin, payload=None):
@@ -30,8 +30,21 @@ def browser_gate(origin, artifacts):
         # Hold only spectrum arrivals to exercise an unsettled retune preview.
         page.add_init_script("""(() => {
           const Native = WebSocket; window.__heldFft = [];
-          window.WebSocket = class extends Native { constructor(...args) {
+          window.__tuneCommands = []; window.__tuneReplies = {};
+          window.WebSocket = class extends Native {
+          send(data) {
+            if (typeof data === 'string') {
+              const command=JSON.parse(data);
+              if (command.cmd==='SET_SDR_CHANNEL' && command.request_id?.startsWith('sdr-tune-')) window.__tuneCommands.push(command);
+            }
+            super.send(data);
+          }
+          constructor(...args) {
             super(...args); this.addEventListener('message', e => {
+              if (typeof e.data === 'string') {
+                const reply=JSON.parse(e.data);
+                if (reply.request_id?.startsWith('sdr-tune-')) window.__tuneReplies[reply.request_id]=reply;
+              }
               if (!window.__holdFft || !(e.data instanceof ArrayBuffer)) return;
               const magic = String.fromCharCode(...new Uint8Array(e.data, 0, 4));
               if (magic === 'RTAF' || magic === 'RTA2') { window.__heldFft = [this,e.data]; e.stopImmediatePropagation(); }
@@ -61,10 +74,26 @@ def browser_gate(origin, artifacts):
             return api(origin)["receivers"][0]["confirmed"]["baseband"]["frequency_hz"]
 
         def wait_frequency(value):
-            page.wait_for_function(
-                'value => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>Math.abs(s.receivers[0].confirmed.baseband.frequency_hz-value)<0.01)',
-                arg=value,
-            )
+            try:
+                wait_async_condition(page,
+                    'value => fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>Math.abs(s.receivers[0].confirmed.baseband.frequency_hz-value)<0.01)',
+                    arg=value,
+                )
+            except AssertionError:
+                (artifacts / 'tune-timeout.json').write_text(json.dumps({'expected': value, 'snapshot': api(origin),
+                    'browser': page.evaluate('() => ({commands:window.__tuneCommands,replies:window.__tuneReplies,field:document.querySelector("#input-sdr-listen").value,focus:document.activeElement.id})')}, indent=2) + '\n')
+                raise
+
+        def wait_plot_tune(previous_count):
+            # A plot click has its own asynchronous command. Derive the key-step
+            # baseline from its matching receipt, not a sleep and an older API value.
+            command = wait_async_condition(page, '''count => {
+              const command=window.__tuneCommands.at(-1);
+              const reply=command && window.__tuneReplies[command.request_id];
+              return window.__tuneCommands.length>count && reply?.cmd==='STATUS' ? command : false;
+            }''', arg=previous_count)
+            wait_frequency(command['freq'])
+            return command['freq']
 
         for editor in ["#input-sdr-center", "#input-sdr-listen"]:
             for surface in ["#spectrum", "#waterfall"]:
@@ -72,6 +101,7 @@ def browser_gate(origin, artifacts):
                 field.fill("100")
                 field.press("Enter")
                 wait_frequency(100e6)
+                command_count = page.evaluate('window.__tuneCommands.length')
                 page.locator(surface).click(
                     position={
                         "x": page.locator(surface).bounding_box()["width"] * 0.65,
@@ -79,9 +109,7 @@ def browser_gate(origin, artifacts):
                     }
                 )
                 expect(page.locator(surface)).to_be_focused()
-                # Wait for the click's tune request before measuring the key step.
-                page.wait_for_timeout(200)
-                before_key = confirmed_frequency()
+                before_key = wait_plot_tune(command_count)
                 page.keyboard.press("ArrowRight")
                 wait_frequency(before_key + 1000)
                 page.keyboard.press("ArrowLeft")
@@ -127,11 +155,11 @@ def browser_gate(origin, artifacts):
             # Clicking the plot dismisses the draft and restores normal tuning.
             plot = page.locator("#spectrum")
             box = plot.bounding_box()
+            command_count = page.evaluate('window.__tuneCommands.length')
             plot.click(position={"x": box["width"] * 0.65, "y": box["height"] * 0.6})
             expect(keypad).not_to_be_visible()
             expect(plot).to_be_focused()
-            page.wait_for_timeout(200)
-            before_key = confirmed_frequency()
+            before_key = wait_plot_tune(command_count)
             page.keyboard.press("ArrowRight")
             wait_frequency(before_key + 1000)
         page.locator("#btn-keypad").click()
@@ -166,12 +194,12 @@ def browser_gate(origin, artifacts):
         page.locator("#btn-wf-pause").click()
         box = waterfall.bounding_box()
         page.mouse.click(box["x"] + box["width"] * 0.75, box["y"] + box["height"] * 0.5)
-        page.wait_for_function(
+        wait_async_condition(page,
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>Math.abs(s.receivers[0].confirmed.baseband.frequency_hz-100048828.125)<500)'
         )
         listen.fill("100")
         listen.press("Enter")
-        page.wait_for_function(
+        wait_async_condition(page,
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers[0].confirmed.baseband.frequency_hz===100000000)'
         )
         page.locator("#btn-spectrum-zoom").click()
@@ -187,7 +215,7 @@ def browser_gate(origin, artifacts):
         page.locator("#btn-zoom-reset").click()
         page.locator("#btn-spectrum-zoom").click()
         add.click()
-        page.wait_for_function(
+        wait_async_condition(page,
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.length===2)'
         )
         snapshot = api(origin)
@@ -199,25 +227,46 @@ def browser_gate(origin, artifacts):
         assert page.locator("[data-view-id=overview-follow]:visible").count() == 0
         listen.fill("100.02")
         listen.press("Enter")
-        page.wait_for_function(
+        wait_async_condition(page,
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.display_number===1).confirmed.baseband.frequency_hz===100020000)'
         )
         page.wait_for_function(
             'window.websaAudioStatus().filter(r=>typeof r.channel==="string"&&r.enabled).length===2'
         )
         add.click()
-        page.wait_for_function(
+        wait_async_condition(page,
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.length===3)'
         )
         listen.fill("100.04")
         listen.press("Enter")
-        page.wait_for_function(
+        wait_async_condition(page,
+            'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.display_number===1).confirmed.baseband.frequency_hz===100040000)'
+        )
+        capacity = api(origin)["capabilities"]["max_channels"]
+        # Reach the advertised limit through the actual shortcut before testing
+        # replacement. Repeated saves at one frequency intentionally reuse the
+        # existing copy, so each added channel needs a distinct tuning intent.
+        for expected_count in range(4, capacity + 1):
+            saved_hz = 100040000 + expected_count * 100
+            listen.fill(str(saved_hz / 1e6)); listen.press("Enter")
+            wait_async_condition(page,
+                'hz=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.display_number===1).confirmed.baseband.frequency_hz===hz)',
+                arg=saved_hz,
+            )
+            add.click()
+            wait_async_condition(page,
+                'count=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.length===count)',
+                arg=expected_count,
+            )
+        assert len(api(origin)["receivers"]) == capacity
+        listen.fill("100.04"); listen.press("Enter")
+        wait_async_condition(page,
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.display_number===1).confirmed.baseband.frequency_hz===100040000)'
         )
         add.click()
         dialog = page.locator("[data-replace-channel]")
         expect(dialog).to_be_visible()
-        expect(dialog.locator("[name=replace]")).to_have_count(3)
+        expect(dialog.locator("[name=replace]")).to_have_count(capacity)
         expect(dialog.locator("[type=submit]")).to_be_disabled()
         before = api(origin)["receivers"]
         second = next(r for r in before if r["display_number"] == 2)
@@ -248,7 +297,7 @@ def browser_gate(origin, artifacts):
         expect(page.locator("#sdr-current-channel")).to_have_text("C2")
         listen.fill("100.05")
         listen.press("Enter")
-        page.wait_for_function(
+        wait_async_condition(page,
             'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.display_number===2).confirmed.baseband.frequency_hz===100050000)'
         )
         assert (
@@ -399,21 +448,50 @@ def browser_gate(origin, artifacts):
         center = page.locator("#input-sdr-center")
         at_center = float(center.input_value())
         at_listen = listen.input_value()
+        before_retune = {"history": history(), "snapshot": api(origin),
+                         "center": at_center, "listen": at_listen}
         for offset in [0.01, 0]:
             center.fill(str(at_center + offset))
             center.press("Enter")
             page.wait_for_timeout(250)
             shared_window()
+        # Shared-center entry also retunes C1 by contract, even while C2 is the
+        # main selection. Restore its overlay before comparing exact pixels.
+        primary_hz = next(r for r in before_retune["snapshot"]["receivers"]
+                          if r["display_number"] == 1)["confirmed"]["baseband"]["frequency_hz"]
+        page.locator("[data-action=sdr-channel-prev]").click()
+        expect(page.locator("#sdr-current-channel")).to_have_text("C1")
+        listen.fill(str(primary_hz / 1e6)); listen.press("Enter")
+        wait_async_condition(page,
+            'hz=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.display_number===1).confirmed.baseband.frequency_hz===hz)',
+            arg=primary_hz,
+        )
+        page.locator("[data-action=sdr-channel-next]").click()
+        expect(page.locator("#sdr-current-channel")).to_have_text("C2")
         listen.fill(at_listen)
         listen.press("Enter")
-        page.wait_for_timeout(300)
+        wait_async_condition(page,
+            'hz=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.find(r=>r.display_number===2).confirmed.baseband.frequency_hz===hz)',
+            arg=float(at_listen) * 1e6,
+        )
+        assert [r["confirmed"] for r in api(origin)["receivers"]] == [
+            r["confirmed"] for r in before_retune["snapshot"]["receivers"]]
         page.mouse.move(5, 5)
         page.wait_for_timeout(100)
         page.wait_for_function(
             'JSON.parse(document.querySelector("#waterfall").dataset.history).settled',
             timeout=15000,
         )
-        assert page.evaluate(stripe, "waterfall") == local_pixels, (
+        returned_pixels = page.evaluate(stripe, "waterfall")
+        if returned_pixels != local_pixels:
+            (artifacts / "paused-return-failure.json").write_text(json.dumps({
+                "before": before_retune, "after": {"history": history(), "snapshot": api(origin),
+                    "center": center.input_value(), "listen": listen.input_value(),
+                    "view": page.locator('#spectrum').get_attribute('data-frequency-view')},
+                "expected_pixels": local_pixels, "actual_pixels": returned_pixels,
+            }, indent=2) + '\n')
+            page.screenshot(path=str(artifacts / "paused-return-failure.png"))
+        assert returned_pixels == local_pixels, (
             "Paused local-floor retune return restores exact history"
         )
         # Hold new-axis FFTs while the axis gesture has committed. A slider must
@@ -481,8 +559,9 @@ def browser_gate(origin, artifacts):
         first_row = overview.locator(f'[data-uid="{first_uid}"]')
         first_row.locator(".mc-row-more > summary").click()
         first_row.locator("[data-action=duplicate]").click()
-        page.wait_for_function(
-            'fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.length===3)'
+        wait_async_condition(page,
+            'count=>fetch("/api/sdr/receivers").then(r=>r.json()).then(s=>s.receivers.length===count)',
+            arg=capacity,
         )
         page.screenshot(path=str(artifacts / "workbench-actions.png"))
         page.set_viewport_size({"width": 420, "height": 800})

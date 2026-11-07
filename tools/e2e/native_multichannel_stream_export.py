@@ -111,6 +111,17 @@ def get(origin, path, status=200):
         return error
 
 
+def read_http_head(connection):
+    """Read only a bounded header so the test can stall the body deliberately."""
+    head = bytearray()
+    while not head.endswith(b'\r\n\r\n'):
+        chunk = connection.recv(1)
+        assert chunk, 'HTTP connection closed before the response headers completed'
+        head.extend(chunk)
+        assert len(head) <= 65536, 'HTTP response headers exceed the test bound'
+    return bytes(head)
+
+
 def validate(path, expected, python):
     code = '''import json,hashlib,sys,sigmf
 from pathlib import Path
@@ -198,14 +209,13 @@ def protocol(origin, proc, root, task_id, blocks, out, expected, python):
     until(available, timeout=8)
     # A genuinely stalled TCP consumer fills only its bounded export pipe.
     parsed = urllib.parse.urlsplit(origin)
-    slow = socket.socket(); slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-    slow.connect((parsed.hostname, parsed.port)); slow.settimeout(10)
-    slow.sendall(f'GET {url(task_id, 4194304)} HTTP/1.1\r\nHost: {parsed.netloc}\r\nConnection: close\r\n\r\n'.encode())
-    head = b''
-    while not head.endswith(b'\r\n\r\n'):
-        head += slow.recv(1)
-    assert b'200 OK' in head
-    time.sleep(2.3); slow.close(); until(available, timeout=8)
+    with socket.socket() as slow:
+        slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024); slow.settimeout(10)
+        slow.connect((parsed.hostname, parsed.port))
+        slow.sendall(f'GET {url(task_id, 4194304)} HTTP/1.1\r\nHost: {parsed.netloc}\r\nConnection: close\r\n\r\n'.encode())
+        assert b'200 OK' in read_http_head(slow)
+        time.sleep(2.3)
+    until(available, timeout=8)
     until(lambda: int(task(origin, healthy_id)['tracks'][0]['raw_bytes']) > old_size + 10000)
     finish(origin, healthy_id)
     return {'reader': result, 'rss_before': before, 'rss_peak': peak, 'rss_growth': peak - before,
@@ -238,12 +248,25 @@ def browser_gate(origin, snapshot, out, expected, python):
         page.goto(origin); wait_ui_ready(page, 'sdr'); page.locator('[data-action=sdr-workbench]').click()
         pane = page.locator('[data-view-id=overview-follow]')
         gain, pan = pane.locator('[data-gain]'), pane.locator('[data-pan]')
+        listen = pane.locator(f'.mc-row[data-uid="{uid}"] [data-action=listen]')
+        # The main receiver is already selected for local listening on mount.
+        # Exercise the disabled state explicitly before enabling its output.
+        if listen.get_attribute('aria-pressed') == 'true':
+            listen.click()
+        expect(listen).to_have_attribute('aria-pressed', 'false')
         expect(gain).to_be_disabled(); expect(pan).to_be_disabled()
         assert pane.locator('[data-key=workflow]').count() == 0
-        pane.locator('.mc-row').nth(0).locator('[data-action=listen]').click()
+        listen.click()
+        expect(listen).to_have_attribute('aria-pressed', 'true')
+        master_mute = pane.locator('[data-action=master-mute]')
+        if master_mute.get_attribute('aria-pressed') == 'true':
+            master_mute.click()
+        expect(master_mute).to_have_attribute('aria-pressed', 'false')
         page.wait_for_function('(uid)=>window.websaAudioStatus().some(r=>r.channel===uid&&r.playedFrames>2000)', arg=uid)
         before, count = api(origin), len(commands)
-        page.evaluate('window.websaNativeMixLevels()'); page.wait_for_timeout(250)
+        page.wait_for_function('window.websaNativeMixLevels().left > .001')
+        # Fill the analyser's initial window and let the local gain ramp settle.
+        page.wait_for_timeout(250)
         initial = page.evaluate('window.websaNativeMixLevels()')
         gain.focus()
         for _ in range(35):
@@ -277,8 +300,8 @@ def browser_gate(origin, snapshot, out, expected, python):
         compact.locator('[data-dock]').click()
         assert len(commands) == count, commands[count:]
         assert_receivers_continue(before['receivers'], api(origin)['receivers'])
-        pane.locator('[data-section=recording-history] summary').click()
-        pane.locator('[data-archive-task=iq-stream-fixture]').click()
+        pane.locator('.mc-workspace-actions [data-action=recording-files]').click()
+        page.locator('[data-view-id=recording-library] [data-archive-task=iq-stream-fixture]').click()
         view = page.locator('[data-view-id=iq-recording]')
         expect(view.locator('[data-boundary]')).not_to_be_visible()
         with page.expect_download() as download:

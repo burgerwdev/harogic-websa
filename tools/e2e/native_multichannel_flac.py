@@ -26,10 +26,16 @@ from pathlib import Path
 
 import numpy as np
 from native_multichannel import api
-from native_multichannel_audio import download, finish_audio, protocol
+from native_multichannel_audio import (
+    download,
+    finalize_audio_prefix,
+    finish_audio,
+    protocol,
+    verify_recovered_prefix,
+)
 from native_multichannel_recording import task, until
 from native_multichannel_results import start, status
-from native_multichannel_stream_export import get, rss
+from native_multichannel_stream_export import get, read_http_head, rss
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, start_service, stop
 from viewport_baseline import wait_ui_ready
@@ -171,36 +177,35 @@ def transport_gate(origin, proc, root, recording, healthy):
     assert transferred < int(response.headers['Content-Length'])
     status(origin, url, 422); file.write_bytes(original); until(available, timeout=8)
     parsed = urllib.parse.urlsplit(origin)
-    slow = socket.socket(); slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-    slow.connect((parsed.hostname, parsed.port)); slow.settimeout(30)
-    slow.sendall(f'GET {url} HTTP/1.1\r\nHost: {parsed.netloc}\r\nConnection: close\r\n\r\n'.encode())
-    head = b''
-    while not head.endswith(b'\r\n\r\n'):
-        head += slow.recv(1)
-    assert b'200 OK' in head
-    before = rss(proc.pid); time.sleep(2.3); peak = rss(proc.pid)
-    assert peak - before < 8*1024*1024
-    slow.close(); until(available, timeout=8)
+    with socket.socket() as slow:
+        slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024); slow.settimeout(30)
+        slow.connect((parsed.hostname, parsed.port))
+        slow.sendall(f'GET {url} HTTP/1.1\r\nHost: {parsed.netloc}\r\nConnection: close\r\n\r\n'.encode())
+        assert b'200 OK' in read_http_head(slow)
+        before = rss(proc.pid); time.sleep(2.3); peak = rss(proc.pid)
+        assert peak - before < 8*1024*1024
+    until(available, timeout=8)
     return {'incomplete_response_bytes': transferred, 'rss_before_stall': before, 'rss_after_stall': peak,
         'checks': ['shared WAV/FLAC reader contention', 'HTTP cancel releases lease', 'changed source short response',
             'corrupt source 422', 'real stalled TCP and bounded RSS']}
 
 
 def browser_gate(origin, recording, artifacts):
-    saved = task(origin, recording); uid = saved['receiver_uid']; commands = []; errors = []
+    saved_task = task(origin, recording); commands = []; errors = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True); page = browser.new_page(viewport={'width': 1440, 'height': 1000})
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.on('request', lambda r: commands.append(r.post_data_json) if r.method == 'POST' and r.url.endswith('/api/sdr/receivers') else None)
         page.goto(origin); wait_ui_ready(page, 'sdr'); page.locator('[data-action=sdr-workbench]').click()
         overview = page.locator('[data-view-id=overview-follow]')
-        overview.locator(f'.mc-row[data-uid="{uid}"] [data-action=select]').click(); overview.locator('[data-action=tab-recording]').click()
+        overview.locator('.mc-workspace-actions [data-action=recording-files]').click()
+        library = page.locator('[data-view-id=recording-library]')
         with page.expect_popup() as info:
-            overview.locator('[data-pop]').click()
+            library.locator('[data-pop]').click()
         popup = info.value; popup.set_viewport_size({'width': 420, 'height': 760})
         popup.wait_for_function("Array.from(document.querySelectorAll('link[rel=stylesheet]')).every(e=>e.sheet)"); popup.evaluate('document.fonts.ready')
         page.locator('#btn-lang').click(); expect(popup.locator('html')).to_have_attribute('lang', 'zh-CN'); page.locator('#btn-theme').click()
-        shell = popup.locator('[data-view-id=overview-follow]')
+        shell = popup.locator('[data-view-id=recording-library]')
         saved = shell.locator(f'[data-task-id="{recording}"]')
         saved.locator('.mc-audio-export summary').click()
         saved.locator('[data-format=flac]').click()
@@ -213,14 +218,14 @@ def browser_gate(origin, recording, artifacts):
         destination = artifacts / 'browser-flac.tar'; info.value.save_as(destination)
         assert popup.evaluate('!window.removedFlacLink && window.originalFlacLink.isConnected')
         _, rows, waves = download(origin, recording, artifacts / 'browser-source.wav.tar')
-        verified = verify_flac(destination, waves, rows, saved)
+        verified = verify_flac(destination, waves, rows, saved_task)
         link.focus(); popup.wait_for_timeout(1300)
         with popup.expect_download() as info:
             popup.keyboard.press('Enter')
         keyboard = artifacts / 'keyboard-flac.tar'; info.value.save_as(keyboard)
         assert keyboard.read_bytes() == destination.read_bytes()
         overflow = shell.evaluate('e=>e.scrollWidth-e.clientWidth'); assert overflow <= 1
-        popup.screenshot(path=str(artifacts / 'flac-420-zh-light.png')); shell.locator('[data-dock]').click(); expect(overview).to_be_visible()
+        popup.screenshot(path=str(artifacts / 'flac-420-zh-light.png')); shell.locator('[data-dock]').click(); expect(library).to_be_visible()
         browser.close()
     assert not commands and not errors, (commands, errors)
     return {'download': verified, 'overflow': overflow, 'pageerrors': errors}
@@ -249,9 +254,10 @@ def main():
                     assert int(current['audio']['audio_index']) - int(prior['audio']['audio_index']) == prior['audio']['frames']
             report['actual'] = asyncio.run(protocol(origin, root, artifacts))
             actual_id = report['actual']['task']['task_id']
-            _, rows, waves = download(origin, actual_id, artifacts / 'actual-source.wav.tar')
-            flac_download(origin, actual_id, artifacts / 'actual-flac.tar')
-            report['network_flac'] = verify_flac(artifacts / 'actual-flac.tar', waves, rows, report['actual']['task'])
+            # Current recordings encode their selected format while running. Only
+            # legacy WBA archives support conversion to FLAC on download.
+            status(origin, f'/api/sdr/recordings/{actual_id}/audio/flac', 422)
+            report['direct_wav_rejects_transcode'] = True
             uid = api(origin)['receivers'][0]['receiver_uid']; healthy = start(origin, uid, 'healthy-iq-during-flac', 'iq')
             count = int(task(origin, healthy)['tracks'][0]['raw_bytes'])
             report['transport'] = transport_gate(origin, proc, root, recording, actual_id)
@@ -262,15 +268,15 @@ def main():
             status(origin, '/api/sdr/recordings/not-found/audio/flac', 404)
             active = start(origin, uid, 'active-flac', 'audio'); status(origin, f'/api/sdr/recordings/{active}/audio/flac', 409)
             until(lambda: int(task(origin, active)['tracks'][0]['raw_bytes']) > 30000)
-            report['browser'] = browser_gate(origin, actual_id, artifacts)
-            prior = task(origin, active); proc.kill(); proc.wait(timeout=3)
-            proc, origin = start_service(port, log=log); recovered = task(origin, active)
-            assert recovered['fault']['code'] == 'SERVICE_INTERRUPTED' and recovered['service_id'] == prior['service_id']
-            _, rows, waves = download(origin, active, artifacts / 'recovered-source.wav.tar')
-            flac_download(origin, active, artifacts / 'recovered-flac.tar')
-            report['recovered'] = verify_flac(artifacts / 'recovered-flac.tar', waves, rows, recovered)
+            report['browser'] = browser_gate(origin, recording, artifacts)
+            prefix = finalize_audio_prefix(origin, root, active); proc.kill(); proc.wait(timeout=3)
+            proc, origin = start_service(port, log=log)
+            recovered, rows, waves = verify_recovered_prefix(origin, active, prefix, artifacts / 'recovered-source.wav.tar')
+            status(origin, f'/api/sdr/recordings/{active}/audio/flac', 422)
+            report['recovered_direct_wav'] = {'task': recovered, 'frames': len(rows), 'segments': len(waves)}
             (artifacts / 'report.json').write_text(json.dumps(report, indent=2)+'\n')
-            print(json.dumps({'ok': True, 'decoder': report['decoder'], 'fixture': report['fixture'], 'network': report['network_flac']}))
+            print(json.dumps({'ok': True, 'decoder': report['decoder'], 'legacy_fixture': report['fixture'],
+                'native_pcm_blocks_verified': report['actual']['network_pcm_blocks_verified'], 'direct_wav_rejects_transcode': True}))
         finally:
             stop(proc)
 

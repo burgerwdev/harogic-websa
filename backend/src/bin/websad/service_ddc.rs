@@ -115,18 +115,6 @@ impl Ddc {
     pub(super) fn configured_service(center: f64, bandwidth: f64,
         hardware: &mut Option<HardwareCapture>, taps: usize, fs: f64,
         configs: &[ChannelConfig]) -> Result<Self, String> {
-        Self::configured_service_inner(center, bandwidth, hardware, taps, fs, configs, true)
-    }
-
-    fn configured_service_cached(center: f64, bandwidth: f64,
-        hardware: &mut Option<HardwareCapture>, taps: usize, fs: f64,
-        configs: &[ChannelConfig]) -> Result<Self, String> {
-        Self::configured_service_inner(center, bandwidth, hardware, taps, fs, configs, false)
-    }
-
-    fn configured_service_inner(center: f64, bandwidth: f64,
-        hardware: &mut Option<HardwareCapture>, taps: usize, fs: f64,
-        configs: &[ChannelConfig], allow_calibration: bool) -> Result<Self, String> {
         let mut slots = std::collections::BTreeSet::new();
         for config in configs {
             if !(1..=MAX_CHANNELS as u32).contains(&config.channel) {return Err("service channel exceeds capacity".into());}
@@ -147,8 +135,7 @@ impl Ddc {
             }
         }
         if bins.is_empty() { bins.push(0); }
-        if allow_calibration { super::service_cost::admit_service(configs,fs,taps,bins.len())?; }
-        else { super::service_cost::admit_service_cached(configs,fs,taps,bins.len())?; }
+        super::service_cost::admit_service(configs,fs,taps,bins.len())?;
         let epoch = allocate_dsp_epoch()?;
         let packet_capacity = if fs == IQ_FS { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
         let stream = PfbStream::with_taps(fs, packet_capacity, bins, epoch as u64, taps).ok_or("PFB unavailable")?;
@@ -213,7 +200,7 @@ impl Ddc {
         let fs=if self.hardware.is_some() {IQ_FS/device_decimate as f64} else {self.stream.input_sample_rate()};
         let bandwidth=if self.hardware.is_some() {fs*0.8} else {self.usable_bandwidth};
         // Build the entire replacement before touching the capture or old framers.
-        let mut next=Self::configured_service_cached(center,bandwidth,&mut None,taps,fs,&configs)?;
+        let mut next=Self::configured_service(center,bandwidth,&mut None,taps,fs,&configs)?;
         next.stamp_gaps=self.stamp_gaps;
         next.generation=self.generation;
         next.device_decimate=self.device_decimate;
@@ -312,7 +299,7 @@ impl Ddc {
         candidate[slot]=config.clone();
         let bin=signed_bin(config.freq,self.capture_center).rem_euclid(self.stream.bin_count() as i64) as u32;
         let selected=self.stream.bins().len()+usize::from(config.enabled && !source.is_direct() && !self.stream.bins().contains(&bin));
-        super::service_cost::admit_service_cached(&candidate,self.stream.input_sample_rate(),self.stream.taps_per_phase(),selected)?;
+        super::service_cost::admit_service(&candidate,self.stream.input_sample_rate(),self.stream.taps_per_phase(),selected)?;
         let next_id = self.next_id.checked_add(1).filter(|&id|id<=u32::MAX as u64).ok_or("channel ID exhausted")?;
         let next_direct=if config.enabled && source.is_direct() {
             Some(sdr_pipeline::DirectChannel::new(config.channel,next_id,self.stream.epoch(),fs,

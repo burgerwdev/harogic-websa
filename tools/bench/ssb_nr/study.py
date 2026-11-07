@@ -58,12 +58,22 @@ def extract(source, destination):
         if sum(m.size for m in members) > 4*1024**3:
             raise ValueError('archive too large for this in-memory study')
         names = set()
+        targets = []
+        root = destination.resolve()
         for item in members:
             rel = Path(item.name)
-            if rel.is_absolute() or '..' in rel.parts or item.name in names or not item.isfile():
+            if rel.is_absolute() or '..' in rel.parts or rel in names or not item.isfile():
                 raise ValueError(f'unsafe or unsupported archive entry {item.name}')
-            names.add(item.name)
+            names.add(rel)
             target = destination / rel
+            # A safe archive name can still traverse a pre-existing output link.
+            # Check the complete archive before replacing any previous copies.
+            if (not target.resolve().is_relative_to(root)
+                    or any((destination.joinpath(*rel.parts[:end])).is_symlink()
+                           for end in range(1, len(rel.parts) + 1))):
+                raise ValueError(f'unsafe output link for archive entry {item.name}')
+            targets.append((item, target))
+        for item, target in targets:
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.extractfile(item) as src, target.open('wb') as dst:
                 shutil.copyfileobj(src, dst)
@@ -153,7 +163,7 @@ def inspect(args):
 
 
 def replay(args, info):
-    subprocess.run(['cargo','run','--release','--example','offline_ssb_nr','--',
+    subprocess.run(['cargo','run','--release','-j','1','--example','offline_ssb_nr','--',
                     info['iq_path'],info['meta_path'],str(args.out/'native')],cwd=ROOT/'backend',check=True)
 
 

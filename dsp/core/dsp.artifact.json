@@ -1,6 +1,6 @@
 {
- "bytes": 2740360,
- "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+ "bytes": 2860153,
+ "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
  "exports": [
   "calloc",
   "free",
@@ -59,7 +59,7 @@
  "file": "frontend/public/dsp.wasm",
  "note": "Written by dsp/core/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/checks/check_wasm_artifact.py verifies this manifest in CI.",
  "profile": "release",
- "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
- "sha256": "4ee31237e975d0e252304fbc4071d3301364fbdff0475e816b0efea3dbc65aad",
+ "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+ "sha256": "a06ac1b0a75588d1765e4b38fc4f50fbe149ad73b1907120317069302d09d715",
  "target": "wasm32-unknown-unknown"
 }

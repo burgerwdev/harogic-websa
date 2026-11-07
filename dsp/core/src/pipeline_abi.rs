@@ -54,6 +54,9 @@ unsafe fn read_str(ptr: *const u8, len: u32) -> Option<String> {
 /// is not the one the caller allocated. The browser feeds 32k-sample blocks, so this is ~32x the
 /// largest real call.
 const MAX_PUSH_SAMPLES: u32 = 1 << 20;
+/// Bound generated PCM or adapted decoder IQ before the resampler allocates.
+/// The count is real PCM samples on the analog path, complex samples on digital.
+const MAX_OUTPUT_SAMPLES: usize = 1 << 20;
 
 fn register(state: PipelineState) -> u32 {
     PIPELINES.with(|slot| {
@@ -74,6 +77,8 @@ fn register(state: PipelineState) -> u32 {
 /// `fs_in` is the rate of the channelized baseband (`STATUS.sdr.actual.ddc_rate`) and `out_rate` is
 /// the rate the consumer wants: the AudioWorklet's `sampleRate` for an analog mode, 48 kHz for a
 /// protocol decoder. Returns 0 when the mode has no kernel or the geometry is invalid.
+/// Rates must be finite, `fs_in` at least 1 Hz and `out_rate` in 8000..=192000 Hz;
+/// fractional rates are retained. Bandwidth must be positive and finite, pitch finite.
 ///
 /// # Safety
 /// `mode_ptr` must point to `mode_len` readable bytes (an ASCII plugin id).
@@ -89,7 +94,9 @@ pub unsafe extern "C" fn websa_dsp_demod_new(
     let Some(mode) = read_str(mode_ptr, mode_len) else {
         return 0;
     };
-    if !(fs_in > 0.0) || !(out_rate > 0.0) {
+    if !fs_in.is_finite() || fs_in < 1.0
+        || !out_rate.is_finite() || !(8_000.0..=192_000.0).contains(&out_rate)
+        || !if_bw.is_finite() || if_bw <= 0.0 || !pitch.is_finite() {
         return 0;
     }
     let mut config = DemodConfig::new(fs_in, if_bw);
@@ -124,6 +131,8 @@ pub unsafe extern "C" fn websa_dsp_demod_new(
 ///
 /// The audio chain may be switched off with `websa_dsp_demod_set_audio` (the RAW/digital comparison
 /// uses that); it never changes the RAW baseband.
+/// Insufficient output capacity or more than 1,048,576 generated PCM samples returns 0
+/// before consuming input. The caller can retry the block with sufficient capacity or split it.
 ///
 /// # Safety
 /// `iq_ptr` must point to `samples * 2` readable f32 values and `out_ptr` to `capacity` writable
@@ -140,17 +149,21 @@ pub unsafe extern "C" fn websa_dsp_demod_process(
     if iq_ptr.is_null() || out_ptr.is_null() || samples == 0 || samples > MAX_PUSH_SAMPLES {
         return 0;
     }
-    let input = core::slice::from_raw_parts(iq_ptr, samples as usize * 2);
-    let output = core::slice::from_raw_parts_mut(out_ptr, capacity as usize);
     with_pipeline(handle, |state| {
         if state.pipeline.kind() != PathKind::Analog {
             return 0;
         }
+        let Some(expected) = state.pipeline.output_length_hint(samples as usize) else { return 0; };
+        if expected > MAX_OUTPUT_SAMPLES || expected > capacity as usize {
+            return 0;
+        }
+        let input = core::slice::from_raw_parts(iq_ptr, samples as usize * 2);
         state.pipeline.process_f32_into(input, audio_hold != 0, &mut state.out);
         let written = state.out.audio.len();
         if written > capacity as usize {
             return 0;                        // never write past the caller's block
         }
+        let output = core::slice::from_raw_parts_mut(out_ptr, written);
         output[..written].copy_from_slice(&state.out.audio);
         written as u32
     })
@@ -159,6 +172,7 @@ pub unsafe extern "C" fn websa_dsp_demod_process(
 
 /// Feed one baseband block to the digital pipeline; returns how many messages this block decoded
 /// (0 when it completed nothing).
+/// More than 1,048,576 adapted complex samples is rejected before consuming input.
 ///
 /// # Safety
 /// `iq_ptr` must point to `samples * 2` readable f32 values inside this module's linear memory.
@@ -167,11 +181,15 @@ pub unsafe extern "C" fn websa_dsp_demod_push(handle: u32, iq_ptr: *const f32, s
     if iq_ptr.is_null() || samples == 0 || samples > MAX_PUSH_SAMPLES {
         return 0;
     }
-    let input = core::slice::from_raw_parts(iq_ptr, samples as usize * 2);
     with_pipeline(handle, |state| {
         if state.pipeline.kind() != PathKind::Digital {
             return 0;
         }
+        let Some(expected) = state.pipeline.output_length_hint(samples as usize) else { return 0; };
+        if expected > MAX_OUTPUT_SAMPLES {
+            return 0;
+        }
+        let input = core::slice::from_raw_parts(iq_ptr, samples as usize * 2);
         state.pipeline.process_f32_into(input, false, &mut state.out);
         state.out.decoded.len() as u32
     })
@@ -421,6 +439,7 @@ pub extern "C" fn websa_dsp_demod_deemph(handle: u32) -> f64 {
 /// into `ptr` and drain it. The samples run at the consumer's rate and interleave with the mono
 /// PCM one-to-one (the consumer builds L = (M+S)/2, R = (M−S)/2). Returns the sample count, or 0
 /// when the mode has no stereo side chain (or the buffer is too small).
+/// Insufficient capacity leaves the complete block available for retry.
 ///
 /// # Safety
 /// `ptr` must point to `capacity` writable `f32`s.
@@ -430,6 +449,9 @@ pub unsafe extern "C" fn websa_dsp_demod_side(handle: u32, ptr: *mut f32, capaci
         return 0;
     }
     with_pipeline(handle, |state| {
+        if state.pipeline.pending_side_samples() > capacity as usize {
+            return 0;
+        }
         let side = state.pipeline.take_side();
         let n = side.len().min(capacity as usize);
         core::ptr::copy_nonoverlapping(side.as_ptr(), ptr, n);
@@ -613,12 +635,209 @@ mod tests {
         }
     }
 
+    #[test]
+    fn invalid_geometry_is_rejected_before_building_the_audio_chain() {
+        for (fs_in, out_rate, if_bw, pitch) in [
+            (f64::INFINITY, OUT_RATE, 6_000.0, 700.0),
+            (FS_IN, f64::INFINITY, 6_000.0, 700.0),
+            (f64::NAN, OUT_RATE, 6_000.0, 700.0),
+            (FS_IN, f64::NAN, 6_000.0, 700.0),
+            (0.0, OUT_RATE, 6_000.0, 700.0),
+            (f64::MIN_POSITIVE, OUT_RATE, 6_000.0, 700.0),
+            (FS_IN, 1.0, 6_000.0, 700.0),
+            (FS_IN, 7_999.0, 6_000.0, 700.0),
+            (FS_IN, 192_001.0, 6_000.0, 700.0),
+            (FS_IN, OUT_RATE, f64::NAN, 700.0),
+            (FS_IN, OUT_RATE, f64::INFINITY, 700.0),
+            (FS_IN, OUT_RATE, 0.0, 700.0),
+            (FS_IN, OUT_RATE, 6_000.0, f64::INFINITY),
+            (FS_IN, OUT_RATE, 6_000.0, f64::NAN),
+        ] {
+            let handle = unsafe {
+                websa_dsp_demod_new(fs_in, out_rate, b"am".as_ptr(), 2, if_bw, pitch)
+            };
+            if handle != 0 { websa_dsp_demod_free(handle); }
+            assert_eq!(handle, 0, "geometry ({fs_in}, {out_rate}, {if_bw}, {pitch})");
+        }
+    }
+
+    #[test]
+    fn valid_audio_rate_limits_and_fractional_input_rates_still_build() {
+        for out_rate in [8_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let handle = unsafe {
+                websa_dsp_demod_new(24_414.0625, out_rate, b"am".as_ptr(), 2, 6_000.0, 700.0)
+            };
+            assert_ne!(handle, 0, "output rate {out_rate}");
+            assert_eq!(websa_dsp_demod_free(handle), 1);
+        }
+    }
+
+    #[test]
+    fn exact_output_capacity_accepts_streaming_am_and_fm_at_fractional_rates() {
+        for mode in ["am", "nfm"] {
+            for (fs_in, out_rate) in [(48_000.0, 48_000.0), (24_000.0, 48_000.0),
+                (24_414.0625, 44_100.0), (96_000.0, 8_000.0)] {
+                let build = || unsafe {
+                    websa_dsp_demod_new(fs_in, out_rate, mode.as_ptr(), mode.len() as u32, 6_000.0, 700.0)
+                };
+                let exact = build();
+                let reference = build();
+                assert_ne!(exact, 0);
+                assert_ne!(reference, 0);
+                let mut position = 0;
+                for size in [1_usize, 2, 3, 7, 64, 127, 13, 1] {
+                    let input: Vec<f32> = (position..position + size).flat_map(|index| {
+                        let t = index as f64 / fs_in;
+                        let phase = 2.0 * PI * 2_000.0 * t + 0.1 * (2.0 * PI * 500.0 * t).sin();
+                        let envelope = 0.25 * (1.0 + 0.4 * (2.0 * PI * 1_000.0 * t).cos());
+                        [(envelope * phase.cos()) as f32, (envelope * phase.sin()) as f32]
+                    }).collect();
+                    position += size;
+                    let mut roomy = vec![0.0; 4096];
+                    let expected = unsafe {
+                        websa_dsp_demod_process(reference, input.as_ptr(), size as u32,
+                            roomy.as_mut_ptr(), roomy.len() as u32, 0)
+                    };
+                    let mut bounded = vec![0.0; expected as usize];
+                    let written = unsafe {
+                        websa_dsp_demod_process(exact, input.as_ptr(), size as u32,
+                            bounded.as_mut_ptr(), expected, 0)
+                    };
+                    assert_eq!(written, expected, "{mode} {fs_in}->{out_rate}, block {size}");
+                    assert_eq!(bounded, roomy[..expected as usize], "{mode} {fs_in}->{out_rate}");
+                }
+                assert_eq!(websa_dsp_demod_free(exact), 1);
+                assert_eq!(websa_dsp_demod_free(reference), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn insufficient_output_capacity_does_not_consume_the_input() {
+        let retry = new("am", 6_000.0, OUT_RATE);
+        let fresh = new("am", 6_000.0, OUT_RATE);
+        let input = am_baseband(256, 1_000.0);
+        let mut sentinel = [123.0];
+        let refused = unsafe {
+            websa_dsp_demod_process(retry, input.as_ptr(), 256, sentinel.as_mut_ptr(), 1, 0)
+        };
+        let mut retried = vec![0.0; 512];
+        let mut expected = vec![0.0; 512];
+        let (n_retry, n_fresh) = unsafe {
+            (websa_dsp_demod_process(retry, input.as_ptr(), 256, retried.as_mut_ptr(), 512, 0),
+             websa_dsp_demod_process(fresh, input.as_ptr(), 256, expected.as_mut_ptr(), 512, 0))
+        };
+        websa_dsp_demod_free(retry);
+        websa_dsp_demod_free(fresh);
+        assert_eq!(refused, 0);
+        assert_eq!(sentinel, [123.0]);
+        assert!(n_fresh > 0);
+        assert_eq!(n_retry, n_fresh);
+        assert_eq!(retried, expected, "a refused block must leave filter and sample-clock state intact");
+    }
+
+    #[test]
+    fn resampling_cannot_exceed_the_per_call_output_budget() {
+        let handle = unsafe {
+            websa_dsp_demod_new(1_000.0, 192_000.0, b"am".as_ptr(), 2, 100.0, 700.0)
+        };
+        assert_ne!(handle, 0);
+        let input = vec![0.125; 6_000 * 2];
+        // Deliberately provide enough caller storage: the independent internal
+        // limit must reject the expansion towards 1,152,000 samples.
+        let mut output = vec![123.0; 1_152_000];
+        let written = unsafe {
+            websa_dsp_demod_process(handle, input.as_ptr(), 6_000, output.as_mut_ptr(),
+                output.len() as u32, 0)
+        };
+        let untouched = output.iter().all(|sample| *sample == 123.0);
+        websa_dsp_demod_free(handle);
+        assert_eq!(written, 0, "resampled output must stay within 1,048,576 samples per call");
+        assert!(untouched, "rejection cannot write a partial output");
+    }
+
+    #[test]
+    fn digital_push_refuses_expansion_before_the_decoder_and_can_recover() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+        struct CountInput(Arc<AtomicUsize>);
+        impl crate::plugin::DigitalDemodulator for CountInput {
+            fn id(&self) -> &'static str { "ft8" }
+            fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
+                self.0.store(iq.len() / 2, Ordering::Relaxed);
+                vec!["accepted".into()]
+            }
+            fn reset(&mut self) { self.0.store(0, Ordering::Relaxed); }
+        }
+
+        let handle = unsafe {
+            websa_dsp_demod_new(1_000.0, 48_000.0, b"ft8".as_ptr(), 3, 100.0, 700.0)
+        };
+        assert_ne!(handle, 0);
+        let received = Arc::new(AtomicUsize::new(0));
+        with_pipeline(handle, |state| {
+            state.pipeline.set_digital_demod(Box::new(CountInput(received.clone())), 1_000.0, 48_000.0);
+        });
+        // Exercise real complex resampling/dispatch with a cheap decoder so
+        // this resource-boundary regression never launches a protocol search.
+        let input = vec![0.125; 24_000 * 2];
+        let refused = unsafe { websa_dsp_demod_push(handle, input.as_ptr(), 24_000) };
+        let after_refusal = received.load(Ordering::Relaxed);
+        let accepted = unsafe { websa_dsp_demod_push(handle, input.as_ptr(), 16) };
+        let after_retry = received.load(Ordering::Relaxed);
+        websa_dsp_demod_free(handle);
+        assert_eq!(refused, 0);
+        assert_eq!(after_refusal, 0, "oversized expansion must not reach the decoder");
+        assert_eq!(accepted, 1);
+        // Sixteen source samples have fifteen first-block interpolation
+        // intervals, each containing 48 output steps, plus the first endpoint.
+        assert_eq!(after_retry, 15 * 48 + 1, "rejection must not advance the resampler phase");
+    }
+
+    #[test]
+    fn insufficient_stereo_capacity_preserves_the_entire_side_block() {
+        let build = || unsafe {
+            websa_dsp_demod_new(288_000.0, OUT_RATE, b"wfm".as_ptr(), 3, 180_000.0, 700.0)
+        };
+        let retry = build();
+        let fresh = build();
+        assert_ne!(retry, 0);
+        assert_ne!(fresh, 0);
+        let input = wfm_stereo_baseband(4_800, 288_000.0, 0.09, 0.3, 0.0);
+        let mut mono = vec![0.0; 4096];
+        for handle in [retry, fresh] {
+            let written = unsafe {
+                websa_dsp_demod_process(handle, input.as_ptr(), 4_800, mono.as_mut_ptr(), 4096, 0)
+            };
+            assert!(written > 0);
+        }
+        let mut sentinel = [123.0];
+        let mut retried = vec![0.0; 4096];
+        let mut expected = vec![0.0; 4096];
+        let (empty, small, n_fresh) = unsafe {
+            (websa_dsp_demod_side(retry, sentinel.as_mut_ptr(), 0),
+             websa_dsp_demod_side(retry, sentinel.as_mut_ptr(), 1),
+             websa_dsp_demod_side(fresh, expected.as_mut_ptr(), 4096))
+        };
+        let n_retry = unsafe {
+            websa_dsp_demod_side(retry, retried.as_mut_ptr(), n_fresh)
+        };
+        let drained = unsafe { websa_dsp_demod_side(retry, sentinel.as_mut_ptr(), 1) };
+        websa_dsp_demod_free(retry);
+        websa_dsp_demod_free(fresh);
+        assert_eq!(empty, 0);
+        assert_eq!(small, 0);
+        assert_eq!(sentinel, [123.0]);
+        assert!(n_fresh > 1, "the reference must contain a real side block");
+        assert_eq!(n_retry, n_fresh, "insufficient capacity cannot drain stereo samples");
+        assert_eq!(retried, expected);
+        assert_eq!(drained, 0, "a successful drain cannot replay the side block");
+    }
+
     /// An amplitude-modulated baseband at DC, the shape the backend's DDC hands over.
     fn am_baseband(n: usize, tone_hz: f64) -> Vec<f32> {
-        // Two modulation tones, not one: the default chain includes the adaptive notch, which
-        // removes the strongest single tone in the channel (correct for interference, and the
-        // reason a pure-tone test signal comes out quiet). With two tones the second one survives,
-        // so the level assertion measures the pipeline rather than the notch.
+        // Two deterministic modulation tones exercise the pipeline's PCM output.
+        // Listening policy leaves the adaptive notch disabled.
         let mut iq = Vec::with_capacity(n * 2);
         for k in 0..n {
             let t = k as f64 / FS_IN;

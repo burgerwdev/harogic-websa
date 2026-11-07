@@ -249,9 +249,8 @@ impl NoiseReduction {
             self.wiener_filled += count;
             input = &input[count..];
             if self.wiener_filled == needed {
-                self.wiener.process_into(&self.wiener_input[..needed], false, &mut self.wiener_output);
-                // The first call's trailing 384 values are the stage's padding.
-                output.extend_from_slice(&self.wiener_output[..128]);
+                self.wiener.process_available_into(&self.wiener_input[..needed], false, &mut self.wiener_output);
+                output.extend_from_slice(&self.wiener_output);
                 self.wiener_filled = 0;
                 self.wiener_warmed = true;
             }

@@ -36,19 +36,17 @@ pub fn block_bytes(bytes: usize) -> usize {
 }
 
 #[inline]
-fn layout(bytes: usize) -> Layout {
-    // block_bytes() guarantees a non-zero size, so Layout::from_size_align cannot fail here.
-    match Layout::from_size_align(block_bytes(bytes), BLOCK_ALIGN) {
-        Ok(layout) => layout,
-        Err(_) => panic!("invalid block layout"),
-    }
+fn layout(bytes: usize) -> Option<Layout> {
+    // Layout also bounds allocations to isize::MAX. A non-zero, aligned size
+    // alone is insufficient, especially for lengths supplied through the ABI.
+    Layout::from_size_align(block_bytes(bytes), BLOCK_ALIGN).ok()
 }
 
-/// Allocate a zeroed block for `bytes` of payload. Returns 0 when the host allocation fails
+/// Allocate a zeroed block for `bytes` of payload. Returns 0 for an invalid size or allocation failure
 /// (the caller must treat 0 as "out of memory", never as a valid pointer).
 #[no_mangle]
 pub extern "C" fn websa_dsp_alloc(bytes: usize) -> *mut u8 {
-    let layout = layout(bytes);
+    let Some(layout) = layout(bytes) else { return core::ptr::null_mut(); };
     // SAFETY: layout has a non-zero size, which `alloc` requires.
     let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
     if ptr.is_null() {
@@ -60,13 +58,16 @@ pub extern "C" fn websa_dsp_alloc(bytes: usize) -> *mut u8 {
 /// Free a block from [`websa_dsp_alloc`]. `bytes` is the value the block was allocated with.
 ///
 /// # Safety
-/// `ptr` must come from `websa_dsp_alloc` (or be null) and must not have been freed already.
+/// `ptr` must come from `websa_dsp_alloc` (or be null), must not have been freed
+/// already, and `bytes` must match the allocated layout.
 #[no_mangle]
 pub unsafe extern "C" fn websa_dsp_free(ptr: *mut u8, bytes: usize) {
     if ptr.is_null() {
         return;
     }
-    std::alloc::dealloc(ptr, layout(bytes));
+    if let Some(layout) = layout(bytes) {
+        std::alloc::dealloc(ptr, layout);
+    }
 }
 
 /// Size of one `f32` in bytes, so the loader derives strides from the module instead of
@@ -104,6 +105,17 @@ mod tests {
         assert!(unsafe { std::slice::from_raw_parts(ptr, 1024) }.iter().all(|b| *b == 0));
         // SAFETY: same pointer and size that were allocated.
         unsafe { websa_dsp_free(ptr, 1024) };
+    }
+
+    #[test]
+    fn unrepresentable_allocations_return_null_without_panicking() {
+        for bytes in [isize::MAX as usize, isize::MAX as usize + 1, usize::MAX] {
+            assert!(websa_dsp_alloc(bytes).is_null());
+        }
+        let empty = websa_dsp_alloc(0);
+        assert!(!empty.is_null());
+        // SAFETY: a zero-sized request still owns one aligned allocation.
+        unsafe { websa_dsp_free(empty, 0) };
     }
 
     #[test]

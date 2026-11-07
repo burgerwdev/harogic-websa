@@ -457,7 +457,7 @@ function renderFt8Rows(): void {
 	body.textContent = '';
 	const shown = ft8FilterRe
 		? spots.filter((spot) => ft8FilterRe!.test(spot.text))
-		: spots;
+		: spots.slice();
 	if (ft8SortCol !== null) {
 		const col = ft8SortCol;
 		const key = (spot: Ft8Spot, geo: { country: string; location: string }): string | number => {
@@ -498,12 +498,19 @@ function renderFt8Rows(): void {
 function renderCwLines(): void {
 	const pane = element('decode-window-cw');
 	if (!pane) return;
-	const { lines, current, marks } = cwLog();
+	const { lines, current, marks, evictedCharacters } = cwLog();
 	// Whether to follow the text: only when the operator is already at the bottom, so reading back
 	// through the log is not yanked away by the next character.
 	const body = element('decode-window-body');
 	const follow = !body || body.scrollHeight - body.scrollTop - body.clientHeight < 24;
 	pane.textContent = '';
+	if (evictedCharacters) {
+		const notice = surfaceDocument().createElement('div');
+		notice.className = 'cw-empty';
+		notice.setAttribute('role', 'status');
+		notice.textContent = t('cw_history_trimmed', { count: evictedCharacters });
+		pane.appendChild(notice);
+	}
 	if (lines.length === 0 && !current) {
 		const empty = surfaceDocument().createElement('div');
 		empty.className = 'cw-empty';

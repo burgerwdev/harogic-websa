@@ -14,7 +14,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     let mut reports=Vec::new();
     for db in [10,13,20] {
         let mut nr=NoiseReduction::new(48000);nr.configure(48000,NrAlgorithm::Dfn,0.25,db as f32);
-        if nr.status().effective!=NrAlgorithm::Dfn {return Err(format!("DFN unavailable: {:?}",nr.status()).into());}
+        if nr.status().effective!=Some(NrAlgorithm::Dfn) {return Err(format!("DFN unavailable: {:?}",nr.status()).into());}
         let delay=nr.latency_samples().unwrap() as usize;
         if delay!=1440 {return Err(format!("unexpected restored DFN delay {delay}").into());}
         let mut padded=input.clone();padded.resize(input.len()+delay+2048,0.0);

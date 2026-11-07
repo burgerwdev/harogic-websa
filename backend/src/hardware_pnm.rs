@@ -15,7 +15,9 @@ use std::{
 
 use parking_lot::Mutex;
 
-use crate::hardware_swp::GnssInfo;
+use crate::hardware_swp::{
+    call_owner, finish_owner, owner_slot_free, park_stuck_owner, GnssInfo, OWNER_STOP_TIMEOUT,
+};
 
 #[link(name = "dl")]
 unsafe extern "C" {
@@ -103,8 +105,13 @@ struct Device {
 
 unsafe impl Send for Device {}
 
+fn geometry_ok(points: u32, segments: u32, partial: u32) -> bool {
+    (2..=65_536).contains(&points) && (1..=7).contains(&segments) && partial >= 1
+}
+
 impl Device {
     fn open(path: &str, params: &PnmParams) -> Result<Self, String> {
+        owner_slot_free()?;
         let path = CString::new(path).map_err(|_| "invalid SDK shim path")?;
         let library = unsafe { dlopen(path.as_ptr(), crate::hardware_swp::SDK_DLOPEN_FLAGS) };
         if library.is_null() {
@@ -140,7 +147,7 @@ impl Device {
                     &mut partial,
                 )
             };
-            if status != 0 || handle.is_null() || points < 2 || segments < 1 || partial < 1 {
+            if status != 0 || handle.is_null() || !geometry_ok(points, segments, partial) {
                 if !handle.is_null() {
                     unsafe {
                         close(handle);
@@ -288,6 +295,10 @@ unsafe impl Send for HardwarePnm {}
 
 impl HardwarePnm {
     pub fn start(path: String, params: PnmParams) -> Result<Self, String> {
+        Self::start_with_timeout(path, params, Duration::from_secs(10))
+    }
+
+    fn start_with_timeout(path: String, params: PnmParams, timeout: Duration) -> Result<Self, String> {
         let (meta_tx, meta_rx) = mpsc::sync_channel(1);
         let (gnss_tx, gnss_rx) = mpsc::sync_channel::<SyncSender<Result<GnssInfo, String>>>(1);
         let (next_tx, next_rx) =
@@ -332,9 +343,14 @@ impl HardwarePnm {
                 let _ = meta_tx.send(Err(e));
             }
         });
-        let device_info = meta_rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|_| "SDK PNM startup timed out; owner outcome unknown".to_owned())??;
+        let device_info = match meta_rx.recv_timeout(timeout) {
+            Ok(result) => result?,
+            Err(_) => {
+                stop.store(true, Ordering::Release);
+                park_stuck_owner(owner);
+                return Err("SDK PNM startup timed out; owner parked".into());
+            }
+        };
         Ok(Self {
             device_info,
             next_tx,
@@ -347,38 +363,37 @@ impl HardwarePnm {
 
     /// GNSS snapshot; runs on the owner thread with every other vendor call.
     pub fn gnss(&self) -> Result<GnssInfo, String> {
-        if let Some(e) = self.error.lock().clone() {
-            return Err(e);
-        }
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.gnss_tx
-            .send(reply_tx)
-            .map_err(|_| "SDK PNM owner closed".to_owned())?;
-        reply_rx
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| "SDK GNSS query stalled".to_owned())?
+        self.call(&self.gnss_tx, Duration::from_secs(5), "SDK GNSS query stalled")
     }
 
     pub fn next(&self) -> Result<Option<PnmFrame>, String> {
+        self.next_with_timeout(Duration::from_secs(10))
+    }
+
+    fn next_with_timeout(&self, timeout: Duration) -> Result<Option<PnmFrame>, String> {
+        self.call(&self.next_tx, timeout, "SDK PNM fetch stalled")
+    }
+
+    fn call<T>(&self, sender: &SyncSender<SyncSender<Result<T, String>>>, timeout: Duration, stalled: &str) -> Result<T, String> {
         if let Some(e) = self.error.lock().clone() {
             return Err(e);
         }
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.next_tx
-            .send(reply_tx)
-            .map_err(|_| "SDK PNM owner closed".to_owned())?;
-        reply_rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|_| "SDK PNM fetch stalled".to_owned())?
+        call_owner(sender, &self.stop, |reply| reply, timeout).map_err(|failure| {
+            let message = match failure {
+                RecvTimeoutError::Timeout => stalled,
+                RecvTimeoutError::Disconnected => "SDK PNM owner closed",
+            }.to_owned();
+            *self.error.lock() = Some(message.clone());
+            message
+        })?
     }
 }
 
 impl Drop for HardwarePnm {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Joining is required: the vendor SDK cannot overlap sessions (see hardware_swp).
         if let Some(owner) = self.owner.take() {
-            let _ = owner.join();
+            finish_owner(owner, OWNER_STOP_TIMEOUT);
         }
     }
 }
@@ -386,6 +401,120 @@ impl Drop for HardwarePnm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware_swp::owner_tests;
+
+    fn params() -> PnmParams {
+        PnmParams { center: 100e6, threshold: -50.0, rbw_ratio: 0.02, start_offset: 100.0, stop_offset: 10e6, trace_average: 4 }
+    }
+
+    #[test]
+    fn reported_geometry_bounds_all_allocations_and_numeric_readback() {
+        assert!(geometry_ok(65_536, 7, 1));
+        for (points, segments, partial) in [
+            (0, 1, 1), (1, 1, 1), (65_537, 1, 1), (u32::MAX, 1, 1),
+            (2, 0, 1), (2, 8, 1), (2, u32::MAX, 1), (2, 1, 0),
+        ] {
+            assert!(!geometry_ok(points, segments, partial),
+                "unsafe PNM geometry {points}/{segments}/{partial}");
+        }
+    }
+
+    fn test_hardware(next_tx: SyncSender<SyncSender<Result<Option<PnmFrame>, String>>>, stop: Arc<AtomicBool>, owner: Option<JoinHandle<()>>) -> HardwarePnm {
+        let (gnss_tx, _gnss_rx) = mpsc::sync_channel(1);
+        HardwarePnm { device_info: None, next_tx, gnss_tx, error: Arc::new(Mutex::new(None)), stop, owner }
+    }
+
+    #[test]
+    fn full_mailbox_obeys_request_deadline_and_stops_owner() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (reply, _received) = mpsc::sync_channel(1);
+        tx.send(reply).ok().unwrap();
+        let hardware = test_hardware(tx, Arc::new(AtomicBool::new(false)), None);
+        owner_tests::full_mailbox(rx, move || {
+            let timed_out = hardware.next_with_timeout(Duration::from_millis(20)).is_err();
+            (timed_out, hardware.stop.load(Ordering::Acquire))
+        });
+    }
+
+    #[test]
+    fn blocked_owner_retirement_excludes_replacement_until_recovery() {
+        if !owner_tests::isolated("hardware_pnm::tests::blocked_owner_retirement_excludes_replacement_until_recovery") { return; }
+        owner_tests::blocked_owner(|owner, stop| {
+            let (tx, _rx) = mpsc::sync_channel(1);
+            test_hardware(tx, stop, Some(owner))
+        });
+    }
+
+    #[test]
+    fn parked_sdk_owner_prevents_pnm_open() {
+        if !owner_tests::isolated("hardware_pnm::tests::parked_sdk_owner_prevents_pnm_open") { return; }
+        let (release, blocked) = mpsc::sync_channel(1);
+        park_stuck_owner(std::thread::spawn(move || { blocked.recv().unwrap(); }));
+        let result = HardwarePnm::start("/does/not/exist.so".into(), params());
+        release.send(()).unwrap();
+        owner_tests::wait_for_owner();
+        let error = result.err().expect("PNM admitted an overlapping owner");
+        assert!(error.contains("previous SDK session"), "PNM touched its shim before ownership admission: {error}");
+    }
+
+    #[test]
+    fn startup_timeout_parks_owner_until_vendor_open_and_close_return() {
+        if !owner_tests::isolated("hardware_pnm::tests::startup_timeout_parks_owner_until_vendor_open_and_close_return") { return; }
+        // This ABI fixture has no vendor dependency. Its open stays inside C until
+        // the test releases it, then returns a valid PNM handle requiring close.
+        let source = r#"
+#include <stdatomic.h>
+#include <stdint.h>
+#include <unistd.h>
+static atomic_int blocked = 1, entered = 0, closed = 0;
+int san90_test_control(int command) {
+    if (command == 1) atomic_store(&blocked, 0);
+    return command == 2 ? atomic_load(&closed) : atomic_load(&entered);
+}
+int san90_pnm_open_v1(void** handle, double center, float threshold, double ratio,
+    double start, double stop, uint32_t average, uint32_t* points,
+    uint32_t* segments, uint32_t* partial) {
+    atomic_store(&entered, 1);
+    while (atomic_load(&blocked)) usleep(1000);
+    *handle = (void*)1;
+    *points = 2; *segments = 1; *partial = 1;
+    return 0;
+}
+int san90_pnm_next_v1(void* handle, double* carrier, float* power, double* offset,
+    float* pn, uint32_t capacity, uint32_t* points, float* reference,
+    uint32_t* progress, uint32_t* done) { return 1; }
+int san90_pnm_close_v1(void* handle) { atomic_fetch_add(&closed, 1); return 0; }
+"#;
+        let directory = std::env::temp_dir().join(format!("websa_pnm_owner_{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let input = directory.join("fixture.c");
+        let library_path = directory.join("fixture.so");
+        std::fs::write(&input, source).unwrap();
+        assert!(std::process::Command::new("cc").args(["-shared", "-fPIC", "-std=gnu11"])
+            .arg(&input).arg("-o").arg(&library_path).status().unwrap().success());
+        let path = CString::new(library_path.to_str().unwrap()).unwrap();
+        let library = unsafe { dlopen(path.as_ptr(), crate::hardware_swp::SDK_DLOPEN_FLAGS) };
+        assert!(!library.is_null());
+        let symbol = unsafe { dlsym(library, b"san90_test_control\0".as_ptr().cast()) };
+        assert!(!symbol.is_null());
+        let control: unsafe extern "C" fn(c_int) -> c_int = unsafe { std::mem::transmute(symbol) };
+        let result = HardwarePnm::start_with_timeout(library_path.to_string_lossy().into_owned(), params(), Duration::from_millis(20));
+        let excluded = owner_slot_free().is_err();
+        let entered = unsafe { control(0) };
+        unsafe { control(1); }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while unsafe { control(2) } == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let closed = unsafe { control(2) };
+        owner_tests::wait_for_owner();
+        unsafe { dlclose(library); }
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(result.is_err(), "blocked vendor open did not time out");
+        assert_eq!(entered, 1, "vendor open did not enter the fixture gate");
+        assert!(excluded, "startup timeout detached the SDK owner and admitted replacement");
+        assert_eq!(closed, 1, "timed-out open must retire its returned mode exactly once");
+    }
 
     #[test]
     #[ignore = "requires /opt/htraapi SDK headers and libhtraapi.so.0.55.100; no hardware access"]

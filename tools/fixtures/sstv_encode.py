@@ -51,6 +51,14 @@ BREAK = (SYNC_HZ, 10_000_000)
 
 #: Full scale of the 16-bit samples.
 FULL_SCALE = 32_767
+MAX_IMAGE_BYTES = 64 * 1024 * 1024
+
+
+def _image_size(width: int, height: int, channels: int = 3) -> int:
+    size = width * height * channels
+    if width <= 0 or height <= 0 or size > MAX_IMAGE_BYTES:
+        raise ValueError('image dimensions exceed the image byte budget')
+    return size
 
 
 def load_modes() -> list[dict]:
@@ -114,17 +122,6 @@ def _luma(r: int, g: int, b: int) -> int:
 
 def _chroma_red(r: int, luma: int) -> int:
     return max(0, min(255, (10 * (r - luma) + 7 * 255) // 14))
-
-
-def _chroma_blue(b: int, luma: int) -> int:
-    return max(0, min(255, (100 * (b - luma) + 89 * 255) // 178))
-
-
-def _clamp_floor_div(numerator: int, denominator: int) -> int:
-    """Rust's integer division truncates toward zero; Python's floors. The results here are clamped
-    to 0..255 either way, so only the intermediate sign differs — this keeps the intent explicit."""
-    quotient = abs(numerator) // denominator
-    return quotient if numerator >= 0 else -quotient
 
 
 def scan_values(mode: dict, rows: list[bytes], width: int) -> dict[str, np.ndarray]:
@@ -262,7 +259,7 @@ class Picture:
     def __init__(self, width: int, height: int) -> None:
         self.width = width
         self.height = height
-        self.rgb = bytearray(width * height * 3)
+        self.rgb = bytearray(_image_size(width, height))
 
     def set(self, x: int, y: int, r: int, g: int, b: int) -> None:
         if 0 <= x < self.width and 0 <= y < self.height:
@@ -341,7 +338,10 @@ def pattern_image(width: int, height: int, callsign: str = '', label: str = '') 
 
 def read_image(path: Path) -> Picture:
     """Read a picture from a PNG (8-bit, non-interlaced) or binary PPM (P6) file, no dependencies."""
-    data = path.read_bytes()
+    with path.open('rb') as source:
+        data = source.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError('encoded image exceeds the image byte budget')
     if data.startswith(b'\x89PNG\r\n\x1a\n'):
         width, height, pixels = _read_png(data)
     elif data.startswith(b'P6'):
@@ -354,6 +354,8 @@ def read_image(path: Path) -> Picture:
 
 
 def _read_ppm(data: bytes) -> tuple[int, int, bytes]:
+    if not data.startswith(b'P6') or len(data) > MAX_IMAGE_BYTES:
+        raise ValueError('invalid PPM header or image byte budget exceeded')
     fields: list[bytes] = []
     cursor = 2
     while len(fields) < 3:
@@ -370,37 +372,74 @@ def _read_ppm(data: bytes) -> tuple[int, int, bytes]:
     cursor += 1
     width, height, maxval = (int(field) for field in fields)
     if maxval != 255:
-        raise SystemExit(f'PPM maxval {maxval} is not supported (only 255)')
-    return width, height, data[cursor:cursor + width * height * 3]
+        raise ValueError(f'PPM maxval {maxval} is not supported (only 255)')
+    size = _image_size(width, height)
+    if len(data) - cursor != size:
+        raise ValueError('PPM pixel count does not match dimensions')
+    return width, height, data[cursor:]
 
 
 def _read_png(data: bytes) -> tuple[int, int, bytes]:
+    if not data.startswith(b'\x89PNG\r\n\x1a\n') or len(data) > MAX_IMAGE_BYTES:
+        raise ValueError('invalid PNG signature or image byte budget exceeded')
     cursor = 8
     width = height = 0
     colour_type = 0
     bit_depth = 0
     chunks = bytearray()
-    while cursor + 8 <= len(data):
+    header_seen = end_seen = False
+    while cursor < len(data):
+        if len(data) - cursor < 12:
+            raise ValueError('truncated PNG chunk')
         length = struct.unpack('>I', data[cursor:cursor + 4])[0]
         kind = data[cursor + 4:cursor + 8]
+        if length > len(data) - cursor - 12:
+            raise ValueError('truncated PNG chunk payload')
         payload = data[cursor + 8:cursor + 8 + length]
+        crc = struct.unpack('>I', data[cursor + 8 + length:cursor + 12 + length])[0]
+        if zlib.crc32(payload, zlib.crc32(kind)) != crc:
+            raise ValueError('PNG chunk checksum mismatch')
         cursor += 12 + length
+        if not header_seen and kind != b'IHDR':
+            raise ValueError('PNG must begin with IHDR')
         if kind == b'IHDR':
-            width, height, bit_depth, colour_type = struct.unpack('>IIBB', payload[:10])
-            if bit_depth != 8 or colour_type not in (0, 2, 4, 6):
-                raise SystemExit(f'PNG bit depth {bit_depth} colour type {colour_type} is not supported')
+            if header_seen or length != 13:
+                raise ValueError('invalid or duplicate PNG IHDR')
+            width, height, bit_depth, colour_type, compression, filtering, interlace = struct.unpack('>IIBBBBB', payload)
+            if bit_depth != 8 or colour_type not in (0, 2, 4, 6) or compression or filtering or interlace:
+                raise ValueError('PNG requires 8-bit non-interlaced grey, RGB or RGBA pixels')
+            _image_size(width, height)
+            channels = {0: 1, 2: 3, 4: 2, 6: 4}[colour_type]
+            expected = _image_size(width, height, channels) + height
+            if expected > MAX_IMAGE_BYTES:
+                raise ValueError('decoded PNG exceeds the image byte budget')
+            header_seen = True
         elif kind == b'IDAT':
             chunks += payload
         elif kind == b'IEND':
+            if length or cursor != len(data):
+                raise ValueError('invalid PNG IEND or trailing data')
+            end_seen = True
             break
-    raw = zlib.decompress(bytes(chunks))
-    channels = {0: 1, 2: 3, 4: 2, 6: 4}[colour_type]
+        elif kind != b'PLTE' and not kind[0] & 0x20:
+            raise ValueError('unsupported critical PNG chunk')
+    if not header_seen or not end_seen or not chunks:
+        raise ValueError('incomplete PNG image')
+    try:
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(bytes(chunks), expected + 1)
+    except zlib.error as error:
+        raise ValueError('invalid PNG compressed data') from error
+    if len(raw) != expected or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+        raise ValueError('PNG decoded pixel count does not match dimensions')
     stride = width * channels
     out = bytearray(width * height * 3)
     previous = bytearray(stride)
     cursor = 0
     for row in range(height):
         filter_type = raw[cursor]
+        if filter_type > 4:
+            raise ValueError('unsupported PNG row filter')
         line = bytearray(raw[cursor + 1:cursor + 1 + stride])
         cursor += 1 + stride
         for index in range(stride):

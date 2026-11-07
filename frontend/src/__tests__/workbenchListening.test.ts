@@ -81,6 +81,33 @@ it('does not overwrite a pending edit or silently apply an obsolete preview', as
   expect(session.route('fixture-c1').enabled).toBe(false);
 });
 
+it('rejects a preview from another service even when its revision, UID and frequency match', async () => {
+  session.snapshot = { ...clone(session.snapshot), service_id: 'service-a' };
+  const plan = planListen(session, request(7_100_000));
+  session.snapshot = { ...clone(session.snapshot), service_id: 'service-b' };
+  const result = await applyListen(session, plan);
+  expect(result.fault?.code).toBe('STALE_PREVIEW');
+  expect(session.routes.size).toBe(0);
+});
+
+it('does not enable listening after Preset invalidates an in-flight configuration', async () => {
+  const confirmed = clone(session.snapshot);
+  let complete!: (reply: { request_id: string; snapshot: typeof confirmed; fault: null }) => void;
+  vi.spyOn(adapter, 'dispatch').mockImplementation(command => new Promise(resolve => {
+    complete = resolve; confirmed.receivers[0].confirmed.baseband.frequency_hz = 7_120_000;
+    confirmed.revision = '2'; confirmed.receivers[0].revision = '2';
+    expect(command.type).toBe('configure');
+  }));
+  const pending = applyListen(session, planListen(session, request()));
+  await vi.advanceTimersByTimeAsync(0);
+  session.snapshot = clone(confirmed);
+  document.dispatchEvent(new Event('websa:preset-applied'));
+  complete({ request_id: 'invalidated', snapshot: confirmed, fault: null });
+  const result = await pending;
+  expect(result.fault).not.toBeNull();
+  expect(session.routes.size).toBe(0);
+});
+
 it('respects local mute and Solo and never claims to recover an interrupted stream', async () => {
   session.masterGain = 0;
   expect((await applyListen(session, planListen(session, request(7_100_000)))).fault).toBeNull();

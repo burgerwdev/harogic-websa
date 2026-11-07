@@ -3,6 +3,57 @@ import { mountRecordingView, recordingRange } from '../ui/recordingView';
 import type { RecordingTask } from '../core/multichannel';
 
 describe('recorded IQ sample selection', () => {
+  const smallTask = (): RecordingTask => ({ task_id: 'bounded-iq', receiver_uid: 'old-uid', state: 'completed', fault: null,
+    tracks: [{ track_id: 'iq', kind: 'iq', format: 'cf32_le', source: 'baseband', compression: 'zstd_auto_lossless',
+      state: 'completed', raw_bytes: '16', stored_bytes: '16', segments: [{ segment_id: 'segment-a', samples: '2', actual_rate_hz: 6000,
+        first_input_index: '9007199254740993', stream: { source_id: 'archive', epoch: '1', channel_id: '7' }, end_reason: 'stopped' }] }] });
+
+  it.each(['waveform', 'SigMF'])('rejects an oversized %s response before consuming its body', async target => {
+    const cancel = vi.fn(), pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+      controller.enqueue(new Uint8Array(16)); controller.close();
+    });
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { headers: { 'Content-Length': String(16 * 1024 * 1024 + 1) } })));
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    const view = mountRecordingView();
+    try {
+      view.open(smallTask());
+      if (target === 'waveform') document.querySelector<HTMLFormElement>('[data-range-form]')!.requestSubmit();
+      else document.querySelector<HTMLButtonElement>('[data-download]')!.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(pull).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>('[data-load]')!.disabled).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>('[data-play]')!.disabled).toBe(true);
+    } finally { view.dispose(); canvas.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it('cancels an IQ body as soon as streamed bytes exceed the declared selection size', async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ start(value) { controller = value; value.enqueue(new Uint8Array(17)); }, cancel });
+    const fetch = vi.fn(async () => new Response(body, { headers: { 'Content-Length': '16' } })); vi.stubGlobal('fetch', fetch);
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    const view = mountRecordingView();
+    try {
+      view.open(smallTask()); document.querySelector<HTMLFormElement>('[data-range-form]')!.requestSubmit();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>('[data-load]')!.disabled).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>('[data-play]')!.disabled).toBe(true);
+      const samples = new Uint8Array(new Float32Array([0.5, -0.25, 0.125, 0.75]).buffer);
+      fetch.mockResolvedValueOnce(new Response(new ReadableStream({ start(value) {
+        value.enqueue(samples.slice(0, 5)); value.enqueue(samples.slice(5)); value.close();
+      } }), { headers: { 'Content-Length': '16' } }));
+      document.querySelector<HTMLFormElement>('[data-range-form]')!.requestSubmit();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(document.querySelector<HTMLButtonElement>('[data-play]')!.disabled).toBe(false);
+      expect(document.querySelector('[data-info]')!.textContent).toContain('2 samples');
+    } finally { view.dispose(); if (!cancel.mock.calls.length) controller.close(); canvas.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
   it('gates collection downloads on the service capability and uses native delivery independently of the range form', () => {
     const task: RecordingTask = { task_id: 'old-task', receiver_uid: 'old-uid', service_id: 'old-service', state: 'completed', fault: null,
       tracks: [{ track_id: 'iq', kind: 'iq', format: 'cf32_le', source: 'baseband', compression: 'zstd_auto_lossless', state: 'completed',

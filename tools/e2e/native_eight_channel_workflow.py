@@ -7,6 +7,7 @@ import json
 import os
 import struct
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 from native_multichannel import api, config
@@ -56,19 +57,45 @@ def setup(origin, *, center=100e6, frequencies=None, reference=None, agc=False, 
 def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
     uids = [receiver['receiver_uid'] for receiver in snapshot['receivers']]
     started = api(origin, payload={'type': 'record_start', 'request_id': 'local-isolation-audio',
-        'receiver_uid': uids[0], 'kinds': ['audio']})
+        'receiver_uid': uids[0], 'kinds': ['audio'], 'audio_format': 'wav'})
     assert started['fault'] is None, started['fault']
     recording = next(row['task_id'] for row in started['snapshot']['recordings'] if row['request_id'] == 'local-isolation-audio')
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         context = browser.new_context(viewport={'width': 1600, 'height': 1100})
+        context.add_init_script('''{
+            const NativeWorker = window.Worker;
+            const probe = window.eightWorkerProbe = {rows: [], overflow: false};
+            window.Worker = class extends NativeWorker {
+                constructor(...args) {
+                    super(...args);
+                    const row = {script: String(args[0]), url: null, terminated: false,
+                        connected: 0, closed: 0, ended: 0, errors: 0};
+                    if (probe.rows.length < 256) probe.rows.push(row); else probe.overflow = true;
+                    const send = this.postMessage.bind(this), terminate = this.terminate.bind(this);
+                    this.postMessage = (message, ...rest) => {
+                        if (message?.type === 'start' && typeof message.url === 'string') row.url = message.url;
+                        return send(message, ...rest);
+                    };
+                    this.terminate = () => {row.terminated = true; return terminate();};
+                    this.addEventListener('message', event => {
+                        const type = event.data?.type;
+                        if (['connected', 'closed', 'ended'].includes(type)) row[type]++;
+                        if (type === 'error') row.errors++;
+                    });
+                }
+            };
+        }''')
         page = context.new_page()
-        errors, commands, sockets, wire_commands = [], [], [], []
+        errors, commands, sockets, wire_commands, socket_lifecycle = [], [], [], [], []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.on('request', lambda request: commands.append(json.loads(request.post_data))
             if request.method == 'POST' and '/api/' in request.url and request.post_data else None)
         def websocket(socket):
             sockets.append(socket.url)
+            lifecycle = {'url': socket.url, 'closed': False}
+            socket_lifecycle.append(lifecycle)
+            socket.on('close', lambda *_: lifecycle.update(closed=True))
             def sent(payload):
                 try:
                     command = json.loads(payload)
@@ -78,6 +105,7 @@ def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
                     pass
             socket.on('framesent', sent)
         page.on('websocket', websocket)
+        context.on('page', lambda opened: opened.on('websocket', websocket))
         page.goto(origin)
         wait_ui_ready(page, 'sdr')
         page.locator('[data-action=sdr-workbench]').click()
@@ -166,8 +194,43 @@ def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
         playing(8)
 
         # Views retain drafts and reuse the page's single speaker/decoder owner.
-        for uid in uids:
-            assert len([url for url in sockets if '/ws/decode?' in url and uid in url]) == 1
+        # Tuning and recentering legitimately replace processing sources. Count
+        # active subscriptions, and forbid any new owner during view-only actions.
+        owner_observations = []
+
+        def decoder_uid(url):
+            parsed = urlsplit(url or '')
+            return parse_qs(parsed.query).get('receiver_uid', [None])[0] if parsed.path == '/ws/decode' else None
+
+        def owner_state():
+            probes = [opened.evaluate('window.eightWorkerProbe') for opened in context.pages if not opened.is_closed()]
+            assert all(probe is not None and not probe['overflow'] for probe in probes), probes
+            workers = [worker for probe in probes for worker in probe['rows']]
+            return {uid: {'workers': [worker for worker in workers if decoder_uid(worker['url']) == uid],
+                'sockets': [dict(item) for item in socket_lifecycle if decoder_uid(item['url']) == uid]} for uid in uids}
+
+        def stable_owners():
+            current = owner_state()
+            return current if all(sum(not worker['terminated'] for worker in lane['workers']) == 1
+                and all(worker['terminated'] or worker['connected'] > 0 for worker in lane['workers'])
+                and sum(not item['closed'] for item in lane['sockets']) == 1 for lane in current.values()) else None
+
+        try:
+            before_views = until(stable_owners, timeout=5)
+        except AssertionError:
+            (artifacts / 'decoder-owner-observation.json').write_text(json.dumps(owner_state(), indent=2) + '\n')
+            raise
+        owner_observations.append({'stage': 'after source changes', 'owners': before_views})
+
+        def views_kept_owners(stage):
+            current = owner_state()
+            owner_observations.append({'stage': stage, 'owners': current})
+            (artifacts / 'decoder-owner-observation.json').write_text(json.dumps(owner_observations, indent=2) + '\n')
+            for uid, lane in current.items():
+                assert sum(not worker['terminated'] for worker in lane['workers']) == 1, {'uid': uid, 'workers': lane['workers']}
+                assert sum(not item['closed'] for item in lane['sockets']) == 1, {'uid': uid, 'sockets': lane['sockets']}
+                assert len(lane['workers']) == len(before_views[uid]['workers']), f'{stage} created another decoder owner for {uid}'
+                assert len(lane['sockets']) == len(before_views[uid]['sockets']), f'{stage} opened another decoder subscription for {uid}'
         audio_before = page.evaluate('window.websaAudioStatus().filter(r=>r.enabled&&r.owner==="workbench").map(r=>({channel:r.channel,played:r.playedFrames}))')
         with page.expect_popup() as popup:
             view.locator('[data-pop]').click()
@@ -186,6 +249,7 @@ def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
         expect(compact.locator('h1')).to_contain_text('Channel workbench')
         overflow = compact.evaluate('(host)=>host.scrollWidth>host.clientWidth+2')
         assert not overflow, 'narrow workbench overflows horizontally'
+        views_kept_owners('pop out, resize and language changes')
         dock = child.locator('[data-dock]')
         dock.scroll_into_view_if_needed()
         box = dock.bounding_box()
@@ -199,19 +263,24 @@ def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
         playing(8)
         page.locator('[data-action=sdr-workbench]').click()
         expect(view).to_be_visible()
+        views_kept_owners('dock, close and reopen')
         page.screenshot(path=str(artifacts / 'eight-desktop.png'))
         assert not errors, errors
         audio = page.evaluate('window.websaAudioStatus()')
         report = {'source_kind': source_kind, 'capture': after_center['capture'], 'audio': audio,
+            'decoder_owners': owner_observations,
             'mix': {'initial_solo': initial, 'pan_right': right}, 'commands': commands, 'wire_commands': wire_commands, 'sockets': sockets,
             'checks': ['eight main selections', 'eight playing routes', 'editing preserves manual mix', 'in-flight tuning actor',
                 'draft switching', 'eighth tuning', 'capture-only selected centering', 'solo and master mute',
                 'recording independent of local mute', '420px sidebar scrolling', 'Pop out/Dock', 'one decoder owner per receiver']}
-        # Removing the selected definition picks an existing one; reuse gets a fresh owner.
+        # The workbench selects a surviving definition. The main tuning slot stays
+        # vacant so an unsubmitted C8 edit cannot silently target another receiver.
         retired = api(origin, payload={'type': 'retire', 'request_id': 'ui-retire-eighth', 'receiver_uid': uids[7]})
         assert retired['fault'] is None, retired['fault']
-        expect(page.locator('#sdr-current-channel')).to_have_text('C1')
+        expect(page.locator('#sdr-current-channel')).to_have_text('C8 · Stopped')
+        expect(page.locator('#sdr-audio-rate-row')).to_have_count(0)
         expect(view.locator('.mc-row')).to_have_count(7)
+        expect(view).to_have_attribute('data-receiver-uid', uids[0])
         playing(7)
         replacement = api(origin, payload={'type': 'create', 'request_id': 'ui-replace-eighth',
             'config': snapshot['receivers'][7]['confirmed']})
@@ -222,6 +291,8 @@ def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
         row(fresh).locator('[data-action=listen]').click()
         playing(8)
         page.locator('[data-action=sdr-channel-prev]').click()
+        expect(page.locator('#sdr-current-channel')).to_have_text('C7')
+        page.locator('[data-action=sdr-channel-next]').click()
         expect(page.locator('#sdr-current-channel')).to_have_text('C8')
         expect(view).to_have_attribute('data-receiver-uid', fresh)
         expect(view.locator('[name=name]')).to_have_value('Channel 8')
@@ -233,7 +304,8 @@ def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
     saved = finish_audio(origin, recording)
     records, codecs = read_journal(artifacts / 'recordings' / recording)
     pcm = [payload for metadata, payload in records if len(payload) > 96]
-    # The independent journal reader validates CRC/Zstd; accepted bytes must all reach disk.
+    # The independent direct-WAV/timeline reader checks hashes and original frames.
+    # Accepted PCM bytes must all reach disk.
     assert pcm and int(saved['tracks'][0]['raw_bytes']) > 0
     energy, samples = 0.0, 0
     for metadata, payload in records:

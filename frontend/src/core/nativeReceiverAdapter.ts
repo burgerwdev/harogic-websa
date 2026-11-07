@@ -16,6 +16,7 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
   private timer: ReturnType<typeof setInterval>;
   private refreshing = false;
   private disposed = false;
+  private readonly lifetime = new AbortController();
   private retiredServices = new Set<string | undefined>();
   private client = crypto.randomUUID();
   private constructor(private current: ServiceSnapshot) {
@@ -54,7 +55,7 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
     this.refreshing = true;
     const service = this.current.service_id;
     try {
-      const response = await fetch(api, { signal: AbortSignal.timeout(8000) });
+      const response = await fetch(api, { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(8000)]) });
       if (response.ok) {
         const snapshot = await response.json() as ServiceSnapshot;
         if (service === this.current.service_id) this.accept(snapshot);
@@ -81,6 +82,7 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
       estimated_cf32_bytes_per_second: config ? config.baseband.minimum_rate_hz * 8 : 0 };
   }
   async dispatch(command: ServiceCommand): Promise<CommandReply> {
+    if (this.disposed) throw new Error('Receiver adapter is closed');
     if (command.type === 'output') {
       this.output(command.receiver_uid, command.enabled);
       return { request_id: command.request_id, snapshot: this.snapshot(), fault: null };
@@ -89,17 +91,20 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
       fault: fault('request', 'UNAVAILABLE', 'This operation is not available from the native receiver service') };
     const service = this.current.service_id;
     const request = { ...command, service_id: service, request_id: `${this.client}:${command.request_id}` };
-    const options: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: AbortSignal.timeout(8000) };
+    const options: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
+      signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(8000)]) };
     if (!command.type.startsWith('record_')) {
     const checked = await fetch(`${api}/preflight`, options);
     if (!checked.ok) throw new Error(`Receiver preflight: HTTP ${checked.status}`);
     const impact = await checked.json() as Impact;
+    if (this.disposed) throw new Error('Receiver adapter closed during admission');
     if (service !== this.current.service_id) throw new Error('Source service restarted during admission');
     if (!impact.accepted) return { request_id: command.request_id, snapshot: this.snapshot(), fault: impact.faults[0] };
     }
-    const response = await fetch(api, { ...options, signal: AbortSignal.timeout(8000) });
+    const response = await fetch(api, { ...options, signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(8000)]) });
     if (!response.ok) throw new Error(`Receiver command: HTTP ${response.status}`);
     const reply = await response.json() as CommandReply;
+    if (this.disposed) throw new Error('Receiver adapter closed during command');
     if (reply.request_id !== request.request_id) throw new Error('Receiver response request_id mismatch');
     if (service !== this.current.service_id || reply.snapshot.service_id !== service) throw new Error('Source service restarted during command');
     this.accept(reply.snapshot);
@@ -160,6 +165,6 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
     };
   }
   dispose(): void {
-    this.disposed = true; clearInterval(this.timer); this.sockets.forEach(socket => socket.close()); this.sockets.clear(); this.listeners.clear(); this.iqListeners.clear();
+    this.disposed = true; this.lifetime.abort(); clearInterval(this.timer); this.sockets.forEach(socket => socket.close()); this.sockets.clear(); this.listeners.clear(); this.iqListeners.clear();
   }
 }

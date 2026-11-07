@@ -20,7 +20,7 @@ def api():
 
 
 @pytest.mark.parametrize('strategy', [0, 1])
-def test_native_pool_fixture_is_ordered_and_faster_than_packet_clock(strategy):
+def test_native_pool_fixture_preserves_order_and_queue_bounds(strategy):
     path = Path(__file__).resolve().parents[1] / 'backend/target/release/libwebsa_channelizer.so'
     if not path.exists():
         pytest.skip('build backend first')

@@ -69,8 +69,10 @@ impl Dsp {
             };
             let (mut handle, mut points, mut rbw) = (std::ptr::null_mut(), 0, 0.0);
             let status = unsafe { open(&mut handle, size as u32, &mut points, &mut rbw) };
-            if status != 0 || handle.is_null() {
-                return Err(format!("display FFT configuration rejected: {status}"));
+            if status != 0 || handle.is_null() || points < 2 || points as usize > size
+                || !rbw.is_finite() || rbw <= 0.0 {
+                if !handle.is_null() { unsafe { close(handle); } }
+                return Err(format!("display FFT configuration rejected: status={status}, points={points}, rbw={rbw}"));
             }
             Ok(Self {
                 library,
@@ -413,6 +415,65 @@ impl Analyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_sdk_boundary_rejects_geometry_and_releases_failed_open() {
+        struct Fixture(std::path::PathBuf, *mut c_void);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                unsafe { if !self.1.is_null() { dlclose(self.1); } }
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = std::env::temp_dir().join(format!("websa-display-geometry-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut fixture = Fixture(directory, std::ptr::null_mut());
+        let source = fixture.0.join("shim.c");
+        let library = fixture.0.join("shim.so");
+        std::fs::write(&source, r#"
+#include <stdint.h>
+#include <math.h>
+static int fault, active, marker;
+void test_fault(int value) { fault = value; }
+int test_active(void) { return active; }
+int san90_display_fft_open_v1(void** out, uint32_t size, uint32_t* points, double* rbw) {
+    *out = &marker; ++active; *points = size * 4 / 5; *rbw = 3.77 / size;
+    if (fault == 1) *points = 0;
+    if (fault == 2) *points = size + 1;
+    if (fault == 3) *points = UINT32_MAX;
+    if (fault == 4) *rbw = NAN;
+    if (fault == 5) *rbw = INFINITY;
+    if (fault == 6) *rbw = 0;
+    if (fault == 7) *rbw = -1;
+    return fault == 8 ? -120 : 0;
+}
+int san90_display_fft_execute_v1(void* handle, const int16_t* iq, uint32_t n, float scale,
+    double center, double rate, double bandwidth, double* frequency, float* power, uint32_t count) { return 0; }
+int san90_display_fft_close_v1(void* handle) { if (handle == &marker) --active; return 0; }
+"#).unwrap();
+        assert!(std::process::Command::new("cc").args(["-shared", "-fPIC", "-O1"])
+            .arg(&source).arg("-o").arg(&library).status().unwrap().success());
+        let path = library.to_str().unwrap();
+        let cpath = CString::new(path).unwrap();
+        fixture.1 = unsafe { dlopen(cpath.as_ptr(), 2) };
+        assert!(!fixture.1.is_null());
+        let fault: unsafe extern "C" fn(c_int) = unsafe { std::mem::transmute(dlsym(fixture.1, c"test_fault".as_ptr())) };
+        let active: unsafe extern "C" fn() -> c_int = unsafe { std::mem::transmute(dlsym(fixture.1, c"test_active".as_ptr())) };
+        let mut failures = Vec::new();
+        for value in 1..=8 {
+            unsafe { fault(value); }
+            let opened = Dsp::open(path, 32768);
+            if opened.is_ok() { failures.push(format!("accepted invalid geometry fault {value}")); }
+            drop(opened);
+            if unsafe { active() } != 0 { failures.push(format!("open fault {value} retained its native handle")); }
+        }
+        unsafe { fault(0); }
+        let dsp = Dsp::open(path, 32768).expect("valid reopen after rejected metadata");
+        assert_eq!(dsp.points, 32768 * 4 / 5);
+        drop(dsp);
+        if unsafe { active() } != 0 { failures.push("native handle retained after valid close".into()); }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
+    }
+
     #[test]
     fn invalid_or_illustrative_sources_cannot_claim_a_real_fft_tier() {
         let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));

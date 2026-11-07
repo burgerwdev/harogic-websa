@@ -117,12 +117,13 @@ impl DevState {
         primary.processing_enabled = true;
         let center = self.capture_center();
         let bandwidth = self.capture_bandwidth();
-        let (fs, taps) = if let Some(pipeline) = self.pipeline.as_ref() {
-            (IQ_FS / pipeline.snapshot.device_decimate.max(1) as f64, pipeline.snapshot.taps)
+        let fs = self.capture_input_rate();
+        let taps = if let Some(pipeline) = self.pipeline.as_ref() {
+            pipeline.snapshot.taps
         } else if let Some(ddc) = self.ddc.as_ref() {
-            (ddc.0.stream.input_sample_rate(), ddc.0.stream.taps_per_phase())
+            ddc.0.stream.taps_per_phase()
         } else {
-            (bandwidth / 0.8, self.sdr_pfb_taps_per_phase)
+            self.sdr_pfb_taps_per_phase
         };
         let feasible = |width: f64, primary: &mut ChannelConfig| {
             primary.if_bw = width;
@@ -157,6 +158,7 @@ impl DevState {
             let mut value = json!(config);
             value["control"]=self.receivers.control_metadata(config.channel);
             value["confirmed"]=multichannel::config_value(&config,None);
+            value["reception"]=self.reception.snapshot(config.channel);
             value["processing_runtime"]=self.receiver_uid_for_slot(config.channel).and_then(|uid|
                 self.receiver_workers.as_ref().map(|workers|workers.runtime_status(config.channel,uid))).unwrap_or(Value::Null);
             value["control_receipts"]=self.receiver_uid_for_slot(config.channel).and_then(|uid|
@@ -298,7 +300,7 @@ impl DevState {
             // reject a short-tap coarse-gap frequency instead of relocating the
             // not-yet-negotiated capture. Direct-rate decoders and out-of-window
             // tunes still produce the fitted candidate capture for admission.
-            let fs = self.capture_bandwidth() / 0.8;
+            let fs = self.capture_input_rate();
             let center = self.capture_center();
             let bandwidth = self.capture_bandwidth();
             if let Ok(source) = service_ddc::source_plan(fs, config) {
@@ -323,7 +325,7 @@ impl DevState {
                 result => result.map(Some),
             };
         }
-        let fs = self.capture_bandwidth() / 0.8;
+        let fs = self.capture_input_rate();
         let center = self.capture_center();
         let bandwidth = self.capture_bandwidth();
         if let Ok(source) = service_ddc::source_plan(fs, config) {
@@ -369,6 +371,18 @@ impl DevState {
             if data["defer_receipt"]!=true {self.track_receiver_control(channel,data)?;}
             return Ok(());
         }
+        let processing_failed = self.receiver_workers.as_ref()
+            .is_some_and(|workers| workers.channel_failure(channel).is_some());
+        let repair_nr = config.enabled && config.processing_enabled && processing_failed
+            && self.receiver_failure.is_none() && !old.resets_receiver(&config)
+            && (old.nr != config.nr || old.nr_algorithm != config.nr_algorithm)
+            && !self.reception.source_interrupted(channel)
+            && !self.fine_faults().iter().any(|fault| fault.channel == channel);
+        if config.enabled && config.processing_enabled && processing_failed
+            && (old.resets_receiver(&config) || repair_nr)
+            && self.receiver_workers.as_ref().is_some_and(|workers| !workers.restart_ready(channel)) {
+            return Err(format!("channel {channel} is still retiring; retry after its execution owner exits"));
+        }
         self.remember_receiver_streams();
         let retiring_iq = self.stream_registry().iter().find(|entry|entry.channel==channel).cloned();
         let geometry_changed=source_recovery || old.enabled!=config.enabled || old.freq!=config.freq || old.mode!=config.mode
@@ -389,7 +403,7 @@ impl DevState {
         let recapture = self.channel_recapture(&config)?;
         if geometry_changed && config.enabled && recapture.is_none() {
             // Replay IQ clocks describe receiver output, not the shared RF capture grid.
-            let fs = self.capture_bandwidth() / 0.8;
+            let fs = self.capture_input_rate();
             let source=service_ddc::source_plan(fs,&config)?;
             service_ddc::validate_source_frequency(self.capture_center(),self.capture_bandwidth(),fs,
                 self.sdr_pfb_taps_per_phase,config.freq,&source)?;
@@ -409,7 +423,7 @@ impl DevState {
             }
         }
         let processing_only=geometry_changed && (self.pipeline.is_some() || self.ddc.is_some())
-            && service_ddc::same_baseband(self.capture_bandwidth()/0.8,&old,&config);
+            && service_ddc::same_baseband(self.capture_input_rate(),&old,&config);
         if geometry_changed {
             let next = config.clone();
             if let Some(capture) = recapture.as_ref() {
@@ -429,6 +443,13 @@ impl DevState {
             }
             self.decode_snapshots.clear_channel(channel);
         }
+        if repair_nr {
+            // Healthy NR edits stay hot. A failed processor cannot consume that
+            // edit, so fence its old work and renew only the processing identity.
+            self.receiver_workers.as_mut().ok_or("receiver owner unavailable")?.restart_channel(channel)?;
+            self.processing_branches.restart_channel(channel);
+            self.decode_snapshots.clear_channel(channel);
+        }
         if !geometry_changed {
             if let Some(ddc)=self.ddc.as_mut() {
                 if let Some(current)=ddc.0.service_configs.as_mut() {*current.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")?=config.clone();}
@@ -443,8 +464,6 @@ impl DevState {
         }
         if geometry_changed {
             self.channel_power[(channel-1) as usize]=None;
-            if config.enabled && !self.fine_faults().iter().any(|f|f.channel==channel)
-                && !self.receiver_workers.as_ref().is_some_and(|w|w.channel_failure(channel).is_some()) {self.reception.configured(channel);}
         }
         *configs.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = config.clone();
         if channel == 1 {
@@ -477,6 +496,14 @@ impl DevState {
                 if let Err(error)=workers.configure(&self.sdr_channels) {self.latch_receiver_failure(error);}
             }
         }
+        // Commit the new processing generation before checking its failure.
+        // A retired generation's fault cannot block repair; actual new input
+        // must still confirm recovery before the supervisor reports receiving.
+        if (geometry_changed || repair_nr) && config.enabled && self.receiver_failure.is_none()
+            && !self.fine_faults().iter().any(|f|f.channel==channel)
+            && !self.receiver_workers.as_ref().is_some_and(|w|w.channel_failure(channel).is_some()) {
+            self.reception.configured(channel, config.processing_enabled);
+        }
         // Keep the bounded healthy pool across an empty processor set. Recreating
         // its thread-local models while the capture is live blocks publication
         // for about a second and overruns the physical device queue.
@@ -489,6 +516,152 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configuration_repair_state(failed: bool) -> DevState {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        state.sdr_demod = "am".into();
+        state.sdr_if_bw = 6000.0;
+        state.sdr_squelch = -160.0;
+        state.sdr_channels[0].audio_rate = 24000;
+        state.sdr_channels[0].nr = true;
+        state.sdr_channels[0].nr_algorithm = "dfn".into();
+        state.sdr_channels[0].baseband = Some(receiver_workers::BasebandConfig {
+            passband_hz: 16000.0, transition_hz: 1000.0, minimum_rate_hz: 48000.0,
+        });
+        let configs = state.channel_configs();
+        let mut fixtures = service_fixture::FixtureSources::new();
+        fixtures.configure(&configs).unwrap();
+        state.fixture_sources = Some(fixtures);
+        state.remember_receiver_streams();
+        let mut workers = receiver_workers::ReceiverWorkers::new().unwrap();
+        workers.configure(&configs).unwrap();
+        if failed {
+            workers.fail_source(1, "injected failed DFN configuration");
+        }
+        state.receiver_workers = Some(workers);
+        state.advance_reception_recovery();
+        state
+    }
+
+    #[test]
+    fn configuration_repair_nr_changes_restart_only_failed_processing() {
+        for edit in [json!({"channel":1,"nr":false}), json!({"channel":1,"nr_algorithm":"wiener"})] {
+            for failed in [false, true] {
+                let mut state = configuration_repair_state(failed);
+                let before_iq = state.stream_registry();
+                let old_config = state.channel_config(1).unwrap();
+                let before_processing = state.processing_branches.input(&[0;56], &before_iq[0], &old_config).unwrap().0;
+                let before_generation = state.receiver_workers.as_ref().unwrap().runtime_status(1, "")["processing_generation"].clone();
+                let before_reception = state.reception.snapshot(1);
+
+                state.apply_channel_config(&edit).unwrap();
+                assert_eq!(state.stream_registry(), before_iq, "NR repair must preserve IQ identity");
+                let config = state.channel_config(1).unwrap();
+                let next_processing = state.processing_branches.input(&[0;56], &before_iq[0], &config).unwrap().0;
+                let workers = state.receiver_workers.as_ref().unwrap();
+                let generation = workers.runtime_status(1, "")["processing_generation"].clone();
+                assert!(workers.channel_failure(1).is_none(), "the old failure blocked {edit}");
+                if failed {
+                    assert_ne!(generation, before_generation);
+                    assert_ne!(next_processing.epoch, before_processing.epoch);
+                    let waiting = state.reception.snapshot(1);
+                    assert_eq!(waiting["state"], "preparing");
+                    assert_eq!(waiting["last_interruption"], before_reception["last_interruption"]);
+                    assert!(workers.recovery_progress(1).is_none(), "configuration is not observed processing progress");
+                    let frames = state.fixture_sources.as_mut().unwrap().step().unwrap();
+                    let output = state.process_receiver_frames_with_registry(&frames, &before_iq, true).unwrap();
+                    assert!(output.audio.iter().any(|frame| frame.len() > 96), "the repaired processor must produce actual PCM");
+                    assert!(state.receiver_workers.as_ref().unwrap().recovery_progress(1).is_some_and(|(count, _)| count > 0));
+                    assert!(state.receiver_workers.as_ref().unwrap().channel_failure(1).is_none());
+                } else {
+                    assert_eq!(generation, before_generation, "healthy NR remains a hot update");
+                    assert_eq!(next_processing, before_processing);
+                    assert!(state.reception.snapshot(1).is_null());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_repair_removing_processor_waits_for_iq_without_forging_processing_recovery() {
+        let mut state = configuration_repair_state(true);
+        state.hardware_shim = Some("configuration-repair-test".into());
+        state.fixture_sources = None;
+        state.ddc = Some(SendDdc(Ddc::configured_service(100e6, 50e6, &mut None, 16, IQ_FS, &state.channel_configs()).unwrap()));
+        let before_iq = state.stream_registry();
+        let before = state.reception.snapshot(1);
+        state.apply_channel_config(&json!({"channel":1,"processing_enabled":false})).unwrap();
+        assert_eq!(state.stream_registry(), before_iq);
+        let waiting = state.reception.snapshot(1);
+        assert_eq!(waiting["state"], "preparing");
+        assert_eq!(waiting["last_interruption"], before["last_interruption"]);
+        assert_eq!(state.receiver_workers.as_ref().unwrap().runtime_status(1, "")["state"], "disabled");
+
+        let iq = &before_iq[0];
+        state.reception.observe_iq(1, iq.channel_id, iq.epoch, 100, 200);
+        let receiving = state.reception.snapshot(1);
+        assert_eq!(receiving["state"], "receiving", "healthy IQ must finish an IQ-only transition");
+        assert_eq!(receiving["interruptions"], before["interruptions"]);
+        assert_eq!(receiving["history"], before["history"]);
+        assert_eq!(receiving["last_interruption"]["scope"], "processing");
+        assert_eq!(receiving["last_interruption"]["failed_identity"], before["last_interruption"]["failed_identity"]);
+        assert!(receiving["last_interruption"]["recovered_at_ms"].is_u64());
+        assert!(receiving["last_interruption"]["resumed_processing_stream"].is_null());
+        assert!(receiving["last_interruption"]["missing_input_samples"].is_null());
+        assert_eq!(receiving["last_interruption"]["precision"], "unknown_gap");
+        assert!(state.receiver_workers.as_ref().unwrap().recovery_progress(1).is_none());
+    }
+
+    #[test]
+    fn configuration_repair_nr_does_not_mask_a_shared_source_fault() {
+        let mut state = configuration_repair_state(false);
+        state.reception_capture_failed("SDK IQS batch status=-130 samples=0");
+        let before = state.reception.snapshot(1);
+        assert_eq!(before["last_interruption"]["scope"], "capture");
+        let generation = state.receiver_workers.as_ref().unwrap().runtime_status(1, "")["processing_generation"].clone();
+        state.apply_channel_config(&json!({"channel":1,"nr":false})).unwrap();
+        let after = state.reception.snapshot(1);
+        assert_eq!(after["state"], before["state"]);
+        assert_eq!(after["last_interruption"], before["last_interruption"]);
+        assert_eq!(after["interruptions"], before["interruptions"]);
+        assert_eq!(state.receiver_workers.as_ref().unwrap().runtime_status(1, "")["processing_generation"], generation);
+        assert!(state.receiver_workers.as_ref().unwrap().channel_failure(1).is_some());
+        assert!(!state.reception.capture_allowed(), "NR settings cannot cancel capture recovery backoff");
+    }
+
+    #[test]
+    fn repaired_processor_configuration_waits_for_new_progress_without_retaining_old_fault() {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        state.sdr_demod = "am".into();
+        state.sdr_if_bw = 6000.0;
+        state.sdr_channels[0].audio_rate = 24000;
+        state.remember_receiver_streams();
+        let mut workers = receiver_workers::ReceiverWorkers::new().unwrap();
+        workers.configure(&state.channel_configs()).unwrap();
+        workers.fail_source(1, "injected old processing failure");
+        state.receiver_workers = Some(workers);
+        state.advance_reception_recovery();
+        let stopped = state.reception.snapshot(1);
+        assert_eq!(stopped["state"], "stopped");
+        assert_eq!(stopped["manual_recovery_allowed"], false);
+
+        state.apply_channel_config(&json!({"channel":1,"audio_rate":48000})).unwrap();
+        let waiting = state.reception.snapshot(1);
+        assert!(state.receiver_workers.as_ref().unwrap().channel_failure(1).is_none());
+        assert_eq!(waiting["state"], "preparing");
+        assert_eq!(waiting["interruptions"], stopped["interruptions"]);
+        assert_eq!(waiting["last_interruption"], stopped["last_interruption"]);
+        assert!(waiting["last_interruption"]["recovered_at_ms"].is_null());
+        assert!(state.receiver_workers.as_ref().unwrap().recovery_progress(1).is_none());
+    }
 
     #[test]
     fn stopping_last_processor_keeps_models_ready_for_live_iq() {

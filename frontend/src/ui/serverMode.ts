@@ -419,8 +419,12 @@ export function initServerMode(onLeave: (mode: GraphMode) => void): void {
   button('btn-server-copy-connect')?.addEventListener('click', () => { void copy(connectionText()); });
   const motion = input('server-motion');
   if (motion) {
-    motion.checked = localStorage.getItem('web-sa-server-motion') !== '0';
-    motion.addEventListener('change', () => { localStorage.setItem('web-sa-server-motion', motion.checked ? '1' : '0'); if (!motion.checked) finishTransition(); });
+    motion.checked = true;
+    try { motion.checked = localStorage.getItem('web-sa-server-motion') !== '0'; } catch { /* Optional browser preference. */ }
+    motion.addEventListener('change', () => {
+      try { localStorage.setItem('web-sa-server-motion', motion.checked ? '1' : '0'); } catch { /* Apply motion without persistence. */ }
+      if (!motion.checked) finishTransition();
+    });
   }
   window.matchMedia?.('(prefers-reduced-motion: reduce)').addEventListener?.('change', event => { if (event.matches) finishTransition(); });
   onLangChange(render);

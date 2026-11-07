@@ -1,11 +1,11 @@
 /** Native density history, visible frequency raster, and persistence controls. */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { advanceDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, DENSITY_HIT_RATE, MAX_DENSITY, rasterDensity, rasterSparseDensity } from '../dsp/rtaDensity';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { resetRtaDensityCfg, restoreRtaDensityCfg, setRtaBins, setRtaDensContrast, setRtaDensWidth, setRtaDensSource, setRtaHalflife } from '../ui/panels/rta';
 import { clearRtaTrace, setTraceAverage, setTraceMode, switchTraceTab } from '../ui/traceOps';
-import { rtaDensWidth, rtaDensSource, rtaHalflife } from '../ui/waterfallState';
+import { rtaAmpBins, rtaDensWidth, rtaDensSource, rtaHalflife } from '../ui/waterfallState';
 
 const BINS = 64;
 function specWithPeak(points = 32, peakDb = -60): Float32Array {
@@ -136,15 +136,19 @@ describe('native density history', () => {
 	it('resolves neighbouring native carriers after zoom and keeps irregular Hz centres', () => {
 		const freq = new Float64Array(16008);
 		for (let i = 0; i < 16008; i++) freq[i] = 28e6 + i * 1000;
+		freq[8001] += 250;
 		const spec = new Float32Array(16008).fill(-100);
 		spec[8000] = -40; spec[8001] = -40; spec[8002] = -70; spec[8003] = NaN;
 		const grid = advanceDensity(null, spec, BINS, 1, 0, 2)!;
 		const lo = freq[7998], hi = freq[8006], width = 800;
 		const raster = new Float32Array(width * BINS);
 		rasterDensity(grid, freq, lo, hi, width, raster);
-		const xPeak1 = Math.floor((freq[8000] - lo) / (hi - lo) * width);
-		const xPeak2 = Math.floor((freq[8001] - lo) / (hi - lo) * width);
-		expect(xPeak2 - xPeak1).toBeGreaterThan(80);
+		// The equal -40 dB carriers sit at x=200 and x=325 despite the irregular grid.
+		// Their midpoint has full occupancy; the -70 dB neighbour stays on its own row.
+		expect(raster[20 * width + 250]).toBeCloseTo(FRAME_HIT, 6);
+		expect(raster[20 * width + 324]).toBeGreaterThan(FRAME_HIT * 0.99);
+		expect(raster[35 * width + 399]).toBeGreaterThan(FRAME_HIT * 0.99);
+		for (let bin = 0; bin < BINS; bin++) expect(raster[bin * width + 500]).toBe(0);
 	});
 
 	it('renders an isolated finite native carrier surrounded by NaN gaps', () => {
@@ -174,13 +178,12 @@ describe('native density history', () => {
 		}
 	});
 
-	it('splits a fractional amplitude hit around its measured level and replaces a same-size axis', () => {
-		const spec = specWithPeak();
+	it('splits a fractional amplitude hit around its measured level', () => {
+		const spec = specWithPeak(32, -61);
 		const grid = advanceDensity(null, spec, BINS, 1, -20, 2)!;
-		const row = (-20 - -60) / 2;
-		const bin = Math.floor(row), frac = row - bin;
-		expect(grid.values[16 * BINS + bin]).toBeCloseTo(FRAME_HIT * (1 - frac), 5);
-		expect(grid.values[16 * BINS + bin + 1]).toBeCloseTo(FRAME_HIT * frac, 5);
+		// -61 lies halfway between the -60 and -62 dB rows.
+		expect(grid.values[16 * BINS + 20]).toBeCloseTo(FRAME_HIT / 2, 5);
+		expect(grid.values[16 * BINS + 21]).toBeCloseTo(FRAME_HIT / 2, 5);
 	});
 
 	it('maps row centres with offset, reference and scale even without advancing history', () => {
@@ -396,6 +399,26 @@ describe('density invalidation through trace controls', () => {
 });
 
 describe('the persistence setting', () => {
+	it.each(['1000000000', '128junk', '-64', '64.5'])('rejects invalid saved density grain %s before it reaches allocation', raw => {
+		localStorage.setItem('rta-bins', raw);
+		document.body.innerHTML = '<select id="select-rta-bins"><option>64</option><option>128</option><option>192</option></select>';
+		rtaAmpBins.set(192);
+		restoreRtaDensityCfg();
+		expect(rtaAmpBins.get()).toBe(128);
+		expect((document.getElementById('select-rta-bins') as HTMLSelectElement).value).toBe('128');
+	});
+
+	it('restores usable density defaults when browser storage is blocked', () => {
+		S.setSdrMode(false);
+		densSelect('<option value="0.5">0.5 s</option>');
+		rtaHalflife.set(10);
+		const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('Blocked', 'SecurityError'); });
+		try {
+			expect(() => restoreRtaDensityCfg()).not.toThrow();
+			expect(rtaHalflife.get()).toBe(0.5);
+		} finally { read.mockRestore(); }
+	});
+
 	it('keeps Off when selected and when restored from storage', () => {
 		densSelect('<option value="0">Off</option><option value="2">2 s</option>');
 		setRtaHalflife(0);

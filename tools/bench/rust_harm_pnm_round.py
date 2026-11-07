@@ -68,10 +68,20 @@ class MsgRx(threading.Thread):
             pass
         self.join(timeout=2)
 
-    def await_text(self, predicate, timeout_s):
+    def await_text(self, predicate, timeout_s, *, after=None):
+        cursor = 0
+        if after is not None:
+            for index, message in enumerate(self.texts):
+                if message is after:
+                    cursor = index + 1
+                    break
+            else:
+                raise ValueError('message boundary is absent from this receiver')
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            for msg in self.texts:
+            while cursor < len(self.texts):
+                msg = self.texts[cursor]
+                cursor += 1
                 if predicate(msg):
                     return msg
             time.sleep(0.2)
@@ -124,8 +134,7 @@ def run_round(url):
         lambda m: m.get('cmd') == 'PNM' and m.get('done') is True, 60)
     restart = rx.await_text(
         lambda m: m.get('cmd') == 'PNM' and m.get('done') is False
-        and done_msg is not None and m is not done_msg
-        and (m.get('progress') or 0) < 100, 30) if done_msg else None
+        and (m.get('progress') or 0) < 100, 30, after=done_msg) if done_msg else None
     summary['pnm_done'] = done_msg
     summary['pnm_restarted'] = restart is not None
     summary['pnm_no_data_bench'] = done_msg is None

@@ -1,6 +1,56 @@
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { buildUnitGroups, unitMap, units } from '../core/units';
 import { initKeypad, isKeypadOpen } from '../ui/keypad';
+
+afterEach(() => {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  document.body.replaceChildren();
+  vi.restoreAllMocks();
+  localStorage.clear();
+});
+
+it('initializes the keypad when its optional saved preference is unreadable', () => {
+  document.body.innerHTML = '<button id="btn-keypad" type="button"></button>';
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('Blocked', 'SecurityError'); });
+  expect(() => initKeypad()).not.toThrow();
+  expect(document.getElementById('btn-keypad')!.getAttribute('aria-pressed')).toBe('false');
+});
+
+it('applies keypad toggles even when preference persistence is unavailable', () => {
+  document.body.innerHTML = '<button id="btn-keypad" type="button"></button>';
+  initKeypad();
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError'); });
+  const errors: unknown[] = [];
+  const onError = (event: ErrorEvent) => { errors.push(event.error); event.preventDefault(); };
+  window.addEventListener('error', onError);
+  try {
+    document.getElementById('btn-keypad')!.click();
+    expect(document.getElementById('btn-keypad')!.getAttribute('aria-pressed')).toBe('true');
+    expect(errors).toEqual([]);
+  } finally { window.removeEventListener('error', onError); }
+});
+
+it.each(['disabled', 'readOnly', 'detached'])('cancels a keypad draft when its target becomes %s', state => {
+  document.body.innerHTML = '<button id="btn-keypad" type="button"></button><input id="plain-number" type="number" value="6">';
+  localStorage.setItem('websa-keypad', 'on');
+  initKeypad();
+  const input = document.querySelector<HTMLInputElement>('#plain-number')!;
+  vi.spyOn(input, 'offsetParent', 'get').mockReturnValue(document.body);
+  const change = vi.fn();
+  input.addEventListener('change', change);
+  input.click();
+  expect(isKeypadOpen()).toBe(true);
+  const key = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('.keypad-key')]
+    .find(button => button.textContent === label)!;
+  key('9').click();
+  if (state === 'disabled') input.disabled = true;
+  else if (state === 'readOnly') input.readOnly = true;
+  else input.remove();
+  key('OK').click();
+  expect(input.value).toBe('6');
+  expect(change).not.toHaveBeenCalled();
+  expect(isKeypadOpen()).toBe(false);
+});
 
 it('commits Filter once in the new unit without clamping to the old unit bounds', () => {
 	document.body.innerHTML = `

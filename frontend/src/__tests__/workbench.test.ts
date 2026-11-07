@@ -7,6 +7,8 @@ import { setTheme } from '../core/theme';
 import { setLang } from '../core/i18n';
 import { setUiScale } from '../core/uiScale';
 import capacity from '../../../contracts/service-capacity.json';
+import { Ajv2020 } from 'ajv/dist/2020';
+import portableSchema from '../../../tests/fixtures/multichannel/draft-v1.schema.json';
 
 let adapter: FixtureReceiverAdapter, session: WorkbenchSession;
 beforeEach(() => { vi.useFakeTimers(); localStorage.clear(); adapter = new FixtureReceiverAdapter(3, 10); session = new WorkbenchSession(adapter); });
@@ -40,6 +42,34 @@ function controlledSession() {
 }
 
 describe('workbench state generations and command ordering', () => {
+  it('does not guess a created receiver when external additions make the reply ambiguous', async () => {
+    const c = controlledSession();
+    const pending = session.create(c.initial.receivers[0].confirmed);
+    await vi.advanceTimersByTimeAsync(0);
+    const snapshot = clone(c.initial); snapshot.revision = '2';
+    snapshot.receivers.push(...['external-a', 'external-b'].map(uid => ({ ...clone(c.initial.receivers[0]), receiver_uid: uid })));
+    c.replies[0]({ request_id: c.dispatch.mock.calls[0][0].request_id, snapshot, fault: null });
+    const result = await pending;
+    expect(result).toMatchObject({ receiver_uid: null, fault: { code: 'IDENTITY', retryable: false } });
+    expect(session.snapshot.receivers).toHaveLength(5);
+    expect(session.selected).toBe('fixture-c1'); expect(session.routes.size).toBe(0);
+    expect(session.fault?.code).toBe('IDENTITY');
+    expect(c.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('cancels a queued creation after Preset without dispatching it or selecting a receiver', async () => {
+    const c = controlledSession();
+    const first = session.configure('fixture-c1', c.initial.receivers[0].confirmed);
+    const queued = session.create(c.initial.receivers[0].confirmed);
+    await vi.advanceTimersByTimeAsync(0);
+    document.dispatchEvent(new Event('websa:preset-applied'));
+    c.replies[0]({ request_id: c.dispatch.mock.calls[0][0].request_id, snapshot: c.initial, fault: null });
+    await first;
+    expect(await queued).toMatchObject({ receiver_uid: null, fault: { code: 'SOURCE_RESTARTED' } });
+    expect(c.dispatch).toHaveBeenCalledOnce();
+    expect(session.selected).toBe('fixture-c1'); expect(session.routes.size).toBe(0);
+  });
+
   it('serializes configuration and deletion against the shared commit revision', async () => {
     const dispatch = vi.spyOn(adapter, 'dispatch'), config = clone(session.snapshot.receivers[0].confirmed);
     config.name = 'Updated';
@@ -336,38 +366,31 @@ describe('multiple surface portals', () => {
   });
 });
 
-// Validate the portable draft independently of TypeScript's compile-time structural checks.
-// This intentionally implements only the JSON Schema vocabulary used by this local schema.
+// Exercise actual fixture output with the full 2020-12 contract, including its
+// conditional processor rules; TypeScript alone cannot enforce those rules.
 it('publishes snapshots and commands compatible with the portable backend contract', async () => {
-  const { readFileSync } = await import('node:fs');
-  const schema = JSON.parse(readFileSync('../tests/fixtures/multichannel/draft-v1.schema.json', 'utf8'));
-  const validate = (value: unknown, rule: any): boolean => {
-    if (rule.$ref) return validate(value, schema.$defs[rule.$ref.split('/').pop()]);
-    if (rule.oneOf) return rule.oneOf.filter((r: any) => validate(value, r)).length === 1;
-    if (rule.anyOf) return rule.anyOf.some((r: any) => validate(value, r));
-    if (rule.const !== undefined && value !== rule.const) return false;
-    if (rule.enum && !rule.enum.includes(value)) return false;
-    const types = Array.isArray(rule.type) ? rule.type : [rule.type];
-    const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
-    if (rule.type && !types.includes(type) && !(types.includes('integer') && Number.isInteger(value))) return false;
-    if (typeof value === 'string' && ((rule.pattern && !new RegExp(rule.pattern).test(value)) || (rule.maxLength && value.length > rule.maxLength))) return false;
-    if (typeof value === 'number' && ((rule.minimum !== undefined && value < rule.minimum) || (rule.exclusiveMinimum !== undefined && value <= rule.exclusiveMinimum))) return false;
-    if (Array.isArray(value)) return (!rule.minItems || value.length >= rule.minItems) && (!rule.uniqueItems || new Set(value).size === value.length) && value.every(v => validate(v, rule.items));
-    if (type === 'object') {
-      const object = value as Record<string, unknown>;
-      return (rule.required ?? []).every((k: string) => k in object)
-        && Object.entries(object).every(([k, v]) => rule.properties[k] ? validate(v, rule.properties[k]) : rule.additionalProperties !== false);
-    }
-    return true;
-  };
-  expect(validate(adapter.snapshot(), schema.$defs.snapshot)).toBe(true);
+  const validator = new Ajv2020({ allErrors: true }).addSchema(portableSchema);
+  const validateSnapshot = validator.compile({ $ref: `${portableSchema.$id}#/$defs/snapshot` });
+  const validateCommand = validator.compile({ $ref: `${portableSchema.$id}#/$defs/command` });
+  expect(validateSnapshot(adapter.snapshot()), validator.errorsText(validateSnapshot.errors)).toBe(true);
   await settle(adapter.dispatch({ type: 'record_start', request_id: 'contract', receiver_uid: 'fixture-c3', kinds: ['iq'] }));
-  expect(validate(adapter.snapshot(), schema.$defs.snapshot)).toBe(true);
+  expect(validateSnapshot(adapter.snapshot()), validator.errorsText(validateSnapshot.errors)).toBe(true);
   await settle(adapter.dispatch({ type: 'record_start', request_id: 'audio-contract', receiver_uid: 'fixture-c1', kinds: ['audio'] }));
-  expect(validate(adapter.snapshot(), schema.$defs.snapshot)).toBe(true);
+  expect(validateSnapshot(adapter.snapshot()), validator.errorsText(validateSnapshot.errors)).toBe(true);
   const command = { type: 'configure', request_id: 'contract-edit', expected_revision: '1', receiver_uid: 'fixture-c1', config: adapter.snapshot().receivers[0].confirmed };
-  expect(validate(command, schema.$defs.command)).toBe(true);
-  expect(validate({ ...command, expected_revision: 9007199254740992 }, schema.$defs.command)).toBe(false);
+  expect(validateCommand(command), validator.errorsText(validateCommand.errors)).toBe(true);
+  expect(validateCommand({ ...command, expected_revision: 9007199254740992 })).toBe(false);
+  expect(validateCommand({ ...command, expected_revision: '18446744073709551615' })).toBe(true);
+  for (const expected_revision of ['18446744073709551616', '1\n', '01']) {
+    expect(validateCommand({ ...command, expected_revision }), expected_revision).toBe(false);
+  }
+  for (const config of [
+    { ...command.config, purpose: 'iq' },
+    { ...command.config, processors: [] },
+    { ...command.config, processors: [...command.config.processors, ...command.config.processors] },
+  ]) {
+    expect(validateCommand({ ...command, config }), JSON.stringify(config)).toBe(false);
+  }
 });
 
 it('coalesces resume submissions while keeping backend preparation separate from receiving',async()=>{

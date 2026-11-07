@@ -98,6 +98,7 @@ def browser_gate(origin, snapshot, artifacts):
             until(lambda: next(r for r in api(origin)['receivers'] if r['receiver_uid'] == target)['revision'] != previous)
             expect(view.locator('[data-preview] button')).to_have_count(0)
 
+        view.locator('[data-default-audio-format]').select_option('wav')
         for target, kind in [(uid, 'audio'), (second, 'results'), (third, 'iq')]:
             row(target).locator(f'[data-action=rec-{kind}]').click()
         until(lambda: len([t for t in api(origin)['recordings'] if t['state'] == 'recording']) == 3)
@@ -273,7 +274,7 @@ def verify_files(origin, report, storage, artifacts):
             samples += index['meta']['clock']['samples']
     assert samples == sum(int(s['samples']) for s in iq['tracks'][0]['segments']) and samples > 0
     return {'audio_frames': len(frames), 'wav_segments': len(waves), 'result_events': len(events), 'iq_samples': str(samples),
-        'accepted_equals_persisted': True, 'independent_crc_zstd_readers': True}
+        'accepted_equals_persisted': True, 'independent_iq_results_crc_zstd_and_direct_wav_sha256_readers': True}
 
 
 def main():

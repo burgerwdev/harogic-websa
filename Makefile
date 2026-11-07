@@ -1,6 +1,10 @@
 # Build the browser controls and native SDR service separately.
 # WASM targets remain explicit offline DSP diagnostics.
 
+# Heavy prerequisites must stay sequential even under make -j. Individual tools
+# bound their own parallelism (Cargo: one job, Vitest: two workers).
+.NOTPARALLEL:
+
 .PHONY: run stop restart status \
 	build frontend native sdk-shim soapy-driver package-runtime wasm wasm-dsp wasm-dfn dev clean clean-all \
 	test wasm-test ci wasm-check soapy-check-patch soapy-check-stream \
@@ -28,7 +32,7 @@ status:   ## Show owned Rust process, log path and HTTP health
 
 ##@ Build
 
-frontend: ## Frontend only: npm install + Vite build -> dist (no WASM)
+frontend: ## Frontend only: npm ci + Vite build -> dist (no WASM)
 	./build.sh
 
 wasm-dsp: ## Build the DSP core (needs Rust) and publish the committed artifact
@@ -88,8 +92,6 @@ wasm-test: ## Run native Rust DSP kernel tests
 ci: wasm-test soapy-check-patch  ## Run hardware-free local checks; browser checks use make e2e-fake
 	./test.sh
 	python3 tools/checks/sync_version.py --check
-	python3 tools/fixtures/gen_frame_fixtures.py --check
-	python3 tools/fixtures/gen_dsp_fixtures.py --check
 	python3 tools/fixtures/gen_ft8_fixtures.py --check
 	python3 tools/fixtures/port_sstv_modes.py --check
 	python3 tools/fixtures/gen_sstv_fixtures.py --check

@@ -37,13 +37,19 @@ fn cgroup_location()->Option<(PathBuf,PathBuf)> {
     let group=std::fs::read_to_string("/proc/self/cgroup").ok()?.lines()
         .find_map(|line|line.strip_prefix("0::").map(str::to_owned))?;
     let mounts=std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    cgroup_location_from(&group,&mounts)
+}
+fn cgroup_location_from(group:&str,mounts:&str)->Option<(PathBuf,PathBuf)> {
+    // Decode backslashes last so a resulting escape-like path is not decoded twice.
+    let decode=|field:&str|PathBuf::from(field.replace("\\040"," ").replace("\\011","\t")
+        .replace("\\012","\n").replace("\\134","\\"));
     for line in mounts.lines() {
         let (before,after)=line.split_once(" - ")?;
         if after.split_whitespace().next()!=Some("cgroup2") {continue;}
         let fields:Vec<_>=before.split_whitespace().collect();
-        let root=PathBuf::from(fields.get(3)?.replace("\\040"," "));
-        let mount=PathBuf::from(fields.get(4)?.replace("\\040"," "));
-        let relative=Path::new(&group).strip_prefix(&root).ok()?;
+        let root=decode(fields.get(3)?);
+        let mount=decode(fields.get(4)?);
+        let Ok(relative)=Path::new(group).strip_prefix(&root) else {continue;};
         return Some((mount.join(relative),mount));
     }
     None
@@ -100,8 +106,16 @@ fn observe()->Value {
 }
 static SNAPSHOT:LazyLock<Mutex<Option<(Instant,Value)>>>=LazyLock::new(||Mutex::new(None));
 pub fn snapshot()->Value {
+    snapshot_with_max_age(std::time::Duration::from_secs(1))
+}
+/// Preparation may have waited behind other model loads. Its start decision
+/// and RSS baseline must observe the host again, even inside the reporting TTL.
+pub(crate) fn fresh_snapshot()->Value {
+    snapshot_with_max_age(std::time::Duration::ZERO)
+}
+fn snapshot_with_max_age(max_age:std::time::Duration)->Value {
     let mut previous=SNAPSHOT.lock().unwrap_or_else(|e|e.into_inner());
-    if let Some((at,value))=&*previous {if at.elapsed().as_secs_f64()<1.0 {return value.clone();}}
+    if let Some((at,value))=&*previous {if at.elapsed()<max_age {return value.clone();}}
     let mut current=observe();
     let used=previous.as_ref().and_then(|(at,old)|Some((current["process_cpu_seconds"].as_f64()?-
         old["process_cpu_seconds"].as_f64()?)/at.elapsed().as_secs_f64()));
@@ -134,6 +148,24 @@ mod tests {
         assert_eq!(quota("max 100000"),None);assert_eq!(quota("100 0"),None);
         assert_eq!(cpus("0-3,7,9-10").unwrap().len(),7);
         assert_eq!(hierarchy(Path::new("/cg/a/b"),Path::new("/cg")),vec![PathBuf::from("/cg/a/b"),PathBuf::from("/cg/a"),PathBuf::from("/cg")]);
+    }
+    #[test]
+    fn cgroup_location_skips_unrelated_subtree_mounts() {
+        let mounts="39 25 0:33 /tenant-b /isolated rw - cgroup2 cgroup rw\n\
+                    40 25 0:33 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n";
+        assert_eq!(cgroup_location_from("/tenant-a/job",mounts),
+            Some((PathBuf::from("/sys/fs/cgroup/tenant-a/job"),PathBuf::from("/sys/fs/cgroup"))));
+    }
+    #[test]
+    fn cgroup_location_decodes_mountinfo_path_escapes_once() {
+        // mountinfo escapes space, tab, newline and backslash in path fields.
+        // A literal backslash followed by 040 must not become a space.
+        for (encoded,decoded) in [("\\040"," "),("\\011","\t"),("\\012","\n"),("\\134","\\"),("\\134040","\\040")] {
+            let mounts=format!("39 25 0:33 / /sys/cgroup{encoded}mount rw - cgroup2 cgroup rw\n");
+            let mount=PathBuf::from(format!("/sys/cgroup{decoded}mount"));
+            assert_eq!(cgroup_location_from("/work",&mounts),
+                Some((mount.join("work"),mount)),"mountinfo escape {encoded}");
+        }
     }
     #[test]
     fn reports_the_current_process_without_creating_a_receiver_cap() {

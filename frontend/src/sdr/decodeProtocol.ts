@@ -133,7 +133,7 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 	if (d.type === 'decoder-result') {
 		if (typeof d.provider !== 'string' || !d.provider || d.provider.length > 64
 			|| typeof d.mode !== 'string' || d.mode !== value.mode
-			|| !['text', 'table', 'image', 'status'].includes(String(d.kind))
+			|| typeof d.kind !== 'string' || !['text', 'table', 'image', 'status'].includes(d.kind)
 			|| d.data === undefined || d.data === null) throw new Error('Invalid decoder result');
 		validateDecoderData(d.data, d.kind === 'image');
 		if ((d.kind === 'table' || d.kind === 'status') && !record(d.data) && !Array.isArray(d.data) && typeof d.data !== 'string') {
@@ -194,7 +194,7 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 			['clockSource', ['nominal', 'phasing', 'image_content', 'manual']],
 		];
 		for (const [key, allowed] of radiofaxEnums) {
-			if (!allowed.includes(String(d[key]))) throw new Error(`Invalid radiofax ${key}`);
+			if (typeof d[key] !== 'string' || !allowed.includes(d[key])) throw new Error(`Invalid radiofax ${key}`);
 		}
 		if (d.ioc !== undefined && d.ioc !== null && d.ioc !== 288 && d.ioc !== 576) throw new Error('Invalid radiofax ioc');
 		if (typeof d.clockConfidence !== 'number' || !Number.isFinite(d.clockConfidence)) throw new Error('Invalid receiver clockConfidence');

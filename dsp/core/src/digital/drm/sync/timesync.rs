@@ -224,6 +224,9 @@ impl ModeDetector {
 /// Best mode and its ratio to the second best, if the ratio exceeds `threshold`.
 fn decide(scores: &[f64; 5], threshold: f64) -> Option<(RobustnessMode, f64)> {
     let (best, &max) = scores.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
+    if !max.is_finite() || max <= 0.0 {
+        return None;
+    }
     let second = scores
         .iter()
         .enumerate()
@@ -661,7 +664,7 @@ mod tests {
         let silence = vec![Cplx::zero(); 3248];
         let mut total = 0i64;
         for _ in 0..200 {
-            ts.push(&silence);
+            assert!(ts.push(&silence).is_empty(), "silence provides no evidence of a robustness mode");
             total += silence.len() as i64;
             assert!(ts.next_window().is_none());
             ts.trim_unsynchronised();

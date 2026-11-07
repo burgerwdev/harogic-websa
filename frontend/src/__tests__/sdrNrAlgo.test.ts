@@ -30,6 +30,18 @@ function mountNrControls() {
 }
 
 describe('sdrNrAlgo', () => {
+    it('loads receiver defaults when the browser storage property itself is blocked', async () => {
+        vi.resetModules();
+        const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+            throw new DOMException('denied', 'SecurityError');
+        });
+        try {
+            const state = await import('../ui/sdrState');
+            expect(state.sdrNrAlgo.get()).toBe('wiener');
+            expect(state.sdrSstvMode.get()).toBe(-1);
+        } finally { storage.mockRestore(); }
+    });
+
     it.each<NrAlgo>(['dfn','gtcrn','ul-unas','fastenhancer'])('persists %s across a page reload', async (id) => {
         sdrNrAlgo.set(id);
         sdrNrAlgo.confirm(id);

@@ -382,27 +382,6 @@ pub(super) struct PipelineOutput {
     pub frames: IqFrames, pub pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
 }
 impl PipelineOutput {
-    #[cfg(test)]
-    fn collect(mut self, rx: &Receiver<Result<Self, String>>, failure: &mut Option<String>) -> Result<Self, String> {
-        if failure.is_none() {
-            for _ in 0..2 {
-                match rx.try_recv() {
-                    Ok(Ok(output)) => { self.frames.extend(output.frames); self.pan.extend(output.pan); }
-                    Ok(Err(error)) => { *failure = Some(error); break; }
-                    Err(sync::TryRecvError::Empty) => break,
-                    Err(sync::TryRecvError::Disconnected) => {
-                        *failure = Some("pipeline output disconnected".into());
-                        break;
-                    }
-                }
-            }
-        }
-        // Deliver every collected tail before reporting the terminal producer failure.
-        if self.frames.is_empty() && self.pan.is_empty() {
-            if let Some(error) = failure { return Err(error.clone()); }
-        }
-        Ok(self)
-    }
     fn capture_boundary(&mut self, previous: (f64, u64, u64), next: &Snapshot) {
         if previous != (next.capture_center, next.device_decimate, next.generation) {
             // IQ tails retain their order; spectra from the old capture configuration expire.
@@ -450,6 +429,12 @@ impl DeliveryQueue {
         Ok(pending)
     }
 }
+fn owner_panic_error(panic: Box<dyn std::any::Any + Send>) -> String {
+    let detail = panic.downcast_ref::<String>().map(String::as_str)
+        .or_else(||panic.downcast_ref::<&str>().copied()).unwrap_or("non-string panic payload");
+    format!("PFB owner panicked: {detail}")
+}
+
 type Change = Box<dyn FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send>;
 struct Command {
     local:bool,
@@ -667,132 +652,192 @@ impl Pipeline {
         let terminal = Arc::new(PLMutex::new(None));
         let failed_capture = terminal.clone();
         let join = thread::Builder::new().name("sdr-pfb".into()).spawn(move || {
-            let setup = (|| {
-                let frequencies: Vec<_> = config.aux.iter().map(|(_, f)| *f).collect();
-                let device_decimate = if let Some(channels)=&channels {
-                    service_ddc::service_capture_decimate(config.center,config.display_decimate,config.taps,channels)?
-                } else {capture_decimate(config.center, config.listen, &frequencies, config.display_decimate, config.taps)};
-                if let Some(channels)=&channels {
-                    let fs=IQ_FS/device_decimate as f64;
-                    let m=PFB_BINS.min((fs/BIN_SPACING).round() as i64).max(2);
-                    let mut bins=Vec::new();
-                    for c in channels.iter().filter(|c|c.enabled && !service_ddc::is_direct(c)) {
-                        let signed=signed_bin(c.freq,config.center);
-                        for neighbour in signed-PLAN_NEIGHBOURS..=signed+PLAN_NEIGHBOURS {
-                            if (-m/2..m/2).contains(&neighbour) {
-                                let bin=neighbour.rem_euclid(m) as u32;
-                                if !bins.contains(&bin){bins.push(bin);}
+            // Publish a terminal result before dropping owners that may still
+            // need to join native work. Never resume DDC state after a panic.
+            let mut owned_ddc = None;
+            let mut last_published = None;
+            let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let setup = (|| {
+                    let frequencies: Vec<_> = config.aux.iter().map(|(_, f)| *f).collect();
+                    let device_decimate = if let Some(channels)=&channels {
+                        service_ddc::service_capture_decimate(config.center,config.display_decimate,config.taps,channels)?
+                    } else {capture_decimate(config.center, config.listen, &frequencies, config.display_decimate, config.taps)};
+                    if let Some(channels)=&channels {
+                        let fs=IQ_FS/device_decimate as f64;
+                        let m=PFB_BINS.min((fs/BIN_SPACING).round() as i64).max(2);
+                        let mut bins=Vec::new();
+                        for c in channels.iter().filter(|c|c.enabled && !service_ddc::is_direct(c)) {
+                            let signed=signed_bin(c.freq,config.center);
+                            for neighbour in signed-PLAN_NEIGHBOURS..=signed+PLAN_NEIGHBOURS {
+                                if (-m/2..m/2).contains(&neighbour) {
+                                    let bin=neighbour.rem_euclid(m) as u32;
+                                    if !bins.contains(&bin){bins.push(bin);}
+                                }
+                            }
+                        }
+                        service_cost::admit_service(channels,fs,config.taps,bins.len().max(1))?;
+                    }
+                    let capture = HardwareCapture::start(config.shim, config.center, config.front_end, device_decimate)?;
+                    let g = capture.geometry;
+                    let fs = g.sample_rate;
+                    let ddc = if let Some(channels) = &channels {
+                        Ddc::configured_service(g.center,g.bandwidth,&mut Some(capture),config.taps,fs,channels)?
+                    } else {
+                        let mut ddc = Ddc::configured_with_budget(g.center, config.listen, config.fine, g.bandwidth,
+                            &mut Some(capture), &frequencies, config.taps, fs, config.channel_budget, config.output_rate_budget)?;
+                        for &(channel, frequency) in &config.aux { ddc.configure_aux(channel, true, frequency)?; }
+                        ddc
+                    };
+                    Ok::<_, String>(ddc)
+                })();
+                let ddc = match setup { Ok(ddc) => owned_ddc.insert(ddc), Err(e) => { let _ = ready.send(Err(e)); return; } };
+                let diagnostics = ddc.hardware.as_ref().unwrap().diagnostics();
+                let device_info = ddc.hardware.as_ref().and_then(|capture| capture.device_info);
+                let gnss = ddc.hardware.as_ref().unwrap().gnss_reader();
+                let mut aux: Arc<[(u32, f64)]> = config.aux.into();
+                if let Err(e) = ddc.resume_fine() { let _ = ready.send(Err(e)); return; }
+                let shared = Arc::new(PLMutex::new(ddc.pipeline_snapshot(aux.clone())));
+                last_published = Some((shared.clone(), diagnostics.clone()));
+                if let Err(e) = ddc.hardware.as_mut().unwrap().arm() {
+                    let _ = ready.send(Err(e));
+                    return;
+                }
+                if ready.send(Ok((shared.clone(), diagnostics.clone(), device_info, gnss))).is_err() { return; }
+                let mut refreshed = Instant::now();
+                let mut control_failure = None;
+                loop {
+                    match commands.try_recv() {
+                        Ok(command) => {
+                            let Command { local, change, reply, resume } = command;
+                            let stop = change.is_none();
+                            // Keep the reply gate and already-drained output outside
+                            // unwind. A panic is fatal, but cannot discard this prefix
+                            // or masquerade as a disconnected command mailbox.
+                            let mut frames = Vec::new();
+                            let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                frames.extend(if local {
+                                    ddc.stream.flush_pending().map_err(str::to_owned).and_then(|_|ddc.drain())
+                                } else { ddc.suspend_fine() }?);
+                                let changed = match change {
+                                    Some(change) => change(ddc).map(|tail| frames.extend(tail)),
+                                    None => ddc.finish_framers(&mut frames),
+                                };
+                                let clocks = ddc.sample_clocks();
+                                aux = ddc.registry.iter().filter(|r|r.channel!=1)
+                                    .map(|r|(r.channel,r.frequency_hz)).collect::<Vec<_>>().into();
+                                output.lock().failed.retain(|&(id,epoch)|ddc.registry.iter().any(|row|row.channel_id==id&&row.epoch==epoch));
+                                let snapshot = ddc.pipeline_snapshot(aux.clone());
+                                *shared.lock() = snapshot.clone();
+                                let failed = ddc.capture_failed || (ddc.fine.is_none() && ddc.fine_worker.is_none());
+                                Ok::<_, String>((snapshot, changed.and(clocks), failed))
+                            }));
+                            let (snapshot, changed, failed) = match applied {
+                                Ok(Ok(value)) => value,
+                                failure => {
+                                    let error = match failure {
+                                        Ok(Err(error)) => error,
+                                        Err(panic) => owner_panic_error(panic),
+                                        Ok(Ok(_)) => unreachable!(),
+                                    };
+                                    control_failure = Some(error.clone());
+                                    let _ = reply.send(Err((error, PipelineOutput { frames, pan:Vec::new() })));
+                                    let _ = resume.recv();
+                                    break;
+                                }
+                            };
+                            let tail = PipelineOutput { frames, pan:std::mem::take(&mut ddc.pan) };
+                            let result = match changed {
+                                Ok(()) => Ok((snapshot, tail)),
+                                Err(error) => Err((error, tail)),
+                            };
+                            if failed { control_failure = result.as_ref().err().map(|(error, _)| error.clone()); }
+                            let _ = reply.send(result);
+                            if resume.recv().is_err() { break; }
+                            if stop || failed { break; }
+                            if let Err(error) = ddc.resume_fine() { control_failure = Some(error); break; }
+                        }
+                        Err(sync::TryRecvError::Disconnected) => break,
+                        Err(sync::TryRecvError::Empty) => (),
+                    }
+                    let result = ddc.packet().map(|mut frames| {
+                        frames.splice(0..0, std::mem::take(&mut ddc.carry));
+                        PipelineOutput { frames, pan:std::mem::take(&mut ddc.pan) }
+                    });
+                    let failed = result.is_err();
+                    if let Err(error) = &result {
+                        let snapshot = ddc.pipeline_snapshot(aux.clone());
+                        *shared.lock() = snapshot.clone();
+                        let actual = PipelinePresentation { snapshot, diagnostics:diagnostics.clone() }.encode();
+                        *failed_capture.lock() = Some(json!({
+                            "error":error, "next_seq":ddc.next_seq, "last_stamp":ddc.last_stamp,
+                            "input_index":ddc.input_pos, "capture_center":ddc.capture_center,
+                            "device_decimate":ddc.device_decimate, "actual":actual,
+                        }));
+                    }
+                    let has_output = result.as_ref().is_ok_and(|o| !o.frames.is_empty() || !o.pan.is_empty());
+                    let batch_frames = result.as_ref().map_or(0, |o| o.frames.len());
+                    if failed || has_output {
+                        let started = Instant::now();
+                        let rejected=output.lock().push(result);
+                        if let Some(worker)=ddc.fine_worker.as_mut() {
+                            for (identity,index) in rejected {worker.fail_delivery(identity,index);}
+                        }
+                        if has_output {
+                            let completed_at = Instant::now();
+                            let elapsed = completed_at.duration_since(started);
+                            ddc.pipeline_timing.output_send.observe(elapsed);
+                            let seq = ddc.next_seq.saturating_sub(1);
+                            let stamp = ddc.last_stamp.unwrap_or(ddc.input_pos);
+                            let input_index = ddc.input_pos.saturating_sub(16240);
+                            ddc.pipeline_timing.observe_slow("output_send", seq, stamp, input_index, elapsed);
+                            if let Some(capture) = &ddc.hardware {
+                                capture.note_output(seq, input_index, batch_frames, completed_at);
                             }
                         }
                     }
-                    service_cost::admit_service(channels,fs,config.taps,bins.len().max(1))?;
-                }
-                let capture = HardwareCapture::start(config.shim, config.center, config.front_end, device_decimate)?;
-                let g = capture.geometry;
-                let fs = ((g.bandwidth / 0.8 / COARSE_RATE).round() * COARSE_RATE).max(COARSE_RATE);
-                let ddc = if let Some(channels) = &channels {
-                    Ddc::configured_service(g.center,g.bandwidth,&mut Some(capture),config.taps,fs,channels)?
-                } else {
-                    let mut ddc = Ddc::configured_with_budget(g.center, config.listen, config.fine, g.bandwidth,
-                        &mut Some(capture), &frequencies, config.taps, fs, config.channel_budget, config.output_rate_budget)?;
-                    for &(channel, frequency) in &config.aux { ddc.configure_aux(channel, true, frequency)?; }
-                    ddc
-                };
-                Ok::<_, String>(ddc)
-            })();
-            let mut ddc = match setup { Ok(ddc) => ddc, Err(e) => { let _ = ready.send(Err(e)); return; } };
-            let diagnostics = ddc.hardware.as_ref().unwrap().diagnostics();
-            let device_info = ddc.hardware.as_ref().and_then(|capture| capture.device_info);
-            let gnss = ddc.hardware.as_ref().unwrap().gnss_reader();
-            let mut aux: Arc<[(u32, f64)]> = config.aux.into();
-            if let Err(e) = ddc.resume_fine() { let _ = ready.send(Err(e)); return; }
-            let shared = Arc::new(PLMutex::new(ddc.pipeline_snapshot(aux.clone())));
-            if let Err(e) = ddc.hardware.as_mut().unwrap().arm() {
-                let _ = ready.send(Err(e));
-                return;
-            }
-            if ready.send(Ok((shared.clone(), diagnostics.clone(), device_info, gnss))).is_err() { return; }
-            let mut refreshed = Instant::now();
-            loop {
-                match commands.try_recv() {
-                    Ok(command) => {
-                        let stop = command.change.is_none();
-                        let mut frames = match if command.local {ddc.stream.flush_pending().map_err(str::to_owned).and_then(|_|ddc.drain())} else {ddc.suspend_fine()} { Ok(frames) => frames, Err(e) => {
-                            let _ = command.reply.send(Err((e, PipelineOutput::default())));
-                            let _ = command.resume.recv();
-                            break;
-                        }};
-                        let changed = match command.change {
-                            Some(change) => change(&mut ddc).map(|tail| frames.extend(tail)),
-                            None => ddc.finish_framers(&mut frames),
-                        };
-                        let clocks = ddc.sample_clocks();
-                        aux = ddc.registry.iter().filter(|r|r.channel!=1)
-                            .map(|r|(r.channel,r.frequency_hz)).collect::<Vec<_>>().into();
-                        output.lock().failed.retain(|&(id,epoch)|ddc.registry.iter().any(|row|row.channel_id==id&&row.epoch==epoch));
+                    if failed { break; }
+                    if refreshed.elapsed() >= Duration::from_millis(50) {
+                        let started = Instant::now();
                         let snapshot = ddc.pipeline_snapshot(aux.clone());
-                        *shared.lock() = snapshot.clone();
-                        let tail = PipelineOutput { frames, pan:std::mem::take(&mut ddc.pan) };
-                        let reply = match changed.and(clocks) {
-                            Ok(()) => Ok((snapshot, tail)),
-                            Err(error) => Err((error, tail)),
-                        };
-                        let failed = ddc.capture_failed || (ddc.fine.is_none() && ddc.fine_worker.is_none());
-                        let _ = command.reply.send(reply);
-                        if command.resume.recv().is_err() { break; }
-                        if stop || failed { break; }
-                        if let Err(e) = ddc.resume_fine() { output.lock().push(Err(e)); break; }
+                        *shared.lock() = snapshot;
+                        let elapsed = started.elapsed();
+                        ddc.pipeline_timing.snapshot_total.observe(elapsed);
+                        let (seq, stamp, input_index) = (ddc.next_seq.saturating_sub(1), ddc.last_stamp.unwrap_or(ddc.input_pos), ddc.input_pos.saturating_sub(16240));
+                        ddc.pipeline_timing.observe_slow("producer_snapshot", seq, stamp, input_index, elapsed);
+                        refreshed = Instant::now();
                     }
-                    Err(sync::TryRecvError::Disconnected) => break,
-                    Err(sync::TryRecvError::Empty) => (),
                 }
-                let result = ddc.packet().map(|mut frames| {
-                    frames.splice(0..0, std::mem::take(&mut ddc.carry));
-                    PipelineOutput { frames, pan:std::mem::take(&mut ddc.pan) }
-                });
-                let failed = result.is_err();
-                if let Err(error) = &result {
-                    let snapshot = ddc.pipeline_snapshot(aux.clone());
-                    *shared.lock() = snapshot.clone();
+                if let Some(error) = control_failure {
+                    // Commands return their accepted old tails before releasing the
+                    // resume gate. Only then publish the fatal error to polling, so
+                    // it cannot overtake that reply or collapse into disconnection.
+                    let snapshot = shared.lock().clone();
                     let actual = PipelinePresentation { snapshot, diagnostics:diagnostics.clone() }.encode();
                     *failed_capture.lock() = Some(json!({
-                        "error":error, "next_seq":ddc.next_seq, "last_stamp":ddc.last_stamp,
-                        "input_index":ddc.input_pos, "capture_center":ddc.capture_center,
-                        "device_decimate":ddc.device_decimate, "actual":actual,
+                        "error":&error, "snapshot_state":"last_published", "actual":actual,
                     }));
+                    output.lock().push(Err(error));
                 }
-                let has_output = result.as_ref().is_ok_and(|o| !o.frames.is_empty() || !o.pan.is_empty());
-                let batch_frames = result.as_ref().map_or(0, |o| o.frames.len());
-                if failed || has_output {
-                    let started = Instant::now();
-                    let rejected=output.lock().push(result);
-                    if let Some(worker)=ddc.fine_worker.as_mut() {
-                        for (identity,index) in rejected {worker.fail_delivery(identity,index);}
-                    }
-                    if has_output {
-                        let completed_at = Instant::now();
-                        let elapsed = completed_at.duration_since(started);
-                        ddc.pipeline_timing.output_send.observe(elapsed);
-                        let seq = ddc.next_seq.saturating_sub(1);
-                        let stamp = ddc.last_stamp.unwrap_or(ddc.input_pos);
-                        let input_index = ddc.input_pos.saturating_sub(16240);
-                        ddc.pipeline_timing.observe_slow("output_send", seq, stamp, input_index, elapsed);
-                        if let Some(capture) = &ddc.hardware {
-                            capture.note_output(seq, input_index, batch_frames, completed_at);
-                        }
-                    }
-                }
-                if failed { break; }
-                if refreshed.elapsed() >= Duration::from_millis(50) {
-                    let started = Instant::now();
-                    let snapshot = ddc.pipeline_snapshot(aux.clone());
-                    *shared.lock() = snapshot;
-                    let elapsed = started.elapsed();
-                    ddc.pipeline_timing.snapshot_total.observe(elapsed);
-                    let (seq, stamp, input_index) = (ddc.next_seq.saturating_sub(1), ddc.last_stamp.unwrap_or(ddc.input_pos), ddc.input_pos.saturating_sub(16240));
-                    ddc.pipeline_timing.observe_slow("producer_snapshot", seq, stamp, input_index, elapsed);
-                    refreshed = Instant::now();
-                }
+            }));
+            if let Err(panic) = completed {
+                let error = owner_panic_error(panic);
+                // Diagnostics use the last published snapshot, not potentially
+                // damaged DDC state. The retained DDC is only dropped below.
+                let actual = last_published.map(|(shared, diagnostics)| {
+                    let snapshot = shared.lock().clone();
+                    PipelinePresentation { snapshot, diagnostics }.encode()
+                });
+                let mut terminal = failed_capture.lock();
+                let first = terminal.get_or_insert_with(||json!({
+                    "error":&error, "snapshot_state":"last_published", "actual":actual,
+                }));
+                let cause = first["error"].as_str().unwrap_or(&error).to_owned();
+                drop(terminal);
+                if cause != error { eprintln!("WebSA cleanup after {cause}: {error}"); }
+                output.lock().push(Err(cause.clone()));
+                // Startup panics must also retain their cause. A full ready slot
+                // already holds the live pipeline; its delivery queue owns failure.
+                let _ = ready.try_send(Err(cause));
             }
             output.lock().closed=true;
         }).map_err(|e| e.to_string())?;
@@ -889,6 +934,10 @@ impl Pipeline {
     }
 }
 impl Drop for Pipeline { fn drop(&mut self) { let _ = self.stop(); } }
+
+#[cfg(test)]
+#[path = "sdr_capture_contract_tests.rs"]
+mod capture_contract_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1257,33 +1306,41 @@ mod tests {
 
     #[test]
     fn producer_disconnect_delivers_queued_tail_before_terminal_error() {
-        let (tx, rx) = sync::sync_channel(2);
-        assert!(tx.send(Ok(PipelineOutput { frames:vec![vec![2].into()], pan:Vec::new() })).is_ok());
-        drop(tx);
+        let mut queue = DeliveryQueue::new(1);
+        let first = queued_iq(1);
+        let second = queued_iq(2);
+        assert!(queue.push(Ok(PipelineOutput { frames:vec![second.clone()], pan:Vec::new() })).is_empty());
+        queue.closed = true;
         let mut failure = None;
-        let pending = PipelineOutput { frames:vec![vec![1].into()], pan:Vec::new() };
-        let output = pending.collect(&rx, &mut failure).unwrap();
-        assert_eq!(output.frames, vec![vec![1], vec![2]]);
-        assert_eq!(PipelineOutput::default().collect(&rx, &mut failure).err().as_deref(), Some("pipeline output disconnected"));
+        let pending = PipelineOutput { frames:vec![first.clone()], pan:Vec::new() };
+        let output = queue.collect(pending, &mut failure).unwrap();
+        assert_eq!(output.frames, vec![first, second]);
+        assert_eq!(queue.collect(PipelineOutput::default(), &mut failure).err().as_deref(), Some("pipeline output disconnected"));
     }
 
     #[test]
     fn explicit_producer_error_preserves_tail_and_original_failure() {
-        let (tx, rx) = sync::sync_channel(2);
-        assert!(tx.send(Ok(PipelineOutput { frames:vec![vec![1].into()], pan:Vec::new() })).is_ok());
-        assert!(tx.send(Err("SDK reconfigure failed".into())).is_ok());
+        let mut queue = DeliveryQueue::new(1);
+        let first = queued_iq(1);
+        assert!(queue.push(Ok(PipelineOutput { frames:vec![first.clone()], pan:Vec::new() })).is_empty());
+        assert!(queue.push(Err("SDK reconfigure failed".into())).is_empty());
         let mut failure = None;
-        assert_eq!(PipelineOutput::default().collect(&rx, &mut failure).unwrap().frames, vec![vec![1]]);
-        assert_eq!(PipelineOutput::default().collect(&rx, &mut failure).err().as_deref(), Some("SDK reconfigure failed"));
+        assert_eq!(queue.collect(PipelineOutput::default(), &mut failure).unwrap().frames, vec![first]);
+        assert_eq!(queue.collect(PipelineOutput::default(), &mut failure).err().as_deref(), Some("SDK reconfigure failed"));
     }
 
     #[test]
     fn empty_live_producer_is_not_a_terminal_failure() {
-        let (_tx, rx) = sync::sync_channel(2);
+        let mut queue = DeliveryQueue::new(1);
         let mut failure = None;
-        let output = PipelineOutput::default().collect(&rx, &mut failure).unwrap();
+        let output = queue.collect(PipelineOutput::default(), &mut failure).unwrap();
         assert!(output.frames.is_empty());
         assert!(failure.is_none());
+    }
+
+    fn queued_iq(seq: u32) -> IqFrame {
+        IqFrame::native(websa_channelizer::BasebandMagic::Primary, seq, 48_000.0,
+            100e6, 1, 9, u64::from(seq) * 64, 0.0, IQ_FS, vec![0.25, 0.5]).unwrap()
     }
 
     #[test]

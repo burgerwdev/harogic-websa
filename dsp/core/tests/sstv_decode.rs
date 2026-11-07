@@ -98,6 +98,7 @@ fn decodes_the_python_encoded_transmission() {
 }
 
 fn mean_absolute_error(actual: &[u8], expected: &[u8]) -> f64 {
+    assert_eq!(actual.len(), expected.len(), "compare the entire image");
     let sum: u64 = actual
         .iter()
         .zip(expected)

@@ -103,7 +103,9 @@ export function sameSpan(a: FreqWindow | null, b: FreqWindow | null): boolean {
 
 /** Clamp [lo,hi] into capture honouring minSpan: shrink at the edges, never exceed capture. */
 export function clampView(w: FreqWindow, capture: FreqWindow, minSpan: number): FreqWindow {
-	const cap = Math.max(capture.hi - capture.lo, minSpan);   // degenerate capture: full width
+	// A sparse grid can require more samples than the capture contains. In that case
+	// show the whole capture; the minimum must never expand its actual boundaries.
+	const cap = capture.hi - capture.lo;
 	const span = Math.min(Math.max(w.hi - w.lo, minSpan), cap);
 	let lo = Math.min(Math.max(w.lo, capture.lo), capture.hi - span);
 	let hi = lo + span;

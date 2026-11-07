@@ -29,8 +29,8 @@ if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
 fi
 
 # Build only. `make wasm-test` and `make ci` run the native kernel suite separately.
-echo "== cargo build --release --target $TARGET =="
-cargo build --release --target "$TARGET"
+echo "== cargo build --release -j 1 --target $TARGET =="
+cargo build --release -j 1 --target "$TARGET"
 
 if [ ! -f "$OUT" ]; then
   echo "build produced no $OUT" >&2

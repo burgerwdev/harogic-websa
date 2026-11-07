@@ -422,6 +422,12 @@ pub unsafe extern "C" fn channel_process_float(
 fn process_samples<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut [f32]) -> i32 {
     let n = iq.len() / 2;
     if c.stages.is_some() { return process_multistage(c, iq, out); }
+    // A supported rational ratio may upsample the integer-DDC output. Reject
+    // its exact capacity before consuming NCO, FIR, or either sample clock.
+    let base_frames = (c.phase2 + (c.phase1 + n) / c.d1) / c.d2;
+    let output_frames = c.rational.as_ref()
+        .map_or(base_frames, |r| r.output_frames_for_input(base_frames));
+    if output_frames > out.len() / 2 { return -1; }
     let n1 = c.fused.as_ref().map_or(c.h1.len(), Vec::len);
     let n2 = c.h2.len();
     if c.rational.is_some() {
@@ -534,6 +540,37 @@ fn process_multistage<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narrow_boundary_ratio_capacity_rejection_preserves_filter_and_clock() {
+        let open = || {
+            let handle = channel_open_ratio(976_562.5, 0.0, 2, 3, 2, 100_000.0);
+            assert!(!handle.is_null());
+            unsafe { Box::from_raw(handle) }
+        };
+        let mut actual = open();
+        let mut reference = open();
+        let input: Vec<f32> = (0..8192).map(|n| ((n as f64 * 0.071).sin() * 0.25) as f32).collect();
+        // The legacy integer-DDC capacity is insufficient for the supported 3/2 final rate.
+        let mut short = vec![123.0; 2 * (4096 / 2 + 2)];
+        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
+            process_samples(&mut actual, &input, &mut short)));
+        assert!(matches!(rejected, Ok(-1)), "invalid capacity must return -1 before entering the extern-C panic boundary");
+        assert_eq!(unsafe { channel_process_float(&mut *actual, input.as_ptr(), 4096,
+            short.as_mut_ptr(), (short.len() / 2) as i32) }, -1);
+        let integers = vec![1i16; input.len()];
+        assert_eq!(unsafe { channel_process(&mut *actual, integers.as_ptr(), 4096,
+            short.as_mut_ptr(), (short.len() / 2) as i32) }, -1);
+        assert_eq!((actual.input_samples, actual.output_samples), (0, 0));
+        assert!(short.iter().all(|&sample| sample == 123.0));
+        let mut expected = vec![0.0; 8192];
+        let mut observed = vec![0.0; 8192];
+        let count = process_samples(&mut reference, &input, &mut expected);
+        assert!(count > 2050);
+        assert_eq!(process_samples(&mut actual, &input, &mut observed), count);
+        assert_eq!(observed, expected, "a rejected call cannot consume FIR or rational phase");
+        assert_eq!((actual.input_samples, actual.output_samples), (reference.input_samples, reference.output_samples));
+    }
 
     /// Shared RF frequency-response probe through the real planned cascade with
     /// packetized input; also asserts exact per-packet sample conservation.

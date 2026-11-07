@@ -102,7 +102,6 @@ struct Work {
     shared: Arc<Shared>,
     queued: Instant,
     accepted: bool,
-    started: bool,
     failed: bool,
     done: bool,
 }
@@ -307,7 +306,6 @@ fn run(
                     stats.started += 1;
                     stats.queue_wait.observe(work.queued.elapsed());
                 }
-                work.started = true;
                 #[cfg(test)]
                 if let Some(gate) = work.shared.gate.lock().take() {
                     gate.hold();
@@ -567,7 +565,6 @@ impl FineWorker {
                 shared: lane.shared.clone(),
                 queued: Instant::now(),
                 accepted: true,
-                started: false,
                 failed: false,
                 done: false,
             };
@@ -668,7 +665,6 @@ impl FineWorker {
                 shared: lane.shared.clone(),
                 queued: Instant::now(),
                 accepted: true,
-                started: false,
                 failed: false,
                 done: false,
             };

@@ -46,7 +46,7 @@ impl DigitalDemodulator for Fingerprint {
             self.checksum += (*value as f64) * (1.0 + index as f64);
         }
         self.samples += iq.len();
-        Vec::new()
+        vec![format!("{}:{:016x}", self.samples, self.checksum.to_bits())]
     }
     fn reset(&mut self) {
         self.checksum = 0.0;
@@ -67,9 +67,7 @@ fn baseband(n: usize) -> Vec<f32> {
 }
 
 fn chain() -> AudioChain {
-    // The *full* chain, not a token stage: the separation claim is about everything the analog path
-    // runs (dc block, lpf, agc, squelch, wiener, notch, blanker), and using the real one is what
-    // makes the comparison below meaningful.
+    // Install the real registered stages. Each test's policy selects which run.
     websa_dsp::audio::default_chain(96_000.0)
 }
 
@@ -112,7 +110,8 @@ fn the_digital_path_ignores_the_audio_chain_completely() {
     let iq = baseband(4096);
 
     let run = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(PathKind::Digital, chain(), AudioPolicy::default());
+        let nr = AudioPolicy { nr: true, ..AudioPolicy::default() };
+        let mut pipeline = Pipeline::new(PathKind::Digital, chain(), nr);
         pipeline.set_digital_demod(Box::new(Fingerprint::default()), 96_000.0, 96_000.0);
         pipeline.set_audio_enabled(audio_enabled);
         let mut out = PipelineOutput::default();
@@ -128,23 +127,12 @@ fn the_digital_path_ignores_the_audio_chain_completely() {
     for (index, (x, y)) in on.raw.iter().zip(off.raw.iter()).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "RAW sample {index} changed with the chain enabled");
     }
-}
-
-#[test]
-fn the_decoder_sees_the_same_samples_in_both_runs() {
-    let iq = baseband(4096);
-    let fingerprint = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(PathKind::Digital, chain(), AudioPolicy::default());
-        pipeline.set_digital_demod(Box::new(Fingerprint::default()), 96_000.0, 96_000.0);
-        pipeline.set_audio_enabled(audio_enabled);
-        let mut out = PipelineOutput::default();
-        pipeline.process_f32_into(&iq, false, &mut out);
-        out
-    };
-    let on = fingerprint(true);
-    let off = fingerprint(false);
+    // Observe what the decoder actually received, not just the upstream RAW
+    // copy. A decoder that is never called cannot satisfy this fingerprint.
+    let expected: f64 = iq.iter().enumerate()
+        .map(|(index, value)| *value as f64 * (1.0 + index as f64)).sum();
+    assert_eq!(on.decoded, vec![format!("{}:{:016x}", iq.len(), expected.to_bits())]);
     assert_eq!(on.decoded, off.decoded);
-    assert_eq!(on.raw, off.raw, "the decoder's input must not depend on the audio settings");
 }
 
 #[test]
@@ -216,7 +204,7 @@ fn every_registered_plugin_can_be_resolved_by_its_own_family() {
 }
 
 /// The FT8 fixture: the channelized 48 kHz baseband of a real CQ transmission, which is what the
-/// backend's DDC hands the browser.
+/// backend's DDC hands the receiver.
 ///
 /// Padded to a full slot: the decoder consumes slots (FT8 is a 15 s slot mode and the live stream is
 /// a rolling buffer), so a transmission-sized buffer would never be decoded.

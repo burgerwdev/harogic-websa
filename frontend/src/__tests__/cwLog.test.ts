@@ -80,6 +80,31 @@ describe('the CW decode log', () => {
 		expect(lines[0].text).toBe('TEST DE N0CALL');
 	});
 
+	it('bounds a continuous CW transmission and keeps its newest text aligned with confidence marks', () => {
+		addCwText('OLD '.repeat(20_000), false, 0.7);
+		addCwText('TAIL', false, 0.2);
+		const log = cwLog();
+		expect(log.current.length).toBeLessThanOrEqual(65_536);
+		expect(log.current.endsWith('TAIL')).toBe(true);
+		expect(log.marks).toHaveLength(log.current.length);
+		expect(log.marks.slice(-4).map(mark => mark.share)).toEqual([0.2, 0.2, 0.2, 0.2]);
+		expect((log as typeof log & { evictedCharacters: number }).evictedCharacters).toBeGreaterThan(0);
+		addCwText('', true);
+		expect(cwLog().lines[0].text).toBe(log.current);
+		clearCwLog();
+		expect((cwLog() as typeof log & { evictedCharacters: number }).evictedCharacters).toBe(0);
+	});
+
+	it('bounds retained CW characters across completed lines and an open transmission', () => {
+		for (let i = 0; i < 100; i++) addCwText(`${i}:` + 'X'.repeat(1000), true);
+		addCwText('NEWEST', false);
+		const log = cwLog();
+		expect(log.lines.reduce((count, line) => count + line.text.length, log.current.length)).toBeLessThanOrEqual(65_536);
+		expect(log.lines.at(-1)?.text.startsWith('99:')).toBe(true);
+		expect(log.current).toBe('NEWEST');
+		expect(log.lines.every(line => line.text.length === line.marks.length)).toBe(true);
+	});
+
 	it('keeps the level on its own listeners, so the meter cannot re-render the text', () => {
 		let lineRenders = 0;
 		let levelRenders = 0;

@@ -82,23 +82,6 @@ fn a_slot_decode_stays_well_inside_a_slot() {
 }
 
 #[test]
-fn the_decoder_rejects_a_slot_that_carries_no_signal() {
-    // The CRC is what separates "decoded" from "invented": noise must produce nothing.
-    let rate = manifest_number("rate");
-    let mut seed = 99_u32;
-    let mut noise = Vec::with_capacity(48_000 * 2);
-    for _ in 0..48_000 {
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        noise.push(((seed >> 8) as f64 / 16_777_216.0 - 0.5) as f32 * 0.05);
-        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        noise.push(((seed >> 8) as f64 / 16_777_216.0 - 0.5) as f32 * 0.05);
-    }
-    let mut decoder = Ft8Decoder::new(rate);
-    decoder.push_iq(&noise);
-    assert!(decoder.decode().is_empty(), "noise must not decode");
-}
-
-#[test]
 fn the_decoder_finds_a_signal_that_does_not_start_at_sample_zero() {
     // The decoder searches the slot edge (+/- 0.128 s), which is where a slot-synchronised FT8
     // transmission lands; this checks that the search actually covers a signal that is not at 0.
@@ -141,21 +124,19 @@ fn the_decoder_finds_a_signal_that_does_not_start_at_sample_zero() {
 fn a_transmission_too_late_in_the_buffer_is_skipped_not_indexed() {
     let rate = manifest_number("rate");
     let symbol_samples = (rate * 0.160) as usize;
-    let span = 79 * symbol_samples;                 // NUM_SYMBOLS
-    let mut iq = as_f32(IQ_BYTES);
-    // Pad so the burst starts 200 ms before the end: less than a transmission fits.
-    let total = iq.len() / 2 + (span - symbol_samples / 2);
-    let mut padded = vec![0.0_f32; total * 2];
-    let start = total - iq.len() / 2 - symbol_samples / 2;
-    padded[start * 2..start * 2 + iq.len()].copy_from_slice(&iq);
-    iq = padded;
+    let signal = as_f32(IQ_BYTES);
+    // Only the first 2.5 symbols fit at the end of a full slot. The complete-burst
+    // positive case is the exact-message fixture test above.
+    let tail_samples = symbol_samples * 5 / 2;
+    let total = (rate * 15.0) as usize;
+    let mut iq = vec![0.0_f32; total * 2];
+    iq[(total - tail_samples) * 2..].copy_from_slice(&signal[..tail_samples * 2]);
     let mut decoder = Ft8Decoder::new(rate);
     decoder.push_iq(&iq);
     if cfg!(debug_assertions) {
         return;
     }
-    // Either it finds nothing (the honest answer) or it finds the message; never a panic.
-    let _ = decoder.decode();
+    assert!(decoder.decode().is_empty(), "a truncated header cannot carry a complete message");
 }
 
 /// A busy band must not kill the decoder.

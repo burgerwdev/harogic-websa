@@ -20,6 +20,11 @@ fi
 health_url
 if [[ "$QUIET" != 1 ]]; then
   echo "Rust websad: $INSTANCE (PID $PID, fixture=$FAKE)"
+  if [[ "$(stat -Lc '%d:%i' "$EXE" 2>/dev/null)" == "$EXE_ID" ]]; then
+    echo 'Binary: current (running executable matches disk)'
+  else
+    echo 'Binary: changed on disk; restart this instance to load the new build'
+  fi
   echo "Log: $LOG"
   echo "Rust HTTP health: $URL"
 fi

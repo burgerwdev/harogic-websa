@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -69,6 +70,28 @@ def test_manifest_is_in_sync():
     _files, manifest = build()
     committed = json.loads((FIXTURES / 'manifest.json').read_text())
     assert committed == json.loads(json.dumps(manifest, sort_keys=True))
+
+
+@pytest.mark.parametrize('invalid', [np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize('damaged', ['committed', 'produced', 'both'])
+def test_drift_check_rejects_nonfinite_samples_even_when_both_sides_match(invalid, damaged):
+    manifest = json.loads((FIXTURES / 'manifest.json').read_text())
+    name = 'demod_usb.bin'
+    samples = np.frombuffer((FIXTURES / name).read_bytes(), dtype='<f4')
+    committed, produced = samples.copy(), samples.copy()
+    if damaged in ('committed', 'both'):
+        committed[0] = invalid
+    if damaged in ('produced', 'both'):
+        produced[0] = invalid
+    assert drifted(name, committed.tobytes(), produced.tobytes(), manifest) is not None
+
+
+def test_drift_check_rejects_large_finite_changes_without_subtraction_overflow():
+    manifest = json.loads((FIXTURES / 'manifest.json').read_text())
+    positive = np.array([np.finfo(np.float32).max], dtype='<f4')
+    negative = -positive
+    with np.errstate(over='raise'):
+        assert drifted('demod_usb.bin', positive.tobytes(), negative.tobytes(), manifest) is not None
 
 
 def test_the_fixture_does_not_clip_and_the_wanted_tone_survives_the_mixer():

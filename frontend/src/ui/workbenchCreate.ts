@@ -67,17 +67,16 @@ export function mountWorkbenchCreate(session: WorkbenchSession, root: HTMLElemen
   dialog.addEventListener('submit', event => {
     event.preventDefault(); if (!validate()) return;
     const config = candidate(), listen = !field<HTMLElement>('[data-create-listen]').hidden && field<HTMLInputElement>('[name=listen]').checked;
-    const previous = new Set(session.snapshot.receivers.map(r => r.receiver_uid));
     busy = true;
     dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { setDomProperty(el, 'disabled', true); });
     field<HTMLButtonElement>('[type=submit]').textContent = l('Creating…', '正在创建…');
-    void session.send({ type: 'create', request_id: session.requestId(), config }).then(reply => {
+    void session.create(config).then(reply => {
       busy = false; if (disposed) return;
       dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button').forEach(el => { setDomProperty(el, 'disabled', false); });
       validate();
       if (reply.fault) { field<HTMLElement>('[data-create-error]').textContent = reply.fault.message; return; }
-      const added = reply.snapshot.receivers.find(r => !previous.has(r.receiver_uid));
-      if (added) { if (listen) session.monitor(added.receiver_uid, { enabled: true }); created(added.receiver_uid); }
+      const uid = reply.receiver_uid;
+      if (uid) { if (listen) session.monitor(uid, { enabled: true }); created(uid); }
       dialog.close();
     });
   });

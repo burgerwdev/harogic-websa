@@ -149,6 +149,22 @@ it('requires an explicit file deletion, permits cancellation, and retains files 
   expect(library().querySelector('.mc-files-empty')!.textContent).toContain('Your recordings appear here');
 });
 
+it('rejects a held deletion confirmation when the service changes before its click', async () => {
+  const id = await completed('fixture-c1', 'audio', 'held-delete');
+  click(overview(), '.mc-workspace-actions [data-action=recording-files]');
+  click(library(), '[data-file-action=delete]');
+  const confirm = library().querySelector<HTMLButtonElement>('[data-file-action=confirm-delete]')!;
+  confirm.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+  session.snapshot = { ...structuredClone(session.snapshot), service_id: 'replacement-service' };
+  session.notify();
+  expect(confirm.isConnected).toBe(true);
+  const dispatch = vi.spyOn(adapter, 'dispatch');
+  confirm.click(); await settle();
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(session.snapshot.recordings.map(task => task.task_id)).toContain(id);
+  expect(library().querySelector('[data-file-action=confirm-delete]')).toBeNull();
+});
+
 it('selects finished files, shows a mixed selection, and confirms a whole batch without deleting an active recording', async () => {
   const audio = await completed('fixture-c1', 'audio', 'audio');
   const iq = await completed('fixture-c3', 'iq', 'iq');

@@ -1,12 +1,12 @@
 [project]
 name = "harogic-websa-tools"
-version = "1.12.9"
+version = "1.12.10"
 description = "Harogic WebSA SDK bench, fixture generators and numerical reference tools (Rust service version source)"
 requires-python = ">=3.10"
 dependencies = ["aiohttp>=3.9", "numpy>=1.24"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff"]
+dev = ["pytest>=8.0", "ruff", "jsonschema>=4.23,<5"]
 hardware = ["pyserial>=3.5"]
 
 [tool.ruff]
@@ -19,4 +19,3 @@ select = ["E", "F", "W", "UP", "B", "SIM", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"

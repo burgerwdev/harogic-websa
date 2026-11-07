@@ -1,5 +1,5 @@
 import { send } from '../core/wsSend';
-import { currentSdrChannel } from './sdrChannels';
+import { advanceQueuedControl, channelControlContext, currentSdrChannel, type SdrChannelControl } from './sdrChannels';
 import * as S from '../core/store';
 import { t } from '../core/i18n';
 import { requestRender } from '../render/redraw';
@@ -7,8 +7,9 @@ import { renderSdrState, sdrListenHz, sdrPrimaryEnabled } from './sdrState';
 import { cancelReceiverFocus } from './spectrumViewport';
 
 let serial = 0;
-let inFlight: { id: string; hz: number; timer: number; followViewport: boolean } | null = null;
-let queued: { hz: number; followViewport: boolean } | null = null;
+type TuneTarget = { hz: number; followViewport: boolean; context: Record<string, unknown> };
+let inFlight: (TuneTarget & { id: string; timer: number }) | null = null;
+let queued: TuneTarget | null = null;
 let version = -1;
 let timeoutError: { id: string; text: string; version: number } | null = null;
 
@@ -26,12 +27,13 @@ export function cancelSdrTuneRequest(): void {
   sdrListenHz.reset();
 }
 
-function submit(hz: number, followViewport: boolean): void {
+function submit(target: TuneTarget): void {
+  const { hz, followViewport, context } = target;
   cancelReceiverFocus();
   const id = `sdr-tune-${++serial}`;
   sdrListenHz.set(hz);
   sdrListenHz.touch(hz);
-  inFlight = { id, hz, followViewport, timer: window.setTimeout(() => {
+  inFlight = { id, hz, followViewport, context, timer: window.setTimeout(() => {
     if (inFlight?.id !== id) return;
     cancelSdrTuneRequest();
     const text = t('sdr_tune_timeout');
@@ -40,7 +42,7 @@ function submit(hz: number, followViewport: boolean): void {
     renderSdrState();
     requestRender();
   }, 3000) };
-  send({ cmd: 'SET_SDR_CHANNEL', channel: currentSdrChannel(), freq: hz, enabled: true, request_id: id });
+  send({ cmd: 'SET_SDR_CHANNEL', ...context, freq: hz, enabled: true, request_id: id });
 }
 
 /** One request in flight; repeated input replaces the single unsent target. */
@@ -48,12 +50,13 @@ export function requestSdrTune(hz: number, options: { followViewport?: boolean; 
   if (!Number.isFinite(hz) || hz <= 0) return;
   clearTimeoutError();
   const followViewport = options.followViewport !== false;
+  const target = { hz, followViewport, context: { channel: currentSdrChannel(), ...channelControlContext() } };
   if (inFlight) {
     cancelReceiverFocus();
-    queued = { hz, followViewport };
+    queued = target;
     sdrListenHz.set(hz);
     sdrListenHz.touch(hz);
-  } else if (options.force || !sdrPrimaryEnabled.get() || Math.abs(hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(hz, followViewport);
+  } else if (options.force || !sdrPrimaryEnabled.get() || Math.abs(hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(target);
   renderSdrState();
   requestRender();
 }
@@ -76,7 +79,7 @@ export function stopSdrTuneRepeat(): void {
 }
 
 export function confirmSdrTuneReport(hz: number, responseTo: unknown, requestId: unknown,
-  configVersion: unknown, options: { acceptSnapshot?: boolean; contextChanged?: boolean; receiverEnabled?: boolean } = {}): boolean {
+  configVersion: unknown, options: { acceptSnapshot?: boolean; contextChanged?: boolean; receiverEnabled?: boolean; control?: SdrChannelControl } = {}): boolean {
   const own = typeof requestId === 'string' && requestId.startsWith('sdr-tune-');
   const nextVersion = typeof configVersion === 'number' && Number.isFinite(configVersion) ? configVersion : -1;
   const matching = inFlight !== null && responseTo === 'SET_SDR_CHANNEL' && requestId === inFlight.id;
@@ -93,13 +96,14 @@ export function confirmSdrTuneReport(hz: number, responseTo: unknown, requestId:
     }
   }
   if (matching && inFlight) {
+    if (queued) advanceQueuedControl(queued.context, inFlight.context, options.control);
     window.clearTimeout(inFlight.timer);
     inFlight = null;
     const next = queued;
     queued = null;
     sdrListenHz.reset();
     if (next !== null && Math.abs(next.hz - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) {
-      submit(next.hz, next.followViewport);
+      submit(next);
     }
     if (!accepted) {
       renderSdrState();

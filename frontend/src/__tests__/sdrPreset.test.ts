@@ -20,7 +20,7 @@ import { send } from '../core/wsSend';
 import { updateStatus } from '../core/ws';
 import { presetAll, syncPresetStatus } from '../ui/controls';
 import { resetGraphMode } from '../ui/graphMode';
-import { resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { hasStoredSdrPrefs, resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { resetTraceFamilyModes, SDR_DEFAULT_AVG, setTraceAverage, setTraceMode } from '../ui/traceOps';
 import { getView, isZoomed, setCapture, setView } from '../ui/spectrumViewport';
 import { commitRefLevel } from '../ui/panels/refAmp';
@@ -53,6 +53,27 @@ afterEach(() => {
 });
 
 describe('Preset clears the persisted SDR preferences', () => {
+  it('reports no saved setup when the browser storage property itself is blocked', () => {
+    const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    try { expect(hasStoredSdrPrefs()).toBe(false); }
+    finally { storage.mockRestore(); }
+  });
+
+  it('resets the live setup when the browser storage property itself is blocked', () => {
+    sdrAmSync.set(true);
+    sdrFilterByMode.set({ am: 4500 });
+    const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    try {
+      expect(() => resetSdrState()).not.toThrow();
+      expect(sdrAmSync.get()).toBe(false);
+      expect(sdrFilterByMode.get()).toEqual({});
+    } finally { storage.mockRestore(); }
+  });
+
   it('resets recording defaults, waterfall mapping and peak count only after a matching success', () => {
     localStorage.setItem('websa-audio-recording-format', 'flac');
     saveWorkbenchPreferences({ masterGain: 0.25, monitorMode: 'follow' });

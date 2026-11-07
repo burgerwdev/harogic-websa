@@ -2,6 +2,7 @@ import type { RecordingTask } from '../core/multichannel';
 import { getLang, onLangChange } from '../core/i18n';
 import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { recordingRange } from './recordingView';
+import { readRecordingResponse } from './recordingResponse';
 import { downloadResult } from './receiverExport';
 import { mountRecordingDelete } from './recordingDelete';
 import type { WorkbenchSession } from './workbenchSession';
@@ -43,21 +44,6 @@ export function recordedAudioWav(buffer: ArrayBuffer): Uint8Array<ArrayBuffer> {
     || manifest.format !== 'websa-audio-range-v1' || manifest.audio?.source !== 'published_audio'
     || manifest.audio.rate_hz !== rate || manifest.audio.channels !== channels || manifest.audio.frames !== String(frames)) throw new Error('Inconsistent audio range');
   return wav;
-}
-
-async function boundedAudioResponse(response: Response): Promise<ArrayBuffer> {
-  const length = response.headers.get('Content-Length');
-  if (!length || !/^\d+$/.test(length) || Number(length) > MAX_ARCHIVE || Number(length) < 1024 || !response.body) throw new Error('Invalid audio range length');
-  const data = new Uint8Array(Number(length)), reader = response.body.getReader(); let at = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read(); if (done) break;
-      if (at + value.length > data.length) throw new Error('Audio range exceeded declared length');
-      data.set(value, at); at += value.length;
-    }
-    if (at !== data.length) throw new Error('Incomplete audio range');
-    return data.buffer;
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
 /** One original-PCM player per workbench, separate from the live monitoring bus. */
@@ -114,7 +100,7 @@ export function mountRecordingAudioView(session?: WorkbenchSession): { open(task
             query.set('segment', s.segment_id!); load.disabled = true; cancel.hidden = false; labels();
             const response = await fetch(`/api/sdr/recordings/${encodeURIComponent(task.task_id)}/audio/range?${query}`, { signal: request.signal });
             if (!response.ok) { const error = await response.json(); throw new Error(error.error ?? `HTTP ${response.status}`); }
-            const data = await boundedAudioResponse(response);
+            const data = await readRecordingResponse(response, 1024, MAX_ARCHIVE);
             if (disposed || controller !== request || request.signal.aborted) return;
             const wav = recordedAudioWav(data);
             archive = new Blob([data], { type: 'application/x-tar' }); url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })); audio.src = url;

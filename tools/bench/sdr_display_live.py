@@ -269,15 +269,35 @@ def main():
             )
         )
     finally:
+        original_error = sys.exc_info()[1]
+        cleanup_errors = []
+
+        def cleanup(name, action):
+            try:
+                action()
+            except Exception as exc:
+                cleanup_errors.append(f'{name}: {exc}')
+
         if source:
-            source.write(b"output off\r\n")
-            source.flush()
-            time.sleep(0.3)
-            report["output_off_reply"] = source.read(4096).decode(errors="replace")
-            source.close()
-        stop(process)
-        log.close()
-        (args.output / "live.json").write_text(json.dumps(report, indent=2) + "\n")
+            def output_off():
+                source.write(b"output off\r\n")
+                source.flush()
+                time.sleep(0.3)
+                report["output_off_reply"] = source.read(4096).decode(errors="replace")
+
+            cleanup('output off', output_off)
+            cleanup('source close', source.close)
+        cleanup('service stop', lambda: stop(process))
+        cleanup('log close', log.close)
+        if original_error is not None:
+            report['error'] = str(original_error)
+        report['cleanup_errors'] = cleanup_errors
+        cleanup('report write', lambda: (args.output / "live.json").write_text(
+            json.dumps(report, indent=2) + "\n"))
+        if cleanup_errors:
+            print('; '.join(cleanup_errors), file=sys.stderr)
+            if original_error is None:
+                raise RuntimeError('; '.join(cleanup_errors))
 
 
 if __name__ == "__main__":

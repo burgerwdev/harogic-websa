@@ -37,7 +37,7 @@ def main():
     if out==base:
         raise ValueError('use an independent output directory')
     out.mkdir(parents=True,exist_ok=True)
-    if (out/'manifest.json').exists():
+    if any(out.iterdir()):
         raise ValueError('use a fresh output directory to preserve listening annotations')
     native=json.loads((base/'native/native.json').read_text())
     files={k:base/'native'/(k+'.f32') for k in ['none','dfn10','dfn13','dfn20','nr_input']}

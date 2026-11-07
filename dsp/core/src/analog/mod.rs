@@ -497,6 +497,13 @@ impl AnalogDemodulator for AnalogDemod {
         self.spec.id
     }
 
+    fn output_length_hint(&self, complex_samples: usize) -> Option<usize> {
+        // The FM discriminator needs a preceding IQ sample. Every subsequent
+        // stage preserves length except the resampler, which owns its phase.
+        let skipped = usize::from(self.spec.detector == Detector::Fm && self.prev_z.is_none());
+        Some(self.resampler.output_length_hint(complex_samples.saturating_sub(skipped)))
+    }
+
     fn process_into(&mut self, iq: &[f32], out: &mut Vec<f32>) {
         out.clear();
         let n = iq.len() & !1;
@@ -589,6 +596,10 @@ impl AnalogDemodulator for AnalogDemod {
             Some(stereo) => stereo.take_side(),
             None => Vec::new(),
         }
+    }
+
+    fn pending_side_samples(&self) -> usize {
+        self.stereo.as_ref().map_or(0, |stereo| stereo.pending_side_samples())
     }
 
     fn stereo_detected(&self) -> bool {

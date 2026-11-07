@@ -234,8 +234,13 @@ def vendor_depth(center):
                 'adm_carrier_dbm': round(float(param.CarrierPower), 2),
                 'raw_estimator': am_stats(raw[0::2] + 1j * raw[1::2], fs)}
     finally:
-        P.T.dll.ADM_Close(byref(adm))
-        P.T.dll.Device_Close(byref(dev))
+        try:
+            P.T.dll.ADM_Close(byref(adm))
+        finally:
+            try:
+                P.T.dll.DSP_Close(byref(dsp))
+            finally:
+                P.T.dll.Device_Close(byref(dev))
 
 
 def run_round(hardware, seconds, capture_s):

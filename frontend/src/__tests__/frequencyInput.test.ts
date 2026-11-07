@@ -24,6 +24,25 @@ describe('shared frequency input', () => {
     expect(readFrequencyHz(document.body)).toBe(9_830_200);
     stop();
   });
+  it.each([['Hz', '100000000'], ['MHz', '100']])('honors explicit whole-Hz input over a rounded original in %s', (unit, value) => {
+    document.body.innerHTML = frequencyInput(100_000_000.25, 'frequency-unit', unit);
+    const stop = wireFrequencyInputs(document.body), input = document.querySelector<HTMLInputElement>('[name=frequency]')!;
+    expect(readFrequencyHz(document.body)).toBe(100_000_000.25);
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    expect(readFrequencyHz(document.body)).toBe(100_000_000);
+    stop();
+  });
+  it('preserves an unmodified fractional original through every unit', () => {
+    document.body.innerHTML = frequencyInput(100_000_000.25);
+    const stop = wireFrequencyInputs(document.body);
+    for (const unit of ['Hz', 'kHz', 'GHz', 'MHz']) {
+      document.querySelector<HTMLButtonElement>(`[data-frequency-unit="${unit}"]`)!.click();
+      expect(readFrequencyHz(document.body)).toBe(100_000_000.25);
+    }
+    stop();
+  });
   it('converts the current draft through unit toggles without applying it', () => {
     document.body.innerHTML = frequencyInput(101700001);
     const stop = wireFrequencyInputs(document.body), input = document.querySelector<HTMLInputElement>('[name=frequency]')!;
@@ -33,6 +52,30 @@ describe('shared frequency input', () => {
       expect(input.value).toBe(expected);
       expect(document.querySelector('[aria-pressed=true]')!.textContent).toBe(unit);
       expect(document.querySelector<HTMLInputElement>('[name=frequency-unit]')!.value).toBe(unit);
+    }
+    stop();
+  });
+  it.each([
+    ['Hz', '100011234.25'], ['kHz', '100011.23425'],
+    ['MHz', '100.01123425'], ['GHz', '0.10001123425'],
+  ])('preserves explicit sub-Hz input on blur in %s', (unit, value) => {
+    document.body.innerHTML = frequencyInput(100_010_000, 'frequency-unit', unit);
+    const stop = wireFrequencyInputs(document.body), input = document.querySelector<HTMLInputElement>('[name=frequency]')!;
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    expect(input.value).toBe(value);
+    expect(readFrequencyHz(document.body)).toBe(100_011_234.25);
+    stop();
+  });
+  it('keeps a fractional-Hz draft through unit changes before submission', () => {
+    document.body.innerHTML = frequencyInput(100_010_000);
+    const stop = wireFrequencyInputs(document.body), input = document.querySelector<HTMLInputElement>('[name=frequency]')!;
+    input.value = '100.01123425';
+    for (const [unit, value] of [['Hz', '100011234.25'], ['kHz', '100011.23425'], ['GHz', '0.10001123425'], ['MHz', '100.01123425']]) {
+      document.querySelector<HTMLButtonElement>(`[data-frequency-unit="${unit}"]`)!.click();
+      expect(input.value).toBe(value);
+      expect(readFrequencyHz(document.body)).toBe(100_011_234.25);
     }
     stop();
   });

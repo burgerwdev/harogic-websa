@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:websa:multichannel:draft-v1",
   "title": "Multichannel draft-v1 portable contract",
-  "description": "P2 fixture/experiments, P3/P4 native receiver/IQ/processed output and P5 backend IQ/result/published-audio recording contract; see MULTICHANNEL_DRAFT.md.",
+  "description": "P2 fixture/experiments, P3/P4 native receiver/IQ/processed output and P5 backend IQ/result/published-audio recording contract; see docs/en/reference/RECEIVERS.md.",
   "oneOf": [
     {
       "$ref": "#/$defs/command"
@@ -32,8 +32,15 @@
   "$defs": {
     "u64": {
       "type": "string",
-      "pattern": "^(0|[1-9][0-9]*)$",
-      "maxLength": 20
+      "pattern": "^(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]{1}|1844674407370955161[0-4]|18446744073709551615)(?![\\s\\S])",
+      "maxLength": 20,
+      "$comment": "Canonical decimal strings from 0 through 18446744073709551615. The end assertion also rejects a trailing newline; ordinary $ may accept one."
+    },
+    "positive_u64": {
+      "$ref": "#/$defs/u64",
+      "not": {
+        "const": "0"
+      }
     },
     "stream": {
       "type": "object",
@@ -123,7 +130,13 @@
           "type": "boolean"
         },
         "nr_algorithm": {
-          "enum": ["wiener", "dfn", "gtcrn", "ul-unas", "fastenhancer"]
+          "enum": [
+            "wiener",
+            "dfn",
+            "gtcrn",
+            "ul-unas",
+            "fastenhancer"
+          ]
         },
         "nr_strength": {
           "type": "number",
@@ -134,6 +147,86 @@
           "type": "number",
           "minimum": 0,
           "maximum": 100
+        },
+        "am_sync": {
+          "type": "boolean"
+        },
+        "stereo": {
+          "type": "boolean"
+        },
+        "audio_rate": {
+          "type": "integer",
+          "minimum": 8000,
+          "maximum": 192000
+        },
+        "pitch": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 20000
+        },
+        "deemph_us": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1000
+        },
+        "sstv_mode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 17
+        },
+        "radiofax_acquisition": {
+          "enum": [
+            "auto",
+            "manual"
+          ]
+        },
+        "radiofax_ioc": {
+          "enum": [
+            "auto",
+            "288",
+            "576"
+          ]
+        },
+        "radiofax_lpm": {
+          "enum": [
+            "auto",
+            "60",
+            "90",
+            "120",
+            "180",
+            "240"
+          ]
+        },
+        "radiofax_modulation": {
+          "enum": [
+            "fm",
+            "am"
+          ]
+        },
+        "radiofax_polarity": {
+          "enum": [
+            "normal",
+            "inverted"
+          ]
+        },
+        "radiofax_clock_recovery": {
+          "enum": [
+            "auto",
+            "off"
+          ]
+        },
+        "radiofax_phase_pixels": {
+          "type": "number",
+          "minimum": -4096,
+          "maximum": 4096
+        },
+        "radiofax_clock_ppm": {
+          "type": "number",
+          "minimum": -5000,
+          "maximum": 5000
         }
       },
       "required": [
@@ -142,7 +235,85 @@
         "mode",
         "minimum_rate_hz"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "cw"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pitch": {
+                "minimum": 100,
+                "maximum": 1600
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "radiofax_acquisition": {
+                "const": "manual"
+              }
+            },
+            "required": [
+              "radiofax_acquisition"
+            ]
+          },
+          "then": {
+            "properties": {
+              "radiofax_ioc": {
+                "enum": [
+                  "288",
+                  "576"
+                ]
+              },
+              "radiofax_lpm": {
+                "enum": [
+                  "60",
+                  "90",
+                  "120",
+                  "180",
+                  "240"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "radiofax_acquisition": {
+                "const": "auto"
+              }
+            },
+            "required": [
+              "radiofax_acquisition"
+            ]
+          },
+          "then": {
+            "properties": {
+              "radiofax_lpm": {
+                "enum": [
+                  "auto",
+                  "60",
+                  "90",
+                  "120",
+                  "240"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "fault": {
       "type": "object",
@@ -153,7 +324,8 @@
             "consumer",
             "recording",
             "receiver",
-            "capture"
+            "capture",
+            "receiver_iq"
           ]
         },
         "code": {
@@ -165,19 +337,49 @@
         "receiver_uid": {
           "type": "string"
         },
-        "task_id": { "type": "string" },
-        "request_id": { "type": "string" },
+        "task_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
         "retryable": {
           "type": "boolean"
+        },
+        "detail": {
+          "$ref": "#/$defs/fine_fault"
         }
       },
       "required": [
         "scope",
         "code",
-        "message",
-        "retryable"
+        "message"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "receiver_iq"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "detail"
+            ]
+          },
+          "else": {
+            "required": [
+              "retryable"
+            ]
+          }
+        }
+      ]
     },
     "config": {
       "type": "object",
@@ -211,7 +413,14 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/processor"
-          }
+          },
+          "maxItems": 1
+        },
+        "continuity": {
+          "enum": [
+            "continuous",
+            "strict"
+          ]
         }
       },
       "required": [
@@ -223,7 +432,35 @@
         "baseband",
         "processors"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "iq"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "then": {
+            "properties": {
+              "processors": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "processors": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "clock": {
       "type": "object",
@@ -238,8 +475,7 @@
           "$ref": "#/$defs/u64"
         },
         "fraction_den": {
-          "type": "string",
-          "pattern": "^[1-9][0-9]*$"
+          "$ref": "#/$defs/positive_u64"
         },
         "input_rate_hz": {
           "type": "number",
@@ -278,7 +514,11 @@
         "type": {
           "const": "configure"
         },
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "expected_revision": {
           "$ref": "#/$defs/u64"
         },
@@ -290,6 +530,9 @@
         },
         "service_id": {
           "type": "string"
+        },
+        "recover": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -307,7 +550,11 @@
         "type": {
           "const": "scene"
         },
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "expected_revision": {
           "$ref": "#/$defs/u64"
         },
@@ -333,6 +580,9 @@
         "capture_center_hz": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "service_id": {
+          "type": "string"
         }
       },
       "required": [
@@ -395,6 +645,62 @@
           "anyOf": [
             {
               "$ref": "#/$defs/fault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audio_signature": {
+          "type": "string"
+        },
+        "control_receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/control_receipt"
+          },
+          "maxItems": 128
+        },
+        "processing_fault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_fault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processing_runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_runtime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processing_state": {
+          "$ref": "#/$defs/processing_state"
+        },
+        "processing_statistics": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/processing_statistics"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reception": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/reception"
             },
             {
               "type": "null"
@@ -528,7 +834,7 @@
           "$ref": "#/$defs/u64"
         },
         "fraction_den": {
-          "$ref": "#/$defs/u64"
+          "$ref": "#/$defs/positive_u64"
         },
         "config_revision": {
           "$ref": "#/$defs/u64"
@@ -746,9 +1052,20 @@
     "recording": {
       "type": "object",
       "properties": {
-        "name": { "type": "string", "maxLength": 128 },
-        "audio_format": { "enum": ["wav", "flac", "opus"] },
-        "task_id": { "type": "string" },
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "audio_format": {
+          "enum": [
+            "wav",
+            "flac",
+            "opus"
+          ]
+        },
+        "task_id": {
+          "type": "string"
+        },
         "receiver_uid": {
           "type": "string"
         },
@@ -784,7 +1101,9 @@
         "service_id": {
           "type": "string"
         },
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string"
+        },
         "created_at_ms": {
           "$ref": "#/$defs/u64"
         },
@@ -855,7 +1174,9 @@
             "monitor_mixing": {
               "type": "boolean"
             },
-            "receiver_presets": { "type": "boolean" },
+            "receiver_presets": {
+              "type": "boolean"
+            },
             "mode_descriptors": {
               "type": "array",
               "items": {
@@ -881,6 +1202,90 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "aliases": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "implemented": {
+                    "type": "boolean"
+                  },
+                  "unavailableReason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "audioEnhancement": {
+                    "type": "boolean"
+                  },
+                  "common": {
+                    "type": "boolean"
+                  },
+                  "audioCompanion": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "sideband": {
+                    "enum": [
+                      "lower",
+                      "symmetric",
+                      "upper"
+                    ]
+                  },
+                  "inputRateHz": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "minimumRateHz": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "defaultBandwidthHz": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "minBandwidthHz": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "maxBandwidthHz": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "bandwidthPresetsHz": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  },
+                  "bandwidthEditable": {
+                    "type": "boolean"
+                  },
+                  "startupTimeoutMs": {
+                    "type": "integer",
+                    "minimum": 1
                   }
                 },
                 "required": [
@@ -889,7 +1294,8 @@
                   "provider",
                   "available",
                   "outputs"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
             "recording_kinds": {
@@ -911,10 +1317,29 @@
             "iq_archive_read": {
               "type": "boolean"
             },
-            "iq_file_demodulate": { "type": "boolean" },
-            "iq_file_demodulate_modes": { "type": "array", "uniqueItems": true, "items": { "enum": ["am", "usb", "lsb", "nfm"] } },
-            "iq_file_demodulate_max_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
-            "iq_file_demodulate_offset": { "type": "boolean" },
+            "iq_file_demodulate": {
+              "type": "boolean"
+            },
+            "iq_file_demodulate_modes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "am",
+                  "usb",
+                  "lsb",
+                  "nfm"
+                ]
+              }
+            },
+            "iq_file_demodulate_max_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60
+            },
+            "iq_file_demodulate_offset": {
+              "type": "boolean"
+            },
             "iq_archive_collection": {
               "type": "boolean"
             },
@@ -940,16 +1365,48 @@
             "audio_archive_export": {
               "type": "boolean"
             },
-            "audio_archive_read": { "type": "boolean" },
-            "audio_range_max_samples": { "$ref": "#/$defs/u64" },
-            "audio_range_max_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+            "audio_archive_read": {
+              "type": "boolean"
+            },
+            "audio_range_max_samples": {
+              "$ref": "#/$defs/u64"
+            },
+            "audio_range_max_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60
+            },
             "audio_flac_export": {
               "type": "boolean"
             },
-            "audio_opus_export": { "type": "boolean" },
+            "audio_opus_export": {
+              "type": "boolean"
+            },
             "max_recording_tasks": {
               "type": "integer",
               "minimum": 1
+            },
+            "action_deduplication": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "action_validity_ms": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "control_capacity": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "control_receipt_history": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "processing_admission": {
+              "type": "boolean"
+            },
+            "resource_policy": {
+              "const": "observed_runtime"
             }
           },
           "required": [
@@ -1083,6 +1540,28 @@
               "additionalProperties": false
             }
           ]
+        },
+        "action_token": {
+          "$ref": "#/$defs/u64"
+        },
+        "host_resources": {
+          "$ref": "#/$defs/host_resources"
+        },
+        "model_preparation": {
+          "$ref": "#/$defs/model_preparation"
+        },
+        "processing_resources": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_resources"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_watermarks": {
+          "$ref": "#/$defs/source_watermarks"
         }
       },
       "required": [
@@ -1103,7 +1582,11 @@
         "type": {
           "const": "create"
         },
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "config": {
           "$ref": "#/$defs/config"
         },
@@ -1124,7 +1607,11 @@
         "type": {
           "const": "retire"
         },
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "receiver_uid": {
           "type": "string"
         },
@@ -1145,12 +1632,19 @@
         "type": {
           "const": "output"
         },
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "receiver_uid": {
           "type": "string"
         },
         "enabled": {
           "type": "boolean"
+        },
+        "service_id": {
+          "type": "string"
         }
       },
       "required": [
@@ -1164,11 +1658,21 @@
     "command_record_start": {
       "type": "object",
       "properties": {
-        "audio_format": { "enum": ["wav", "flac", "opus"] },
+        "audio_format": {
+          "enum": [
+            "wav",
+            "flac",
+            "opus"
+          ]
+        },
         "type": {
           "const": "record_start"
         },
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "receiver_uid": {
           "type": "string"
         },
@@ -1183,6 +1687,9 @@
           },
           "minItems": 1,
           "uniqueItems": true
+        },
+        "service_id": {
+          "type": "string"
         }
       },
       "required": [
@@ -1199,31 +1706,79 @@
         "type": {
           "const": "record_stop"
         },
-        "request_id": { "type": "string" },
-        "task_id": { "type": "string" }
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "service_id": {
+          "type": "string"
+        }
       },
-      "required": ["type", "request_id", "task_id"],
+      "required": [
+        "type",
+        "request_id",
+        "task_id"
+      ],
       "additionalProperties": false
     },
     "command_record_rename": {
       "type": "object",
       "properties": {
-        "type": { "const": "record_rename" },
-        "request_id": { "type": "string" },
-        "task_id": { "type": "string" },
-        "name": { "type": "string", "minLength": 1, "maxLength": 128 }
+        "type": {
+          "const": "record_rename"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "service_id": {
+          "type": "string"
+        }
       },
-      "required": ["type", "request_id", "task_id", "name"],
+      "required": [
+        "type",
+        "request_id",
+        "task_id",
+        "name"
+      ],
       "additionalProperties": false
     },
     "command_record_delete": {
       "type": "object",
       "properties": {
-        "type": { "const": "record_delete" },
-        "request_id": { "type": "string" },
-        "task_id": { "type": "string" }
+        "type": {
+          "const": "record_delete"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "service_id": {
+          "type": "string"
+        }
       },
-      "required": ["type", "request_id", "task_id"],
+      "required": [
+        "type",
+        "request_id",
+        "task_id"
+      ],
       "additionalProperties": false
     },
     "command": {
@@ -1254,6 +1809,9 @@
         },
         {
           "$ref": "#/$defs/command_record_delete"
+        },
+        {
+          "$ref": "#/$defs/command_action"
         }
       ]
     },
@@ -1307,7 +1865,9 @@
     "reply": {
       "type": "object",
       "properties": {
-        "request_id": { "type": "string" },
+        "request_id": {
+          "type": "string"
+        },
         "snapshot": {
           "$ref": "#/$defs/snapshot"
         },
@@ -1503,8 +2063,7 @@
           "$ref": "#/$defs/u64"
         },
         "input_fraction_den": {
-          "type": "string",
-          "pattern": "^[1-9][0-9]*$"
+          "$ref": "#/$defs/positive_u64"
         },
         "delay_seconds": {
           "type": "number",
@@ -1613,7 +2172,7 @@
               "$ref": "#/$defs/u64"
             },
             "input_fraction_den": {
-              "$ref": "#/$defs/u64"
+              "$ref": "#/$defs/positive_u64"
             },
             "seq": {
               "type": "integer",
@@ -1736,7 +2295,7 @@
               "$ref": "#/$defs/u64"
             },
             "input_fraction_den": {
-              "$ref": "#/$defs/u64"
+              "$ref": "#/$defs/positive_u64"
             },
             "input_rate_hz": {
               "type": "number",
@@ -1784,11 +2343,21 @@
         "selection": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["record_skip_frames", "frames", "range_sample_start"],
+          "required": [
+            "record_skip_frames",
+            "frames",
+            "range_sample_start"
+          ],
           "properties": {
-            "record_skip_frames": { "$ref": "#/$defs/u64" },
-            "frames": { "$ref": "#/$defs/u64" },
-            "range_sample_start": { "$ref": "#/$defs/u64" }
+            "record_skip_frames": {
+              "$ref": "#/$defs/u64"
+            },
+            "frames": {
+              "$ref": "#/$defs/u64"
+            },
+            "range_sample_start": {
+              "$ref": "#/$defs/u64"
+            }
           }
         }
       },
@@ -1799,6 +2368,1716 @@
         "original_aud2_header_hex",
         "segment_id",
         "segment_sample_start"
+      ],
+      "additionalProperties": false
+    },
+    "command_action": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "action"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "service_id": {
+          "type": "string"
+        },
+        "receiver_uid": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/u64"
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "action_token": {
+          "$ref": "#/$defs/u64"
+        },
+        "action": {
+          "enum": [
+            "radiofax_new_page",
+            "radiofax_reset_correction"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "request_id",
+        "receiver_uid",
+        "expected_revision",
+        "action_id",
+        "action_token",
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "processing_state": {
+      "enum": [
+        "disabled",
+        "waiting",
+        "preparing",
+        "active",
+        "backlogged",
+        "retiring",
+        "failed"
+      ]
+    },
+    "fault_kind": {
+      "enum": [
+        "overload",
+        "source_gap",
+        "device",
+        "internal"
+      ]
+    },
+    "processing_clock": {
+      "type": "object",
+      "properties": {
+        "input_index": {
+          "$ref": "#/$defs/u64"
+        },
+        "input_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "channel_id": {
+          "$ref": "#/$defs/u64"
+        },
+        "epoch": {
+          "$ref": "#/$defs/u64"
+        },
+        "actual_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delay_input_samples": {
+          "type": "number",
+          "minimum": 0
+        },
+        "precision": {
+          "const": "block"
+        }
+      },
+      "required": [
+        "input_index",
+        "input_rate"
+      ],
+      "additionalProperties": false
+    },
+    "processing_fault": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/fault_kind"
+        },
+        "receiver_uid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_success": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_clock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_delivered": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_clock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "first_unavailable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_clock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gap_end": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "channel",
+        "generation",
+        "error",
+        "kind",
+        "receiver_uid",
+        "service_id",
+        "last_success",
+        "last_delivered",
+        "first_unavailable",
+        "gap_end"
+      ],
+      "additionalProperties": false
+    },
+    "external_buffer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "input_held_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "input_executing_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "input_blocks": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "written_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_input_blocks": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_input_block_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "done": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "input_held_bytes",
+            "input_executing_bytes",
+            "input_blocks",
+            "written_bytes",
+            "max_input_blocks",
+            "max_input_block_bytes",
+            "done"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "transport": {
+              "const": "tcp"
+            },
+            "encoding_buffer_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pid": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "encoding_capacity_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upstream_pending_bytes": {
+              "type": "null"
+            },
+            "upstream_pending_precision": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "transport",
+            "encoding_buffer_bytes",
+            "pid",
+            "encoding_capacity_bytes",
+            "upstream_pending_bytes",
+            "upstream_pending_precision"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "observed_receiver": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "nr_requested": {
+          "enum": [
+            "off",
+            "wiener",
+            "dfn",
+            "gtcrn",
+            "ul-unas",
+            "fastenhancer"
+          ]
+        },
+        "nr_effective": {
+          "enum": [
+            null,
+            "off",
+            "wiener",
+            "dfn",
+            "gtcrn",
+            "ul-unas",
+            "fastenhancer"
+          ]
+        },
+        "nr_state": {
+          "enum": [
+            "off",
+            "wiener",
+            "ready",
+            "failed"
+          ]
+        },
+        "nr_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_sessions": {
+          "type": "object",
+          "properties": {
+            "dfn_templates": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "onnx_sessions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "ownership": {
+              "const": "current_thread"
+            }
+          },
+          "required": [
+            "dfn_templates",
+            "onnx_sessions",
+            "ownership"
+          ],
+          "additionalProperties": false
+        },
+        "squelch": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "open": {
+                  "type": "boolean"
+                },
+                "gain": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "open",
+                "gain"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocol_window_samples": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocol_window_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocol_waiting": {
+          "type": "boolean"
+        },
+        "external": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/external_buffer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "nr_requested",
+        "nr_effective",
+        "nr_state",
+        "nr_reason",
+        "model_sessions",
+        "squelch",
+        "protocol_window_samples",
+        "protocol_window_bytes",
+        "protocol_waiting",
+        "external"
+      ],
+      "additionalProperties": false
+    },
+    "processing_runtime": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/processing_state"
+        },
+        "processing_generation": {
+          "$ref": "#/$defs/u64"
+        },
+        "fault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_fault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "oldest_input_wait_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "backlog_notice_after_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observed_receiver": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/observed_receiver"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_held_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_held_media_ns": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "state",
+        "processing_generation",
+        "fault",
+        "oldest_input_wait_ns",
+        "backlog_notice_after_ns",
+        "observed_receiver",
+        "input_held_bytes",
+        "input_held_media_ns"
+      ],
+      "additionalProperties": false
+    },
+    "control_boundary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "precision": {
+              "const": "control"
+            },
+            "source_boundary": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "precision",
+            "source_boundary"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "precision": {
+              "const": "block"
+            },
+            "channel_id": {
+              "$ref": "#/$defs/u64"
+            },
+            "epoch": {
+              "$ref": "#/$defs/u64"
+            },
+            "input_index": {
+              "$ref": "#/$defs/u64"
+            },
+            "fraction_num": {
+              "$ref": "#/$defs/u64"
+            },
+            "fraction_den": {
+              "$ref": "#/$defs/positive_u64"
+            },
+            "input_rate": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "delay_input_samples": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "precision",
+            "channel_id",
+            "epoch",
+            "input_index",
+            "fraction_num",
+            "fraction_den",
+            "input_rate",
+            "delay_input_samples"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "control_receipt": {
+      "type": "object",
+      "properties": {
+        "receiver_uid": {
+          "type": "string"
+        },
+        "service_id": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/u64"
+        },
+        "processing_generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/u64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "action_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "applied",
+            "inactive",
+            "cancelled",
+            "expired",
+            "failed"
+          ]
+        },
+        "boundary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/control_boundary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "receiver_uid",
+        "service_id",
+        "revision",
+        "processing_generation",
+        "request_id",
+        "status",
+        "boundary"
+      ],
+      "additionalProperties": false
+    },
+    "processing_totals": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "succeeded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cancelled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cancelled_after_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "in_flight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "successful_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "wall_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queue_wait_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queue_wait_max_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "successful_media_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "thread_cpu_ns": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "accepted",
+        "started",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "cancelled_after_start",
+        "rejected",
+        "in_flight",
+        "successful_samples",
+        "wall_ns",
+        "queue_wait_ns",
+        "queue_wait_max_ns",
+        "successful_media_seconds",
+        "thread_cpu_ns"
+      ],
+      "additionalProperties": false
+    },
+    "processing_occupancy": {
+      "type": "object",
+      "properties": {
+        "jobs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "oldest_age_ns": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "jobs",
+        "samples",
+        "bytes",
+        "oldest_age_ns"
+      ],
+      "additionalProperties": false
+    },
+    "processing_statistics": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "processing_generation": {
+          "$ref": "#/$defs/u64"
+        },
+        "channel_id": {
+          "$ref": "#/$defs/u64"
+        },
+        "epoch": {
+          "$ref": "#/$defs/u64"
+        },
+        "receiver_uid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "packets": {
+          "$ref": "#/$defs/processing_totals"
+        },
+        "searches": {
+          "$ref": "#/$defs/processing_totals"
+        },
+        "occupancy": {
+          "type": "object",
+          "properties": {
+            "input_queued": {
+              "$ref": "#/$defs/processing_occupancy"
+            },
+            "executing": {
+              "$ref": "#/$defs/processing_occupancy"
+            },
+            "output_pending": {
+              "$ref": "#/$defs/processing_occupancy"
+            },
+            "search_queued": {
+              "$ref": "#/$defs/processing_occupancy"
+            },
+            "search_executing": {
+              "$ref": "#/$defs/processing_occupancy"
+            },
+            "search_return_pending": {
+              "$ref": "#/$defs/processing_occupancy"
+            },
+            "tail": {
+              "$ref": "#/$defs/processing_occupancy"
+            }
+          },
+          "required": [
+            "input_queued",
+            "executing",
+            "output_pending",
+            "search_queued",
+            "search_executing",
+            "search_return_pending",
+            "tail"
+          ],
+          "additionalProperties": false
+        },
+        "held_reference_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "watermarks": {
+          "type": "object",
+          "properties": {
+            "accepted": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/processing_clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "started": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/processing_clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "succeeded": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/processing_clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "published": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/processing_clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "service_consumed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/processing_clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "accepted",
+            "started",
+            "succeeded",
+            "published",
+            "service_consumed"
+          ],
+          "additionalProperties": false
+        },
+        "first_rejected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/processing_clock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fault": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gap": {
+          "type": "object",
+          "properties": {
+            "first_failed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/processing_clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "first_cancelled": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/processing_clock"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "end": {
+              "type": "null"
+            },
+            "end_known": {
+              "const": false
+            }
+          },
+          "required": [
+            "first_failed",
+            "first_cancelled",
+            "end",
+            "end_known"
+          ],
+          "additionalProperties": false
+        },
+        "receiver": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/observed_receiver"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clock_policy": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "processing_generation",
+        "channel_id",
+        "epoch",
+        "receiver_uid",
+        "service_id",
+        "packets",
+        "searches",
+        "occupancy",
+        "held_reference_bytes",
+        "watermarks",
+        "first_rejected",
+        "fault",
+        "gap",
+        "receiver",
+        "clock_policy"
+      ],
+      "additionalProperties": false
+    },
+    "reception_position": {
+      "type": "object",
+      "properties": {
+        "channel_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "input_index": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "required": [
+        "channel_id",
+        "epoch",
+        "input_index"
+      ],
+      "additionalProperties": false
+    },
+    "interruption": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failed_identity": {
+          "type": "string"
+        },
+        "resumed_processing_stream": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/reception_position"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/fault_kind"
+        },
+        "scope": {
+          "enum": [
+            "capture",
+            "baseband",
+            "processing"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/reception_position"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/reception_position"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "missing_input_samples": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/u64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovered_at_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "precision": {
+          "enum": [
+            "unknown_gap",
+            "input_sample_boundary"
+          ]
+        }
+      },
+      "required": [
+        "number",
+        "failed_identity",
+        "resumed_processing_stream",
+        "kind",
+        "scope",
+        "reason",
+        "at_ms",
+        "before",
+        "after",
+        "missing_input_samples",
+        "recovered_at_ms",
+        "precision"
+      ],
+      "additionalProperties": false
+    },
+    "reception": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "enum": [
+            "continuous",
+            "strict"
+          ]
+        },
+        "state": {
+          "enum": [
+            "recovering",
+            "preparing",
+            "receiving",
+            "stopped"
+          ]
+        },
+        "interruptions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retry_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retry_in_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manual_recovery_allowed": {
+          "type": "boolean"
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_interruption": {
+          "$ref": "#/$defs/interruption"
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/interruption"
+          },
+          "maxItems": 7
+        },
+        "startup": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy",
+        "state",
+        "interruptions",
+        "attempts",
+        "retry_limit",
+        "retry_in_ms",
+        "manual_recovery_allowed",
+        "last_error",
+        "last_interruption",
+        "history",
+        "startup"
+      ],
+      "additionalProperties": false
+    },
+    "fine_fault": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "channel_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "error": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/fault_kind"
+        },
+        "first_unavailable_input": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_completed_input": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "channel",
+        "channel_id",
+        "epoch",
+        "error",
+        "kind",
+        "first_unavailable_input",
+        "last_completed_input"
+      ],
+      "additionalProperties": false
+    },
+    "host_resources": {
+      "type": "object",
+      "properties": {
+        "affinity_cpus": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "uniqueItems": true
+        },
+        "allowed_cpus": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "uniqueItems": true
+        },
+        "effective_cpuset": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "uniqueItems": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available_memory_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cgroup": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "degraded_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "effective_cpu_cores": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "hierarchical_cpu_quotas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cgroup": {
+                "type": "string"
+              },
+              "cores": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "cgroup",
+              "cores"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "host_cpu_busy_fraction": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_cpu_ticks": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "idle_ticks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "total_ticks": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "idle_ticks",
+                "total_ticks"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_load_precision": {
+          "type": "string"
+        },
+        "host_loadavg": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9]+(?:\\.[0-9]+)?$"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "measured_process_cpu_cores": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "peak_rss_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preparation_parallelism": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "process_cpu_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quota_cores": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receiver_limit_from_cpu": {
+          "type": "null"
+        },
+        "rss_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "swap_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "affinity_cpus",
+        "allowed_cpus",
+        "effective_cpuset",
+        "available_memory_bytes",
+        "cgroup",
+        "degraded_reasons",
+        "effective_cpu_cores",
+        "hierarchical_cpu_quotas",
+        "host_cpu_busy_fraction",
+        "host_cpu_ticks",
+        "host_load_precision",
+        "host_loadavg",
+        "measured_process_cpu_cores",
+        "peak_rss_bytes",
+        "preparation_parallelism",
+        "process_cpu_seconds",
+        "quota_cores",
+        "receiver_limit_from_cpu",
+        "rss_bytes",
+        "swap_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "model_preparation": {
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cancelled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_queue_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_queued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observed_process_rss_growth_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "succeeded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "wall_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rss_precision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "active",
+        "cancelled",
+        "failed",
+        "max_ns",
+        "max_queue_seconds",
+        "max_queued",
+        "observed_process_rss_growth_bytes",
+        "queued",
+        "succeeded",
+        "wall_ns",
+        "rss_precision"
+      ],
+      "additionalProperties": false
+    },
+    "processing_resources": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "policy": {
+          "const": "observed_runtime"
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "channel": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16
+              },
+              "worker": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "actual_input_rate": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "mode": {
+                "type": "string"
+              },
+              "nr": {
+                "type": "boolean"
+              },
+              "nr_algorithm": {
+                "enum": [
+                  "wiener",
+                  "dfn",
+                  "gtcrn",
+                  "ul-unas",
+                  "fastenhancer"
+                ]
+              },
+              "processor_enabled": {
+                "type": "boolean"
+              },
+              "cf32_bytes_per_second_if_subscribed": {
+                "type": "number",
+                "minimum": 0
+              },
+              "audio_bytes_per_second_if_published": {
+                "type": "number",
+                "minimum": 0
+              },
+              "predicted_processing_ns_per_second": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "channel",
+              "worker",
+              "actual_input_rate",
+              "mode",
+              "nr",
+              "nr_algorithm",
+              "processor_enabled",
+              "cf32_bytes_per_second_if_subscribed",
+              "audio_bytes_per_second_if_published",
+              "predicted_processing_ns_per_second"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "publication_bytes_per_second": {
+          "type": "number",
+          "minimum": 0
+        },
+        "publication_limit_bytes_per_second": {
+          "type": "null"
+        },
+        "worker_limit_ns_per_second": {
+          "type": "null"
+        },
+        "heavy_limits": {
+          "type": "null"
+        },
+        "diagnostic_precision": {
+          "type": "string"
+        },
+        "host_resources": {
+          "$ref": "#/$defs/host_resources"
+        }
+      },
+      "required": [
+        "accepted",
+        "policy",
+        "channels",
+        "publication_bytes_per_second",
+        "publication_limit_bytes_per_second",
+        "worker_limit_ns_per_second",
+        "heavy_limits",
+        "diagnostic_precision",
+        "host_resources"
+      ],
+      "additionalProperties": false
+    },
+    "source_watermarks": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "capture_epoch": {
+          "$ref": "#/$defs/u64"
+        },
+        "input_samples": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pfb_submitted": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pfb_completed": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clock_policy": {
+          "type": "string"
+        },
+        "fine_channels": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16
+                  },
+                  "channel_id": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "epoch": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "input_samples": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "output_samples": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "channel",
+                  "channel_id",
+                  "epoch",
+                  "input_samples",
+                  "output_samples"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "source_id",
+        "capture_epoch",
+        "input_samples",
+        "pfb_submitted",
+        "pfb_completed",
+        "clock_policy",
+        "fine_channels"
       ],
       "additionalProperties": false
     }

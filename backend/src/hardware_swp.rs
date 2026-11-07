@@ -6,11 +6,11 @@ use std::{
     ffi::{c_char, c_int, c_void, CStr, CString},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, RecvTimeoutError, SyncSender},
+        mpsc::{self, RecvTimeoutError, SyncSender, TrySendError},
         Arc,
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use parking_lot::Mutex;
@@ -168,12 +168,14 @@ pub const WARN_STATUS: [i32; 9] = [-10, -11, -12, -14, -15, -16, -17, -18, -19];
 /// Vendor bus errors: the handle is stale; never pass it to Device_Close.
 pub const LINK_LOST_STATUS: [i32; 2] = [-8, -9];
 
-/// Owner thread whose vendor open did not return within the start timeout. A new session
+/// Owner whose vendor open, request or teardown has not returned. A new session
 /// must not open while it runs (vendor rule: sessions must not overlap).
 static STUCK_OWNER: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 /// Wait time for one vendor open (Python LINK_CALL_TIMEOUT).
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Healthy owners can finish their queued receive/close; stalled owners stay exclusive.
+pub(crate) const OWNER_STOP_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Refuses a new vendor session while a previous owner thread is still inside the SDK.
 pub fn owner_slot_free() -> Result<(), String> {
@@ -192,9 +194,47 @@ pub fn owner_slot_free() -> Result<(), String> {
     }
 }
 
-/// Keeps an owner whose open timed out; [`owner_slot_free`] blocks new sessions until it exits.
+/// Keeps an unfinished owner; [`owner_slot_free`] blocks new sessions until it exits.
 pub fn park_stuck_owner(owner: JoinHandle<()>) {
     *STUCK_OWNER.lock() = Some(owner);
+}
+
+/// Admission and reply consume the same deadline. A transport failure retires
+/// this owner so a delayed SDK operation cannot be followed by newer requests.
+pub(crate) fn call_owner<C, T>(
+    sender: &SyncSender<C>, stop: &AtomicBool,
+    make: impl FnOnce(SyncSender<T>) -> C, timeout: Duration,
+) -> Result<T, RecvTimeoutError> {
+    let result = (|| {
+        if stop.load(Ordering::Acquire) { return Err(RecvTimeoutError::Disconnected); }
+        let deadline = Instant::now() + timeout;
+        let (reply, received) = mpsc::sync_channel(1);
+        let mut request = make(reply);
+        loop {
+            if stop.load(Ordering::Acquire) { return Err(RecvTimeoutError::Disconnected); }
+            if Instant::now() >= deadline { return Err(RecvTimeoutError::Timeout); }
+            match sender.try_send(request) {
+                Ok(()) => break,
+                Err(TrySendError::Disconnected(_)) => return Err(RecvTimeoutError::Disconnected),
+                Err(TrySendError::Full(pending)) => request = pending,
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        received.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    })();
+    if result.is_err() { stop.store(true, Ordering::Release); }
+    result
+}
+
+/// Only the original owner may destroy SDK state. An unfinished call stays
+/// parked behind the session gate instead of blocking the service's state lock.
+pub(crate) fn finish_owner(owner: JoinHandle<()>, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while !owner.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if owner.is_finished() { let _ = owner.join(); }
+    else { park_stuck_owner(owner); }
 }
 
 type Open = unsafe extern "C" fn(*mut *mut c_void, *const SwpRequest, *mut SwpActual) -> c_int;
@@ -680,11 +720,16 @@ fn request_of(params: &SwpParams) -> SwpRequest {
 }
 
 fn geometry_of(actual: &SwpActual) -> Result<SwpGeometry, String> {
-    if actual.points < 2
+    let span = actual.stop_hz - actual.start_hz;
+    if !(2..=65_536).contains(&actual.points)
         || !actual.start_hz.is_finite()
         || !actual.stop_hz.is_finite()
-        || actual.start_hz >= actual.stop_hz
-        || !actual.sweep_ms.is_finite()
+        || !span.is_finite() || span <= 0.0
+        || !actual.sweep_ms.is_finite() || actual.sweep_ms < 0.0
+        || !actual.ref_dbm.is_finite()
+        || !actual.rbw_hz.is_finite() || actual.rbw_hz <= 0.0
+        || !actual.vbw_hz.is_finite() || actual.vbw_hz < 0.0
+        || !actual.refclk_hz.is_finite() || actual.refclk_hz < 0.0
     {
         return Err("SDK SWP geometry rejected".into());
     }
@@ -957,6 +1002,7 @@ impl HardwareSwp {
         let (geometry, device_info) = match meta_rx.recv_timeout(OPEN_TIMEOUT) {
             Ok(value) => value?,
             Err(_) => {
+                stop.store(true, Ordering::Release);
                 park_stuck_owner(owner);
                 return Err("SDK SWP startup timed out; owner outcome unknown".into());
             }
@@ -975,9 +1021,7 @@ impl HardwareSwp {
         make: impl FnOnce(SyncSender<T>) -> OwnerCommand,
         timeout: Duration,
     ) -> Option<T> {
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.tx.send(make(reply_tx)).ok()?;
-        reply_rx.recv_timeout(timeout).ok()
+        call_owner(&self.tx, &self.stop, make, timeout).ok()
     }
 
     /// In-place profile change on the open handle (Python configure_swp).
@@ -1023,10 +1067,8 @@ impl HardwareSwp {
 impl Drop for HardwareSwp {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Join the owner before allowing another SDK open; fetch/close must not
-        // overlap a new session.
         if let Some(owner) = self.owner.take() {
-            let _ = owner.join();
+            finish_owner(owner, OWNER_STOP_TIMEOUT);
         }
     }
 }
@@ -1041,6 +1083,78 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_hardware(tx: SyncSender<OwnerCommand>, stop: Arc<AtomicBool>, owner: Option<JoinHandle<()>>) -> HardwareSwp {
+        HardwareSwp {
+            geometry: geometry_of(&SwpActual { start_hz: 1.0, stop_hz: 2.0, points: 2, rbw_hz: 1.0, ..SwpActual::default() }).unwrap(),
+            device_info: None,
+            tx,
+            stop,
+            owner,
+        }
+    }
+
+    #[test]
+    fn reported_geometry_bounds_all_allocations_and_numeric_readback() {
+        let valid = || SwpActual {
+            start_hz: 90e6, stop_hz: 110e6, points: 65_536, sweep_ms: 10.0,
+            ref_dbm: -10.0, rbw_hz: 1000.0, vbw_hz: 1000.0, refclk_hz: 10e6,
+            refclk_src: 0,
+        };
+        assert!(geometry_of(&valid()).is_ok());
+        let mut accepted_invalid = Vec::new();
+        for points in [0, 1, 65_537, u32::MAX] {
+            let mut actual = valid();
+            actual.points = points;
+            if geometry_of(&actual).is_ok() { accepted_invalid.push(format!("point count {points}")); }
+        }
+        let fields: [fn(&mut SwpActual, f64); 7] = [
+            |g, n| g.start_hz = n, |g, n| g.stop_hz = n, |g, n| g.sweep_ms = n,
+            |g, n| g.ref_dbm = n, |g, n| g.rbw_hz = n, |g, n| g.vbw_hz = n,
+            |g, n| g.refclk_hz = n,
+        ];
+        for (field, set) in fields.into_iter().enumerate() {
+            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let mut actual = valid();
+                set(&mut actual, invalid);
+                if geometry_of(&actual).is_ok() { accepted_invalid.push(format!("field {field} = {invalid}")); }
+            }
+        }
+        let mut overflowing = valid();
+        overflowing.start_hz = -f64::MAX;
+        overflowing.stop_hz = f64::MAX;
+        if geometry_of(&overflowing).is_ok() { accepted_invalid.push("overflowing span".into()); }
+        for field in [2, 4, 5, 6] {
+            let mut negative = valid();
+            fields[field](&mut negative, -1.0);
+            if geometry_of(&negative).is_ok() { accepted_invalid.push(format!("negative field {field}")); }
+        }
+        let mut zero_rbw = valid();
+        zero_rbw.rbw_hz = 0.0;
+        if geometry_of(&zero_rbw).is_ok() { accepted_invalid.push("zero RBW".into()); }
+        assert!(accepted_invalid.is_empty(), "accepted unsafe SWP geometry: {accepted_invalid:?}");
+    }
+
+    #[test]
+    fn full_mailbox_obeys_request_deadline_and_stops_owner() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (reply, _received) = mpsc::sync_channel(1);
+        tx.send(OwnerCommand::Gnss(reply)).ok().unwrap();
+        let hardware = test_hardware(tx, Arc::new(AtomicBool::new(false)), None);
+        owner_tests::full_mailbox(rx, move || {
+            let timed_out = hardware.call(OwnerCommand::Gnss, Duration::from_millis(20)).is_none();
+            (timed_out, hardware.stop.load(Ordering::Acquire))
+        });
+    }
+
+    #[test]
+    fn blocked_owner_retirement_excludes_replacement_until_recovery() {
+        if !owner_tests::isolated("hardware_swp::tests::blocked_owner_retirement_excludes_replacement_until_recovery") { return; }
+        owner_tests::blocked_owner(|owner, stop| {
+            let (tx, _rx) = mpsc::sync_channel(1);
+            test_hardware(tx, stop, Some(owner))
+        });
+    }
 
     fn params() -> SwpParams {
         SwpParams {
@@ -1182,3 +1296,7 @@ int san90_session_invalidate_v1(void* state, int abandon) {
 #[cfg(test)]
 #[path = "hardware_swp_transaction_tests.rs"]
 mod transaction_tests;
+
+#[cfg(test)]
+#[path = "hardware_owner_tests.rs"]
+pub(crate) mod owner_tests;

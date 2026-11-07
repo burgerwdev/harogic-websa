@@ -1,15 +1,16 @@
-//! WebSA DSP core — the real-time signal processing the browser runs in a Web Worker.
+//! WebSA DSP kernels shared by native receivers and browser Web Workers.
 //!
-//! Layout (grown by the following steps, one module per stage of the pipeline):
+//! Modules follow the signal-processing stages:
 //!   * `abi`      — the raw linear-memory boundary (no wasm-bindgen)
 //!   * `ddc`      — NCO / FIR / resampler / AGC, the shared base layer for every mode
 //!   * `analog`   — analog demodulator plugins (am, dsb, usb, lsb, cw, nfm, wfm, pm)
-//!   * `digital`  — digital demodulator plugins (FT8 first); never sees the audio chain
+//!   * `digital`  — FT8, SSTV, radiofax and DRM decoders; separate from the audio chain
 //!   * `audio`    — audio enhancement for the analog PCM path only
 //!   * `fft`      — the transform those stages share
 //!
 //! The crate builds natively (`cargo test` runs the kernels) and for
-//! `wasm32-unknown-unknown` (the artifact the browser loads), with no dependencies.
+//! `wasm32-unknown-unknown` (the artifact the browser loads), with no Rust crate
+//! dependencies. Native DRM audio links FDK AAC; WASM links the codec archives.
 
 pub mod abi;
 pub mod analog;
@@ -25,7 +26,7 @@ pub mod pipeline;
 pub mod pipeline_abi;
 pub mod plugin;
 pub mod plugin_abi;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 pub mod xaac;
 
 /// The ABI version the loader checks before it trusts any exported signature.

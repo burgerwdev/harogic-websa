@@ -70,3 +70,81 @@ def test_nonbinary_iq_rate_keeps_exact_positions_and_rejects_one_sample_gap():
                     monitor.check()
         finally:
             send_gap.set(); finished.set(); server.shutdown(); thread.join(timeout=5)
+
+
+def test_all_iq_monitor_detects_a_gap_in_the_first_of_sixteen_receivers():
+    send_gap, finished = threading.Event(), threading.Event()
+    receivers = [{'receiver_uid': f'uid-{slot}', 'display_number': slot,
+        'stream': {'source_id': 'primary', 'channel_id': str(slot), 'epoch': '3'},
+        'confirmed': {'purpose': 'iq', 'processors': []}} for slot in range(1, 17)]
+
+    def handler(socket):
+        slot = int(socket.request.path.rsplit('-', 1)[1])
+        receiver = receivers[slot - 1]
+        socket.send(json.dumps({'type': 'stream_start', 'receiver_uid': receiver['receiver_uid'],
+            'stream': receiver['stream']}))
+        def packet(sequence, position):
+            return struct.pack('<4sIIIddIIQd', b'IQBF', 2, sequence, 100, 62500000 / 192,
+                435000000.0, slot, 3, position, 1.0) + struct.pack('<200f', *([.125] * 200))
+        socket.send(packet(1, 12345)); socket.send(packet(2, 12345 + 19200))
+        assert send_gap.wait(10)
+        if slot == 1:
+            socket.send(packet(3, 12345 + 38401))
+        finished.wait(10)
+
+    with serve(handler, '127.0.0.1', 0) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        snapshot = {'service_id': 'fixture', 'capture': {'input_rate_hz': 62500000}, 'receivers': receivers}
+        try:
+            with module.StreamMonitor(f'http://127.0.0.1:{server.socket.getsockname()[1]}', snapshot,
+                    all_iq=True) as monitor:
+                deadline = time.monotonic() + 5
+                while len(monitor.status()) < 16 or any(row['packets'] < 2 for row in monitor.status().values()):
+                    assert time.monotonic() < deadline
+                    time.sleep(.01)
+                assert {row['receiver_uid'] for row in monitor.status().values()} == {r['receiver_uid'] for r in receivers}
+                send_gap.set()
+                while not monitor.errors:
+                    assert time.monotonic() < deadline
+                    time.sleep(.01)
+                with pytest.raises(AssertionError, match='1-iq'):
+                    monitor.check()
+        finally:
+            send_gap.set(); finished.set(); server.shutdown(); thread.join(timeout=5)
+
+
+def test_sixteen_rf_source_has_independently_demodulatable_tones(tmp_path):
+    from types import SimpleNamespace
+    rf_spec = importlib.util.spec_from_file_location('rf_source',
+        Path(__file__).resolve().parents[1] / 'tools/bench/eight_channel_rf.py')
+    rf = importlib.util.module_from_spec(rf_spec); rf_spec.loader.exec_module(rf)
+    radio = rf.BenchRadio(tmp_path)
+    radio.rate = 521000
+    radio.sdr = SimpleNamespace(tx_lo=rf.CENTER)
+    radio.settings = lambda: {'sample_rate': radio.rate}
+    transmitted = []
+    radio.push_cyclic = transmitted.append
+    frequencies = [rf.CENTER + (slot - 7.5) * 20000 for slot in range(16)]
+    tones = [400 + slot * 100 for slot in range(16)]
+    modes = rf.MODES * 2
+    radio.narrow(frequencies=frequencies, tones=tones, modes=modes)
+    signal = transmitted[0]
+    assert np.isfinite(signal).all() and max(np.max(np.abs(signal.real)), np.max(np.abs(signal.imag))) < 32767
+    # Independent ideal channel filters and envelope/phase/product detectors.
+    # Verify what would reach the ADC; do not reuse the waveform generator.
+    time_axis = np.arange(len(signal)) / radio.rate
+    bins = np.fft.fftfreq(len(signal), 1 / radio.rate)
+    for frequency, tone, mode in zip(frequencies, tones, modes, strict=True):
+        spectrum = np.fft.fft(signal * np.exp(-2j * np.pi * (frequency - rf.CENTER) * time_axis))
+        spectrum[np.abs(bins) > 8000] = 0
+        baseband = np.fft.ifft(spectrum)
+        if mode == 'am':
+            audio = np.abs(baseband)
+        elif mode == 'nfm':
+            audio = np.angle(baseband[1:] * np.conj(baseband[:-1]))
+        else:
+            audio = baseband.real
+        measured = np.abs(np.fft.rfft((audio - audio.mean()) * np.hanning(len(audio))))
+        peak = int(np.argmax(measured))
+        assert abs(peak * radio.rate / len(audio) - tone) < 1
+        assert measured[peak] > 100 * np.median(measured[10:400])

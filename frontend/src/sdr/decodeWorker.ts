@@ -1,5 +1,5 @@
 import { DecodeSequence, MAX_DECODE_BYTES, type DecodeEnvelope } from './decodeProtocol';
-import { StreamRetry } from './streamRetry';
+import { receiverEndReason, StreamRetry } from './streamRetry';
 import { MAX_QUEUED_EVENTS, MAX_QUEUED_BYTES } from './streamLimits';
 
 interface DecoderWorkerHost {
@@ -12,6 +12,7 @@ let socket: WebSocket | null = null;
 let enabled = false;
 let url = '';
 let retry: number | null = null;
+let pendingEnd: string | null = null;
 let recovery = new StreamRetry();
 let inFlight = 0;
 let inFlightBytes = 0;
@@ -19,14 +20,24 @@ let queuedBytes = 0;
 const queue: { envelope: DecodeEnvelope; bytes: number; connection: WebSocket }[] = [];
 const applied = new Map<string, { envelope: DecodeEnvelope; connection: WebSocket }>();
 const snapshotAck = new WeakMap<WebSocket, boolean>();
-function fail(message: string): void {
-  enabled = false;
-  if (retry !== null) { self.clearTimeout(retry); retry = null; }
+function clearDelivery(): void {
   inFlight = 0;
   inFlightBytes = 0;
   queue.length = 0;
   queuedBytes = 0;
   applied.clear();
+  pendingEnd = null;
+}
+function finishEnd(): void {
+  if (pendingEnd === null || inFlight || queue.length) return;
+  const reason = pendingEnd;
+  clearDelivery();
+  host.postMessage({ type: 'ended', reason });
+}
+function fail(message: string): void {
+  enabled = false;
+  if (retry !== null) { self.clearTimeout(retry); retry = null; }
+  clearDelivery();
   const previous = socket;
   socket = null;
   // Browser clients may send 1000 or application codes, never protocol code 1002.
@@ -79,6 +90,16 @@ function connect(): void {
     if (socket !== connection) return;
     socket = null;
     if (!enabled) return;
+    const reason = receiverEndReason(event.code, event.reason);
+    if (reason !== null) {
+      enabled = false;
+      if (retry !== null) { self.clearTimeout(retry); retry = null; }
+      // Server close follows its FIFO tail. Already validated local deliveries
+      // still belong to that source and must reach the host before it ends.
+      pendingEnd = reason;
+      finishEnd();
+      return;
+    }
     const delay = recovery.delay(event.code, event.reason);
     if (delay !== null) {
       host.postMessage({ type: 'closed', message: `Decoded-output stream interrupted (${event.code}): ${event.reason}; reconnecting` });
@@ -101,6 +122,7 @@ host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: st
   const message = event.data;
   if (message.type === 'start') {
     if (enabled) return;
+    clearDelivery();
     recovery = new StreamRetry();
     enabled = true;
     url = message.url ?? '';
@@ -118,18 +140,15 @@ host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: st
       }
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
     deliver();
+    finishEnd();
   } else if (message.type === 'error') {
     fail(message.message ?? 'Invalid decoded output');
   } else if (message.type === 'stop') {
     enabled = false;
     if (retry !== null) { self.clearTimeout(retry); retry = null; }
-    inFlight = 0;
-    inFlightBytes = 0;
-    applied.clear();
+    clearDelivery();
     const previous = socket;
     socket = null;
     previous?.close();
-    queue.length = 0;
-    queuedBytes = 0;
   }
 };

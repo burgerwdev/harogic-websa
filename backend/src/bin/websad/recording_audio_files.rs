@@ -253,8 +253,6 @@ fn stored(path: &FsPath, task: &mut Value) -> io::Result<()> {
     Ok(())
 }
 pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
-    fs::create_dir(path)?;
-    File::open(path.parent().unwrap())?.sync_all()?;
     let mut task = lane.task.lock().unwrap().clone();
     let format = task["audio_format"].as_str().unwrap().to_owned();
     let mut timeline = OpenOptions::new()
@@ -526,6 +524,9 @@ pub(super) fn recover(path: &FsPath, task: &mut Value) -> io::Result<()> {
         return Err(io_error("audio timeline checksum mismatch during recovery"));
     }
     task["tracks"][0]["timeline_sha256"] = json!(hash);
+    task["accepted_bytes"] = json!(number(&task["accepted_bytes"])
+        .max(number(&task["tracks"][0]["raw_bytes"]))
+        .to_string());
     task["queued_bytes"] = json!("0");
     stored(path, task)?;
     let mut blocks = 0u64;

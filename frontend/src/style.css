@@ -300,7 +300,7 @@ body.server-mode #keypad { display: none !important; }
   padding: 6px 12px; margin-bottom: 8px; font-size: 12px;
 }
 .info-left { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
-.info-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.info-right { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; margin-left: auto; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .dot.on { background: var(--dot-on); box-shadow: 0 0 6px var(--dot-on); }
 .dot.off { background: var(--dot-off); }
@@ -461,7 +461,6 @@ select:disabled { color: var(--label); }
 .decode-sstv-thumb .sstv-tick { position: absolute; left: 2px; bottom: 2px; width: 12px; height: 12px; border: 1px solid var(--input-border); background: var(--panel-2); font-size: 10px; line-height: 11px; text-align: center; color: transparent; }
 .decode-sstv-thumb.selected .sstv-tick { color: var(--text); background: var(--btn-active); border-color: var(--text); }
 .decode-sstv-side { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.decode-sstv-actions { display: flex; gap: 4px; padding: 4px 8px 6px; }
 /* The waiting line, in the title row: dim, after the pane's title, so the canvas stays a canvas. */
 .decode-sstv-hint { color: var(--label); font-size: 11px; font-weight: 400; white-space: nowrap; }
 .decode-sstv-state { color: var(--label); white-space: nowrap; }
@@ -671,18 +670,7 @@ body.rta-mode #meas-panel .btn { opacity: 0.4; }
 /* Trace panel: only smooth/cal-wnd/normalize rows are RTA-inapplicable */
 body.rta-mode #trace-panel .param-row:not(.trace-keep) { pointer-events: none; opacity: 0.45; }
 body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
-.harmonic-table { width: 100%; border-collapse: collapse; margin-top: 4px; font: 11px monospace; }
-.harmonic-table td { border: 1px solid var(--inner-border); padding: 3px 8px; text-align: center; color: var(--table-cell); background: var(--panel-2); }
-.harmonic-table td.harm-dim { color: var(--table-cell-dim); background: var(--panel); }
-.harmonic-table .harm-h { color: var(--text); font-weight: bold; }
-.harmonic-table .harm-dbc { color: var(--table-cell-dim); }
-.pk-cell, .pk-empty { border: 1px solid var(--inner-border); padding: 3px 6px; text-align: center; color: var(--table-cell); background: var(--panel-2); font: 11px monospace; }
-.pk-empty { border: 1px solid var(--inner-border); }
-.pk-f { color: var(--text); }
-.pk-id { color: var(--label); font-weight: bold; }
-.pk-a { color: var(--table-cell-dim); }
 .marker-table { flex-shrink: 0; }
-/* 瀑布图: 绝对定位覆盖 marker 表区域(关闭时隐藏) */
 /* The spectrum/waterfall divider: a grab strip between the two. Dragging it sets the split
    (render/../panels/waterfall.ts); its visibility follows the waterfall, so the spectrum owns
    the whole area whenever the waterfall is off. */
@@ -702,7 +690,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
    buttons sit absolutely at the right, never squeezing the canvas */
 .waterfall-container canvas {
   position: absolute; left: 10px; top: 0; height: 100%;
-  width: auto;   /* override global `canvas { width:100% }`; width set by JS */
+  width: auto;   /* width set by the canvas size owner in render/spectrum.ts */
   border: none; display: block;
   touch-action: none;
 }
@@ -924,6 +912,9 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* Allow quick presets to shrink and wrap within their container. */
 #sdr-step-quick { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }
 #sdr-step-quick .btn { padding: 2px 5px; }
+.sdr-audio-rate-row .btn-group { min-width: 0; flex-wrap: nowrap; }
+.sdr-audio-rate-row .btn { min-width: 32px; padding: 3px 6px; }
+#sdr-settings .sdr-audio-rate-row > .cur-val { flex: 0 0 auto; white-space: nowrap; }
 /* Inline step-tier / grid settings: in-flow panel content, no overlay. */
 .sdr-inline-settings { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin: 2px 0 2px 62px; min-width: 0; }
 .sdr-inline-settings[style*="display:none"] { display: none; }
@@ -1007,10 +998,7 @@ input[type=number]:focus { outline: none; border-color: var(--text); }
 .meas-tabs { flex: 1; min-width: 0; }
 /* Button row that follows a label/value column: line up with the value column above */
 .trace-norm-ops { padding-left: calc(58px + 4px); }
-/* Limit line panel: pass/fail badge and compact point rows */
-/* Trigger panel applies to RTA only: dim it elsewhere (same idea as the other mode rules) */
-.trigger-status.pass { color: #00c853; }
-.trigger-status.fail { color: #d9a300; }
+/* Trigger timing and output controls require RTA; software level capture also supports SWP. */
 body:not(.rta-mode) #trigger-panel .rta-only { pointer-events: none; opacity: 0.45; }
 #trigger-panel .cur-val { white-space: nowrap; }
 #limit-rows .limit-freq,
@@ -1046,7 +1034,6 @@ select:focus { border-color: var(--text); }
 .harmonic-table .harm-h { color: var(--text); font-weight: bold; }
 .harmonic-table .harm-dbc { color: var(--table-cell-dim); }
 .pk-cell, .pk-empty { border: 1px solid var(--inner-border); padding: 3px 6px; text-align: center; color: var(--table-cell); background: var(--panel-2); font: 11px monospace; }
-.pk-empty { border: 1px solid var(--inner-border); }
 .pk-f { color: var(--text); }
 .pk-id { color: var(--label); font-weight: bold; }
 .pk-a { color: var(--table-cell-dim); }
@@ -1066,9 +1053,6 @@ select:focus { border-color: var(--text); }
 .mk-track-indicator { display: none; min-width: 12px; color: var(--text); font-size: 9px; text-align: center; }
 .marker-toggle.tracking .mk-track-indicator { display: inline-block; }
 .mk-swatch { width: 11px; height: 11px; border-radius: 2px; display: inline-block; flex-shrink: 0; border: 1px solid #000; }
-.status-label { padding: 2px 6px; border: 1px solid var(--input-border); border-radius: 3px; font-size: 10px; }
-.status-label.active { background: var(--btn-active); border-color: var(--text); }
-.tip-text { color: #888800; font-size: 10px; margin-top: 4px; display: block; }
 .trace-btn { min-width: 28px; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-weight: bold; border: 1px solid #555; background: var(--input-bg); }
 .trace-btn.T1 { color: var(--t1); } .trace-btn.T1.active { border-color: var(--t1); background: var(--t1-bg); }
 .trace-btn.T2 { color: var(--t2); } .trace-btn.T2.active { border-color: var(--t2); background: var(--t2-bg); }
@@ -1080,7 +1064,6 @@ select:focus { border-color: var(--text); }
 .mkr-btn.M3 { color: var(--m3); } .mkr-btn.M3.active { border-color: var(--m3); background: var(--m3-bg); }
 .mkr-btn.M4 { color: var(--m4); } .mkr-btn.M4.active { border-color: var(--m4); background: var(--m4-bg); }
 .mkr-btn.active { color: var(--text); }
-.analyzer-card { position: relative; }
 #btn-preset { background: var(--input-bg); color: var(--text); border: 1px solid var(--input-border); padding: 2px 8px;
   font-family: 'Courier New', monospace; font-size: 11px; border-radius: 2px; cursor: pointer; }
 #btn-preset:hover { border-color: var(--text); }
@@ -1101,8 +1084,6 @@ select:focus { border-color: var(--text); }
 /* The device strip sits at the page bottom: its popover must open upward (the GNSS
    popover's top:26px would push it past the viewport edge). */
 .dev-bar .gnss-popover { top: auto; bottom: calc(100% - 2px); }
-.mk-main { line-height: 1.3; }
-.mk-sub { font-size: 10px; color: var(--sub); line-height: 1.3; }
 
 /* Vendor warning on the Ref control: pulse (glow) instead of a static outline so it reads
    as "act here" - e.g. -12 IF overflow, whose remedy is to raise the reference level. */
@@ -1125,29 +1106,27 @@ input.ref-pending { border: 1px dashed #ffb300; }
    or shrink the plot to a sliver, and a narrow window is scrolled anyway.
    This is a "nothing overflows or overlaps, everything reachable" layout, not a touch
    layout: no touch-target work is in scope. */
-@media (max-width: 1000px) {
-  .analyzer-card { height: auto; min-height: calc(100dvh / var(--ui, 1)); }
-  .screen-container { flex-direction: column; }
-  .spectrum-area { flex: 0 0 auto; }
-  .spectrum-box { min-height: 260px; }
-  .control-panel { flex: 0 0 auto; overflow-y: visible; }
-  .control-rail { flex-direction: row; width: auto; height: auto; padding: 0; }
-  .control-rail.collapsed { width: auto; margin-left: 0; }
-  .rail-items { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
-  .rail-item { writing-mode: horizontal-tb; padding: 4px 10px; }
+/* uiScale owns these breakpoints in local CSS pixels (viewport / UI scale),
+   including resize. Raw viewport media queries ignore the frame's CSS zoom. */
+.ui-stacked .analyzer-card { height: auto; min-height: calc(100dvh / var(--ui, 1)); }
+.ui-stacked .screen-container { flex-direction: column; }
+.ui-stacked .spectrum-area { flex: 0 0 auto; }
+.ui-stacked .spectrum-box { min-height: 260px; }
+.ui-stacked .control-panel { flex: 0 0 auto; overflow-y: visible; }
+.ui-stacked .control-panel.panel-hidden { display: none; margin-left: 0; }
+.ui-stacked .control-rail { flex-direction: row; width: auto; height: auto; padding: 0; }
+.ui-stacked .control-rail.collapsed { width: auto; margin-left: 0; }
+.ui-stacked .control-rail > .rail-toggle { width: 34px; }
+.ui-stacked .rail-items { flex-direction: row; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.ui-stacked .rail-item { writing-mode: horizontal-tb; padding: 4px 10px; }
   /* the collapsed toggle is absolutely placed for the vertical rail; in a row it is inline */
-  .control-rail.collapsed .rail-toggle { position: static; width: 34px; height: 22px; }
-}
+.ui-stacked .control-rail.collapsed .rail-toggle { position: static; width: 34px; height: 22px; }
 /* Below this the marker table's five columns are the widest thing left; keep the table
    scrollable rather than letting it push the card wider than the viewport. */
-@media (max-width: 700px) {
-  .marker-table { display: block; overflow-x: auto; }
-}
+.ui-narrow .marker-table { display: block; overflow-x: auto; }
 /* A window shorter than the plot column's floor (120px canvas + waterfall + tables) cannot
    fit them at once: scroll the middle row instead of letting it overlap the status bar. */
-@media (max-height: 560px) {
-  .screen-container { overflow-y: auto; }
-}
+.ui-short:not(.ui-stacked) .screen-container { overflow-y: auto; }
 
 /* Zoom rail: native range controls retain touch, keyboard and assistive-tool support.
    The slider strip takes the same column the group buttons do. */
@@ -1170,11 +1149,7 @@ input.ref-pending { border: 1px dashed #ffb300; }
 .zoom-rail-control input:focus-visible { outline: 1px solid var(--text); outline-offset: 0; }
 .zoom-rail-control output { max-width: 100%; font-size: 6px; font-variant-numeric: tabular-nums;
   color: var(--text); text-align: center; white-space: nowrap; overflow: hidden; }
-@media (max-width: 1000px) {
-  .control-rail.zoom-rail:not(.collapsed) { width: auto; }
-  .control-rail.zoom-rail > .rail-toggle { width: 34px; }
-  .zoom-rail .rail-items { min-width: 0; overflow-x: auto; }
-  .zoom-rail-controls { flex-direction: row; flex: 1 1 auto; min-height: 0; width: auto; }
-  .zoom-rail-switch { width: 22px; height: 22px; align-self: stretch; }
-  .zoom-rail-control { min-width: 0; min-height: 124px; }
-}
+.ui-stacked .control-rail.zoom-rail:not(.collapsed) { width: auto; }
+.ui-stacked .zoom-rail-controls { flex-direction: row; flex: 1 1 auto; min-height: 0; width: auto; }
+.ui-stacked .zoom-rail-switch { width: 22px; height: 22px; align-self: stretch; }
+.ui-stacked .zoom-rail-control { min-width: 0; min-height: 124px; }

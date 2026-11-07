@@ -176,6 +176,9 @@ fn run(seconds: f64, bin_count: u32, fine: bool, fused: bool, decimate: i32, tap
         return Err(USAGE.into());
     }
     let target = (FS * seconds / N as f64).round() as usize;
+    if target == 0 {
+        return Err("duration must include at least one input packet".into());
+    }
     let bins: Vec<u32> = (0..bin_count).collect();
     let mut stream = PfbStream::with_taps(FS, N, bins.clone(), 7, taps).ok_or("PFB stream unavailable")?;
     let mut channels: Vec<FineChannel> = if fine {
@@ -372,5 +375,14 @@ fn main() {
     if let Err(e) = result {
         eprintln!("output bench failed: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn benchmark_boundary_rejects_duration_with_no_input_packets() {
+        let result = super::run(1e-9, 1, false, false, 12, 16);
+        assert!(result.is_err(), "a zero-input run cannot report valid throughput metrics");
     }
 }

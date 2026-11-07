@@ -17,7 +17,6 @@ import os
 import resource
 import signal
 import struct
-import subprocess
 import tarfile
 import urllib.error
 import urllib.request
@@ -28,13 +27,17 @@ from native_multichannel import api
 from native_multichannel_processing import setup
 from native_multichannel_recording import finish, task, until
 from playwright.sync_api import expect, sync_playwright
-from rust_iq_browser import ROOT, WEBSAD, free_port, start_service, stop
+from rust_iq_browser import ROOT, WEBSAD, free_port, start_owned_service, start_service, stop
 from viewport_baseline import wait_ui_ready
 from websockets.asyncio.client import connect
 
 
-def start(origin, uid, key, kind='results'):
+def start(origin, uid, key, kind='results', *, audio_format='wav'):
     request = {'type': 'record_start', 'receiver_uid': uid, 'request_id': key, 'kinds': [kind]}
+    # These gates compare original PCM bytes. Default-format/Opus behavior has
+    # its own native_audio_formats gate; never use a lossy recording as its oracle.
+    if kind == 'audio':
+        request['audio_format'] = audio_format
     reply = api(origin, payload=request)
     assert reply['fault'] is None, reply
     assert api(origin, payload=request) == reply
@@ -255,16 +258,12 @@ def write_failure_gate(artifacts):
     def limit():
         signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
         resource.setrlimit(resource.RLIMIT_FSIZE, (8192, 8192))
-    def ready():
-        try:
-            return api(origin)
-        except OSError:
-            return None
     proc = None
     with (artifacts / 'write-failure-service.log').open('w') as log:
         try:
-            proc = subprocess.Popen([str(WEBSAD)], cwd=ROOT, env=env, stdout=log, stderr=log, preexec_fn=limit)
-            until(ready); snapshot = setup(origin); uid = snapshot['receivers'][0]['receiver_uid']
+            proc, origin = start_owned_service([str(WEBSAD)], port=int(env['WEBSA_PORT']), cwd=ROOT,
+                env=env, stdout=log, stderr=log, preexec_fn=limit, startup_timeout=12)
+            snapshot = setup(origin); uid = snapshot['receivers'][0]['receiver_uid']
             recording = start(origin, uid, 'actual-result-write-failure')
             failed = until(lambda: t if (t := task(origin, recording))['state'] == 'failed' else None, timeout=25)
             assert failed['fault']['code'] == 'RECORDING_IO' and 'File too large' in failed['fault']['message'], failed
@@ -277,8 +276,10 @@ def write_failure_gate(artifacts):
                             count += isinstance(data, bytes) and len(data) > 56
                     return count
             frames = asyncio.run(healthy())
-            stop(proc); proc = subprocess.Popen([str(WEBSAD)], cwd=ROOT, env=env, stdout=log, stderr=log)
-            until(ready); recovered = task(origin, recording)
+            stop(proc)
+            proc, origin = start_owned_service([str(WEBSAD)], port=int(env['WEBSA_PORT']), cwd=ROOT,
+                env=env, stdout=log, stderr=log, startup_timeout=12)
+            recovered = task(origin, recording)
             assert recovered['state'] == 'failed' and int(recovered['tracks'][0]['blocks']) > 0
             assert recovered['fault']['code'] == 'RECORDING_IO' and 'File too large' in recovered['fault']['message'], recovered
             manifest, rows = download(origin, recording, artifacts / 'write-failure-prefix.tar')

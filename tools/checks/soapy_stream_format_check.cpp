@@ -16,6 +16,8 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <limits>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,6 +27,22 @@ namespace {
 constexpr double kNativeRate = 122880000.0;
 constexpr int kPacketSamples = 4;
 
+// Faults are configured only while no RX worker exists.
+double g_native_rate = kNativeRate;
+double g_configured_rate = 0;
+bool g_override_rate = false;
+uint32_t g_configured_samples = kPacketSamples;
+int64_t g_configured_bytes = -1;
+int g_configured_format = -1;
+std::atomic<int> g_starts(0), g_stops(0), g_fetches(0);
+std::atomic<bool> g_triggered(false);
+uint32_t g_packet_samples = kPacketSamples;
+int64_t g_packet_bytes = -1;
+int g_packet_format = -1;
+bool g_null_packet = false;
+std::atomic<bool> g_watch_allocations(false), g_excess_allocation(false);
+constexpr size_t kAllocationBudget = 64 * 1024 * 1024;
+
 int g_last_data_format = -1;
 int g_opens = 0;
 int g_closes = 0;
@@ -33,6 +51,9 @@ bool g_fail_configuration = false;
 bool g_fail_open = false;
 int g_last_device_index = -1;
 int g_device_lists = 0;
+uint8_t g_network_count = 0;
+int g_network_lists = 0;
+std::array<uint8_t, 4> g_last_ip{};
 std::atomic<int> g_packets_remaining(-1);
 DevicePowerSupply_TypeDef g_last_power{};
 std::atomic<bool> g_fail_fetch(false);
@@ -58,6 +79,19 @@ void expect(bool condition, const std::string &message) {
 
 } // namespace
 
+// A broken bound must fail without exhausting the test host. Observe the
+// attempted allocation as well as the API error, so bad_alloc is not a pass.
+void *operator new(std::size_t size) {
+    if (g_watch_allocations && size > kAllocationBudget) {
+        g_excess_allocation = true;
+        throw std::bad_alloc();
+    }
+    if (void *p = std::malloc(size ? size : 1)) return p;
+    throw std::bad_alloc();
+}
+[[gnu::noinline]] void operator delete(void *p) noexcept { std::free(p); }
+[[gnu::noinline]] void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+
 extern "C" {
 
 int Device_List(const BootProfile_TypeDef *, uint8_t *count, uint8_t indices[MAX_DEVICE],
@@ -80,6 +114,7 @@ int Device_Open(void **handle, int index, const BootProfile_TypeDef *boot, BootI
     if (!g_fail_open) ++g_opens;
     g_last_device_index = index;
     g_last_power = boot->DevicePowerSupply;
+    std::copy_n(boot->ETH_IPAddress, g_last_ip.size(), g_last_ip.begin());
     static int slot = 1;
     *handle = &slot;
     if (g_fail_open) return -1;
@@ -96,15 +131,26 @@ int Device_Close(void **handle) {
     return 0;
 }
 
-int Device_GetNetworkDeviceList(uint8_t *count, NetworkDeviceInfo_TypeDef *, uint8_t *, uint8_t *) {
-    if (count) *count = 0;
+int Device_GetNetworkDeviceList(uint8_t *count, NetworkDeviceInfo_TypeDef *info, uint8_t *, uint8_t *) {
+    if (!count || !info) return -1;
+    ++g_network_lists;
+    *count = g_network_count;
+    // Inject a bad returned count without corrupting the caller's 64-entry buffer.
+    for (unsigned i = 0; i < std::min<unsigned>(g_network_count, 64); ++i) {
+        info[i] = {};
+        info[i].DeviceUID = i == 63 ? 0xA11CE : 0xB000 + i;
+        info[i].IPAddress[0] = 192;
+        info[i].IPAddress[1] = 168;
+        info[i].IPAddress[2] = 1;
+        info[i].IPAddress[3] = static_cast<uint8_t>(i + 1);
+    }
     return 0;
 }
 
 int IQS_ProfileDeInit(void **, IQS_Profile_TypeDef *profile) {
     if (!profile) return -1;
     std::memset(profile, 0, sizeof(*profile));
-    profile->NativeIQSampleRate_SPS = kNativeRate;
+    profile->NativeIQSampleRate_SPS = g_native_rate;
     return 0;
 }
 
@@ -115,16 +161,21 @@ int IQS_Configuration(void **, const IQS_Profile_TypeDef *in, IQS_Profile_TypeDe
     *out = *in;
     g_last_data_format = static_cast<int>(in->DataFormat);
     std::memset(info, 0, sizeof(*info));
-    info->PacketSamples = kPacketSamples;
-    info->IQSampleRate = kNativeRate / (in->DecimateFactor ? in->DecimateFactor : 1);
+    if (g_configured_format >= 0) out->DataFormat = static_cast<DataFormat_TypeDef>(g_configured_format);
+    info->PacketSamples = g_configured_samples;
+    const size_t width = in->DataFormat == Complex8bit ? 2 : in->DataFormat == Complex16bit ? 4 : 8;
+    info->PacketDataSize = g_configured_bytes >= 0 ? g_configured_bytes : info->PacketSamples * width;
+    info->IQSampleRate = g_override_rate ? g_configured_rate :
+        g_native_rate / (in->DecimateFactor ? in->DecimateFactor : 1);
     return 0;
 }
 
-int IQS_BusTriggerStart(void **) { return 0; }
-int IQS_BusTriggerStop(void **) { return 0; }
+int IQS_BusTriggerStart(void **) { ++g_starts; g_triggered = true; return 0; }
+int IQS_BusTriggerStop(void **) { ++g_stops; g_triggered = false; return 0; }
 
 int IQS_GetIQStream_PM1(void **, IQStream_TypeDef *stream) {
     if (!stream) return -1;
+    ++g_fetches;
     if (g_fail_fetch && g_packets_before_failure.fetch_sub(1) <= 0) {
         g_fatal_fetch_returned = true;
         return -1;
@@ -133,9 +184,14 @@ int IQS_GetIQStream_PM1(void **, IQStream_TypeDef *stream) {
     if (g_packets_remaining == 0) return APIRETVAL_WARNING_BusTimeOut;
     if (g_packets_remaining > 0) --g_packets_remaining;
     std::memset(stream, 0, sizeof(*stream));
-    stream->IQS_StreamInfo.PacketSamples = kPacketSamples;
+    stream->IQS_Profile.DataFormat = static_cast<DataFormat_TypeDef>(
+        g_packet_format >= 0 ? g_packet_format : g_last_data_format);
+    stream->IQS_StreamInfo.PacketSamples = g_packet_samples;
+    const size_t width = g_last_data_format == Complex8bit ? 2 : g_last_data_format == Complex16bit ? 4 : 8;
+    stream->IQS_StreamInfo.PacketDataSize = g_packet_bytes >= 0 ? g_packet_bytes : g_packet_samples * width;
     stream->AlternIQStream = g_extrema ? (g_last_data_format == Complex8bit ? static_cast<void *>(g_iq8) :
         g_last_data_format == Complex16bit ? static_cast<void *>(g_iq16) : static_cast<void *>(g_iq32)) : g_iq;
+    if (g_null_packet) stream->AlternIQStream = nullptr;
     return g_fetch_warning;
 }
 
@@ -224,7 +280,225 @@ static void check_discovery() {
            "USB enumeration opened hardware instead of using Device_List");
 }
 
-int main() {
+static void check_network_bounds(bool construction) {
+    const auto discover = [] {
+        return SoapySDR::Device::enumerate({{"driver", "harogic"}, {"interface", "ETH"}});
+    };
+    const auto valid = [&] {
+        g_network_count = 64;
+        const int opens = g_opens, closes = g_closes;
+        if (construction) {
+            {
+                SoapyHarogic device(SoapySDR::Kwargs{{"interface", "ETH"}, {"serial", "A11CE"}});
+                expect(g_last_ip == std::array<uint8_t, 4>{192, 168, 1, 64},
+                       "ETH constructor did not resolve the last valid discovery entry");
+                expect(g_opens == opens + 1 && g_closes == closes,
+                       "ETH constructor did not retain exactly one handle");
+            }
+            expect(g_closes == closes + 1, "ETH constructor leaked its valid handle");
+        } else {
+            const auto devices = discover();
+            expect(devices.size() == 64 && devices.front().at("serial") == "B000" &&
+                   devices.back().at("serial") == "A11CE" && devices.back().at("ip") == "192.168.1.64",
+                   "ETH enumeration lost the exact-capacity discovery list");
+            expect(g_opens == opens && g_closes == closes, "ETH discovery opened a device");
+        }
+    };
+    valid();
+    for (uint8_t count : {65, 255}) {
+        g_network_count = count;
+        const int opens = g_opens, closes = g_closes;
+        bool rejected = false;
+        try {
+            if (construction) {
+                SoapyHarogic invalid(SoapySDR::Kwargs{{"interface", "ETH"}, {"serial", "A11CE"}});
+            } else {
+                // Soapy's public enumeration may translate a driver exception to no results.
+                rejected = discover().empty();
+            }
+        } catch (const std::runtime_error &) { rejected = true; }
+        expect(rejected, std::string(construction ? "ETH constructor" : "ETH enumeration") +
+               " accepted SDK count " + std::to_string(count));
+        expect(g_opens == opens && g_closes == closes,
+               "malformed ETH discovery opened a device before rejecting its count");
+        valid();
+    }
+    // A direct endpoint keeps working without relying on broadcast discovery.
+    g_network_count = 255;
+    const int lists = g_network_lists, opens = g_opens, closes = g_closes;
+    {
+        SoapyHarogic direct(SoapySDR::Kwargs{{"interface", "ETH"}, {"ip", "192.168.1.100"}});
+        expect(g_network_lists == lists && g_opens == opens + 1,
+               "direct ETH endpoint unexpectedly used discovery");
+    }
+    expect(g_closes == closes + 1, "direct ETH constructor leaked its handle");
+    g_network_count = 0;
+}
+
+static void check_gain_bounds() {
+    SoapyHarogic device(SoapySDR::Kwargs{{"device", "2"}});
+    auto *stream = device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, {0}, {{"native_format", "CS8"}});
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (bool active : {false, true}) {
+        if (active) expect(device.activateStream(stream) == 0, "gain-bound stream activation failed");
+        for (double value : {nan, inf, -inf, 1e300, -1e300,
+                static_cast<double>(std::numeric_limits<int>::max()) + 1.0,
+                static_cast<double>(std::numeric_limits<int>::min()) - 1.0}) {
+            const int starts = g_starts, stops = g_stops, configurations = g_configurations;
+            const double previous = device.getGain(SOAPY_SDR_RX, 0, "REF");
+            bool rejected = false;
+            try { device.setGain(SOAPY_SDR_RX, 0, "REF", value); }
+            catch (const std::invalid_argument &) { rejected = true; }
+            expect(rejected, "REF gain accepted nonfinite or out-of-int-range input");
+            expect(device.getGain(SOAPY_SDR_RX, 0, "REF") == previous &&
+                   g_starts == starts && g_stops == stops && g_configurations == configurations &&
+                   g_triggered == active, "invalid REF gain mutated settings or stopped/reconfigured acquisition");
+        }
+        // Keep the prior truncation semantics for finite, representable values.
+        for (double value : {-12.75, 15.75}) {
+            const int configurations = g_configurations;
+            device.setGain(SOAPY_SDR_RX, 0, "REF", value);
+            expect(device.getGain(SOAPY_SDR_RX, 0, "REF") == std::trunc(value), "valid REF gain changed truncation");
+            expect(g_configurations == configurations + (active ? 1 : 0),
+                   "valid REF gain did not preserve live/inactive configuration behavior");
+        }
+        if (active) {
+            std::complex<float> data[kPacketSamples];
+            void *buffs[] = {data};
+            int flags = 0; long long time = 0;
+            expect(device.readStream(stream, buffs, kPacketSamples, flags, time, 1000000) == kPacketSamples,
+                   "stream did not remain readable after rejecting invalid REF gain");
+            expect(device.deactivateStream(stream) == 0 && !g_triggered, "gain-bound stream did not stop");
+            expect(device.activateStream(stream) == 0, "gain-bound stream did not restart");
+            expect(device.readStream(stream, buffs, kPacketSamples, flags, time, 1000000) == kPacketSamples,
+                   "gain-bound stream did not produce samples after restart");
+            device.deactivateStream(stream);
+        }
+    }
+    for (double value : {static_cast<double>(std::numeric_limits<int>::min()),
+                         static_cast<double>(std::numeric_limits<int>::max())}) {
+        device.setGain(SOAPY_SDR_RX, 0, "REF", value);
+        expect(device.getGain(SOAPY_SDR_RX, 0, "REF") == value, "representable REF gain endpoint rejected");
+    }
+    device.closeStream(stream);
+}
+
+static void check_sdk_bounds() {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const double rate : {nan, inf, -inf, 0.0, -1.0, 1e300}) {
+        g_native_rate = rate;
+        const int opens = g_opens, closes = g_closes;
+        bool rejected = false;
+        try { SoapyHarogic invalid(SoapySDR::Kwargs{{"device", "2"}}); }
+        catch (const std::runtime_error &) { rejected = true; }
+        expect(rejected, "accepted invalid SDK native sample rate");
+        expect(g_opens == opens + 1 && g_closes == closes + 1,
+               "capability validation leaked the opened device");
+    }
+    g_native_rate = kNativeRate;
+    SoapyHarogic device(SoapySDR::Kwargs{{"device", "2"}});
+    const size_t mtu = device.getStreamMTU(nullptr);
+    expect(mtu == 16384, "transport MTU is not stable and bounded");
+    auto *stream = device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, {0}, {{"native_format", "CS32"}});
+    const auto reject_configuration = [&] {
+        const int starts = g_starts, fetches = g_fetches, stops = g_stops;
+        g_excess_allocation = false;
+        g_watch_allocations = true;
+        const int result = device.activateStream(stream);
+        g_watch_allocations = false;
+        expect(result == SOAPY_SDR_STREAM_ERROR, "accepted invalid SDK stream geometry");
+        expect(!g_excess_allocation, "SDK geometry reached oversized allocation before validation");
+        expect(g_starts == starts && g_fetches == fetches && g_stops > stops && !g_triggered,
+               "rejected geometry started acquisition or failed to stop it");
+        expect(device.getStreamMTU(stream) == mtu, "failed activation changed the advertised MTU");
+    };
+    g_override_rate = true;
+    for (double rate : {nan, inf, -inf, 0.0, -1.0, 1e-300, 1e300, 200000000.0}) {
+        g_configured_rate = rate;
+        reject_configuration();
+    }
+    g_override_rate = false;
+    for (uint32_t samples : {0u, 1048577u, UINT32_MAX}) {
+        g_configured_samples = samples;
+        reject_configuration();
+    }
+    g_configured_samples = kPacketSamples;
+    for (int64_t bytes : {0LL, 31LL, 33LL, static_cast<long long>(UINT32_MAX)}) {
+        g_configured_bytes = bytes;
+        reject_configuration();
+    }
+    g_configured_bytes = -1;
+    g_configured_format = Complex8bit;
+    reject_configuration();
+    g_configured_format = -1;
+    device.closeStream(stream);
+
+    // An otherwise supported high-rate profile can still exceed the total byte
+    // budget in CS32. This must be rejected before allocating a larger ring.
+    g_native_rate = 200000000.0;
+    {
+        SoapyHarogic high_rate(SoapySDR::Kwargs{{"device", "2"}});
+        auto *wide_stream = high_rate.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, {0}, {{"native_format", "CS32"}});
+        g_excess_allocation = false;
+        g_watch_allocations = true;
+        expect(high_rate.activateStream(wide_stream) == SOAPY_SDR_STREAM_ERROR,
+               "accepted ring larger than stream byte budget");
+        g_watch_allocations = false;
+        expect(!g_excess_allocation, "byte budget was enforced only by allocator failure");
+    }
+    g_native_rate = kNativeRate;
+    g_extrema = true;
+    stream = device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, {0}, {{"native_format", "CS16"}});
+    const auto read_packet = [&](int expected) {
+        std::complex<float> data[kPacketSamples + 1];
+        const std::complex<float> sentinel(123, -456);
+        std::fill(std::begin(data), std::end(data), sentinel);
+        void *buffs[] = {data};
+        int flags = 0;
+        long long time = 0;
+        expect(device.readStream(stream, buffs, kPacketSamples, flags, time, 1000000) == expected,
+               "packet validation returned the wrong stream state");
+        const size_t untouched = expected < 0 ? 0 : kPacketSamples;
+        for (size_t i = untouched; i < std::size(data); ++i)
+            expect(data[i] == sentinel, "malformed packet or bounded read modified destination");
+    };
+    for (int fault = 0; fault < 9; ++fault) {
+        g_packet_samples = fault == 0 ? 0 : fault == 1 ? 5 : fault == 2 ? UINT32_MAX : kPacketSamples;
+        g_packet_bytes = fault == 3 ? 0 : fault == 4 ? 15 : fault == 5 ? 17 : -1;
+        g_packet_format = fault == 6 ? Complex8bit : fault == 7 ? Real16bit : -1;
+        g_null_packet = fault == 8;
+        expect(device.activateStream(stream) == 0, "bad-packet activation failed");
+        read_packet(SOAPY_SDR_STREAM_ERROR);
+        const int stops = g_stops;
+        expect(device.deactivateStream(stream) == 0 && g_stops > stops && !g_triggered,
+               "bad-packet stop did not release acquisition");
+        const int fetches = g_fetches;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        expect(g_fetches == fetches, "stopped SDK worker kept fetching");
+        g_packet_samples = kPacketSamples; g_packet_bytes = -1; g_packet_format = -1; g_null_packet = false;
+        expect(device.activateStream(stream) == 0, "valid stream did not recover after malformed packet");
+        read_packet(kPacketSamples);
+        device.deactivateStream(stream);
+    }
+    device.closeStream(stream);
+    g_extrema = false;
+}
+
+int main(int argc, char **argv) {
+    // Isolate malformed SDK inputs for sanitizer RED/GREEN runs as well as the full contract.
+    if (argc == 2) {
+        const std::string selected = argv[1];
+        if (selected == "gain-bounds") check_gain_bounds();
+        else if (selected == "network-discovery-bounds") check_network_bounds(false);
+        else if (selected == "network-constructor-bounds") check_network_bounds(true);
+        else fail("unknown focused contract " + selected);
+        expect(g_opens == g_closes, "focused boundary check leaked a device handle");
+        std::cout << "soapy_stream_format_check: " << selected << " ok\n";
+        return 0;
+    }
+    expect(argc == 1, "unexpected contract arguments");
     check_ring();
     check_discovery();
     g_fail_open = true;
@@ -497,6 +771,12 @@ int main() {
            "recreated device did not reuse its constructor handle");
     device.reset();
     expect(g_opens == g_closes, "active device destruction leaked its handle");
+    check_sdk_bounds();
+    expect(g_opens == g_closes, "SDK boundary checks leaked device handles");
+    check_gain_bounds();
+    check_network_bounds(false);
+    check_network_bounds(true);
+    expect(g_opens == g_closes, "control/discovery boundary checks leaked device handles");
     std::cout << "soapy_stream_format_check: ok\n";
     return 0;
 }

@@ -1,5 +1,10 @@
 import { STREAM_RETRY } from './streamLimits';
 
+/** Only explicit receiver lifecycle endings bypass the transport retry policy. */
+export function receiverEndReason(code: number, reason: string): string | null {
+  return code === 1000 && (reason === 'receiver retired' || reason === 'receiver stopped') ? reason : null;
+}
+
 /** Retry subscriptions, never receiver configuration or recording tasks. */
 export class StreamRetry {
   private networkAttempts = 0;

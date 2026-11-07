@@ -1,14 +1,16 @@
 //! STFT Wiener denoiser for narrowband voice — the analog path's noise-reduction stage.
 //!
 //! Standard short-time spectral subtraction with a Wiener-shaped gain: a Hann-windowed STFT at 75%
-//! overlap, a per-bin noise power estimate tracked by minimum statistics, and
+//! overlap, a smoothed low quantile of each frame's bin powers as the noise floor, and
 //! `g = max(floor, 1 - noise/(power + eps))`. The floor is what keeps the residual from turning
 //! into isolated "musical" tones: without it, bins that happen to dip below the estimate get
 //! slammed to zero and the result sounds like a ring modulator.
 //!
 //! Streaming: the frame overlap, the noise estimate and the output FIFO all carry across blocks.
-//! The stage has `frame - hop` samples of latency, which is why the chain's block budget has to
-//! leave room for it rather than assume zero-delay processing.
+//! The equal-length [`AudioStage`] interface has a fixed `FRAME - 1` (511 sample) delay: the
+//! first sample cannot be emitted before its 512-sample analysis frame is complete. Native
+//! callers that account for completed hops use [`Wiener::process_available_into`] instead;
+//! that interface emits 128 samples after the first 512, retaining 384 samples of overlap.
 //!
 //! This is deliberately *not* an ML speech enhancer: it must run in the wasm audio budget with no
 //! dependencies, and it must be provably safe to disable (the RAW/digital path never sees it).
@@ -28,9 +30,11 @@ pub struct Wiener {
     window: Vec<f64>,
     /// Running input frame (the last `FRAME` samples seen).
     frame: Vec<f64>,
-    /// Filled by the first `HOP` calls, so the first frames are real instead of starting mid-air.
+    /// Input samples collected towards a complete frame, including retained overlap.
     filled: usize,
-    /// Per-bin noise estimate (the floor the gains are computed against).
+    /// Exclusive end of the last held input within `frame`; zero means it is safe to adapt.
+    held_until: usize,
+    /// Current frame's power in each FFT bin.
     power: Vec<f64>,
     floor: f64,
     warmed: bool,
@@ -38,6 +42,8 @@ pub struct Wiener {
     out_buf: Vec<f64>,
     /// Samples produced by the STFT but not yet handed to the caller.
     pending: Vec<f64>,
+    /// Startup delay for the equal-length interface, consumed once per stream.
+    padding_remaining: usize,
     fft_re: Vec<f64>,
     fft_im: Vec<f64>,
     /// COLA normalisation: the sum of the squared window over the overlapping frames.
@@ -79,11 +85,13 @@ impl Wiener {
             window,
             frame: vec![0.0; n],
             filled: 0,
+            held_until: 0,
             power: vec![0.0; n],
             floor: 0.0,
             warmed: false,
             out_buf: vec![0.0; n],
             pending: Vec::new(),
+            padding_remaining: FRAME - 1,
             fft_re: vec![0.0; n],
             fft_im: vec![0.0; n],
             norm: norm.max(1e-9),
@@ -159,16 +167,17 @@ impl Wiener {
             // find the floor, and with a continuous carrier it would converge onto the carrier
             // itself and notch the signal out. A quantile floor needs no pauses and cannot lock
             // onto a tone that occupies a handful of bins.
-            let _ = power;
             self.power[k] = power;
         }
-        let floor = Self::quantile(&self.power, 0.25);
-        self.floor = if self.warmed {
-            self.floor * 0.8 + floor * 0.2
-        } else {
-            self.warmed = true;
-            floor
-        };
+        if self.held_until == 0 {
+            let floor = Self::quantile(&self.power, 0.25);
+            self.floor = if self.warmed {
+                self.floor * 0.8 + floor * 0.2
+            } else {
+                self.warmed = true;
+                floor
+            };
+        }
         let gains = self.gains();
         for k in 0..FRAME {
             self.fft_re[k] *= gains[k];
@@ -188,16 +197,8 @@ impl Wiener {
         }
         self.frames += 1;
     }
-}
 
-impl AudioStage for Wiener {
-    fn id(&self) -> &'static str {
-        "wiener"
-    }
-
-    fn process_into(&mut self, input: &[f32], _hold: bool, out: &mut Vec<f32>) {
-        out.clear();
-        out.reserve(input.len());
+    fn ingest(&mut self, input: &[f32], hold: bool) {
         let mut index = 0;
         while index < input.len() {
             let take = (FRAME - self.filled).min(input.len() - index);
@@ -205,36 +206,58 @@ impl AudioStage for Wiener {
                 self.frame[self.filled + k] = input[index + k] as f64;
             }
             self.filled += take;
+            if hold {
+                self.held_until = self.filled;
+            }
             index += take;
             if self.filled == FRAME {
                 self.frame_into();
                 // Slide by one hop: keep the newest FRAME-HOP samples at the front.
                 self.frame.copy_within(HOP.., 0);
                 self.filled = FRAME - HOP;
-            }
-            while let Some(sample) = self.pending.first().copied() {
-                if out.len() >= input.len() {
-                    break;
-                }
-                out.push(sample as f32);
-                self.pending.remove(0);
+                self.held_until = self.held_until.saturating_sub(HOP);
             }
         }
-        // A block shorter than the stage's latency produces nothing yet; pad with zeros so the
-        // caller's sample count is preserved (the chain must not change the block length).
-        while out.len() < input.len() {
-            out.push(0.0);
-        }
+    }
+
+    /// Emit completed 128-sample hops without padding. The first hop needs 512 input samples;
+    /// each subsequent hop needs 128. Input partitioning does not change the emitted sequence.
+    /// A frame containing any held sample advances the stream without updating its noise floor.
+    /// Use this interface or the equal-length `AudioStage` interface consistently until reset.
+    pub fn process_available_into(&mut self, input: &[f32], hold: bool, out: &mut Vec<f32>) {
+        self.ingest(input, hold);
+        out.clear();
+        out.extend(self.pending.drain(..).map(|sample| sample as f32));
+    }
+}
+
+impl AudioStage for Wiener {
+    fn id(&self) -> &'static str {
+        "wiener"
+    }
+
+    fn process_into(&mut self, input: &[f32], hold: bool, out: &mut Vec<f32>) {
+        self.ingest(input, hold);
+        out.clear();
+        let padding = self.padding_remaining.min(input.len());
+        out.resize(padding, 0.0);
+        self.padding_remaining -= padding;
+        // Waiting for FRAME-1 samples once makes every subsequent output causal, including
+        // one-sample callbacks. Padding at each callback's end would insert gaps into the PCM.
+        let available = input.len() - padding;
+        out.extend(self.pending.drain(..available).map(|sample| sample as f32));
     }
 
     fn reset(&mut self) {
         self.frame.iter_mut().for_each(|v| *v = 0.0);
         self.filled = 0;
+        self.held_until = 0;
         self.power.iter_mut().for_each(|v| *v = 0.0);
         self.floor = 0.0;
         self.warmed = false;
         self.out_buf.iter_mut().for_each(|v| *v = 0.0);
         self.pending.clear();
+        self.padding_remaining = FRAME - 1;
         self.frames = 0;
     }
 
@@ -341,5 +364,100 @@ mod tests {
         for (index, (x, y)) in a.iter().zip(b.iter()).enumerate() {
             assert!((x - y).abs() < 1e-6, "sample {index}: {x} vs {y}");
         }
+    }
+
+    #[test]
+    fn held_audio_advances_frames_without_learning_its_noise_floor() {
+        let mut wiener = Wiener::new();
+        let input = tone_plus_noise(FRAME);
+        let mut output = Vec::new();
+        wiener.process_into(&input, false, &mut output);
+        let floor = wiener.floor;
+        let frames = wiener.frames;
+        let transient: Vec<f32> = input.iter().map(|sample| sample * 10.0).collect();
+        wiener.process_into(&transient, true, &mut output);
+        assert_eq!(wiener.floor, floor, "AudioStage::hold freezes noise adaptation");
+        assert!(wiener.frames > frames, "hold still advances the stream clock");
+    }
+
+    #[test]
+    fn callback_partition_does_not_insert_gaps_into_the_pcm_clock() {
+        let input = tone_plus_noise(4096);
+        let render = |size| {
+            let mut wiener = Wiener::new();
+            let mut output = Vec::new();
+            let mut block = Vec::new();
+            for chunk in input.chunks(size) {
+                wiener.process_into(chunk, false, &mut block);
+                assert_eq!(block.len(), chunk.len());
+                output.extend_from_slice(&block);
+            }
+            output
+        };
+        let reference = render(input.len());
+        for size in [1, 7, 127, 128, 511, 512, 960] {
+            let output = render(size);
+            let mismatch = output.iter().zip(&reference).position(|(a, b)| a != b);
+            assert!(mismatch.is_none(), "block size {size} changes PCM at sample {mismatch:?}");
+        }
+    }
+
+    #[test]
+    fn unity_gain_follows_the_independent_overlap_add_and_causal_delay_reference() {
+        let input = tone_plus_noise(2048);
+        let mut wiener = Wiener::new();
+        wiener.gain_floor = 1.0;
+        let mut output = Vec::new();
+        wiener.process_into(&input, false, &mut output);
+        assert!(output[..FRAME - 1].iter().all(|sample| *sample == 0.0));
+        for (n, actual) in output[FRAME - 1..].iter().enumerate() {
+            // With unit spectral gain, analysis and synthesis multiply each sample by
+            // Hann twice. Only frames starting at 0, HOP, ... exist during startup.
+            let weight: f64 = (0..=n).step_by(HOP).map(|start| n - start)
+                .filter(|&index| index < FRAME)
+                .map(|index| (0.5 - 0.5 * (2.0 * PI * index as f64 / FRAME as f64).cos()).powi(2))
+                .sum();
+            let expected = input[n] as f64 * weight / 1.5;
+            assert!((*actual as f64 - expected).abs() < 2e-7,
+                "source sample {n}: {actual} vs independent OLA {expected}");
+        }
+    }
+
+    #[test]
+    fn completed_hops_match_the_equal_length_sequence_after_its_delay() {
+        let input = tone_plus_noise(4096);
+        let mut equal = Wiener::new();
+        let mut delayed = Vec::new();
+        equal.process_into(&input, false, &mut delayed);
+        for size in [1, 7, 128, 512, 960, 4096] {
+            let mut native = Wiener::new();
+            let mut available = Vec::new();
+            let mut block = Vec::new();
+            for chunk in input.chunks(size) {
+                native.process_available_into(chunk, false, &mut block);
+                assert_eq!(block.len() % HOP, 0);
+                available.extend_from_slice(&block);
+            }
+            assert_eq!(available.len(), input.len() - (FRAME - HOP));
+            assert_eq!(delayed[FRAME - 1..], available[..delayed.len() - (FRAME - 1)]);
+        }
+    }
+
+    #[test]
+    fn held_samples_freeze_every_overlapping_frame_until_they_leave() {
+        let mut wiener = Wiener::new();
+        let mut output = Vec::new();
+        wiener.process_available_into(&tone_plus_noise(FRAME), false, &mut output);
+        let initial_floor = wiener.floor;
+        wiener.process_available_into(&[9.0], true, &mut output);
+        let loud: Vec<f32> = tone_plus_noise(HOP).iter().map(|sample| sample * 10.0).collect();
+        for hop in 0..4 {
+            let count = if hop == 0 { HOP - 1 } else { HOP };
+            wiener.process_available_into(&loud[..count], false, &mut output);
+            assert_eq!(output.len(), HOP);
+            assert_eq!(wiener.floor, initial_floor, "held input still appears in overlap {hop}");
+        }
+        wiener.process_available_into(&loud, false, &mut output);
+        assert!(wiener.floor > initial_floor, "learning resumes after the last held sample leaves");
     }
 }

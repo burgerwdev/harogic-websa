@@ -15,6 +15,7 @@ const DRM_PRIME_S = 1.6;
 const DRM_TARGET_S = 1.4;
 const DRM_MAX_FILL_S = 2.4;
 const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not a click
+const METER_S = 0.05;           // meter follows rendered PCM, independently of ingress buffering
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
@@ -64,6 +65,9 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.resets = 0;
     this.slipped = 0;
     this.reportCountdown = 0;
+    this.meterFrames = 0;
+    this.meterPower = 0;
+    this.meterPeak = 0;
     this.failed = false;
     this.generation = 0;
     // Source frames actually removed from the ring in the current generation.
@@ -110,6 +114,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   reset() {
     const wasPlaying = this.playing;
     this.resets++;
+    this.meterFrames = this.meterPower = this.meterPeak = 0;
     this.tailGain = 0;
     this.lastSample = 0;
     this.lastSampleR = 0;
@@ -259,6 +264,19 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.available -= step;
         this.consumedFrames++;
       }
+    }
+    // Measure the actual rendered block (including fades and silence). Stereo
+    // RMS averages both channels; sample peak uses the louder channel.
+    for (let i = 0; i < out.length; i++) {
+      const left = out[i], right = outR ? outR[i] : left;
+      this.meterPower += (left * left + right * right) / 2;
+      this.meterPeak = Math.max(this.meterPeak, Math.abs(left), Math.abs(right));
+    }
+    this.meterFrames += out.length;
+    if (this.meterFrames >= sampleRate * METER_S) {
+      this.port.postMessage({ type: 'meter', generation: this.generation, playing: this.playing,
+        rms: Math.sqrt(this.meterPower / this.meterFrames), peak: this.meterPeak });
+      this.meterFrames = this.meterPower = this.meterPeak = 0;
     }
     this.fillSum += this.available;
     if (this.playing !== wasPlaying) this.postGate();

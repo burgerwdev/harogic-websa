@@ -9,6 +9,7 @@ import { updateInfoBar } from '../render/infobar';
 import {
   fillGnssDetail,
   syncGraphModeStatus,
+  supersedeSdrEntryReplay,
   setGraphMode,
   releaseGraphModePending,
   syncPresetStatus, rejectPresetRequest,
@@ -190,6 +191,7 @@ function scheduleSpectrumWork(work: () => void, immediate = false) {
 
 onTriggerReset(cancelSpectrumWork);
 onCommandSent(command => {
+  supersedeSdrEntryReplay(command);
   if (command.cmd === 'SET_MODE') initialModeSync = false;
   if (command.cmd !== 'STATUS') {
     pendingCommands.set(command.request_id, { sequence: ++commandSequence, command });
@@ -544,8 +546,10 @@ export function updateStatus(s: any) {
     return;
   }
   if (Number.isFinite(version)) statusVersion = Math.max(statusVersion, version);
-  const restoreMode = initialModeSync && s.mode !== 'server'
-    ? localStorage.getItem('web-sa-mode') : null;
+  let restoreMode: string | null = null;
+  if (initialModeSync && s.mode !== 'server') {
+    try { restoreMode = localStorage.getItem('web-sa-mode'); } catch { /* Optional browser preference. */ }
+  }
   // A native receiver service owns its live capture/set. Opening another browser
   // must not stop it or replay this browser's remembered operating mode.
   const shouldRestoreMode = initialModeSync && s.mode !== 'server'
@@ -562,10 +566,10 @@ export function updateStatus(s: any) {
   if (typeof s.sdr?.receiver_error === 'string') rejectSdrFilterRequest(undefined, undefined, true);
   if (recoveredReceiver && previousReceiverError
       && S.statusError === localizedError({ msg: previousReceiverError })) S.setStatusError(null);
-  syncGraphModeStatus(s.mode);
+  const nativeSdr = s.mode === 'sdr' && s.sdr?.receiver_api === 'multichannel-draft-v1';
+  syncGraphModeStatus(s.mode, nativeSdr);
   // Adopting an existing native receiver set skips the legacy SET_MODE/SET_SDR
   // replay. Its display still needs the one-time, display-only entry fit.
-  const nativeSdr = s.mode === 'sdr' && s.sdr?.receiver_api === 'multichannel-draft-v1';
   if (!nativeSdr || s.connected !== true) nativeSdrDisplayReady = false;
   else if (!nativeSdrDisplayReady) { nativeSdrDisplayReady = true; requestSdrEntryFit(); }
   syncServerStatus(s);

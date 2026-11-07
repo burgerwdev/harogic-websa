@@ -2,8 +2,9 @@
 use serde::Serialize;
 use serde_json::Value;
 use std::env;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use websa_channelizer::receiver::{AudioBlock, InputClock, Receiver, ReceiverConfig, ReceiverOutput, SamplePosition};
 
@@ -299,6 +300,11 @@ fn resolved_path(path: &Path) -> io::Result<PathBuf> {
     Ok(fs::canonicalize(parent)?.join(name))
 }
 
+fn file_identity(file: &File) -> io::Result<(u64, u64)> {
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let input_path = resolved_path(&args.input)?;
     let pcm_path = args.output_pcm.as_deref().map(resolved_path).transpose()?;
@@ -307,13 +313,26 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         || (pcm_path.is_some() && pcm_path == report_path) {
         return Err("input, PCM output, and JSON report must use distinct files".into());
     }
-    let mut receiver = Receiver::new(args.config.clone())?;
     let input_file = File::open(&args.input)?;
     if input_file.metadata()?.len() % 8 != 0 {
         return Err("IQ file must contain complete little-endian f32 I,Q pairs (8 bytes each)".into());
     }
+    // Open without truncation so aliases are checked against the actual files,
+    // including hard links and paths changed after the canonical-path check.
+    let open_output = |path: &PathBuf| OpenOptions::new().write(true).create(true).truncate(false).open(path);
+    let pcm_file = args.output_pcm.as_ref().map(open_output).transpose()?;
+    let report_file = args.report_json.as_ref().map(open_output).transpose()?;
+    let input_identity = file_identity(&input_file)?;
+    let pcm_identity = pcm_file.as_ref().map(file_identity).transpose()?;
+    let report_identity = report_file.as_ref().map(file_identity).transpose()?;
+    if pcm_identity == Some(input_identity) || report_identity == Some(input_identity)
+        || (pcm_identity.is_some() && pcm_identity == report_identity) {
+        return Err("input, PCM output, and JSON report must use distinct files".into());
+    }
+    let mut receiver = Receiver::new(args.config.clone())?;
+    if let Some(file) = &pcm_file { file.set_len(0)?; }
     let mut input = BufReader::new(input_file);
-    let pcm = args.output_pcm.as_ref().map(File::create).transpose()?.map(BufWriter::new);
+    let pcm = pcm_file.map(BufWriter::new);
     let mut sink = Sink { pcm, formats: Vec::new(), pcm_spans: Vec::new(), events: Vec::new(), event_bytes: 0, pcm_bytes: Vec::new(), next_source: None };
     let mut bytes = vec![0_u8; BLOCK_COMPLEX * 8];
     let mut iq = Vec::with_capacity(BLOCK_COMPLEX * 2);
@@ -363,8 +382,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         event_limits: EventLimits { max_events: MAX_EVENTS, max_json_bytes: MAX_EVENT_JSON_BYTES, max_pcm_spans: MAX_EVENTS, max_formats: MAX_FORMATS },
         ft8: Ft8Report { padding: "caller-supplied; no automatic padding", eof_flush: args.config.mode == "ft8" },
     };
-    let mut report_writer: Box<dyn Write> = match &args.report_json {
-        Some(path) => Box::new(BufWriter::new(File::create(path)?)),
+    let mut report_writer: Box<dyn Write> = match report_file {
+        Some(file) => {
+            file.set_len(0)?;
+            Box::new(BufWriter::new(file))
+        }
         None => Box::new(BufWriter::new(io::stdout().lock())),
     };
     serde_json::to_writer(&mut report_writer, &report)?;
@@ -388,6 +410,62 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn decode_output_boundary_preserves_hardlinked_input() {
+        struct Directory(PathBuf);
+        impl Drop for Directory { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let dir = Directory(env::temp_dir().join(format!("websa-decode-alias-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())));
+        fs::create_dir(&dir.0).unwrap();
+        let original: Vec<u8> = (0..128).flat_map(|_| [0.25f32, 0.0].into_iter().flat_map(f32::to_le_bytes)).collect();
+        let mut failures = Vec::new();
+        for pcm in [true, false] {
+            let input = dir.0.join(format!("source-{pcm}.iq"));
+            let output = dir.0.join(if pcm { "linked.f32" } else { "linked.json" });
+            fs::write(&input, &original).unwrap();
+            fs::hard_link(&input, &output).unwrap();
+            let result = run(Args {
+                input: input.clone(), output_pcm: pcm.then_some(output.clone()),
+                report_json: Some(if pcm {dir.0.join("report.json")} else {output}),
+                config: ReceiverConfig { mode:"am".into(), input_rate:48_000.0,
+                    if_bw:6_000.0, ..ReceiverConfig::default() },
+                clock: InputClock { first_sample_index:0, input_rate:48_000.0, delay_input_samples:0.0 },
+                realtime:false,
+            });
+            if result.is_ok() || fs::read(&input).unwrap() != original {
+                failures.push(if pcm { "PCM output truncated its IQ source" } else { "JSON report overwrote its IQ source" });
+            }
+        }
+        let input = dir.0.join("distinct-source.iq");
+        let pcm = dir.0.join("output.f32");
+        let report = dir.0.join("output.json");
+        fs::write(&input, &original).unwrap();
+        let previous = b"existing output must survive alias rejection";
+        fs::write(&pcm, previous).unwrap();
+        fs::hard_link(&pcm, &report).unwrap();
+        let args = || Args {
+            input:input.clone(), output_pcm:Some(pcm.clone()), report_json:Some(report.clone()),
+            config:ReceiverConfig { mode:"am".into(), input_rate:48_000.0,
+                if_bw:6_000.0, ..ReceiverConfig::default() },
+            clock:InputClock { first_sample_index:0, input_rate:48_000.0, delay_input_samples:0.0 },
+            realtime:false,
+        };
+        assert!(run(args()).is_err(), "PCM and report cannot share an inode");
+        assert_eq!(fs::read(&pcm).unwrap(), previous);
+        assert_eq!(fs::read(&report).unwrap(), previous);
+        assert_eq!(fs::read(&input).unwrap(), original);
+        // Distinct existing outputs still use the CLI's overwrite semantics.
+        fs::remove_file(&report).unwrap();
+        fs::write(&report, vec![b'X'; 16_384]).unwrap();
+        run(args()).unwrap();
+        let decoded:Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+        assert_eq!(decoded["input"]["complex_samples"], 128);
+        assert_ne!(fs::read(&pcm).unwrap(), previous);
+        assert_eq!(fs::read(&input).unwrap(), original);
+        assert!(failures.is_empty(), "{}", failures.join("; "));
+    }
 
     fn sink() -> Sink {
         Sink {pcm:None,formats:Vec::new(),pcm_spans:Vec::new(),events:Vec::new(),

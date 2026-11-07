@@ -59,7 +59,7 @@ impl HardwarePresentation {
             "start":lo,"stop":hi,
             "packet_samples":16240,"packet_bytes":64960,"pan_available":false,
             "listen":self.listen,"demod":self.demod,"if_bw":self.if_bw,
-            "ddc_decimate":snapshot.registry.iter().find(|c|c.channel==1).map(|c| snapshot.usable_bandwidth/0.8/c.output_rate),"ddc_batch":snapshot.batch_packets,
+            "ddc_decimate":snapshot.registry.iter().find(|c|c.channel==1).map(|c| snapshot.input_rate/c.output_rate),"ddc_batch":snapshot.batch_packets,
             "audio_rate":null,"deemph_us":self.deemph,
             "timing_scope":"capture_lifetime_cumulative","timing_quantiles":"histogram_upper_bound_ns",
             "ddc_error_count":self.errors,"ddc_error_last":self.last_error,
@@ -152,6 +152,10 @@ impl DevState {
         self.pipeline.as_ref().map(|p| p.snapshot.usable_bandwidth)
             .or_else(|| self.ddc.as_ref().map(|d| d.0.usable_bandwidth))
             .or(self.last_capture.map(|p|p.bandwidth)).unwrap_or(50e6)
+    }
+    pub(super) fn capture_input_rate(&self) -> f64 {
+        self.live_capture_parameters().or(self.last_capture)
+            .map_or(IQ_FS, |parameters| parameters.input_rate)
     }
     pub(super) fn capture_center(&self) -> f64 {
         self.pipeline.as_ref().map(|p| p.snapshot.capture_center)

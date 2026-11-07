@@ -1,10 +1,27 @@
 # Tools
 
 Helpers for the native Rust service, committed fixtures, browser gates, and RF benches.
-Start with [Architecture](../docs/en/ARCHITECTURE.md), [API](../docs/en/API.md), and
+Start with [Architecture](../docs/en/ARCHITECTURE.md), [API](../docs/en/reference/API.md), and
 [Development](../docs/en/DEVELOPMENT.md) for runtime and protocol contracts.
 Python dependencies belong to these tools; the service runs through `./run.sh`,
 `./stop.sh`, and `./status.sh`.
+
+## Choose a task
+
+| Task | Section |
+|---|---|
+| Install Soapy handoff | [Soapy driver](#soapy-server-driver-setup) |
+| Verify fixtures or replay IQ | [Checks and references](#checks-fixtures-and-references) |
+| Set up ADS-B, GPS or RTTY | [ADS-B](#ads-b--mode-s-aircraft), [GPS](#gps-l1-ca-from-sdr-iq), [RTTY](#independent-rtty-companion) |
+| Exercise the browser | [Browser/service benches](#browser-and-service-benches) |
+| Run signal-source experiments | [RF transmit/capture](#rf-transmit-and-capture) |
+| Qualify the SDR pipeline | [Pipeline acceptance](#sdr-pipeline-acceptance) |
+| Inspect device behavior | [Native hardware diagnostics](#native-hardware-diagnostics) |
+
+These are focused procedures; general setup and the bounded build/test workflow belong in
+[Development](../docs/en/DEVELOPMENT.md). Run heavy probes separately, retain small reports,
+and clean only temporary data created by that run. Historical results in this guide do not
+qualify the current executable.
 
 ## Tool groups and dependencies
 
@@ -21,8 +38,7 @@ Python dependencies belong to these tools; the service runs through `./run.sh`,
 | `build-soapy.sh` | Build the official SoapyHarogic module with typed IQ and device-lifecycle fixes; `--check-patch` checks pinned patch applicability and `--check-stream` checks the patched stream contract with an HTRA stub. |
 
 Run commands from the repository root. Install Python tools with
-`python3 -m pip install -r requirements-dev.txt`; use `requirements-lock.txt` for
-the pinned environment. Browser probes also need `python3 -m playwright install chromium`.
+`python3 -m pip install -r requirements-dev.txt -c requirements-lock.txt` in a virtual environment. Browser probes also need `python3 -m playwright install chromium`.
 Native DSP builds require Rust, `pkg-config`, FDK AAC 2.0.3 or newer, and a C++17
 compiler. Frontend builds require Node/npm. Browser reception uses native DSP;
 WASM builds remain explicit offline diagnostics.
@@ -60,11 +76,18 @@ The host IQ ring holds about 50 ms at the configured sample rate, with a minimum
 
 For a custom prefix, export `WEBSA_SOAPY_MODULE_PATH=<prefix>/lib/SoapySDR/modules0.8` before starting `websad`; direct Soapy tools use `SOAPY_SDR_PLUGIN_PATH` for that path. The manager prepends its module path to the inherited plugin path and probes `SoapySDRUtil --info` for the registered lowercase `harogic` factory. `WEBSA_SOAPY_SERVER_BIN` and `WEBSA_SOAPY_UTIL_BIN` are trusted process-environment overrides of the two executables, not browser settings. Handoff requires the nonterminal `san90_session_release_v1` ABI; a loaded shim without it refuses handoff. Rebuild custom SDK shims with `make sdk-shim`.
 
-Open WebSA, select **SRV**, configure the stopped server's IP literal/port, then Start. The default bind is `127.0.0.1:55132`; use `0.0.0.0` for IPv4 LAN clients, then connect to the server's reachable LAN address. A wildcard bind (`0.0.0.0` or `::`) is not a client destination. Use `driver=remote,remote=<host>:<port>,remote:driver=harogic` in a SoapyRemote client. SoapySDRServer exposes installed device factories, so retain the `harogic` filter. Listening confirms only the process endpoint; the analyzer opens on client use. Web capture and audio are stopped throughout Server mode. Spectrum stops and reaps the child before restoring the last graph view. See the paired [API](../docs/en/API.md) / [中文](../docs/zh-CN/API.md) for state, logs, dependency failures, browser lifetime and release refusal.
+Open WebSA, select **SRV**, configure the stopped server's IP literal/port, then Start. The default bind is `127.0.0.1:55132`; use `0.0.0.0` for IPv4 LAN clients, then connect to the server's reachable LAN address. A wildcard bind (`0.0.0.0` or `::`) is not a client destination. Use `driver=remote,remote=<host>:<port>,remote:driver=harogic` in a SoapyRemote client. SoapySDRServer exposes installed device factories, so retain the `harogic` filter. Listening confirms only the process endpoint; the analyzer opens on client use. Web capture and audio are stopped throughout Server mode. Spectrum stops and reaps the child before restoring the last graph view. See the paired [API](../docs/en/reference/API.md) / [中文](../docs/zh-CN/reference/API.md) for state, logs, dependency failures, browser lifetime and release refusal.
 
 SoapyRemote provides automatic network discovery through mDNS/Avahi and SSDP; WebSA does not need a second publisher. `avahi-browse -rt _soapy._tcp` can show the advertised host and port. An advertisement can include addresses on multiple interfaces, including loopback; discovery does not make a server bound to `127.0.0.1` reachable from another machine. In OnAir 3.2, stop reception, open the source selector, and enable **Search the network for radios** (off by default). The client must have the SoapyRemote module installed; discovered radios then appear through its Soapy source.
 
 [SDRoxide's SoapySDR backend](https://github.com/dividebysandwich/sdroxide#soapysdr-connectivity) accepts Soapy device arguments. Use a build with its `soapy` feature and install the SoapyRemote module **on the client**. Connect with `sdroxide --device 'driver=remote,remote=127.0.0.1:55132,remote:driver=harogic'`, substituting the server's reachable host for LAN use. SDRoxide's `--connect` and Settings → Remote use its own WebSocket protocol on port 4950; that entry point cannot connect to SoapySDRServer. An AppImage advertising native drivers alone does not establish that its build includes SoapySDR. This is an upstream-supported path, without an SDRoxide/SAN-90 reception claim.
+
+Stream geometry is validated before host allocation: the native SDK rate must be finite and within
+1–1,000,000,000 S/s, the returned rate must be within the advertised decimation range, and packets
+must contain 1–1,048,576 complex samples with matching byte counts. The 50 ms ring plus conversion
+scratch has a 64 MiB ceiling; these are adapter resource ceilings, not device capabilities.
+Malformed per-fetch metadata returns a stream error before copying, and stop/reactivation can
+reuse the retained device handle. The transport MTU remains 16,384 samples.
 
 USB discovery uses the SDK's `Device_List` to obtain device indices and serials without opening acquisition handles. Explicit Ethernet addresses bypass broadcast discovery; the constructor validates the selected device and serial. One streaming-capable handle serves capability queries and subsequent streams. Deactivation and `closeStream` stop acquisition but retain that handle; device destruction releases it. Changing live settings stops and joins the worker before SDK configuration, and unchanged settings do not restart acquisition.
 
@@ -88,12 +111,18 @@ python3 tools/fixtures/gen_sstv_fixtures.py --check
 `soapy-check-patch`, without hardware or the vendor SDK. Hosted CI also runs the SDK-free
 patch check. `soapy-check-stream` is a separate gate for hosts with the real vendor headers
 and SoapySDR development files. See [fixture ownership](../tests/fixtures/README.md) before
-regenerating data. `tools/reference/` and `tools/analysis/` provide independent numerical
+regenerating data. `tests/test_sdr_capture.py` uses an SDK-free ctypes stub: the Python reference
+reader accepts only consistent CS16 packets up to 4 MiB before copying. The separate production
+shim regression requires installed SDK headers/library but no hardware:
+
+```sh
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --bin websad production_shim_preserves_valid_overflow_and_rejects_malformed_outputs -- --ignored --test-threads=1
+```
+
+`tools/reference/` and `tools/analysis/` provide independent numerical
 comparisons; they do not run the HTTP service. DRM generation, capture, codec oracle, and AAC
-reserialization procedures are documented in [DRM bench](../docs/en/DRM_BENCH.md)
-([中文](../docs/zh-CN/DRM_BENCH.md)) and
-[DRM AAC reserialization](../docs/en/DRM_AAC_RESERIALIZATION.md)
-([中文](../docs/zh-CN/DRM_AAC_RESERIALIZATION.md)).
+reserialization procedures are documented in [DRM development reference](../docs/en/reference/DRM.md)
+([中文](../docs/zh-CN/reference/DRM.md)).
 
 Offline IQ replay uses the production receiver:
 
@@ -328,7 +357,9 @@ records current geometry; it is not an input for screenshot comparison.
 `bench/bench.py` consumes `bench/bench_baseline.json`; that historical baseline
 does not certify current native performance. `make bench-record` replaces it
 with measurements from the current host. Keep the configuration and report
-with any comparison.
+with any comparison. CPU samples are attributed only to the native process that
+owns the requested loopback HTTP listener. A remote endpoint or an ambiguous
+listener has no local CPU measurement; another running service cannot supply it.
 
 Specialized `e2e/` probes cover trace reset, mode switches, WFM/RDS, FT8 window
 dragging, SSTV reception, and README screenshots. Check each tool's `--help` for
@@ -427,7 +458,7 @@ capture the channelized IQ for native analysis and repeatable replay:
 python3 tools/bench/hil_audio_check.py --mode wfm --frequency 411e6 \
   --seconds 8 --tinysa-port '' --ifbw 180000 --out /tmp/hil_wfm.json
 WEBSA_RDS_IQ=/tmp/hil_wfm.json cargo test -j 1 --release --manifest-path dsp/core/Cargo.toml \
-  --test live_rds_capture -- --nocapture
+  --test live_rds_capture -- --ignored --nocapture
 ```
 
 `hil_reference_check.py`, `ft8_capture_check.py`, and `ft8_reference_compare.py`
@@ -438,12 +469,21 @@ and finite bursts can cause underruns.
 
 ## SDR pipeline acceptance
 
+`bench/multichannel_rf.py` owns a SAN90/Pluto bench for sustained sixteen-channel
+AM/NFM/USB/LSB acceptance. It verifies every IQ/audio subscription, sample clocks,
+stream identity and known RF tones, then stops its service, restores the transmitter
+and removes temporary tone PCM after saving hashes. Use a fresh external artifact
+directory and the matching SDK shim. The [development guide](../docs/en/DEVELOPMENT.md#fixtures-and-evidence)
+([中文](../docs/zh-CN/DEVELOPMENT.md#样本与验证证据)) gives the 600-second command and
+the limits of its 300 kHz stimulus within a 50 MHz capture. Keep heavy builds and
+browser tests out of the measurement window.
+
 IQBF/IQAX v2 uses a 56-byte little-endian header. `channel_id`, `epoch`,
 `input_index`, and `group_delay_samples` begin at bytes 32, 36, 40, and 48;
 complex f32 IQ begins at byte 56. Stream identity is `(epoch, channel_id)`.
 Frequency is metadata. Registry, native channel clocks, and wire metadata must
 agree, including fractional rates and source-time positions. See the
-[architecture](../docs/en/ARCHITECTURE.md) and [API](../docs/en/API.md) contracts.
+[architecture](../docs/en/ARCHITECTURE.md) and [API](../docs/en/reference/API.md) contracts.
 
 Against a running hardware service, use explicit URLs and retain JSON reports:
 

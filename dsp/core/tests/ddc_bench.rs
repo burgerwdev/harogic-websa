@@ -79,11 +79,10 @@ fn records_the_per_block_cost_of_the_ddc_chain() {
 }
 
 #[test]
-fn the_chain_does_not_grow_its_memory_per_block() {
-    // A per-block allocation in the hot path is invisible in a single measurement but shows up
-    // as steady growth here. The first blocks are warm-up: a resampler carries its fractional
-    // phase across blocks, so the produced length alternates between two values and the buffer
-    // legitimately grows to the larger one before it settles.
+fn the_output_buffer_capacity_stabilizes_after_warmup() {
+    // This observes only the caller-owned output capacity; it does not track
+    // internal allocations or total process memory. Fractional resampling makes
+    // produced lengths alternate, so warm up to the largest required size first.
     let iq = block();
     let mut ddc = Ddc::new(DdcConfig::for_channel(1_000_000.0, 80_078.125, 48_000.0, 129));
     let mut out = Vec::new();

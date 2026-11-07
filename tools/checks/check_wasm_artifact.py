@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Verify the committed WASM artifact without a Rust toolchain (so CI can gate it).
 
-`dsp/core/build.sh --check` is the real proof (it rebuilds and compares), but it needs Rust, and
-CI deliberately has none: adding the artifact must not add a toolchain to every push. This
-check keeps the artifact honest with pure Python:
+`dsp/core/build.sh --check` rebuilds and compares the artifact using Rust. This
+lightweight check can also run without that toolchain and verifies with pure Python:
 
   * the file exists and its size and sha256 match `dsp/core/dsp.artifact.json`
   * the recorded ABI version is the one the loader expects

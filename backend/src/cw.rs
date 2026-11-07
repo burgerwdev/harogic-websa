@@ -223,11 +223,15 @@ mod tests {
     }
 
     fn phrase_stream(tone_hz: f64) -> Vec<f32> {
-        let dot = (1.2 / 20.0 * RATE as f64).round() as usize;
-        let mut pcm = vec![0.0; RATE as usize / 5];
+        phrase_stream_at(RATE, tone_hz)
+    }
+
+    fn phrase_stream_at(rate: u32, tone_hz: f64) -> Vec<f32> {
+        let dot = (1.2 / 20.0 * rate as f64).round() as usize;
+        let mut pcm = vec![0.0; rate as usize / 5];
         let mut append = |key: bool, dots: usize| {
             for _ in 0..dots * dot {
-                let phase = std::f64::consts::TAU * tone_hz * pcm.len() as f64 / RATE as f64;
+                let phase = std::f64::consts::TAU * tone_hz * pcm.len() as f64 / rate as f64;
                 pcm.push(if key { (0.4 * phase.sin()) as f32 } else { 0.0 });
             }
         };
@@ -245,8 +249,29 @@ mod tests {
             append(false, 10);
             append(false, 42);
         }
-        pcm.resize(pcm.len() + 6 * RATE as usize, 0.0);
+        pcm.resize(pcm.len() + 6 * rate as usize, 0.0);
         pcm
+    }
+
+    #[test]
+    fn high_supported_rates_decode_known_text_across_irregular_blocks() {
+        for rate in [144_000, 176_400, 192_000] {
+            let pcm = phrase_stream_at(rate, 800.0);
+            let mut decoder = CwDecoder::new(rate, 800.0).unwrap();
+            let blocks = [1, 137, rate as usize / 10, 53, rate as usize / 20];
+            let mut offset = 0;
+            let mut text = String::new();
+            for count in blocks.into_iter().cycle() {
+                if offset == pcm.len() { break; }
+                let end = (offset + count).min(pcm.len());
+                let chunk = decoder.push(&pcm[offset..end]);
+                assert!(chunk.error.is_none(), "{rate}: {:?}", chunk.error);
+                text.push_str(&chunk.text);
+                offset = end;
+            }
+            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(normalized.contains(PHRASE), "{rate} Hz: {text:?}");
+        }
     }
 
     #[test]

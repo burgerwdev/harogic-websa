@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct Admission {
-    pub revision: u64,
+    revision: u64,
     command: String,
     request: Value,
     prepared: Option<receiver_workers::PreparedDecoders>,
@@ -9,13 +9,12 @@ pub(super) struct Admission {
     released: Option<receiver_workers::PreparedDecoders>,
     consumed: bool,
     processing:Option<Value>,
-    _fine_costs:Option<service_cost::PreparedCosts>,
     workers:Option<receiver_workers::ReceiverWorkers>,
 }
 
 impl Admission {
     fn empty(revision: u64, command: &str, request: &Value) -> Self {
-        Self { revision, command: command.into(), request: request.clone(), prepared: None, retired: None, released: None, consumed: false,processing:None,_fine_costs:None,workers:None }
+        Self { revision, command: command.into(), request: request.clone(), prepared: None, retired: None, released: None, consumed: false,processing:None,workers:None }
     }
 
     pub(super) fn dispatch(&mut self, state: &mut DevState, command: &str, request: &Value) -> Result<bool, CommandError> {
@@ -97,7 +96,7 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
             let config = state.parse_channel_config(data)?;
             state.receivers.check_control(config.channel,data)?;
             if state.channel_recapture(&config)?.is_none() && config.enabled {
-                let fs = state.capture_bandwidth() / 0.8;
+                let fs = state.capture_input_rate();
                 let source = service_ddc::source_plan(fs, &config)?;
                 service_ddc::validate_source_frequency(state.capture_center(), state.capture_bandwidth(),
                     fs, state.sdr_pfb_taps_per_phase, config.freq, &source)?;
@@ -145,7 +144,7 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
             } else {
                 let target=configs.iter_mut().find(|old|old.channel==next.channel).ok_or("channel not found")?;
                 *target = next;
-                let fs = state.capture_bandwidth() / 0.8;
+                let fs = state.capture_input_rate();
                 let bins = state.pipeline.as_ref().map(|p| p.snapshot.selected_bins)
                     .or_else(|| state.ddc.as_ref().map(|d| d.0.stream.bins().len()));
                 (state.capture_center(), fs, state.capture_bandwidth(), state.sdr_pfb_taps_per_phase, bins)
@@ -186,24 +185,23 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
                     && websa_channelizer::catalog::is_external(&config.mode)).cloned().collect(),
             }
         };
-        let calibrate = state.hardware_shim.is_some() || state.ddc.is_some() || state.pipeline.is_some();
+        let validate_geometry = state.hardware_shim.is_some() || state.ddc.is_some() || state.pipeline.is_some();
         let needs_workers=(state.receiver_failure.is_none() || recovery || starting)
             && (state.receiver_workers.is_none() || recovery)
             && configs.iter().any(|c|c.enabled&&c.processing_enabled);
-        (revision, configs, fs, taps, existing.unwrap_or(bins.len().max(1)), m as usize, live_channels, prepare_configs, calibrate,needs_workers)
+        (revision, configs, fs, taps, existing.unwrap_or(bins.len().max(1)), m as usize, live_channels, prepare_configs, validate_geometry,needs_workers)
     };
-    let (revision, configs, fs, taps, selected, maximum, channels, prepare_configs, calibrate,needs_workers) = candidate;
+    let (revision, configs, fs, taps, selected, maximum, channels, prepare_configs, validate_geometry,needs_workers) = candidate;
     let needs_preparation = !prepare_configs.is_empty();
     let result = tokio::task::spawn_blocking(move || {
-        let fine_costs=if calibrate {Some(service_cost::prepare_service(&configs,fs,taps,selected,channels && selected<maximum)?)} else {None};
+        if validate_geometry {service_cost::prepare_service(&configs,fs,taps,selected,channels && selected<maximum)?;}
         let processing=processing_admission::prepare(&configs,fs)?;
         let workers=if needs_workers {Some(receiver_workers::ReceiverWorkers::new()?)} else {None};
-        Ok::<_,String>((prepare(&prepare_configs)?,processing,fine_costs,workers))
+        Ok::<_,String>((prepare(&prepare_configs)?,processing,workers))
     }).await.map_err(|error| format!("service admission worker: {error}"))?;
     drop(permit);
     let mut ticket = Admission::empty(revision, cmd, data);
-    let (prepared,processing,fine_costs,workers) = result?;
-    ticket._fine_costs=fine_costs;
+    let (prepared,processing,workers) = result?;
     ticket.processing=Some(processing);
     ticket.workers=workers;
     if needs_preparation { ticket.prepared = Some(prepared); }
@@ -225,7 +223,7 @@ mod tests {
             identities:channel_identities(),display_version:Arc::new(AtomicU64::new(0))});
         let request=json!({"channel":MAX_CHANNELS,"enabled":true,"freq":100e6,"mode":"am"});
         let mut ticket=preflight(&app,"SET_SDR_CHANNEL",&request).await.unwrap();
-        assert!(ticket.workers.is_some(),"model preparation must finish before commit");
+        assert!(ticket.workers.is_some(),"bounded mailboxes must be allocated before commit");
         let mut state=app.state.lock().unwrap();
         assert!(state.receiver_workers.is_none());
         ticket.dispatch(&mut state,"SET_SDR_CHANNEL",&request).unwrap();

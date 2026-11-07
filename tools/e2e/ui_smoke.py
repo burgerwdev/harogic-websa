@@ -157,6 +157,8 @@ def main() -> int:
     failures: list[str] = []
 
     def check(name: str, ok: bool, detail: str = '') -> None:
+        if not isinstance(ok, bool):
+            raise TypeError(f'{name}: check requires a boolean result, got {type(ok).__name__}')
         print(f'  {"PASS" if ok else "FAIL"}  {name}' + (f'  <- {detail}' if detail else ''))
         if not ok:
             failures.append(name)
@@ -760,6 +762,7 @@ def main() -> int:
                 " return { gaps, spaces };"
                 " }")
             check('a word pause is drawn at every word gap, and only there',
+                  stats['spaces'] > 0 and stats['gaps'] == stats['spaces'],
                   f"gaps={stats['gaps']} spaces={stats['spaces']}")
             meter = page.evaluate(
                 "() => { const m = document.getElementById('cw-meter');"
@@ -1002,7 +1005,7 @@ def main() -> int:
         check("...and SDR remembers the trace mode the user chose there",
               back_mode == 'MAX_HOLD', f'trace mode={back_mode}')
 
-        # SDR pans preserve capture bandwidth; zooms use supported decimation steps.
+        # SDR pans preserve requested display bandwidth; zooms use supported decimation steps.
         post(args.url, {'cmd': 'SET_SDR', 'center': 100_000_000, 'decimate': 32})
         page.wait_for_timeout(3000)
         bands = axis_band_points(page)
@@ -1011,13 +1014,13 @@ def main() -> int:
         page.wait_for_timeout(3000)
         sdr_after = state(args.url)['sdr']
         check('SDR commands wait for pointer stillness or release', *drag_timing(sdr_drag))
-        check('dragging the frequency row pans the SDR capture centre',
+        check('dragging the frequency row pans the SDR display centre',
               sdr_after['center'] < sdr_before['center'] - 1000
               and bool(sdr_drag['commands'])
               and all(command['payload']['center'] < sdr_before['center'] - 1000
                       for command in sdr_drag['commands']),
               f"centre {sdr_before['center']:.0f} -> {sdr_after['center']:.0f}")
-        check('...without touching the capture bandwidth',
+        check('...without changing the requested display bandwidth',
               sdr_after['decimate'] == sdr_before['decimate']
               and all(command['payload']['decimate'] == sdr_before['decimate']
                       for command in sdr_drag['commands']),
@@ -1028,7 +1031,7 @@ def main() -> int:
             page.wait_for_timeout(120)
         page.wait_for_timeout(3000)
         sdr_zoom = state(args.url)['sdr']
-        check('the wheel on the frequency row narrows the capture to a real decimate step',
+        check('the wheel on the frequency row narrows the display to a supported decimate step',
               sdr_zoom['decimate'] > sdr_after['decimate'],
               f"decimate {sdr_after['decimate']} -> {sdr_zoom['decimate']}")
 

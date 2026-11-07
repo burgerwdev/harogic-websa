@@ -262,3 +262,11 @@ def test_invalid_timing_is_rejected_before_opening_the_radio(args):
     with pytest.raises(SystemExit) as error:
         tx.main(list(args))
     assert error.value.code == 2
+
+
+def test_zero_sized_stream_chunk_is_rejected_before_entering_synthesis():
+    def no_tones():
+        raise AssertionError('tone iterator consumed before chunk validation')
+        yield
+    with pytest.raises(ValueError):
+        next(tx.stream_tones(no_tones(), RATE, 1., 0))

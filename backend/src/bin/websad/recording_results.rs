@@ -21,6 +21,8 @@ fn scan(
 }
 fn validate(task: &Value, row: &Value) -> io::Result<()> {
     let e = &row["envelope"];
+    let fraction_num = e["input_fraction_num"].as_str().and_then(|s| s.parse::<u64>().ok());
+    let fraction_den = e["input_fraction_den"].as_str().and_then(|s| s.parse::<u64>().ok());
     if row["version"] != 1
         || e["receiver_uid"] != task["receiver_uid"]
         || e["service_id"] != task["service_id"]
@@ -33,14 +35,7 @@ fn validate(task: &Value, row: &Value) -> io::Result<()> {
             .as_str()
             .and_then(|s| s.parse::<u64>().ok())
             .is_none()
-        || e["input_fraction_num"]
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .is_none()
-        || e["input_fraction_den"]
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .is_none_or(|n| n == 0)
+        || fraction_num.zip(fraction_den).is_none_or(|(num, den)| den == 0 || num >= den)
         || !row["source"]["actual_rate_hz"]
             .as_f64()
             .is_some_and(|r| r.is_finite() && r > 0.0)
@@ -104,8 +99,6 @@ fn saved(task: &mut Value, finished: u64, position: u64) {
     last["valid_bytes"] = json!(position.to_string());
 }
 pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
-    fs::create_dir(path)?;
-    File::open(path.parent().unwrap())?.sync_all()?;
     let mut task = lane.task.lock().unwrap().clone();
     persist(path, &task)?;
     let mut writer = writer(path, 0)?;
@@ -398,6 +391,69 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         manager.reap();
+    }
+    #[test]
+    fn result_fraction_validation_preserves_u64_edges_and_rejects_improper_fractions() {
+        let task = json!({"receiver_uid":"uid","service_id":"service"});
+        for (num, den, valid) in [
+            (0, 1, true), (1, 3, true), (u64::MAX - 1, u64::MAX, true),
+            (0, 0, false), (3, 3, false), (4, 3, false),
+            (u64::MAX, u64::MAX, false), (u64::MAX, 1, false),
+        ] {
+            let mut value: Value = serde_json::from_slice(&row(4, 10)).unwrap();
+            value["envelope"]["input_fraction_num"] = json!(num.to_string());
+            value["envelope"]["input_fraction_den"] = json!(den.to_string());
+            assert_eq!(validate(&task, &value).is_ok(), valid, "fraction {num}/{den}");
+        }
+    }
+    #[test]
+    fn result_fraction_corruption_is_rejected_on_recovery_and_export() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        }
+        for invalid_num in ["3", "4", "18446744073709551615"] {
+            let root = directory();
+            let _cleanup = Cleanup(root.clone());
+            let mut manager = Manager::open(root.clone()).unwrap();
+            manager.start_kind("uid", "service", "results", "results").unwrap().wait().unwrap();
+            let id = manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+            let first = row(4, 10);
+            let second = row(4, 11);
+            manager.admit_result("uid", first.clone());
+            manager.admit_result("uid", second.clone());
+            finish(&mut manager, &id);
+            let mut task = manager.snapshots()[0].clone();
+            drop(manager);
+            let path = root.join(&id);
+            let file = path.join("results-000000.wbr");
+            fs::remove_file(&file).unwrap();
+            // Re-encode valid checksums and footer so rejection is caused by
+            // the semantic clock fault, not the journal integrity layer.
+            let mut malformed: Value = serde_json::from_slice(&second).unwrap();
+            malformed["envelope"]["input_fraction_num"] = json!(invalid_num);
+            let mut writer = writer(&path, 0).unwrap();
+            let prefix = writer.append(&first).unwrap();
+            writer.append(&serde_json::to_vec(&malformed).unwrap()).unwrap();
+            let size = writer.finish().unwrap();
+            drop(writer);
+            task["tracks"][0]["volumes"][0]["valid_bytes"] = json!(size.to_string());
+            let error = visit(&path, &task, &AtomicBool::new(false), |_| Ok(())).unwrap_err();
+            assert!(error.to_string().contains("identity/clock mismatch"), "{error}");
+            recover(&path, &mut task).unwrap();
+            assert_eq!(task["fault"]["code"], "ARCHIVE_CORRUPT");
+            assert_eq!(task["tracks"][0]["blocks"], "1");
+            assert_eq!(task["tracks"][0]["volumes"][0]["valid_bytes"], prefix.to_string());
+            let mut exported = Vec::new();
+            visit(&path, &task, &AtomicBool::new(false), |raw| {
+                exported.extend_from_slice(raw); Ok(())
+            }).unwrap();
+            assert_eq!(exported, [first.as_ref(), b"\n"].concat());
+            let recovered = task.clone();
+            recover(&path, &mut task).unwrap();
+            assert_eq!(task, recovered);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
     #[test]
     fn durable_results_preserve_pixels_clocks_interleaved_processing_tails_and_coexist_with_iq() {

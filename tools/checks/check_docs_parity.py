@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Require paired English/Chinese documents with the same section structure.
 
-Compares the `##`/`###` heading sequence of every docs/en/*.md with its zh-CN counterpart,
-ignoring translated titles. Every document name must exist in both languages.
+Compares the `##`/`###` heading sequence of every Markdown document under docs/en
+with its zh-CN counterpart, including reference subdirectories. Relative paths
+must exist in both languages; translated titles can differ.
 
     python3 tools/checks/check_docs_parity.py
 """
@@ -34,8 +35,8 @@ def headings(path: Path) -> list[tuple[int, int]]:
 
 def main() -> int:
     problems: list[str] = []
-    en_files = sorted(p.name for p in EN.glob('*.md'))
-    zh_files = sorted(p.name for p in ZH.glob('*.md'))
+    en_files = sorted(p.relative_to(EN).as_posix() for p in EN.rglob('*.md'))
+    zh_files = sorted(p.relative_to(ZH).as_posix() for p in ZH.rglob('*.md'))
     if en_files != zh_files:
         problems.append(f'docs/en has {en_files}, docs/zh-CN has {zh_files}')
     for name in en_files:
