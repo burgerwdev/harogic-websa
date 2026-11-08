@@ -154,8 +154,8 @@ async def protocol(origin, channels=3, *, raw_capture=False, center=100e6):
         'expected_revision': target['revision'], 'config': target['confirmed']})
     assert rejected['fault'] is not None
     assert rejected['snapshot']['receivers'][channels - 1]['stream'] == changed['snapshot']['receivers'][channels - 1]['stream']
-    candidate['baseband']['frequency_hz'] = 200e6
-    invalid = api(origin, payload={'type': 'configure', 'request_id': 'out-of-range', 'receiver_uid': target['receiver_uid'],
+    candidate['baseband']['frequency_hz'] = -1
+    invalid = api(origin, payload={'type': 'configure', 'request_id': 'invalid-enabled-frequency', 'receiver_uid': target['receiver_uid'],
         'expected_revision': changed['snapshot']['receivers'][channels - 1]['revision'], 'config': candidate})
     assert invalid['fault'] is not None
     assert invalid['snapshot']['receivers'][channels - 1]['stream'] == changed['snapshot']['receivers'][channels - 1]['stream']
@@ -204,7 +204,7 @@ async def protocol(origin, channels=3, *, raw_capture=False, center=100e6):
     return {'source_kind': before['capture']['source_kind'], 'service_id': service_id, 'receivers': receivers,
             'streams': traces, 'snapshot': api(origin), 'known_content_checked': not raw_capture,
             'checks': [f'{channels} UIDs', 'finite IQ samples' if raw_capture else 'IQ samples/power', 'actual source clocks',
-            'cross-bin boundary', 'unaffected sequence/position continuity', 'revision rejection', 'RF rejection', 'disabled frequency validation', 'unified command stop drain', 'stopped subscription rejection', 'resume keeps UID', 'middle number reused with fresh UID', 'retired UID rejection']}
+            'cross-bin boundary', 'unaffected sequence/position continuity', 'revision rejection', 'enabled frequency validation', 'disabled frequency validation', 'unified command stop drain', 'stopped subscription rejection', 'resume keeps UID', 'middle number reused with fresh UID', 'retired UID rejection']}
 
 
 def browser_gate(origin, artifacts, channels=3):
