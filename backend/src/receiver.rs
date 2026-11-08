@@ -499,9 +499,10 @@ impl Receiver {
         if let Some(ft8) = self.ft8.as_mut() { *ft8 = Ft8Window::new(); }
         Ok(())
     }
-    /// Protocol codec audio bypasses the analog listener chain.
+    /// Only a running analog listener has an audio squelch gate. Independent
+    /// protocol decoders may produce results without ever using this chain.
     pub fn squelch_status(&self) -> Option<(bool, f64)> {
-        if matches!(self.config.mode.as_str(), "drm" | "drmplus") { None }
+        if self.analog.is_none() { None }
         else { self.listener.squelch_status() }
     }
     pub fn process(&mut self, iq: &[f32], clock: InputClock, power_dbm: Option<f64>) -> Result<ReceiverOutput, String> {
@@ -945,6 +946,32 @@ mod tests {
             input_rate:if mode == "wfm" {240_000.0} else if mode == "drmplus" {96_000.0} else if mode == "radiofax" {12_000.0} else {48_000.0},
             if_bw:if mode == "wfm" {180_000.0} else if mode == "drmplus" {90_000.0} else if mode == "radiofax" {3_000.0} else {6_000.0},
             ..ReceiverConfig::default() }
+    }
+
+    #[test]
+    fn listener_squelch_is_only_reported_when_the_mode_has_an_analog_listener() {
+        for mode in MODES {
+            let receiver=Receiver::new(mode_config(mode)).unwrap();
+            let descriptor=crate::catalog::mode(mode).unwrap();
+            assert_eq!(receiver.squelch_status().is_some(),descriptor.audio_companion.is_some(),"{mode}");
+            assert_eq!(receiver.processing_status()["squelch"].is_null(),descriptor.audio_companion.is_none(),"{mode}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires installed OnAir, rtl_433, GNSS-SDR, multimon-ng and RTTY providers"]
+    fn external_modes_only_report_squelch_for_their_companion_audio() {
+        for (mode,center_hz) in [("adsb",1_090_000_000),("ais",162_000_000),
+            ("gps",1_575_420_000),("ism",433_920_000),("meteor",137_100_000),
+            ("aprs",144_800_000),("ft4",14_080_000),("wspr",14_097_100),
+            ("rtty",14_080_000),("dtmf",144_800_000)] {
+            let descriptor=crate::catalog::mode(mode).unwrap();
+            let config=ReceiverConfig {mode:mode.into(),center_hz,if_bw:descriptor.default_bandwidth_hz,
+                input_rate:descriptor.minimum_rate_hz.max(descriptor.input_rate_hz.unwrap_or(48_000)) as f64,
+                ..ReceiverConfig::default()};
+            let receiver=Receiver::new(config).unwrap();
+            assert_eq!(receiver.squelch_status().is_some(),descriptor.audio_companion.is_some(),"{mode}");
+        }
     }
 
     /// Martin M2 as real audio in I (Q=0), synthesised at an integer rate close

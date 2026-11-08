@@ -4,6 +4,9 @@
 
 ## Choose a runtime
 
+The checked-in runtime is v1.12.5. Build the current service/frontend with `make build`,
+or use a matching candidate package.
+
 WebSA runs on Linux. The repository includes a Linux x86_64/glibc service, SDK adapter and
 frontend under `runtime/`. The recorded bundle requires glibc 2.44, GLIBCXX 3.4.30,
 CXXABI 1.3.15 and `libfdk-aac.so.2`; it is not a static or generally portable distribution.

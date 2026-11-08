@@ -56,6 +56,8 @@ impl FaultKind {
                 "receiver input queue failure: sending on a full channel",
                 "FT8 search queue failure: sending on a full channel",
                 "FT8 result queue failure: sending on a full channel",
+                "decoder retained input exceeds ",
+                "decoder input backlog exceeded ",
             ]
             .iter()
             .any(|p| error.starts_with(p))
@@ -161,6 +163,10 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 impl Supervisor {
+    pub fn awaiting_decoder(&self, slot: u32) -> bool {
+        self.lanes.get(&slot).is_some_and(|lane| lane.phase == "recovering" && lane.needs_processing)
+    }
+
     pub fn snapshot(&self, slot: u32) -> Value {
         self.lanes.get(&slot).map_or(Value::Null,|r|json!({"policy":r.policy,"state":r.phase,
             "interruptions":r.count,"attempts":r.attempts,"retry_limit":RETRY_LIMIT,
@@ -372,6 +378,26 @@ impl Supervisor {
     }
 }
 impl DevState {
+    /// Recovery has the same resource admission contract as a user configuration.
+    /// The publisher constructs these processes outside the device-state lock.
+    pub(super) fn missing_reception_preparations(&self) -> Vec<receiver_workers::ChannelConfig> {
+        if self.swp.mode != "sdr" || self.receiver_failure.is_some() { return Vec::new(); }
+        self.missing_receiver_preparations().into_iter().filter(|config| {
+            self.reception.awaiting_decoder(config.channel)
+                && self.receiver_workers.as_ref().is_none_or(|w| w.restart_ready(config.channel))
+        }).collect()
+    }
+
+    pub(super) fn reception_preparation_failed(&mut self, error: &str) {
+        for config in self.missing_reception_preparations() {
+            if let Some(lane) = self.reception.lanes.get_mut(&config.channel) {
+                lane.attempts += 1;
+                lane.last_error = Some(format!("decoder preparation failed: {error}"));
+                lane.phase = "stopped";
+            }
+        }
+    }
+
     pub(super) fn reception_capture_failed(&mut self, error: &str) {
         let kind = FaultKind::capture(error);
         self.reception.shared_serial += 1;
@@ -498,6 +524,7 @@ impl DevState {
                     );
                 }
             }
+            let awaiting_preparation = self.missing_reception_preparations().iter().any(|c| c.channel == slot);
             let Some(lane) = self.reception.lanes.get_mut(&slot) else {
                 continue;
             };
@@ -579,6 +606,12 @@ impl DevState {
                 }
                 continue;
             }
+            // Keep both source and processing identities fenced until a new
+            // decoder is owned. Starting IQ first can consume sequence zero
+            // without its resource and turn a local overload into a global fault.
+            if awaiting_preparation {
+                continue;
+            }
             if !lane.shared {
                 lane.attempts += 1;
             }
@@ -625,6 +658,99 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires installed multimon-ng, rtl_433, OnAir, websa-rtty and GNSS-SDR providers"]
+    fn external_provider_recovery_prepares_again_before_readmitting_iq() {
+        // One lifecycle contract for pipes, network decoders, RTTY and GNSS.
+        for (mode,frequency) in [("dtmf",144_800_000.0),("ism",433_920_000.0),
+            ("adsb",1_090_000_000.0),("rtty",14_080_000.0),("gps",1_575_420_000.0)] {
+        let descriptor=websa_channelizer::catalog::mode(mode).unwrap();
+        assert!(descriptor.available,"{mode}: {:?}",descriptor.unavailable_reason);
+        let occupied=descriptor.default_bandwidth_hz * if descriptor.sideband=="upper" {2.0} else {1.0};
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.swp.mode = "sdr".into();
+        state.sdr_center = frequency;
+        state.sdr_listen = frequency;
+        state.sdr_channels[0].freq = frequency;
+        state.sdr_channels[1] = receiver_workers::ChannelConfig { channel:2, enabled:true,
+            freq:frequency, mode:mode.into(), if_bw:descriptor.default_bandwidth_hz,
+            baseband:Some(receiver_workers::BasebandConfig {passband_hz:occupied,
+                transition_hz:(occupied*0.125).max(1000.0),minimum_rate_hz:descriptor.minimum_rate_hz as f64}),
+            ..receiver_workers::ChannelConfig::default() };
+        state.remember_receiver_streams();
+        let configs = state.channel_configs();
+        state.ddc = Some(SendDdc(Ddc::configured_service(frequency,6_250_000.0,&mut None,16,
+            IQ_FS / 4.0,&configs).unwrap()));
+        let mut workers = receiver_workers::ReceiverWorkers::new().unwrap();
+        workers.install_prepared(receiver_workers::PreparedDecoders::new(&configs).unwrap());
+        state.receiver_workers = Some(workers);
+        for attempt in 0..2 {
+            let registry = state.stream_registry();
+            let frames:Vec<_> = registry.iter().filter(|row|attempt==0 || row.channel==2).map(|row|websa_channelizer::encode_baseband(
+                if row.channel==1 {websa_channelizer::BasebandMagic::Primary} else {websa_channelizer::BasebandMagic::Aux},
+                0,row.output_rate,row.frequency_hz,row.channel_id.into(),row.epoch.into(),0,0.0,&[]).unwrap()).collect();
+            state.process_receiver_frames_with_registry(&frames,&registry,true).unwrap();
+            assert!(state.receiver_failure.is_none());
+            let row=registry.iter().find(|r|r.channel==2).unwrap();
+            state.ddc.as_mut().unwrap().0.faults.insert(2,fine_workers::FineFault {channel:2,
+                channel_id:row.channel_id,epoch:row.epoch,kind:FaultKind::Overload,
+                error:"direct fine input exceeds 4194304 bytes".into(),
+                first_unavailable_input:Some(1000),last_completed_input:Some(0)});
+            state.receiver_workers.as_mut().unwrap().fail_source(2,"direct fine input exceeds 4194304 bytes");
+            let deadline=Instant::now()+Duration::from_secs(5);
+            while !state.receiver_workers.as_ref().unwrap().restart_ready(2) {
+                assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(1));
+            }
+            state.reception.next_check=None;state.advance_reception_recovery();
+            state.reception.lanes.get_mut(&2).unwrap().due=Instant::now();
+            let missing=state.missing_reception_preparations();
+            assert_eq!(missing.iter().map(|c|c.channel).collect::<Vec<_>>(),[2]);
+            let before=state.stream_registry();
+            state.reception.next_check=None;state.advance_reception_recovery();
+            assert_eq!(state.stream_registry(),before,"source must wait for preparation");
+            assert_eq!(state.reception.snapshot(2)["attempts"],attempt);
+            state.receiver_workers.as_mut().unwrap().install_prepared(
+                receiver_workers::PreparedDecoders::new(&missing).unwrap());
+            drop(state.receiver_workers.as_mut().unwrap().discard_staged(&before));
+            assert!(state.missing_reception_preparations().is_empty(),"{mode}: housekeeping discarded recovery resource");
+            state.reception.next_check=None;state.advance_reception_recovery();
+            assert_eq!(state.reception.snapshot(2)["state"],"preparing");
+            assert_eq!(state.reception.snapshot(2)["interruptions"],attempt+1);
+            assert!(state.receiver_failure.is_none());
+            let after=state.stream_registry();
+            assert_eq!(before.iter().find(|r|r.channel==1),after.iter().find(|r|r.channel==1));
+            assert_ne!(row.channel_id,after.iter().find(|r|r.channel==2).unwrap().channel_id);
+        }
+        let registry=state.stream_registry();let row=registry.iter().find(|r|r.channel==2).unwrap();
+        let marker=websa_channelizer::encode_baseband(websa_channelizer::BasebandMagic::Aux,0,
+            row.output_rate,row.frequency_hz,row.channel_id.into(),row.epoch.into(),0,0.0,&[]).unwrap();
+        state.process_receiver_frames_with_registry(&[marker],&registry,true).unwrap();
+        assert!(state.receiver_failure.is_none());
+        state.receiver_workers.as_mut().unwrap().retire_channels(&[2]).unwrap();
+        state.sdr_channels[1].enabled=false;
+        let configs=state.channel_configs();
+        state.receiver_workers.as_mut().unwrap().configure(&configs).unwrap();
+        drop(state.receiver_workers.as_mut().unwrap().release_prepared(&configs));
+        }
+    }
+
+    #[test]
+    fn decoder_preparation_failure_stays_local_and_allows_manual_retry() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.swp.mode="sdr".into();state.sdr_demod="adsb".into();
+        state.sdr_if_bw=1_800_000.0;state.sdr_listen=1_090e6;
+        fault(&mut state.reception,1,Policy::Continuous,FaultKind::Overload);
+        state.reception.lanes.get_mut(&1).unwrap().needs_processing=true;
+        state.reception_preparation_failed("injected child startup failure");
+        let report=state.reception.snapshot(1);
+        assert_eq!(report["state"],"stopped");
+        assert_eq!(report["attempts"],1);
+        assert!(report["last_error"].as_str().unwrap().contains("injected child startup failure"));
+        assert!(state.receiver_failure.is_none());
+        state.reception.manual(1).unwrap();
+        assert_eq!(state.missing_reception_preparations().len(),1);
+    }
+
     fn fault(s: &mut Supervisor, n: u32, policy: Policy, kind: FaultKind) {
         s.observe(
             1,

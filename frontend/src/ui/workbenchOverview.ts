@@ -168,6 +168,7 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       const rect = view.root.getBoundingClientRect();
       if (!active || viewport && (rect.bottom < viewport.top || rect.top > viewport.bottom || rect.right < viewport.left || rect.left > viewport.right)) { releaseProbe(uid, view); continue; }
       const result = options.readouts?.results(uid);
+      const hasAudio = receiverHasAudio(session.snapshot, r.confirmed);
       const reading = receiverLevel(r, result?.entries ?? [], options.readouts?.playback?.(uid), result?.source);
       const display = view.meter.update(reading, `${state.service}:${uid}:${r.stream?.epoch}:${r.stream?.channel_id}:${r.processing_runtime?.processing_generation}:${reading?.source}`);
       const scale = receiverLevelScale(reading ? { ...reading, db: display.level } : null), peak = receiverLevelScale(reading ? { ...reading, db: display.peak } : null);
@@ -178,12 +179,12 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       const sourceLabel = reading?.source === 'input' ? l('RF input', '射频输入') : reading?.source === 'playback' ? l('Playing audio before monitor volume', '播放音频，监听音量之前') : l('Demodulated audio, not playing', '解调音频，未播放');
       meter.title = reading ? `${sourceLabel} · ${reading.db.toFixed(1)} dBFS` : l('No live level', '暂无实时电平');
       meter.setAttribute('aria-valuetext', meter.title);
-      meter.querySelector('[data-card-source]')!.textContent = reading?.source === 'input' ? 'RF' : 'AF';
+      meter.querySelector('[data-card-source]')!.textContent = reading ? reading.source === 'input' ? 'RF' : 'AF' : hasAudio ? 'AF' : 'RF';
       meter.querySelector('small')!.textContent = reading ? `${reading.db.toFixed(0)} dBFS` : '— dBFS';
       const canvas = view.root.querySelector<HTMLCanvasElement>('[data-card-wave]')!, placeholder = view.root.querySelector<HTMLElement>('[data-card-placeholder]')!;
       const message = view.root.querySelector<HTMLElement>('[data-card-message]')!;
       const text = !!view.ticker && !message.hidden;
-      const audio = !text && r.coverage?.state !== 'out_of_band' && receiverHasAudio(session.snapshot, r.confirmed) && r.state === 'running' && !r.fault;
+      const audio = !text && r.coverage?.state !== 'out_of_band' && hasAudio && r.state === 'running' && !r.fault;
       const sampled = audio && !!options.readouts?.waveform?.(uid, view.samples);
       if (sampled) view.probe = true; else releaseProbe(uid, view);
       canvas.hidden = !sampled; placeholder.hidden = sampled || text;

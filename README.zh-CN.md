@@ -23,7 +23,8 @@ Python 用于离线工具和测试。
 
 ## 试用
 
-仓库包含 **Linux x86_64/glibc** 运行包，当前要求 glibc 2.44、GLIBCXX 3.4.30、
+仓库包含 **Linux x86_64/glibc** 运行包。已提交捆绑版本为 v1.12.5，
+`make build` 构建当前服务和前端。运行包要求 glibc 2.44、GLIBCXX 3.4.30、
 CXXABI 1.3.15 和 `libfdk-aac.so.2`；系统不兼容时请源码构建。
 
 ```bash

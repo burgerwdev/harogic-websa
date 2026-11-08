@@ -101,6 +101,10 @@ python tools/bench/multichannel_rf.py --shim <matching-sdk-shim.so> \
 
 ## 发布与清理
 
+版本以 `pyproject.toml` 为准，`python3 tools/checks/sync_version.py` 同步前端清单和 HTML。
+`make ci` 运行无硬件测试和静态检查，`make e2e-fake` 运行浏览器验收。
+`tools/package-candidate.py OUTPUT --verify` 验证独立候选目录；源码归档和报告不提交 Git。
+
 构建服务后重启目标实例，并检查 `./status.sh` 和进程实际可执行文件。成功重建后，旧进程可能仍持有
 旧 inode。如果暂不重启，交付说明必须明确提醒。
 

@@ -4,6 +4,9 @@
 
 ## 选择运行方式
 
+已提交 runtime 的版本为 v1.12.5。使用 `make build` 构建当前服务／前端，
+或使用同版本候选包。
+
 WebSA 运行于 Linux。仓库的 `runtime/` 包含 Linux x86_64/glibc 服务、SDK 适配器和前端。
 已记录的捆绑版本要求 glibc 2.44、GLIBCXX 3.4.30、CXXABI 1.3.15 和 `libfdk-aac.so.2`；
 它不是静态或通用跨发行版分发。旧系统或其他架构请按照[开发指南](DEVELOPMENT.md)重新构建。

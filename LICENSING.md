@@ -1,6 +1,6 @@
 # Harogic WebSA licensing scope
 
-Copyright (c) 2026 Harogic SAN Web Spectrum Analyzer contributors.
+Copyright (c) 2026 Tommy Wang.
 
 The copyright holders' **project-owned code for which they have authority to
 grant these terms** is licensed under **AGPL-3.0-only**, with the narrowly scoped

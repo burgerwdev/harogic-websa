@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "encoding": "cf32le",
+  "hardware_access": false,
+  "runner": "tools/checks/digital_decode_acceptance.py",
+  "fixtures": [
+    {
+      "mode": "rtty",
+      "samples": 935604,
+      "source": {
+        "generator": "independent ITA2 UART + continuous-phase FSK",
+        "format": "cf32_le",
+        "sampleRateHz": 48000,
+        "dialOffsetHz": 0,
+        "sideband": "upper",
+        "samples": 935604,
+        "baud": 45.45,
+        "shiftHz": 170,
+        "lowToneHz": 2125,
+        "markHz": 2125,
+        "spaceHz": 2295,
+        "reverse": false,
+        "unshiftOnSpace": false,
+        "preamble": "RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\r\n",
+        "expectedText": "CQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\n",
+        "transmittedText": "CQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\r\n",
+        "repetitions": 1,
+        "hardwareAccess": false,
+        "iq_sha256": "232d1b27b5a8e309bab6df1a9c39d6a1d914415190ff95ee61d7c1500c6e9a73",
+        "iq_bytes": 7484832,
+        "rate_hz": 48000
+      },
+      "observed": {
+        "decoded_text": "RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 01234RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICKRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWNRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\nRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\nRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\n"
+      }
+    },
+    {
+      "mode": "rtty-reverse",
+      "samples": 935604,
+      "source": {
+        "generator": "independent ITA2 UART + continuous-phase FSK",
+        "format": "cf32_le",
+        "sampleRateHz": 48000,
+        "dialOffsetHz": 0,
+        "sideband": "upper",
+        "samples": 935604,
+        "baud": 45.45,
+        "shiftHz": 170,
+        "lowToneHz": 2125,
+        "markHz": 2295,
+        "spaceHz": 2125,
+        "reverse": true,
+        "unshiftOnSpace": false,
+        "preamble": "RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\r\n",
+        "expectedText": "CQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\n",
+        "transmittedText": "CQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\r\n",
+        "repetitions": 1,
+        "hardwareAccess": false,
+        "iq_sha256": "8cf886a92fa548cfa4dabf8a3cc7e0bdb7ff8e24289c4010704392dffe75988f",
+        "iq_bytes": 7484832,
+        "rate_hz": 48000
+      },
+      "observed": {
+        "decoded_text": "RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 01234RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICKRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWNRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\nRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\nRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY\nCQ CQ DE WEBSA TEST 0123456789 1/2 -.:? THE QUICK BROWN FOX\n"
+      }
+    },
+    {
+      "mode": "aprs",
+      "samples": 2250000,
+      "source": {
+        "rate": 240000,
+        "period": 3,
+        "expected": "N0CALL-1>APRS:!4903.50N/07201.75W>WEBSA APRS TEST",
+        "encoder_sha256": "841b8ba7187350627763556cd87474e8d2fffcf7a77d97177f737d86673adb07",
+        "iq_sha256": "b7d85ad58b9e0d3641aba085ec83c861187a0943aac83abf1d4707b50fb3546c",
+        "iq_bytes": 18000000,
+        "rate_hz": 250000
+      },
+      "observed": {
+        "matching_frames": [
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "(again, via direct) Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 4.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "(again, via direct) Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 4.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "(again, via direct) Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 4.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "(again, via direct) Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 4.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "(again, via direct) Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 7.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 1.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "(again, via direct) Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 4.1,
+            "to": "APRS",
+            "type": "Position"
+          },
+          {
+            "baud": 1200,
+            "from": "N0CALL-1",
+            "lat": 49.05833,
+            "lon": -72.02917,
+            "path": "",
+            "summary": "(again, via direct) Position 49.0583N 72.0292W [/>] WEBSA APRS TEST",
+            "t": 7.1,
+            "to": "APRS",
+            "type": "Position"
+          }
+        ]
+      }
+    },
+    {
+      "mode": "ft4",
+      "samples": 5625000,
+      "source": {
+        "rate": 8000,
+        "period": 7.5,
+        "expected": "CQ K1ABC FN42",
+        "encoder_sha256": "841b8ba7187350627763556cd87474e8d2fffcf7a77d97177f737d86673adb07",
+        "iq_sha256": "606b824f6e811aef715418a472720908f0d65d5183ee09c6340d2793adb1c2b2",
+        "iq_bytes": 45000000,
+        "rate_hz": 250000
+      },
+      "observed": {
+        "matching_decodes": [
+          {
+            "audio_hz": 1500,
+            "call": "K1ABC",
+            "cq": true,
+            "dt_s": 0.0,
+            "grid": "FN42",
+            "msg": "CQ K1ABC FN42",
+            "onairRfHz": 14081500.0,
+            "rf_hz": 14081500.0,
+            "slot_utc": 1794123840.0,
+            "snr_db": 4
+          },
+          {
+            "audio_hz": 1500,
+            "call": "K1ABC",
+            "cq": true,
+            "dt_s": 0.0,
+            "grid": "FN42",
+            "msg": "CQ K1ABC FN42",
+            "onairRfHz": 14081500.0,
+            "rf_hz": 14081500.0,
+            "slot_utc": 1794123847.5,
+            "snr_db": 4
+          }
+        ],
+        "generated_slot": {
+          "timing": "synthetic sample zero rescheduled to host UTC; not original recording UTC",
+          "slot_utc_seconds": 1794123840.0,
+          "period_seconds": 7.5,
+          "preroll_complex_samples": 267762,
+          "maximum_pacing_lateness_seconds": 0.0
+        }
+      }
+    },
+    {
+      "mode": "wspr",
+      "samples": 30000000,
+      "source": {
+        "rate": 8000,
+        "period": 120,
+        "expected": "K1ABC FN42 30",
+        "encoder_sha256": "841b8ba7187350627763556cd87474e8d2fffcf7a77d97177f737d86673adb07",
+        "iq_sha256": "8b34ed1abdd03d5e13f1ebba72052f6a8eb6db10a667e042ad25e3da88bdd917",
+        "iq_bytes": 240000000,
+        "rate_hz": 250000
+      },
+      "observed": {
+        "matching_decodes": [
+          {
+            "audio_hz": 1500,
+            "call": "K1ABC",
+            "cq": true,
+            "dbm": 30,
+            "dt_s": 0.0,
+            "grid": "FN42",
+            "msg": "K1ABC FN42 30",
+            "onairRfHz": 14097500.0,
+            "rf_hz": 14097100.0,
+            "slot_utc": 1794123960.0,
+            "snr_db": 20
+          }
+        ],
+        "generated_slot": {
+          "timing": "synthetic sample zero rescheduled to host UTC; not original recording UTC",
+          "slot_utc_seconds": 1794123960.0,
+          "period_seconds": 120.0,
+          "preroll_complex_samples": 22049955,
+          "maximum_pacing_lateness_seconds": 0.044632769
+        }
+      }
+    },
+    {
+      "mode": "gps",
+      "samples": 234000000,
+      "source": {
+        "generator": "pinned gps-sdr-sim via pluto_tx.py --stdout",
+        "duration_seconds": 90,
+        "expected_position": [
+          25.2,
+          55.36,
+          10
+        ],
+        "source_manifest": {
+          "project": "gps-sdr-sim",
+          "revision": "28ca29a6719475195e3aabd5930c4ed02d67190f",
+          "archive_sha256": "046209d533e11628ba9cf44abf9717809f981f4de3eff13bd5a6d799f5671560",
+          "url": "https://codeload.github.com/osqzss/gps-sdr-sim/tar.gz/28ca29a6719475195e3aabd5930c4ed02d67190f",
+          "license": "MIT",
+          "rinex": "brdc0010.22n",
+          "scenario_time": "2022/01/01,00:00:00",
+          "position": [
+            25.2,
+            55.36,
+            10
+          ]
+        },
+        "source_hashes": "f3e03e571757d9ed93958d3b50e69c63b85b0868598a7ae47af1f6649e61ceff  gps-sdr-sim\ne1707b112d9f5291b06b95ab5af17e1b83c9399e35ccb968467db4f282437b24  gpssim.c\n093c341c6045bbfacc70df20ef7dc0f1a63e88741606808b44fe7463f2862fe4  gpssim.h\n2b86db3a43c3c762ea7a409bac912ce8064afa509820b7e42fc615b391d72a87  LICENSE\n7db04513dd2d0e13c0ee20cb4eaa8f71e5a28ab58b65c9b5b789f86eeab436cd  brdc0010.22n\n01bcdd88b9e015684fd6e5b408795fc73ac8db887b97ac7e88bbc10a59d6c428  provenance.json\n"
+      },
+      "observed": {
+        "valid_fixes": 196,
+        "last_fix": {
+          "age_ms": 1901,
+          "gdop": 2.72877759102709,
+          "hdop": 1.1370428334043914,
+          "height_m": 1.3674906147643924,
+          "lat_deg": 25.200006797586795,
+          "lon_deg": 55.35999357119693,
+          "pdop": 2.344094283293939,
+          "solution_status": 5,
+          "solution_type": 0,
+          "stale": false,
+          "tow_ms": 518489620,
+          "utc_time": "2022-01-01T00:01:11.700000Z",
+          "valid": true,
+          "valid_sats": 7,
+          "vdop": 2.0498564837507622,
+          "velocity_e_mps": -0.00879939823525025,
+          "velocity_n_mps": -0.22066428834743956,
+          "velocity_u_mps": -0.32366353344324006,
+          "week": 2190
+        },
+        "navigation_rows": 132
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { occupiedBandwidth } from '../core/receiverBandwidth';
+import { defaultTransitionHz, occupiedBandwidth } from '../core/receiverBandwidth';
 import { copyModeControls, modeControlKeys } from '../core/receiverControls';
 import { getLang, onLangChange } from '../core/i18n';
 import { clone, receiverHasAudio, type ReceiverConfig, type ReceiverState } from '../core/multichannel';
@@ -13,7 +13,7 @@ export function currentChannelConfig(session: WorkbenchSession): ReceiverConfig 
   const mode = sdrDemod.get(), bandwidth = sdrIfbw.get(), hz = sdrListenHz.get();
   const descriptor = session.snapshot.capabilities.mode_descriptors?.find(m => m.id === mode);
   if (!descriptor?.available) throw new Error(l('This mode is unavailable.', '当前解调模式不可用。'));
-  const passband = occupiedBandwidth(descriptor, bandwidth, sdrPitchHz.get()), transition = 1000;
+  const passband = occupiedBandwidth(descriptor, bandwidth, sdrPitchHz.get()), transition = defaultTransitionHz(passband);
   return { name: `${formatFreqHz(hz)} · ${descriptor.label}`, color: '#e6b95c', tags: [], enabled: true,
     purpose: descriptor.kind === 'analog' ? 'listen' : 'digital',
     baseband: { frequency_hz: hz, passband_hz: passband, transition_hz: transition,

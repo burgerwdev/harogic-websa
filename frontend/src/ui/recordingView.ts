@@ -1,4 +1,5 @@
 import type { RecordingTask } from '../core/multichannel';
+import { appendCopyDetails } from './copyDetails';
 import { getLang, onLangChange } from '../core/i18n';
 import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { downloadResult } from './receiverExport';
@@ -53,6 +54,7 @@ export function mountRecordingView(options: { session?: WorkbenchSession; demodu
         segmentSelect.append(option);
       }
       get('[data-owner]').textContent = `${task.task_id} · ${task.service_id} · ${task.receiver_uid}`;
+      appendCopyDetails(get('details'), () => task);
       const start = get<HTMLInputElement>('[name=start]'), count = get<HTMLInputElement>('[name=count]');
       const position = get<HTMLInputElement>('[data-position]'), play = get<HTMLButtonElement>('[data-play]');
       let abort: AbortController | null = null, disposed = false, playing = false, timer: number | undefined;

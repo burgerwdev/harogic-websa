@@ -74,6 +74,8 @@ broadcast-audio quality measurements.
 
 ## Receiver and decoder limits
 
+Opening Decode and Overview adds subscriptions, not receivers. Current and a saved same-frequency channel run independently. Digital reception does not depend on companion audio squelch. Use diagnostic JSON Copy to retain the current fault, recovery history and processing backlog.
+
 The service permits sixteen receiver definitions and sixteen recording tasks. Disabled receivers
 still occupy definition slots, and every full passband/transition must fit the shared capture.
 Sustained sixteen-channel real-RF acceptance remains pending. CPU saturation, SDK stalls and

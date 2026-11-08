@@ -7,11 +7,8 @@
 
 ## 依据与授权边界
 
-任务开始时工作区干净。本地 HEAD 历史有 760 个提交，只有 Tommy Wang
-`<hui@gang.st>` 一位作者／提交者署名，未发现 `Co-authored-by` 或 `Signed-off-by`
-尾注。仓库中未发现 CLA、版权转让或雇主授权文件。单一 Git 署名不能证明每行代码
-均归该人所有；导入材料和独立许可的贡献均排除在统一换证范围外。
-本任务只授权调整有权处置的自有代码。
+项目记录作者为 Tommy Wang。仓库中没有 CLA、版权转让或雇主授权文件。
+导入材料和独立许可的贡献保留原条款。
 
 原根目录 MIT 文件逐字节保存在 [LICENSES/MIT-legacy.txt](../../LICENSES/MIT-legacy.txt)，
 此前 MIT 授权不撤回。第三方 MIT、Apache、GPL 等声明继续适用于原材料及此前按原许可
@@ -41,7 +38,8 @@ SHA-256 为 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`�
 ## 源码入口与打包
 
 `npm run build`（或 `npm run dev`）通过 Vite 调用 `tools/prepare_legal.py`，
-准备本地许可／声明副本和带版本的源码归档。在检出仓库中需要 Python 3.10+ 和 Git。
+准备本地许可／声明副本和带版本的源码归档。归档是生成产物，不提交 Git。公开 Git 源码入口可以
+指向包含实际修改和构建输入的精确发行 commit/tag；移动分支或上游首页不代表修改版本的源码。在检出仓库中需要 Python 3.10+ 和 Git。
 页脚链接至许可页及本次构建源码，源码链接标题包含版本标识；该过程不上传或对外发布。
 开发服务器生成启动时的快照；修改源码后应重启开发服务器更新入口。生产构建每次重新生成快照。
 
@@ -78,3 +76,20 @@ codec 归档库缺少精确源码来源的问题。文档修改也不会自动�
 GNU AGPL [第 7、13 条](https://spdx.org/licenses/AGPL-3.0-only.html) 提供附加许可机制和
 修改网络版本的源码要求。例外草案受授权人实际权利范围约束；上述事项仍需法律人员／权利人
 核实，不能把新的对外分发视为已全部获准。
+
+## 2026-11-08 追加核对证据
+
+本地候选包核对补充了实际产物比对；公开下载不能代替适用协议，也不据此推断授权。
+
+| 项目 | 新增证据 | 状态 |
+|---|---|---|
+| SDK | /opt/htraapi 仍未找到 LICENSE／NOTICE／EULA／协议，未取得实际适用的 SDK 协议。 | 仍须厂商协议；候选包不含 SDK 头文件和库。 |
+| FDK | 在隔离目录以本机提交 22128505f539b90a25c7f7463abd00b5d544dee8、clang 23.1.3 和仓库脚本重建。本机差异 SHA-256 为 72dbe6dc9bf1e8c802b7867638b03e5c1769ebdd5e380bf1c4bb4c4fa31d1e9d。 | 重建哈希 8443a7eff7fd76e1ef6275110ae9e598929e1f26b1ed6c83e963ffe0e349a972 与已提交的 9115cb6dbabb895a966ffb6c13372973c1fde9cb1055f579bb0b821596d17232 不同。尚不能确认原始输入／工具链；未替换已提交归档。 |
+| libxaac | 隔离重建本机提交 2fbadd57bca46693b7a077bcf1513131106d960c；decoder 补丁 SHA-256 为 a02c873c6e5db7d136bb307bbb9790232b33c4fddd2c0b08e999edb41d0bcfd4。 | 重建哈希 da732619175946a44bef290e2dd89ed6929027359fe68646e063c8bb646dca1f 与已提交的 49ca5e0bedacaced12e407c4f8f0788cac8d30b0bae9c30e65d10ab2c5c3d2d8 不同，原归档源码／补丁仍待确认。 |
+| DFN3 | 已提交模型与[上游 v0.5.6](https://github.com/Rikorose/DeepFilterNet/blob/v0.5.6/models/DeepFilterNet3_onnx.tar.gz) 逐字节匹配，SHA-256 为 c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616。该发行版根 LICENSE 提供 MIT OR Apache-2.0。 | 已确认产物来源；模型归档内未单独记载模型专属授权。 |
+| 字体 | 两个 WOFF2 的 name 表均标识 **1.522，2026-03-17**；各自 7,953 个映射字形的轮廓与已安装 1.522 Regular／Medium TTF 全部一致。现有许可与 [v1.522 OFL](https://github.com/lxgw/LxgwWenKai/blob/v1.522/OFL.txt) 完全匹配，SHA-256 为 c38b1994a5e48ac30ac7d1da7d0409fd8fd8127dfe28a13d6e787d5b1ef34a5e。 | 已确定历史版本／许可对应；该文本版权行后未声明保留字体名，不以当前分支条款代替此发行版。 |
+| CTY | 本地数据未附再分发授权；上游 cty/readme.txt 查询返回 HTTP 404。 | 再分发及生成数据使用权仍待确认。 |
+
+重建／补丁和字形比对的机器可读记录保存在本机
+/tmp/websa-license-review-20261108/。这些核对缩小了未知范围；候选包仅作本地验收，
+尚不表示对外发布许可已全部就绪。

@@ -97,6 +97,7 @@ Display frames can be replaced. Explicit retry creates the required new identity
 
 Fatal PFB control errors and Rust panics explicitly end the output queue. Control replies deliver collected tails before publishing the terminal cause; polling, terminal diagnostics and stop preserve that cause. After panic, diagnostics use the published snapshot and the original owner is dropped after closing the queue, without processing the affected DDC again. This boundary does not catch native aborts or segmentation faults.
 
+External providers share prepared-resource admission before IQ and automatic recovery, with bounded retirement under the owning receiver.
 Fine workers preserve ordering within each lane. CPU-intensive inference and external decoder
 processes do not execute on acquisition locks. Thread wall-time sums across owners are not
 single-thread CPU utilization. Admission limits are structural; available algorithms do not imply

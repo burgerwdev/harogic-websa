@@ -207,6 +207,7 @@ impl FineChannel {
     }
     pub fn id(&self)->u64 {self.id}
     pub fn bin(&self)->u32 {self.bin}
+    pub fn input_rate(&self)->f64 {self.output_rate*self.decimate as f64}
     pub fn clock(&self)->(u64,u64) {self.detached_clock}
     /// Metadata remains at the control owner, while the sole native handle and
     /// mutable workspaces move to the execution owner. A detached entry cannot execute.

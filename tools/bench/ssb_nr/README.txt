@@ -19,8 +19,8 @@ the repository's toolchain/dependencies and embedded DeepFilterNet3 model.
   /path/to/independent-experiment/venv/bin/pip install -r tools/bench/ssb_nr/requirements.txt
   /path/to/independent-experiment/venv/bin/python tools/bench/ssb_nr/test_omlsa.py
   /path/to/independent-experiment/venv/bin/python tools/bench/ssb_nr/study.py \
-    --iq /home/hui/Downloads/recording.sigmf \
-    --audio /home/hui/Downloads/audio.tar \
+    --iq ~/Downloads/recording.sigmf \
+    --audio ~/Downloads/audio.tar \
     --out /path/to/independent-experiment
 
 The inputs are verified tar containers, not bare IQ/PCM. Only safe regular archive

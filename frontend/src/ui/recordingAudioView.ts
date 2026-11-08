@@ -1,4 +1,5 @@
 import type { RecordingTask } from '../core/multichannel';
+import { appendCopyDetails } from './copyDetails';
 import { getLang, onLangChange } from '../core/i18n';
 import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { recordingRange } from './recordingView';
@@ -69,6 +70,7 @@ export function mountRecordingAudioView(session?: WorkbenchSession): { open(task
       const segments = task.tracks.find(t => t.kind === 'audio')?.segments.filter(s => s.segment_id && BigInt(s.samples) > 0n) ?? [];
       segments.forEach((s, i) => { const option = body.ownerDocument.createElement('option'); option.value = String(i); option.textContent = `${i + 1} · ${s.actual_rate_hz} Hz · ${s.channels} ch · ${s.samples}`; select.append(option); });
       get('[data-owner]').textContent = `${task.task_id} · ${task.service_id} · ${task.receiver_uid}`;
+      appendCopyDetails(get('details'), () => task);
       let controller: AbortController | null = null, url: string | null = null, archive: Blob | null = null, disposed = false;
       const clear = (): void => {
         controller?.abort(); controller = null;

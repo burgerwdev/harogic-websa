@@ -145,10 +145,46 @@ rtl_433 receives exactly 250 kS/s at every tuned frequency, including bands abov
 the adapter applies its rate option after upstream frequency-dependent defaults.
 Use `--center-hz` for the tuned RF frequency and `--realtime` to pace recordings by their
 sample clock for live or wall-clock decoders. OnAir AIS requires `--center-hz 162000000`.
-OnAir FT4/WSPR require UTC-aligned live IQ. CLI recording replay and looping fake-device
-fixtures reject these modes: pacing a recording does not restore its original UTC slot phase.
+OnAir FT4/WSPR require UTC-aligned IQ. Ordinary CLI recording replay and looping
+fake-device fixtures reject these modes: pacing a recording does not restore its
+original UTC slot phase. For generated complete-slot fixtures only, add
+`--generated-utc-slot --realtime`: the CLI feeds silence and schedules the
+fixture's sample zero at the next host UTC slot. The report explicitly records
+the synthetic schedule and preroll; a UTC clock step or pacing delay over 100 ms
+fails the run.
 stdin providers close input, drain results and reap at EOF; OnAir has no consumed/flush ACK,
-so its bounded drain reports that upstream completion is unknown. Replay never pads IQ.
+so its bounded drain reports that upstream completion is unknown. Ordinary replay
+never pads IQ.
+
+Reproduce known-payload acceptance (no transmitter or receiver hardware):
+
+```sh
+python3 tools/checks/digital_decode_acceptance.py --artifacts /tmp/websa-decode
+python3 tools/e2e/native_copy_and_eq.py --artifacts /tmp/websa-copy-eq
+# Optional installed-provider lifecycle regressions (no RF hardware):
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --bin websad external_ -- --ignored --test-threads=1
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib external_modes_only_report_squelch -- --ignored --test-threads=1
+```
+
+The decoder gate covers RTTY normal/reverse, APRS, FT4, WSPR and a streamed
+90-second GPS simulator scenario. It requires the independently installed
+providers and encoders, NumPy/SciPy, and a built `sdr_decode`; the browser gate
+also needs Playwright and built service/frontend assets. It asserts protocol
+payloads/PVT, saves source hashes, commands and actual receiver reports, and
+does not treat capability discovery or an empty status table as decoding.
+See [acceptance record](../docs/en/ACCEPTANCE.md)
+([中文](../docs/zh-CN/ACCEPTANCE.md)) for measured results and limits.
+
+Stage and check a local candidate from matching current builds:
+
+```sh
+python3 tools/package-candidate.py /tmp/websa-candidate --verify
+```
+
+The output must be a fresh directory outside the checkout. The check starts and
+stops its own fixture service there, verifies the running executable, version,
+license page and exact source download hash. SDK files remain external;
+unresolved distribution questions in the licensing review still apply.
 
 ### ADS-B / Mode S aircraft
 

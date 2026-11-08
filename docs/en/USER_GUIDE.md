@@ -50,6 +50,9 @@ itself can move to a separate browser window and return to the page.
 Visible cards show the existing playback PCM waveform at ten frames per second, before
 local monitor volume. The waveform is normalized for visibility; the dBFS meter retains its
 absolute scale. Unmonitored channels retain status text, and decoded text keeps its ticker.
+Decode and overview subscribe to existing receivers. Current and a saved channel at the same
+frequency run separately. Digital status is independent of audio squelch. Raw fields and
+diagnostic JSON have a Copy button.
 Channels sharing one playback route share its waveform and level readouts. Hidden cards
 release their waveform references; opening the overview creates no audio subscriptions.
 

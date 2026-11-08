@@ -121,6 +121,10 @@ remote services or ambiguous listeners have no local CPU measurement.
 
 ## Release and cleanup
 
+Version comes from `pyproject.toml`; `python3 tools/checks/sync_version.py` updates frontend manifests and HTML.
+`make ci` runs the hardware-free suites and static gates; `make e2e-fake` runs the browser gate.
+`tools/package-candidate.py OUTPUT --verify` checks a separate candidate directory. Source archives and reports stay outside Git.
+
 After building a service executable, restart the intended instance and verify `./status.sh` and
 its process executable. An old process can keep its previous inode after a successful rebuild.
 If restarting is deferred, say so explicitly in the handoff.

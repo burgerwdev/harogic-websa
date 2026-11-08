@@ -28,7 +28,8 @@ See [Known limitations](docs/en/OPERATIONS.md).
 
 ## Try it
 
-The checkout includes a **Linux x86_64/glibc** runtime. It currently requires glibc 2.44,
+The checkout includes a **Linux x86_64/glibc** runtime. The checked-in bundle is v1.12.5;
+`make build` produces the current service and frontend. It currently requires glibc 2.44,
 GLIBCXX 3.4.30, CXXABI 1.3.15 and `libfdk-aac.so.2`; rebuild if your system cannot run it.
 
 ```bash

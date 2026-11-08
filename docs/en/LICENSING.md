@@ -9,13 +9,9 @@ rights have been cleared.
 
 ## Evidence and authorization boundary
 
-The working tree was clean before this task. Local history contains 760
-commits on HEAD, one recorded author/committer identity, Tommy Wang
-`<hui@gang.st>`, and no `Co-authored-by` or `Signed-off-by` trailers found.
-No CLA, copyright assignment or employer clearance document was found in the
-repository. A single Git identity cannot prove that every line is owned by
-that person; imported work and separately licensed contributions are excluded.
-The task authorizes changes only for project-owned rights that can be granted.
+Recorded project author: Tommy Wang. No CLA, copyright assignment or employer
+clearance document is present in the repository. Imported work and separately
+licensed contributions retain their original terms.
 
 The previous root MIT notice is preserved byte for byte in
 [LICENSES/MIT-legacy.txt](../../LICENSES/MIT-legacy.txt). Earlier MIT grants are
@@ -51,7 +47,10 @@ requirements or authorize a vendor SDK redistribution that its terms prohibit.
 ## Source entry and packaging
 
 `npm run build` (or `npm run dev`) uses `tools/prepare_legal.py` through Vite to
-prepare local license/notice copies and a versioned source archive. It needs
+prepare local license/notice copies and a versioned source archive. The archive is
+generated output, excluded from Git. A public Git source offer may instead link to
+the exact release commit/tag with the matching modifications and build inputs;
+a moving branch or upstream homepage does not identify modified build sources. It needs
 Python 3.10+ and Git in a checkout. The footer links to the license page and
 the source archive for that build, with the source ID in the link title.
 No upload or external release is involved.
@@ -102,3 +101,21 @@ support the additional-permission mechanism and modified network source offer.
 The drafted permission is limited by the granting holders' authority; the
 questions above remain open for counsel/rightsholder confirmation before a
 new external distribution is treated as cleared.
+
+## Follow-up evidence on 2026-11-08
+
+The local candidate review adds concrete artifact checks. It does not replace
+an applicable agreement or infer permissions from a public download.
+
+| Item | Additional evidence | Status |
+|---|---|---|
+| SDK | Installed /opt/htraapi still contains no LICENSE/NOTICE/EULA/agreement. No actual applicable SDK agreement was located. | Vendor agreement remains required; SDK headers/libraries are excluded from the candidate. |
+| FDK | Rebuilt in an isolated directory from local commit 22128505f539b90a25c7f7463abd00b5d544dee8, clang 23.1.3 and the repository build script. Local diff SHA-256: 72dbe6dc9bf1e8c802b7867638b03e5c1769ebdd5e380bf1c4bb4c4fa31d1e9d. | Rebuild SHA-256 8443a7eff7fd76e1ef6275110ae9e598929e1f26b1ed6c83e963ffe0e349a972 differs from committed 9115cb6dbabb895a966ffb6c13372973c1fde9cb1055f579bb0b821596d17232. Exact original inputs/toolchain remain unconfirmed; the committed archive was not replaced. |
+| libxaac | Isolated rebuild from local commit 2fbadd57bca46693b7a077bcf1513131106d960c; local decoder patch SHA-256 a02c873c6e5db7d136bb307bbb9790232b33c4fddd2c0b08e999edb41d0bcfd4. | Rebuild da732619175946a44bef290e2dd89ed6929027359fe68646e063c8bb646dca1f differs from committed 49ca5e0bedacaced12e407c4f8f0788cac8d30b0bae9c30e65d10ab2c5c3d2d8. Source/patch identity of the committed archive remains unconfirmed. |
+| DFN3 | The committed model archive exactly matches [upstream v0.5.6](https://github.com/Rikorose/DeepFilterNet/blob/v0.5.6/models/DeepFilterNet3_onnx.tar.gz), SHA-256 c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616. The release's root LICENSE offers MIT OR Apache-2.0. | Artifact origin is confirmed; a model-specific grant is not separately documented by the archive. |
+| Fonts | Both WOFF2 name tables identify version **1.522, March 17, 2026**. All 7,953 mapped glyph outlines in each subset match the installed 1.522 Regular/Medium TTF. The retained license exactly matches [v1.522 OFL](https://github.com/lxgw/LxgwWenKai/blob/v1.522/OFL.txt), SHA-256 c38b1994a5e48ac30ac7d1da7d0409fd8fd8127dfe28a13d6e787d5b1ef34a5e. | Historical version/license mapping is established. That text contains no Reserved Font Name declaration after its copyright lines; current branch terms are not substituted for this release. |
+| CTY | No redistribution grant accompanies the local dataset; attempted upstream cty/readme.txt lookup returned HTTP 404. | Redistribution/generated-data permission remains unresolved. |
+
+Machine-readable rebuild/patch and glyph comparisons are retained locally in
+/tmp/websa-license-review-20261108/. These checks narrow the open questions;
+the candidate is for local validation, without an external release clearance.

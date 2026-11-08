@@ -297,3 +297,30 @@ it('releases waveform probes on hidden cards and disposal without creating audio
   expect(waveform).toHaveBeenCalledWith('fixture-c1', null);
   manager.dispose();
 });
+
+it.each(['adsb', 'ais', 'gps', 'ism', 'meteor'])('%s overview follows reception despite historical decodes and closed audio squelch', mode => {
+  ui.dispose();
+  const r = session.snapshot.receivers[0];
+  session.snapshot.transport = 'native'; session.snapshot.receivers = [r];
+  r.confirmed.purpose = 'digital';
+  r.confirmed.processors[0] = { ...r.confirmed.processors[0], kind: 'decoder', mode };
+  r.state = 'running'; r.processing_state = 'active';
+  r.processing_runtime = { state: 'active', processing_generation: '2', oldest_input_wait_ns: 0, input_held_bytes: 0, input_held_media_ns: 0,
+    observed_receiver: { nr_requested: 'off', nr_effective: 'off', nr_state: 'off', squelch: { open: false, gain: 0 } } };
+  session.snapshot.capabilities.mode_descriptors = [{ id: mode, kind: 'digital', label: mode, provider: 'external', available: true,
+    unavailableReason: null, defaultBandwidthHz: 1_800_000, minimumRateHz: 2_500_000, audioCompanion: null, outputs: ['table'], sideband: 'symmetric' }];
+  const dispatch = vi.spyOn(adapter, 'dispatch'), waveform = vi.fn();
+  const manager = createWorkbenchOverview(session, { available: () => true, recording: () => undefined, detached: () => false,
+    fit: vi.fn(), dockAll: vi.fn(), readouts: { results: () => ({ entries: [{ id: 1, at: Date.now(), source: 'old-stream', bytes: 20,
+      provider: 'external', mode, kind: 'table', data: { rows: [{ callsign: 'TEST123' }] } }], evicted: 0 }), waveform } });
+  const surface = document.createElement('section'); surface.className = 'mc-window';
+  surface.innerHTML = '<header class="mc-head"><div class="mc-window-actions"></div></header><div class="mc-body"></div>'; document.body.append(surface);
+  manager.attach(surface.querySelector('.mc-body')!, surface.querySelector('.mc-head')!);
+  const card = surface.querySelector('.mc-overview-card')!;
+  expect(card.querySelector('[data-card-placeholder]')!.textContent).toBe('Receiving normally');
+  expect(card.querySelector('[data-card-source]')!.textContent).toBe('RF');
+  expect(card.querySelector('[data-card-meter] small')!.textContent).toContain('— dBFS');
+  r.processing_state = 'failed'; manager.update();
+  expect(card.querySelector('[data-card-placeholder]')!.textContent).toBe('Reception fault');
+  expect(waveform).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled(); manager.dispose();
+});

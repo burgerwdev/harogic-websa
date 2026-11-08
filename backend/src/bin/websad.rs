@@ -3801,8 +3801,11 @@ async fn publisher_loop(
                     let restarting = state.swp.mode == "sdr" && state.receiver_failure.is_none()
                         && ((state.hardware_shim.is_some() && state.pipeline.is_none() && state.ddc.is_none())
                             || state.auto_receiver_preparation_required());
-                    let missing = if restarting { state.missing_receiver_preparations() } else { Vec::new() };
-                    (!missing.is_empty() && preparation_failed != Some((state.config_version, state.auto.seq)))
+                    let missing = if restarting { state.missing_receiver_preparations() }
+                        else { state.missing_reception_preparations() };
+                    // Failed recovery preparation stops only its own lanes. A
+                    // later fault on another lane must still prepare at this revision.
+                    (!missing.is_empty() && (!restarting || preparation_failed != Some((state.config_version, state.auto.seq))))
                         .then_some((state.config_version, state.channel_configs(), missing))
                 };
                 if let Some((revision, configs, missing)) = candidate {
@@ -3854,6 +3857,7 @@ async fn publisher_loop(
                             Err(error) => preparation_error = Some(error),
                         }
                         if let Some(error) = preparation_error.as_ref() {
+                            state.reception_preparation_failed(error);
                             if state.auto.session.is_some() { state.finish_auto("failed", None); }
                             failed_revision = Some((revision, state.auto.seq));
                             eprintln!("WebSA receiver preparation failed: {error}");
@@ -3862,6 +3866,7 @@ async fn publisher_loop(
                     else if let Ok(batch) = result { discarded_preparation = Some(batch); }
                 }
                 let recording_clients = usize::from(state.recordings.as_ref().is_some_and(|r|r.has_active()));
+                let receiver_clients = usize::from(state.sdr_channels.iter().any(|config|config.enabled));
                 let mode = state.swp.mode.clone();
                 let epoch = compute.epoch.load(Ordering::Acquire);
                 let mut display: Vec<Bytes> = Vec::new();
@@ -3894,7 +3899,7 @@ async fn publisher_loop(
                         else { Duration::from_millis(10) }
                     }
                     "sdr" if state.hardware_shim.is_some() => {
-                        let listeners = iq_clients + aux_clients + display_clients + audio_clients + decode_clients + recording_clients
+                        let listeners = iq_clients + aux_clients + display_clients + audio_clients + decode_clients + recording_clients + receiver_clients
                             + usize::from(state.auto.session.is_some());
                         let waiting = state.pipeline.is_none() && state.ddc.is_none()
                             && state.receiver_failure.is_none() && !state.missing_receiver_preparations().is_empty();
@@ -3910,7 +3915,7 @@ async fn publisher_loop(
                         let (pan,retiring_iq,retiring_aux,_)=state.step_sdr(0,0,display_clients,0);
                         iq_frame.extend(retiring_iq); aux_frame.extend(retiring_aux);
                         display.extend(pan.into_iter().map(Bytes::from));
-                        if iq_clients+aux_clients+audio_clients+decode_clients+recording_clients>0 {
+                        if iq_clients+aux_clients+audio_clients+decode_clients+recording_clients+receiver_clients>0 {
                             let configs=state.channel_configs();
                             let source=state.fixture_sources.get_or_insert_with(service_fixture::FixtureSources::new);
                             match source.configure(&configs).and_then(|()|source.step()) {

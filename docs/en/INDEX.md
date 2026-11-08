@@ -22,3 +22,4 @@
 | Change modes and parameter ownership | [State ownership](reference/STATE.md) |
 | Maintain DRM bench and AAC fixtures | [DRM](reference/DRM.md) |
 | Install providers and use focused tools | [Tools](../../tools/README.md) |
+| Local candidate checks and known payloads | [Acceptance](ACCEPTANCE.md) |

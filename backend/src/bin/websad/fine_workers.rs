@@ -7,10 +7,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use websa_channelizer::{FineChannel, PfbOutput};
 
-const INPUT_JOBS: usize = 64;
+pub(super) use super::receiver_limits::INPUT_JOBS;
 const BATCH_JOBS: usize = 8;
 const BATCH_DELAY: Duration = Duration::from_millis(4);
-const INPUT_BYTES: usize = 4 * 1024 * 1024;
 const OUTPUT_JOBS: usize = 32;
 const OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -74,6 +73,7 @@ struct LaneStats {
 }
 struct Shared {
     stats: PLMutex<LaneStats>,
+    input_bytes_limit: usize,
     slot: u32,
     id: u32,
     epoch: u32,
@@ -185,6 +185,7 @@ pub(super) struct FineLaneSnapshot {
     in_flight: u64,
     held_bytes: usize,
     peak_bytes: usize,
+    input_bytes_limit: usize,
     output_bytes: usize,
     fine: websa_channelizer::timing::TimingSnapshot,
     framer: websa_channelizer::timing::TimingSnapshot,
@@ -435,6 +436,7 @@ impl FineWorker {
                 )
             };
             let shared = Arc::new(Shared {
+                input_bytes_limit: super::receiver_limits::input_bytes_limit(channel.input_rate(), 8) as usize,
                 stats: PLMutex::new(LaneStats {
                     clock: channel.clock(),
                     ..Default::default()
@@ -492,6 +494,7 @@ impl FineWorker {
                 continue;
             }
             let shared = Arc::new(Shared {
+                input_bytes_limit: super::receiver_limits::input_bytes_limit(row.input_rate, 4) as usize,
                 stats: PLMutex::new(LaneStats {
                     clock: route.clock(),
                     ..Default::default()
@@ -549,11 +552,11 @@ impl FineWorker {
             let bytes = input.bytes();
             {
                 let mut stats = lane.shared.stats.lock();
-                if stats.held_bytes + bytes > INPUT_BYTES {
+                if stats.held_bytes + bytes > lane.shared.input_bytes_limit {
                     stats.rejected += 1;
                     drop(stats);
                     lane.shared
-                        .fail(&format!("direct fine input exceeds {INPUT_BYTES} bytes"), Some(input_index));
+                        .fail(&format!("direct fine input exceeds {} bytes", lane.shared.input_bytes_limit), Some(input_index));
                     continue;
                 }
                 stats.held_bytes += bytes;
@@ -647,11 +650,11 @@ impl FineWorker {
             let bytes = column.iq.len() * 4;
             {
                 let mut stats = lane.shared.stats.lock();
-                if stats.held_bytes + bytes > INPUT_BYTES {
+                if stats.held_bytes + bytes > lane.shared.input_bytes_limit {
                     stats.rejected += 1;
                     drop(stats);
                     lane.shared.fail(
-                        &format!("fine input exceeds {INPUT_BYTES} bytes retained payload"),
+                        &format!("fine input exceeds {} bytes retained payload", lane.shared.input_bytes_limit),
                         Some(packet.input_index),
                     );
                     continue;
@@ -752,6 +755,7 @@ impl FineWorker {
                         .saturating_sub(s.succeeded + s.failed + s.cancelled),
                     held_bytes: s.held_bytes,
                     peak_bytes: s.peak_bytes,
+                    input_bytes_limit: lane.shared.input_bytes_limit,
                     output_bytes: s.output_bytes,
                     fine: s.fine.snapshot(),
                     framer: s.framer.snapshot(),
@@ -1234,6 +1238,38 @@ mod tests {
     }
 
     #[test]
+    fn direct_input_retains_a_short_wideband_burst_without_dropping_samples() {
+        let config=receiver_workers::ChannelConfig {freq:1_090e6,mode:"adsb".into(),if_bw:1_800_000.0,
+            baseband:Some(receiver_workers::BasebandConfig {passband_hz:1_800_000.0,
+                transition_hz:225_000.0,minimum_rate_hz:2_500_000.0}),
+            ..receiver_workers::ChannelConfig::default()};
+        let mut ddc=Ddc::configured_service(1_090e6,6_250_000.0,&mut None,16,7_812_500.0,&[config]).unwrap();
+        let mut worker=FineWorker::start(ddc.fine.take().unwrap()).unwrap();
+        worker.sync_directs(&mut ddc.direct).unwrap();
+        let gate=Gate::new();
+        *worker.lanes[&1].shared.gate.lock()=Some(gate.clone());
+        let release=Release(gate.clone());
+        let raw=vec![100_i16;SDR_PACKET_SAMPLES*2];
+        worker.submit_raw(0,0,0,&raw).unwrap();
+        flush_lane(worker.lanes.get_mut(&1).unwrap());gate.entered();
+        for seq in 1..128 {
+            let index=seq*SDR_PACKET_SAMPLES as u64;
+            worker.submit_raw(seq,index*2,index,&raw).unwrap();
+        }
+        {
+            let stats=worker.lanes[&1].shared.stats.lock();
+            assert!(stats.held_bytes>4*1024*1024);
+            assert!(stats.fault.is_none());
+        }
+        drop(release);
+        let mut frames=Vec::new();
+        wait_count(&mut worker,1,128,&mut frames);
+        let (state,_)=worker.finish_with_direct(&mut frames).unwrap();
+        assert!(state.faults.is_empty());
+        assert!(frames.iter().any(|frame|frame.native_iq().is_some_and(|iq|!iq.samples.is_empty())));
+    }
+
+    #[test]
     fn fine_overflow_is_identity_scoped_and_counts_executing_references() {
         let mut ddc = plan(2);
         let mut worker = FineWorker::start(ddc.fine.take().unwrap()).unwrap();
@@ -1250,18 +1286,20 @@ mod tests {
         gate.entered();
         assert_eq!(worker.lanes[&2].shared.stats.lock().held_bytes, 1000 * 8);
         wait_count(&mut worker, 1, 1, &mut frames);
+        let mut rejected = None;
         for seq in 1..=INPUT_JOBS as u64 + 1 {
             worker
                 .submit(packet(&worker.state, seq), &mut frames)
                 .unwrap();
             wait_count(&mut worker, 1, seq + 1, &mut frames);
+            if worker.state.faults.contains_key(&2) { rejected = Some(seq); break; }
         }
         let fault = worker.state.faults.get(&2).unwrap();
         assert_eq!(fault.channel_id, 2);
-        assert!(fault.error.contains("queue full"));
+        assert_eq!(fault.kind, reception_recovery::FaultKind::Overload);
         assert_eq!(
             fault.first_unavailable_input,
-            Some((INPUT_JOBS as u64 + 1) * 64000)
+            rejected.map(|seq| seq * 64000)
         );
         assert!(!worker.state.faults.contains_key(&1));
         drop(release);

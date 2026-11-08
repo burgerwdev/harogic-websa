@@ -107,6 +107,49 @@ def test_status_identifies_a_replaced_binary_until_restart(launcher, tmp_path):
     assert 'Binary: current' in invoke('status.sh').stdout
 
 
+def test_enabled_receivers_process_without_browser_or_output_subscriptions(launcher):
+    invoke, env, _, _, _ = launcher
+    started = invoke('run.sh')
+    assert started.returncode == 0, started.stderr
+    origin = f'http://127.0.0.1:{env["WEBSA_PORT"]}'
+
+    async def exercise():
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as client:
+            async def request(path, payload=None):
+                method = client.get if payload is None else client.post
+                async with method(origin + path, **({} if payload is None else {'json': payload})) as response:
+                    value = await response.json()
+                    assert response.status == 200, value
+                    return value
+
+            async def active(count):
+                deadline = asyncio.get_running_loop().time() + 10
+                while True:
+                    snapshot = await request('/api/sdr/receivers')
+                    if len(snapshot['receivers']) == count and all(row['processing_state'] == 'active' for row in snapshot['receivers']):
+                        return snapshot
+                    assert asyncio.get_running_loop().time() < deadline, snapshot
+                    await asyncio.sleep(0.05)
+
+            await request('/api/config', {'cmd': 'SET_MODE', 'mode': 'sdr'})
+            first = await active(1)
+            current = first['receivers'][0]
+            config = copy.deepcopy(current['confirmed'])
+            config.update(name='API reception')
+            config['baseband'].update(passband_hz=6000, transition_hz=1000, minimum_rate_hz=48000)
+            reply = await request('/api/sdr/receivers', {'type': 'create', 'request_id': 'without-view',
+                'service_id': first['service_id'], 'config': config})
+            assert reply['fault'] is None, reply['fault']
+            before = await active(2)
+            await asyncio.sleep(0.2)
+            after = await active(2)
+            for old, new in zip(before['receivers'], after['receivers'], strict=True):
+                assert old['stream'] == new['stream']
+                assert int(old['clock']['input_index']) < int(new['clock']['input_index'])
+                assert new['fault'] is None and new['processing_fault'] is None
+    asyncio.run(exercise())
+
+
 def test_aux_channel_alias_http_and_websocket_match_canonical_contract(launcher):
     invoke, env, _, _, _ = launcher
     started = invoke('run.sh')

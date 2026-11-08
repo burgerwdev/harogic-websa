@@ -2,6 +2,7 @@ import { t, getLang } from '../core/i18n';
 import { clock } from '../sdr/ft8Log';
 import { decoderLog, type DecoderRaster, type DecoderImage, type DecoderLogEntry } from '../sdr/decoderLog';
 import { drawAudioScope } from './audioScope';
+import { copyDetails, copyDetailsButton } from './copyDetails';
 import { patchWorkbench } from './workbenchDom';
 
 const rendered = new WeakMap<HTMLElement, { identity: string; presentation: string; nodes: Map<number, { entry: DecoderLogEntry; node: HTMLElement }> }>();
@@ -376,9 +377,16 @@ function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLEl
   summary.textContent = t('decoder_details');
   const raw = doc.createElement('pre');
   const current = { entry };
+  const copy = doc.createElement('template');
+  copy.innerHTML = copyDetailsButton();
+  const copyButton = copy.content.firstElementChild as HTMLButtonElement;
+  copyButton.addEventListener('click', event => {
+    event.preventDefault(); event.stopPropagation();
+    void copyDetails(copyButton, JSON.stringify(current.entry.data, null, 2));
+  });
   // Materialize raw details only when requested; the bounded log owns the original payload.
   details.addEventListener('toggle', () => { raw.textContent = details.open ? JSON.stringify(current.entry.data, null, 2) : ''; });
-  details.append(summary, raw);
+  details.append(summary, copyButton, raw);
   article.appendChild(details);
   const update: ResultUpdater = (next, nextUtc) => {
     current.entry = next;

@@ -1,4 +1,5 @@
 import { liveStatus, receiverLive } from './receiverLive';
+import { copyDetails, copyDetailsButton } from './copyDetails';
 import { processingLabel, receiverRuntime } from './receiverRuntime';
 import { analogEnhancementsApplicable } from '../core/receiverControls';
 import { receiverControlFields, readReceiverControlFields, syncReceiverControlFields } from './receiverControlFields';
@@ -10,7 +11,7 @@ import { mountReceiverDecodeView, type ReceiverDecodeView } from './receiverDeco
 import { workbenchTip } from './workbenchTips';
 import { patchWorkbench } from './workbenchDom';
 import { mountWorkbenchCreate } from './workbenchCreate';
-import { occupiedBandwidth } from '../core/receiverBandwidth';
+import { defaultTransitionHz, occupiedBandwidth } from '../core/receiverBandwidth';
 import { workbenchIcon as icon } from './workbenchIcons';
 import { convertUnitValue } from '../core/units';
 import { frequencyInput, frequencyLabel, readFrequencyHz, formatFrequencyValue, syncFrequencyInputs, wireFrequencyInputs } from './frequencyInput';
@@ -182,7 +183,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       <div class="mc-task-main"><span class="mc-task-icon">${icon(task.tracks[0]?.kind === 'audio' ? 'volume' : task.tracks[0]?.kind === 'iq' ? 'signal' : 'file')}</span><div class="mc-task-info"><strong>${esc(recordingName(task, session.snapshot))}</strong><p>${metadata.map(value => `<span>${esc(value)}</span>`).join('')}</p></div><div class="mc-task-meta"><span class="mc-file-state" data-state="${task.state}"><i class="mc-state-dot" data-state="${['preparing', 'waiting', 'recording', 'finalizing'].includes(task.state) ? 'running' : task.state}"></i>${recordingStateLabel(task.state)}</span><span>${kinds} · ${recordingSize(recordingBytes(task))}</span></div></div>
       ${task.fault ? `<p class="mc-file-fault">${esc(task.fault.message)}</p>` : ''}
       <div class="mc-task-actions">${archiveButton(task)}<span class="mc-file-spacer"></span>${deleteRecordingButton(task)}</div>
-      <details data-section="task-${esc(task.task_id)}" ${pane.expanded.has(`task-${task.task_id}`) ? 'open' : ''}><summary>${l('File details', '文件详情')}</summary><dl class="mc-task-details"><dt>${l('Task', '任务')}</dt><dd>${esc(task.task_id)}</dd>${task.tracks.map(track => `<dt>${track.kind.toUpperCase()}</dt><dd>${esc(track.format)} · ${esc(track.compression)} · ${track.segments.length} ${l('segments', '片段')}</dd>`).join('')}</dl></details></article>`;
+      <details data-section="task-${esc(task.task_id)}" ${pane.expanded.has(`task-${task.task_id}`) ? 'open' : ''}><summary>${l('File details', '文件详情')}</summary>${copyDetailsButton('copy-task')}<dl class="mc-task-details"><dt>${l('Task', '任务')}</dt><dd>${esc(task.task_id)}</dd>${task.tracks.map(track => `<dt>${track.kind.toUpperCase()}</dt><dd>${esc(track.format)} · ${esc(track.compression)} · ${track.segments.length} ${l('segments', '片段')}</dd>`).join('')}</dl></details></article>`;
   };
   const recordingHistory = (r: ReceiverState, pane: Pane, kinds?: TrackKind[]): string => {
     const tasks = recordingsForFrequency(session.snapshot, r).filter(task => !kinds || task.tracks.some(t => kinds.includes(t.kind)));
@@ -445,7 +446,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         <dl class="mc-output-links"><dt>IQ · CF32</dt><dd><code>${esc(endpoint('/ws/iq'))}</code>${button('copy-output', l('Copy', '复制'), `data-endpoint="${esc(endpoint('/ws/iq'))}"`, l('Copy IQ WebSocket address', '复制 IQ WebSocket 地址'))}</dd>
         ${receiverHasAudio(session.snapshot, c) ? `<dt>${l('Audio', '音频')} · PCM</dt><dd><code>${esc(endpoint('/ws/audio'))}</code>${button('copy-output', l('Copy', '复制'), `data-endpoint="${esc(endpoint('/ws/audio'))}"`, l('Copy audio WebSocket address', '复制音频 WebSocket 地址'))}</dd>` : ''}
         ${c.processors.length ? `<dt>${l('Results', '解码结果')}</dt><dd><code>${esc(endpoint('/ws/decode'))}</code>${button('copy-output', l('Copy', '复制'), `data-endpoint="${esc(endpoint('/ws/decode'))}"`, l('Copy results WebSocket address', '复制结果 WebSocket 地址'))}</dd>` : ''}</dl>
-        <details data-section="iq-preview" ${expanded('iq-preview')}><summary>${l('Check IQ delivery in this page', '在本页检查 IQ 数据接收')}</summary>
+        <details data-section="iq-preview" ${expanded('iq-preview')}><summary>${l('Check IQ delivery in this page', '在本页检查 IQ 数据接收')}</summary>${copyDetailsButton('copy-iq-preview')}
         ${button('output', connected ? l('Disconnect IQ preview', '断开本页 IQ') : l('Connect IQ preview', '连接本页 IQ'), `aria-pressed="${connected}"`, l('Receive IQ in this page to check sample delivery; this does not save a file', '在本页接收 IQ 以检查样本传输；此操作不保存文件'))}
         <p>${esc(outputs.map(o => `${o.kind.toUpperCase()} · ${o.state} · ${o.samples ?? '0'} samples · ${o.bytes ?? '0'} bytes ${o.fault?.message ?? ''}`).join(' / ') || l('No local IQ connection', '本页未连接 IQ'))}</p></details>`;
     }
@@ -453,7 +454,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       ${(['audio', 'results', 'iq'] as const).filter(kind => recordKind(kind) && (kind === 'iq' || activeTask(r.receiver_uid, kind) || (kind === 'audio' ? receiverHasAudio(session.snapshot, c) : receiverHasResults(session.snapshot, c)))).map(kind => `<article class="mc-record-kind"><div><h3>${kind === 'audio' ? l('Audio recording', '音频录制') : kind === 'results' ? l('Decoded results', '解码结果') : l('Raw IQ signal', '原始 IQ 信号')}</h3><p>${kind === 'audio' ? l('Save demodulated audio for playback and download.', '保存解调后的音频，支持回听与下载。') : kind === 'results' ? l('Save decoded messages, events and received images.', '保存解码消息、事件和接收图像。') : l('Keep the original signal for playback and further analysis.', '保留原始信号，用于回放和后续分析。')}</p></div>${recordButton(r.receiver_uid, kind)}</article>`).join('')}</div>
       ${recordingHistory(r, pane)}`;
     return `<header data-key="channel-heading-${ownerKey}" class="mc-channel-heading" style="--channel:${esc(c.color)}"><div class="mc-channel-title"><span class="mc-channel-avatar">${r.display_number.toString().padStart(2, '0')}</span><div><p class="mc-eyebrow">${l('Channel name', '信道名称')}</p><label class="mc-name-editor"><input data-channel-name name="name" form="${esc(formId)}" value="${esc(channelName(r))}" ${isCurrent(r.receiver_uid) ? 'readonly' : ''} maxlength="128" required aria-label="${l('Channel name', '信道名称')}" title="${l('Edit the channel name; press Enter or Apply settings to save', '修改信道名称，按 Enter 或应用设置保存')}" ${session.retiring(r.receiver_uid) ? 'disabled' : ''}>${icon('edit')}</label></div></div><div data-key="channel-actions" class="mc-channel-actions"><button type="button" data-action="toggle-receiver" role="switch" aria-checked="${c.enabled}" title="${c.enabled ? l('Stop receiving this channel', '停止此信道的接收') : l('Start receiving this channel', '开始此信道的接收')}" ${edit?.pending || session.retiring(r.receiver_uid) ? 'disabled' : ''}><span>${receiverLabel(r.state)}</span><span class="mc-receiver-switch" aria-hidden="true"></span></button>${managementButtons(r.receiver_uid)}</div></header>
-      ${pane.tab === 'output' ? `<details data-section="clock" ${expanded('clock')}><summary>${l('Stream details', '数据流详情')}</summary><p class="mc-clock">${l('Revision', '修订')} ${r.revision}<br>${esc(r.stream ? `${r.stream.source_id} / epoch ${r.stream.epoch} / channel ${r.stream.channel_id}` : l('No continuous stream', '当前无连续流'))}<br>${r.clock?.actual_rate_hz ?? '—'} S/s</p></details>` : ''}
+      ${pane.tab === 'output' ? `<details data-section="clock" ${expanded('clock')}><summary>${l('Stream details', '数据流详情')}</summary>${copyDetailsButton('copy-stream')}<p class="mc-clock">${l('Revision', '修订')} ${r.revision}<br>${esc(r.stream ? `${r.stream.source_id} / epoch ${r.stream.epoch} / channel ${r.stream.channel_id}` : l('No continuous stream', '当前无连续流'))}<br>${r.clock?.actual_rate_hz ?? '—'} S/s</p></details>` : ''}
       ${r.fault && pane.tab!=='receive' ? `<p data-key="receiver-fault" class="mc-error" role="alert">${esc(r.fault.scope)}: ${esc(r.fault.message)}</p>` : ''}
       ${pane.tab!=='receive'?receiverRuntime(r):''}
       ${native?.status(r.receiver_uid) ? `<p data-key="consumer-fault" class="mc-error" role="alert">${esc(native.status(r.receiver_uid))} ${button('retry-stream', l('Retry local consumer', '重试本地消费'))}</p>` : ''}
@@ -723,6 +724,16 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         const task = session.snapshot.recordings.find(t => t.task_id === target.dataset.archiveTask);
         if (task) archives.open(task);
       }
+      else if (action === 'copy-raw') {
+        const raw = target.closest('details')?.querySelector('pre');
+        if (raw) void copyDetails(target as HTMLButtonElement, raw.textContent ?? '');
+      }
+      else if (action === 'copy-stream' && r) void copyDetails(target as HTMLButtonElement, JSON.stringify({ revision:r.revision, stream:r.stream, clock:r.clock }, null, 2));
+      else if (action === 'copy-iq-preview' && r) void copyDetails(target as HTMLButtonElement, JSON.stringify(session.snapshot.outputs.filter(o => o.receiver_uid === uid), null, 2));
+      else if (action === 'copy-task') {
+        const task = session.snapshot.recordings.find(t => t.task_id === target.closest<HTMLElement>('[data-task-id]')?.dataset.taskId);
+        if (task) void copyDetails(target as HTMLButtonElement, JSON.stringify(task, null, 2));
+      }
       else if (action === 'copy-output') {
         const status = surface.body.querySelector<HTMLElement>('[data-copy-status]');
         const clipboard = surface.body.ownerDocument.defaultView?.navigator.clipboard;
@@ -862,6 +873,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
           if (purpose && input.name === 'mode') purpose.value = mode.kind === 'analog' ? 'listen' : 'digital';
           const bw = mode.defaultBandwidthHz, occupied = occupiedBandwidth(mode);
           const full = form.querySelector<HTMLInputElement>('[name=bandwidth]'), rate = form.querySelector<HTMLInputElement>('[name=minimum-rate]');
+          const transition = form.querySelector<HTMLInputElement>('[name=transition]');
+          if (transition) transition.value = String(defaultTransitionHz(occupied));
           if (full) full.value = String(Math.max(Number(full.value), occupied));
           if (rate) rate.value = String(Math.max(Number(rate.value), mode.minimumRateHz));
           const bandwidth = form.querySelector<HTMLInputElement>('[name=processor-bandwidth]'); if (bandwidth) bandwidth.value = String(bw);

@@ -22,3 +22,4 @@
 | 修改模式与参数归属 | [状态与所有权](reference/STATE.md) |
 | 维护 DRM 台架与 AAC 夹具 | [DRM](reference/DRM.md) |
 | 安装 provider 和使用专项工具 | [工具](../../tools/README.md) |
+| 本地候选包检查与已知样本 | [验收](ACCEPTANCE.md) |

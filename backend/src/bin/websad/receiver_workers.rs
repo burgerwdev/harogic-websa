@@ -16,8 +16,7 @@ pub(super) const WORKERS: usize = MAX_CHANNELS;
 pub(super) fn worker_for(channel:u32)->usize {channel.saturating_sub(1) as usize}
 // Item protection plus real retained bytes/media duration, including execution.
 const INPUT_CAPACITY: usize = 64;
-const INPUT_BYTES_PER_CHANNEL:u64=4*1024*1024;
-const INPUT_MEDIA_NS_PER_CHANNEL:u64=2_000_000_000;
+use super::receiver_limits::{input_bytes_limit, INPUT_MEDIA_NS as INPUT_MEDIA_NS_PER_CHANNEL};
 const RESULT_CAPACITY: usize = 32;
 // Two pending protocol windows per UID, independent of the number of receivers.
 const SEARCH_CAPACITY: usize = 2;
@@ -316,9 +315,10 @@ impl InputPermit {
     fn reserve(shared:&Arc<Shared>,slot:usize,samples:usize,rate:f64)->Result<Self,String> {
         let branch=&shared.branches[slot];let bytes=(samples*8) as u64;
         let media=(samples as f64/rate*1e9).ceil() as u64;
+        let limit=input_bytes_limit(rate,8);
         branch.input_bytes.try_update(Ordering::AcqRel,Ordering::Acquire,
-            |held|held.checked_add(bytes).filter(|total|*total<=INPUT_BYTES_PER_CHANNEL))
-            .map_err(|_|format!("receiver input queue failure: retained input including execution exceeds {INPUT_BYTES_PER_CHANNEL} bytes per UID"))?;
+            |held|held.checked_add(bytes).filter(|total|*total<=limit))
+            .map_err(|_|format!("receiver input queue failure: retained input including execution exceeds {limit} bytes per UID"))?;
         if branch.input_media_ns.try_update(Ordering::AcqRel,Ordering::Acquire,
             |held|held.checked_add(media).filter(|total|*total<=INPUT_MEDIA_NS_PER_CHANNEL)).is_err() {
             branch.input_bytes.fetch_sub(bytes,Ordering::AcqRel);
@@ -654,6 +654,11 @@ impl ReceiverWorkers {
         if [slot,WORKERS+slot].iter().any(|&index|self.threads[index].as_ref().is_some_and(|h|!h.is_finished())) {
             return Err(format!("channel {channel} is still retiring; its native call has not completed"));
         }
+        if self.configs[slot].enabled && self.configs[slot].processing_enabled
+            && websa_channelizer::catalog::is_external(&self.configs[slot].mode)
+            && !self.prepared.matches(slot, &self.configs[slot]) {
+            return Err(format!("channel {channel} decoder preparation pending before restart"));
+        }
         if self.configs[slot].enabled && self.configs[slot].processing_enabled {self.ensure_owner(slot,self.configs[slot].mode=="ft8")?;}
         self.bump_generation(slot)?;
         self.shared.branches[slot].recovery_floor.store(self.shared.generations[slot].load(Ordering::Acquire),Ordering::Release);
@@ -789,7 +794,8 @@ impl ReceiverWorkers {
             let Some(slot) = config.channel.checked_sub(1).map(|slot| slot as usize).filter(|&slot| slot < MAX_CHANNELS) else { return false; };
             config.enabled && config.processing_enabled && websa_channelizer::catalog::is_external(&config.mode)
                 && !self.prepared.matches(slot, config)
-                && (restart || self.configs[slot].resets_receiver(config) || self.active[slot].is_none())
+                && (restart || self.configs[slot].resets_receiver(config)
+                    || self.active[slot].is_none() && self.channel_failure(config.channel).is_none())
         }).cloned().collect()
     }
 
@@ -841,7 +847,8 @@ impl ReceiverWorkers {
         for row in registry {
             let Some(slot) = row.channel.checked_sub(1).map(|slot| slot as usize).filter(|&slot| slot < MAX_CHANNELS) else { continue; };
             let generation = self.shared.generations[slot].load(Ordering::Acquire);
-            if row.state == "active" && self.active[slot] == Some((generation, row.channel_id, row.epoch)) {
+            if row.state == "active" && self.channel_failure(row.channel).is_none()
+                && self.active[slot] == Some((generation, row.channel_id, row.epoch)) {
                 discarded.selected[slot] = true;
                 discarded.channels[slot] = self.prepared.channels[slot].take();
                 discarded.previous[slot] = self.prepared.previous[slot].take();
@@ -862,12 +869,8 @@ impl ReceiverWorkers {
             desired[slot] = config.clone();
         }
         // Preparation failures must leave every active configuration and generation intact.
-        for (slot, config) in desired.iter().enumerate() {
-            if config.enabled && config.processing_enabled && websa_channelizer::catalog::is_external(&config.mode)
-                && (self.configs[slot].resets_receiver(config) || self.active[slot].is_none())
-                && !self.prepared.matches(slot, config) {
-                return Err(format!("external decoder for channel {} was not prepared before admission", config.channel));
-            }
+        if let Some(config) = self.preparation_needed(&desired, false).first() {
+            return Err(format!("external decoder for channel {} was not prepared before admission", config.channel));
         }
         for (slot, config) in desired.into_iter().enumerate() {
             if *self.configs[slot] != config {
@@ -1167,7 +1170,9 @@ impl ReceiverWorkers {
             "model_preparation":websa_channelizer::model_preparation::snapshot(),
             "native_chain":{"count":load(&c.chain_count),"total_ns":load(&c.chain_total_ns),"max_ns":load(&c.chain_max_ns)},
             "limits":{"workers":WORKERS,"input_per_worker":INPUT_CAPACITY,"results":RESULT_CAPACITY,
-                "input_bytes_per_channel":INPUT_BYTES_PER_CHANNEL,"input_media_ns_per_channel":INPUT_MEDIA_NS_PER_CHANNEL,
+                "input_bytes_per_channel_min":super::receiver_limits::INPUT_BYTES_MIN,
+                "input_bytes_per_channel_max":super::receiver_limits::INPUT_BYTES_MAX,
+                "input_burst_ns":super::receiver_limits::INPUT_BURST_NS,"input_media_ns_per_channel":INPUT_MEDIA_NS_PER_CHANNEL,
                 "results_per_channel":RESULT_CAPACITY,"output_bytes_per_channel":OUTPUT_BYTES_PER_CHANNEL,
                 "ft8_jobs":SEARCH_CAPACITY,"max_iq_samples":MAX_BASEBAND_SAMPLES,"max_event_bytes":MAX_EVENT_BYTES}
         })
@@ -1854,6 +1859,28 @@ mod tests {
     }
 
     #[test]
+    fn input_bursts_are_rate_aware_bounded_and_release_executing_reservations() {
+        let workers=ReceiverWorkers::new().unwrap();
+        let shared=&workers.shared;
+        for rate in [2_604_166.666_666_666_5,4_000_000.0] {
+            let samples=(rate*0.2) as usize;
+            let a=InputPermit::reserve(shared,0,samples,rate).unwrap();
+            let b=InputPermit::reserve(shared,0,samples,rate).unwrap();
+            assert!(shared.branches[0].input_bytes.load(Ordering::Acquire)>4*1024*1024);
+            assert!(InputPermit::reserve(shared,0,samples,rate).is_err());
+            assert!(InputPermit::reserve(shared,1,samples,rate).is_ok());
+            drop((a,b));
+            assert_eq!(shared.branches[0].input_bytes.load(Ordering::Acquire),0);
+            assert_eq!(shared.branches[0].input_media_ns.load(Ordering::Acquire),0);
+        }
+        let a=InputPermit::reserve(shared,0,48_000,48_000.0).unwrap();
+        let b=InputPermit::reserve(shared,0,48_000,48_000.0).unwrap();
+        assert!(InputPermit::reserve(shared,0,1,48_000.0).err().unwrap().contains("two seconds"));
+        drop((a,b));
+        assert_eq!(shared.branches[0].input_bytes.load(Ordering::Acquire),0);
+    }
+
+    #[test]
     fn packet_statistics_follow_actual_dsp_success_squelch_and_failure() {
         let shared=Arc::new(Shared {stopping:AtomicBool::new(false),
             generations:(0..MAX_CHANNELS).map(|_|AtomicU64::new(1)).collect(),pending:AtomicUsize::new(0),
@@ -2420,6 +2447,37 @@ mod tests {
         workers.configure(&configs).unwrap();
         let retired = workers.poll().unwrap();
         assert!(retired.audio.is_empty() && retired.decode.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires multimon-ng capability discovery; no decoder input or RF hardware"]
+    fn failed_external_preparation_before_first_packet_does_not_poison_healthy_lane() {
+        let mut workers=ReceiverWorkers::new().unwrap();
+        let healthy=ChannelConfig {freq:144_800_000.0,..ChannelConfig::default()};
+        let external=ChannelConfig {channel:2,enabled:true,freq:144_800_000.0,
+            mode:"dtmf".into(),if_bw:12_500.0,..ChannelConfig::default()};
+        let configs=[healthy.clone(),external.clone()];
+        workers.install_prepared(PreparedDecoders::prepare_with(&configs, |_|Ok(None)).unwrap());
+        workers.configure(&configs).unwrap();
+        // Simulate a resource transferred to a rejected first packet. This
+        // branch has never published an active IQ identity and has no candidate.
+        drop(workers.prepared.take(1,&external));
+        workers.fail_source(2,"fine input queue full; first IQ admission failed");
+        workers.configure(&configs).unwrap();
+        assert!(workers.preparation_needed(&configs,false).is_empty());
+        assert_eq!(workers.missing_preparations(&configs).iter().map(|c|c.channel).collect::<Vec<_>>(),[2]);
+        let registry=[ChannelRegistryEntry {channel:1,channel_id:42,epoch:7,frequency_hz:healthy.freq,
+            output_rate:48_000.0,input_rate:48_000.0,group_delay_samples:0.0,state:"active"}];
+        for seq in 0..=1 {
+            let frame=encode_baseband(BasebandMagic::Primary,seq,48_000.0,healthy.freq,42,7,0,0.0,
+                &if seq==0 {Vec::new()} else {vec![0.1,0.0].repeat(8192)}).unwrap();
+            workers.submit(&frame,&registry).unwrap();
+        }
+        let output=workers.finish().unwrap();
+        assert!(output.audio.iter().any(|frame|frame.len()>96));
+        assert!(workers.shared.check().is_ok());
+        assert!(workers.channel_failure(1).is_none());
+        assert!(workers.channel_failure(2).is_some());
     }
 
     #[test]

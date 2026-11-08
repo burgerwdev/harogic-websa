@@ -15,7 +15,7 @@ it('distinguishes healthy, squelched, protocol waiting and IQ-only reception',()
  expect(liveStatus(r).label).toBe('Waiting for signal');
  r.processing_runtime.observed_receiver!.squelch=null;r.processing_runtime.observed_receiver!.protocol_waiting=true;
  expect(liveStatus(r).label).toBe('Waiting for protocol result');
- r.confirmed.processors=[];r.processing_state='disabled';r.processing_runtime=null;
+ r.confirmed.processors=[];r.processing_state='disabled';r.processing_runtime.observed_receiver!.squelch={open:false,gain:0};r.processing_runtime.observed_receiver!.protocol_waiting=false;
  expect(liveStatus(r).kind).toBe('healthy');
 });
 it('separates queued recovery, preparation, resumed listening and ended recording',()=>{
@@ -33,6 +33,18 @@ it('separates queued recovery, preparation, resumed listening and ended recordin
  expect(document.querySelector('details')!.open).toBe(true);
  r.reception.last_interruption.kind='device';r.reception.manual_recovery_allowed=false;
  expect(receiverLive(r,[])).not.toContain('data-action="recover-processing"');
+});
+
+it.each(['adsb','ais','gps','ism','meteor','drm','drmplus','ft8','ft4','wspr','rtty','aprs','future-digital'])('%s reception is independent of companion audio squelch',mode=>{
+ setLang('en');const r=structuredClone(base);r.state='running';r.processing_state='active';
+ r.confirmed.purpose='digital';r.confirmed.processors[0]={...r.confirmed.processors[0],kind:'decoder',mode};
+ r.processing_runtime={state:'active',processing_generation:'2',oldest_input_wait_ns:0,input_held_bytes:0,input_held_media_ns:0,observed_receiver:{nr_requested:'off',nr_effective:'off',nr_state:'off',squelch:{open:false,gain:0},protocol_waiting:false}};
+ expect(liveStatus(r).label).toBe('Receiving normally');
+ r.processing_runtime.observed_receiver!.protocol_waiting=true;
+ expect(liveStatus(r).label).toBe('Waiting for protocol result');
+ r.processing_state='backlogged';expect(liveStatus(r).label).toBe('Receiving · processing behind');
+ r.processing_state='failed';expect(liveStatus(r).kind).toBe('fault');
+ r.reception=recovery('recovering');expect(liveStatus(r).kind).toBe('recovering');
 });
 
 it('clears only recovered notices, survives refreshes and shows a new interruption',()=>{

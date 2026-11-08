@@ -10,8 +10,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const QUEUE: usize = 32;
+// Bound retained bytes independently of packet fragmentation. Small IQ blocks
+// must not have a smaller jitter budget than large blocks of the same signal.
+const INPUT_QUEUE: usize = 1024;
 const LINE_LIMIT: usize = 64 * 1024;
 const BLOCK_LIMIT: usize = 1024 * 1024;
+const INPUT_BYTES: u64 = (QUEUE * BLOCK_LIMIT) as u64;
 const FINISH_TIMEOUT: Duration = Duration::from_secs(10);
 #[repr(C)]
 struct PollFd { fd: i32, events: i16, revents: i16 }
@@ -59,7 +63,7 @@ impl Process {
             if prctl(1, 9usize, 0usize, 0usize, 0usize) != 0 { return Err(std::io::Error::last_os_error()); }
             Ok(())
         }); }
-        let (tx, rx) = mpsc::sync_channel(QUEUE);
+        let (tx, rx) = mpsc::sync_channel(INPUT_QUEUE);
         let (out_tx, out_rx) = mpsc::sync_channel(if probe { 256 } else { QUEUE });
         let (recycle_tx, recycle_rx) = mpsc::sync_channel(QUEUE);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -201,7 +205,8 @@ impl Process {
         let load=|v:&AtomicU64|v.load(Ordering::Relaxed);
         serde_json::json!({"input_held_bytes":load(&self.stats.bytes),"input_executing_bytes":load(&self.stats.executing),
             "input_blocks":load(&self.stats.blocks),"written_bytes":load(&self.stats.written),
-            "done":self.done.load(Ordering::Acquire),"max_input_blocks":QUEUE,"max_input_block_bytes":BLOCK_LIMIT})
+            "done":self.done.load(Ordering::Acquire),"max_input_blocks":INPUT_QUEUE,
+            "max_input_held_bytes":INPUT_BYTES,"max_input_block_bytes":BLOCK_LIMIT})
     }
     pub fn buffer(&self) -> Vec<u8> { self.recycled.try_recv().unwrap_or_default() }
     fn check(&self) -> Result<(), String> {
@@ -213,10 +218,13 @@ impl Process {
         let result = self.drain();
         if !bytes.is_empty() {
             let size=bytes.len() as u64;
-            self.stats.bytes.fetch_add(size,Ordering::Relaxed);self.stats.blocks.fetch_add(1,Ordering::Relaxed);
+            self.stats.bytes.try_update(Ordering::AcqRel,Ordering::Acquire,
+                |held|held.checked_add(size).filter(|sum|*sum<=INPUT_BYTES))
+                .map_err(|_|format!("decoder retained input exceeds {INPUT_BYTES} bytes"))?;
+            self.stats.blocks.fetch_add(1,Ordering::Relaxed);
             self.input.try_send(Input::Data(bytes,InputReservation {stats:self.stats.clone(),remaining:size,executing:false})).map_err(|e| {
                 match e {
-                mpsc::TrySendError::Full(_) => "decoder input backlog exceeded 32 blocks".to_string(),
+                mpsc::TrySendError::Full(_) => format!("decoder input backlog exceeded {INPUT_QUEUE} blocks"),
                 mpsc::TrySendError::Disconnected(_) => "decoder input process stopped".to_string(),
             }})?;
         }
@@ -349,6 +357,26 @@ mod tests {
         let done = process.done.clone();
         drop(process);
         assert!(done.load(Ordering::Acquire));
+    }
+    #[test]
+    fn fragmented_input_shares_one_byte_budget_including_executing_input() {
+        let mut process=Process::spawn(Path::new("/usr/bin/python3"),&["-c".into(),
+            "import time; time.sleep(30)".into()]).unwrap();
+        // The consumer does not read. More than 32 small blocks must still fit
+        // within the same bounded retention budget as one large block.
+        for _ in 0..96 {process.push(vec![42;4096]).unwrap();}
+        let stats=process.stats.clone();
+        let mut rejected=false;
+        for _ in 0..QUEUE+1 {
+            if let Err(error)=process.push(vec![42;BLOCK_LIMIT]) {
+                assert!(error.starts_with("decoder retained input exceeds "));rejected=true;break;
+            }
+        }
+        assert!(rejected);
+        assert!(stats.bytes.load(Ordering::Acquire)<=INPUT_BYTES);
+        drop(process);
+        assert_eq!(stats.bytes.load(Ordering::Acquire),0);
+        assert_eq!(stats.blocks.load(Ordering::Acquire),0);
     }
     #[test]
     fn abnormal_exit_is_an_explicit_error() {

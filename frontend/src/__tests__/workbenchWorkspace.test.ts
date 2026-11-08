@@ -51,6 +51,26 @@ function nativeWorkspace(quota?: ServiceSnapshot['recording_resources']): void {
 }
 
 describe('per-channel audio settings', () => {
+  it('uses a practical ADS-B transition for mode changes and new channels', async () => {
+    nativeWorkspace();
+    session.snapshot.capabilities.mode_descriptors!.push(receiverPlugin('adsb', {kind:'digital',provider:'onair',
+      defaultBandwidthHz:1_800_000,minimumRateHz:2_500_000,sideband:'symmetric',outputs:['table'],audioCompanion:null}));
+    session.snapshot.capture.center_hz=1_090_000_000;
+    session.snapshot.capture.usable_bandwidth_hz=6_250_000;
+    session.notify();
+    change('mode','adsb');
+    expect(element<HTMLInputElement>('[name=transition]').value).toBe('225000');
+    click('create');
+    const dialog=overview.querySelector<HTMLDialogElement>('[data-create-channel]')!;
+    const mode=dialog.querySelector<HTMLSelectElement>('[name=mode]')!;
+    mode.value='adsb';mode.dispatchEvent(new Event('change',{bubbles:true}));
+    const create=vi.spyOn(session,'create').mockResolvedValue({receiver_uid:null,fault:null});
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+    await settle();
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({baseband:expect.objectContaining({
+      passband_hz:1_800_000,transition_hz:225_000,minimum_rate_hz:2_500_000})}));
+  });
+
   it.each([
     { geometry: {}, hidden: false, collapsed: false },
     { geometry: [0, 0, 400, 300], hidden: false, collapsed: false },

@@ -11,11 +11,17 @@ class PlaybackWorker {
 
 class PlaybackContext extends EventTarget {
   sampleRate = 48000;
+  currentTime = 0;
   state = 'running';
   destination = {};
   resume = vi.fn().mockResolvedValue(undefined);
   createScriptProcessor() { return { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null }; }
   createAnalyser() { return { connect: vi.fn(), disconnect: vi.fn(), fftSize: 0 }; }
+  createGain() { return { connect:vi.fn(),disconnect:vi.fn(),gain:this.param() }; }
+  createDynamicsCompressor() { return { connect:vi.fn(),disconnect:vi.fn(),threshold:this.param(),
+    knee:this.param(),ratio:this.param(),attack:this.param(),release:this.param() }; }
+  createBiquadFilter() { return { connect:vi.fn(),disconnect:vi.fn(),frequency:this.param(),Q:this.param(),gain:this.param() }; }
+  private param() { return { value:0,cancelScheduledValues:vi.fn(),setValueAtTime:vi.fn(),linearRampToValueAtTime:vi.fn() }; }
 }
 
 beforeEach(() => { vi.spyOn(document, 'addEventListener'); });
