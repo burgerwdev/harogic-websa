@@ -3,9 +3,10 @@ import {FixtureReceiverAdapter} from '../dev/fixtureReceiverAdapter';
 import {receiverLive,liveStatus} from '../ui/receiverLive';
 import {setLang} from '../core/i18n';
 import type {ReceptionState,RecordingTask} from '../core/multichannel';
+import {WorkbenchSession} from '../ui/workbenchSession';
 const adapter=new FixtureReceiverAdapter();
 const base=adapter.snapshot().receivers[0];adapter.dispose();
-afterEach(()=>document.body.replaceChildren());
+afterEach(()=>{document.body.replaceChildren();sessionStorage.clear();});
 const recovery=(state:ReceptionState['state']):ReceptionState=>({policy:'continuous',state,interruptions:1,attempts:1,retry_limit:3,retry_in_ms:500,manual_recovery_allowed:state==='stopped',last_error:null,last_interruption:{kind:'overload',scope:'processing',reason:'queue full',at_ms:100,recovered_at_ms:state==='receiving'?200:null,before:null,after:null,missing_input_samples:null}});
 it('distinguishes healthy, squelched, protocol waiting and IQ-only reception',()=>{
  setLang('en');const r=structuredClone(base);r.state='running';r.processing_state='active';
@@ -32,4 +33,26 @@ it('separates queued recovery, preparation, resumed listening and ended recordin
  expect(document.querySelector('details')!.open).toBe(true);
  r.reception.last_interruption.kind='device';r.reception.manual_recovery_allowed=false;
  expect(receiverLive(r,[])).not.toContain('data-action="recover-processing"');
+});
+
+it('clears only recovered notices, survives refreshes and shows a new interruption',()=>{
+ setLang('en');const adapter=new FixtureReceiverAdapter();
+ const r=structuredClone(base);r.state='running';r.processing_state='active';r.reception=recovery('receiving');
+ const snapshot=adapter.snapshot();snapshot.service_id='notice-test';snapshot.receivers=[r];
+ adapter.snapshot=()=>structuredClone(snapshot);
+ let session=new WorkbenchSession(adapter);
+ expect(receiverLive(r,[])).toContain('data-action="clear-interruption"');
+ session.clearInterruption(r.receiver_uid);expect(session.interruptionCleared(r.receiver_uid)).toBe(true);
+ expect(receiverLive(r,[],false,false,session.interruptionCleared(r.receiver_uid))).not.toContain('class="mc-live-interruption"');
+ expect(receiverLive(r,[],false,false,true)).toContain('queue full'); // Diagnostics retain the record.
+ session.dispose();session=new WorkbenchSession(adapter);
+ expect(session.interruptionCleared(r.receiver_uid)).toBe(true);
+ session.snapshot.receivers[0].reception!.interruptions++;
+ expect(session.interruptionCleared(r.receiver_uid)).toBe(false);
+ r.reception=recovery('stopped');
+ expect(receiverLive(r,[],false,false,true)).toContain('class="mc-live-interruption"');
+ expect(receiverLive(r,[])).not.toContain('data-action="clear-interruption"');
+ session.snapshot.receivers=[r];session.clearInterruption(r.receiver_uid);
+ expect(session.interruptionCleared(r.receiver_uid)).toBe(false);
+ session.dispose();adapter.dispose();
 });

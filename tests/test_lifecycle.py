@@ -620,12 +620,15 @@ def test_stop_escalates_only_the_owned_process(launcher):
 
 
 @pytest.mark.parametrize('repair', [
-    pytest.param({'audio_rate': 48000}, id='valid-model-rate'),
+    pytest.param({'nr_algorithm': 'dfn'}, id='working-neural-model'),
     pytest.param({'nr': False}, id='disable-failed-model'),
     pytest.param({'nr_algorithm': 'wiener'}, id='replace-failed-model'),
 ])
-def test_status_exposes_recovery_permission_and_rejection_preserves_failed_receiver(launcher, repair):
+def test_status_exposes_recovery_permission_and_rejection_preserves_failed_receiver(launcher, repair, tmp_path):
     invoke, env, _, _, _ = launcher
+    broken_runtime = tmp_path / 'invalid-onnxruntime.so'
+    broken_runtime.write_bytes(b'controlled invalid runtime for model preparation failure')
+    env['WEBSA_ORT_DYLIB'] = str(broken_runtime)
     started = invoke('run.sh')
     assert started.returncode == 0, started.stderr
     origin = f'http://127.0.0.1:{env["WEBSA_PORT"]}'
@@ -644,7 +647,7 @@ def test_status_exposes_recovery_permission_and_rejection_preserves_failed_recei
 
             assert (await command({'cmd': 'SET_MODE', 'mode': 'sdr'}))['cmd'] == 'STATUS'
             accepted = await command({'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
-                'mode': 'am', 'audio_rate': 24000, 'nr': True, 'nr_algorithm': 'dfn'})
+                'mode': 'am', 'audio_rate': 24000, 'nr': True, 'nr_algorithm': 'fastenhancer'})
             assert accepted['cmd'] == 'STATUS', accepted
             receiver = (await snapshot('/api/sdr/receivers'))['receivers'][0]
             await subscriptions.enter_async_context(client.ws_connect(
@@ -658,7 +661,7 @@ def test_status_exposes_recovery_permission_and_rejection_preserves_failed_recei
                         await asyncio.sleep(0.02)
             except TimeoutError:
                 pytest.fail(f'expected selected-model failure; current receiver: {receiver}')
-            assert 'rate 24000' in receiver['processing_fault']['error']
+            assert 'selected fastenhancer model preparation failed' in receiver['processing_fault']['error']
             assert receiver['reception']['manual_recovery_allowed'] is False
             status = await snapshot('/api/state')
             channel = next(row for row in status['sdr']['channels'] if row['channel'] == 1)

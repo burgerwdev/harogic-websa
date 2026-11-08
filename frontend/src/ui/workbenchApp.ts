@@ -419,7 +419,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     let content = '';
     const expanded = (key: string): string => pane.expanded.has(key) ? 'open' : '';
     if (!fixture && pane.tab === 'recording' && !available('record_start')) pane.tab = 'receive';
-    if (pane.tab === 'receive') content = `<section class="mc-live-section" data-key="reception-${esc(r.receiver_uid)}">${receiverLive(r,session.snapshot.recordings,session.recovering(r.receiver_uid)||!!edit?.pending,pane.expanded.has('live-diagnostics'))}</section><form id="${esc(formId)}" data-key="config-${ownerKey}-receive" data-config data-revision="${r.revision}">
+    if (pane.tab === 'receive') content = `<section class="mc-live-section" data-key="reception-${esc(r.receiver_uid)}">${receiverLive(r,session.snapshot.recordings,session.recovering(r.receiver_uid)||!!edit?.pending,pane.expanded.has('live-diagnostics'),session.interruptionCleared(r.receiver_uid))}</section><form id="${esc(formId)}" data-key="config-${ownerKey}-receive" data-config data-revision="${r.revision}">
       <div class="mc-tuning-grid"><label class="mc-frequency-field"><span>${l('Receive frequency', '接收频率')}</span>${frequencyInput(c.baseband.frequency_hz)}</label>
       <label class="mc-mode-field"><span>${l('Demodulate / decode', '解调 / 解码')}</span>${fixture ? `<select name="purpose">${Object.entries(labels()).map(([v, label]) => `<option value="${v}" ${c.purpose === v ? 'selected' : ''}>${label}</option>`).join('')}</select>` : `<select name="mode" title="${l('Choose a mode; bandwidth and rate are adjusted automatically', '选择模式后自动匹配带宽与速率')}">${modeOptions(c)}</select>`}</label></div>
       ${!fixture ? audioSettings(c, receiverHasAudio(session.snapshot, c)) + receiverControlFields(c.processors[0], c.processors[0]?.mode) : ''}
@@ -677,6 +677,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       else if (action.startsWith('filter-')) { channelFilter = action.slice(7); renderPane(pane); }
       else if (action === 'clear-search') { search = ''; channelFilter = 'all'; const input = surface.body.querySelector<HTMLInputElement>('[data-search]'); if (input) input.value = ''; renderPane(pane); }
       else if (action === 'dismiss-fault') { session.fault = null; session.notify(); }
+      else if (action === 'clear-interruption') session.clearInterruption(uid);
       else if (action === 'bandwidth-preset') {
         const field = target.closest('form')?.querySelector<HTMLInputElement>('[name=processor-bandwidth]');
         if (field) { field.value = target.dataset.bandwidth!; field.dispatchEvent(new Event('input', { bubbles: true })); }

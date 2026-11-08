@@ -130,6 +130,21 @@ describe('per-channel audio settings', () => {
     expect(element<HTMLInputElement>('[data-channel-name]').form).toBe(element('[data-config]'));
   });
 
+  it('clears a recovered interruption through the live panel and shows the next one', () => {
+    const row=session.snapshot.receivers[0];row.processing_state='active';
+    row.reception={policy:'continuous',state:'receiving',interruptions:1,attempts:0,retry_limit:3,
+      retry_in_ms:null,manual_recovery_allowed:false,last_error:null,last_interruption:{kind:'overload',scope:'processing',
+        reason:'queue full',at_ms:100,recovered_at_ms:200,before:null,after:null,missing_input_samples:null}};
+    session.notify();
+    expect(element('.mc-live-interruption').textContent).toContain('Interruptions');
+    click('clear-interruption');
+    expect(overview.querySelector('.mc-live-interruption')).toBeNull();
+    session.notify();expect(overview.querySelector('.mc-live-interruption')).toBeNull();
+    row.reception.interruptions++;row.reception.last_interruption.at_ms=300;session.notify();
+    expect(element('.mc-live-interruption').textContent).toContain('Interruptions 2');
+    sessionStorage.clear();
+  });
+
   it('uses mode bandwidth limits and presets without applying until requested', async () => {
     nativeWorkspace(); const configure = vi.spyOn(session, 'configure');
     change('mode', 'am');

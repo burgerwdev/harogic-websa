@@ -15,8 +15,8 @@ import { filterPreviewHz } from '../ui/sdrFilter';
 import { filterHandlesVisible, passbandDragFrequency, renderFilterHandles } from '../ui/sdrFilterGesture';
 import { sdrPassbandVisible } from '../ui/sdrPassbandState';
 import { displayOffset } from '../ui/displayState';
-import { waterfallLUT } from './waterfallPalette';
-import { chooseViewFloor, observedFloor, WaterfallAutoLevels } from '../dsp/waterfallLevels';
+import { waterfallHeadroom, waterfallLUT } from './waterfallPalette';
+import { chooseViewFloor, observedFloor, waterfallDisplayBounds, WaterfallAutoLevels } from '../dsp/waterfallLevels';
 import { requestRender } from './redraw';
 
 const MAX_HISTORY_COLUMNS = 16384;
@@ -367,7 +367,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   const img = wfImg;
   const pixels = wfPixels!;
   if (scroll) pixels.copyWithin(scroll * W, 0, (H - scroll) * W);
-  const lut = waterfallLUT(wfPalette.get(), wfContrast.get());
+  const lut = waterfallLUT(wfPalette.get());
   const fixedBounds = wfRangeMode.get() === 'fixed';
   const fixedBottom = wfLoDbm.get() - (S.sdrMode ? displayOffset.get() : 0);
   const fixedTop = wfHiDbm.get() - (S.sdrMode ? displayOffset.get() : 0);
@@ -392,12 +392,21 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
     const level = rowGeometry.get(row)?.level;
     const top = fixedBounds ? fixedTop : localWindow?.hi ?? level?.windowHi ?? 0;
     const bottom = fixedBounds ? fixedBottom : localWindow?.lo ?? level?.windowLo ?? 0;
+    // Retained automatic windows contain the smoothed floor even in Fixed mode.
+    // Neither instantaneous peaks nor live frames behind a pause set contrast.
+    const floor = (localWindow?.lo ?? level?.windowLo ?? 0) + 6;
+    const bounds = level ? waterfallDisplayBounds(bottom, top, floor, wfContrast.get())
+      : waterfallDisplayBounds(0, 1, 0.26, wfContrast.get());
     const lastColour = lut.length - 1;
-    const scale = level ? level.step / (top - bottom) * lastColour : lastColour / dmax;
-    const bias = level ? (level.lo - level.step - bottom) / (top - bottom) * lastColour : 0;
+    const scale = level ? level.step / (bounds.hi - bounds.lo) * lastColour
+      : lastColour / (dmax * (bounds.hi - bounds.lo));
+    const bias = level ? (level.lo - level.step - bounds.lo) / (bounds.hi - bounds.lo) * lastColour
+      : -bounds.lo / (bounds.hi - bounds.lo) * lastColour;
     const rowStart = y * W;
     for (let x = 0; x < W; x++) {
-      const colour = ds[x] === 0 ? 0 : Math.max(0, Math.min(lastColour, Math.round(ds[x] * scale + bias)));
+      let mapped = ds[x] * scale + bias;
+      if (level && !fixedBounds) mapped = waterfallHeadroom(mapped / lastColour) * lastColour;
+      const colour = ds[x] === 0 ? 0 : Math.max(0, Math.min(lastColour, Math.round(mapped)));
       pixels[rowStart + x] = level && ds[x] === 0 ? bgPixel : lut[colour];
     }
   }

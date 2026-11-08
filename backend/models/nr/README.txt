@@ -49,7 +49,8 @@ ONNX Runtime CPU binary:
   MIT, LICENSE.onnxruntime and ThirdPartyNotices.onnxruntime.txt.
   tools/fetch-nr-runtime.sh downloads/verifies it. The library is packaged beside
   websad. WEBSA_ORT_DYLIB can specify another location. Missing/init failure is
-  reported as requested-model/Wiener fallback; inference failures stop the stream.
+  reported as a selected-model preparation failure; inference failures stop the
+  processing branch. Neither condition silently substitutes another algorithm.
 
 Runtime choice:
   Existing Tract 0.21.4 executed GTCRN and UL-UNAS, but GTCRN's initial native
@@ -74,6 +75,24 @@ Causal PCM:
   not an additional signal shift. Flush offline with zeros then trim the reported
   delay to preserve the original sample count and tail. Stopping/switching a live
   stream drops its buffered tail under the existing receiver discontinuity policy.
+
+Listener sample rates:
+  Neural reducers accept 8-192kHz listening PCM, including 12/24kHz. At rates
+  other than 48kHz, a channel-owned pair of Blackman-windowed sinc FIR converters
+  surrounds the existing 48kHz model stream. Exact integer phase accumulators
+  retain cadence across callbacks; the filters reject interpolation images and
+  downsampling aliases. The cutoff is 0.45 times the lower sample rate. Each FIR
+  has a radius of 32*ceil(input_rate/output_rate) input samples. A fractional delay
+  in the return FIR rounds the complete signal delay up to a listener sample.
+  Metadata includes both converters and model latency. At 12/24kHz respectively:
+    dfn:          424 / 784 samples (35.333 / 32.667ms)
+    gtcrn/ul-unas: 316 / 567 samples (26.333 / 23.625ms)
+    fastenhancer: 192 / 320 samples (16.000 / 13.333ms)
+  Converted paths run the model at full attenuation and mix the delayed original
+  PCM at the listener rate. Thus 0dB retains the original waveform, including its
+  high frequencies, with the same delay as other attenuation settings. Live
+  attenuation changes do not reset conversion, recurrent state or sample clocks.
+  The direct 48kHz paths retain their existing model-specific behavior below.
 
 dfn (UI DeepFilterNet3):
   Restored pre-guard production behavior in 1.12.1 after listening feedback of
@@ -100,9 +119,18 @@ Mode and UI policy:
   GTCRN/UL-UNAS necessarily limit the wet component to ~7.2kHz. This affects
   wideband/music material at high attenuation. FastEnhancer/DFN remain at 48k.
   WFM has independent L/R model, converter and overlap state at equal cadence.
-  All neural modes currently require 48k listener PCM; other rates explicitly
-  report Wiener fallback. DRM/DRM+ retain NR preference but bypass listener NR.
+  DRM/DRM+ retain NR preference but bypass listener NR.
   Digital decoder RAW audio remains upstream and unaffected by listening NR.
+
+Wiener:
+  This is a spectral Wiener gain with an estimated flat in-band noise PSD, not
+  IMCRA or a neural speech model. The exact lower-quartile order statistic uses
+  reusable scratch and is corrected by -ln(0.75) for exponential noise-bin power.
+  Noise estimation follows the demodulator's usable audio band rather than its
+  rejected spectrum. Narrow CW keeps a conservative full-spectrum estimate to
+  protect continuous carriers. Strong tones cannot set a histogram resolution
+  and inflate the noise estimate. STFT overlap, delay and -6..-20dB gain-floor
+  strength semantics are retained; the frame loop no longer allocates gains.
 
 No claim of word-recognition or input-SNR improvement is implied by these
 contracts, runtime timings, finite outputs or the original listening feedback.

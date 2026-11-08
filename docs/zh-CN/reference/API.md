@@ -200,7 +200,7 @@ AM 默认使用包络检波，`am_sync:true` 切换到载波恢复同步检波�
 
 命令先校验完整的候选频道配置，再修改状态。CW pitch 超出 100..1600 Hz 时返回 `bad_parameter`，不触发接收器故障。健康分支上切换 NR 保留解码历史和连续的 `audio_index`；源位置跳过被丢弃的降噪器尾部。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。所选模型准备或推理失败明确失败该处理分支；准备失败时 effective 为 null，不自动换用 Wiener／Off。符合恢复权限的过载可重试原配置；模型、设备或内部错误须先修复配置或信号源，具体权限以 `reception.manual_recovery_allowed` 为准。
 
-`nr_algorithm` 接受 `wiener`、`dfn`（DeepFilterNet3）、`gtcrn`、`ul-unas` 和 `fastenhancer`。`nr_strength`（0–1）控制 Wiener；`nr_atten_db`（0–100 dB）控制神经 NR，0 dB 返回原音，数值越高混入的原音越少。神经模式要求监听 PCM 为 48 kHz。模型版本、许可、采样率转换及信号延迟见 [`backend/models/nr/README.txt`](../../../backend/models/nr/README.txt)。
+`nr_algorithm` 接受 `wiener`、`dfn`（DeepFilterNet3）、`gtcrn`、`ul-unas` 和 `fastenhancer`。`nr_strength`（0–1）控制 Wiener；`nr_atten_db`（0–100 dB）控制神经 NR，0 dB 返回原音，数值越高混入的原音越少。神经模式支持 8–192 kHz 监听 PCM，包含 12/24 kHz，在原有 48 kHz 处理链路前后进行带限采样率转换。转换链路在 0 dB 保留对齐的原音，并以监听采样数报告转换器及模型的总延迟。模型版本、许可、采样率转换及信号延迟见 [`backend/models/nr/README.txt`](../../../backend/models/nr/README.txt)。
 
 降噪、增益和 AGC 均按频道独立设置。模型独立选择，不以预测CPU/输出量或算法数量准入。`processing_resources`报告载荷几何诊断；`processing_statistics`、`processing_runtime`、`host_resources`和`model_preparation`报告实际执行、队列与模型状态。真实逐UID过载中断该分支并标记源缺口，支持`recover:true`；其他路及独立IQ继续。
 

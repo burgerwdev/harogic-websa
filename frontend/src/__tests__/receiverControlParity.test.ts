@@ -68,10 +68,10 @@ it('runtime UI uses observed model state, distinguishes waiting windows and offe
 
 const receptionFailure = (allowed: boolean): ReceptionState => ({policy:'continuous',state:'stopped',interruptions:1,
   attempts:0,retry_limit:3,retry_in_ms:null,manual_recovery_allowed:allowed,last_error:null,
-  last_interruption:{kind:allowed?'overload':'internal',scope:'processing',reason:'selected dfn model preparation failed: rate 24000',
+  last_interruption:{kind:allowed?'overload':'internal',scope:'processing',reason:'selected dfn model preparation failed: invalid model',
     at_ms:100,recovered_at_ms:null,before:null,after:null,missing_input_samples:null}});
 it('processing diagnostics obey explicit recovery permission while retaining the actual failure', () => {
-  const row={processing_state:'failed' as const,processing_fault:{error:'selected dfn model preparation failed: rate 24000',
+  const row={processing_state:'failed' as const,processing_fault:{error:'selected dfn model preparation failed: invalid model',
     generation:13,receiver_uid:'eight',service_id:'test'},reception:receptionFailure(false)};
   document.body.innerHTML=receiverRuntime(row);
   expect(document.querySelector('[data-processing-runtime]')!.textContent).toContain(row.processing_fault.error);

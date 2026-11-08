@@ -405,6 +405,8 @@ impl Receiver {
         nr.configure(config.audio_rate, algorithm, config.nr_strength as f32, config.nr_atten_db);
         let right_algorithm = if mode == "wfm" && config.stereo { algorithm } else { NrAlgorithm::Off };
         nr_right.configure(config.audio_rate, right_algorithm, config.nr_strength as f32, config.nr_atten_db);
+        nr.configure_band(listen_mode, config.if_bw, config.pitch, config.input_rate);
+        nr_right.configure_band(listen_mode, config.if_bw, config.pitch, config.input_rate);
         nr.ensure_ready()?;nr_right.ensure_ready()?;
         let cw = if mode == "cw" { Some(CwDecoder::new(config.audio_rate, config.pitch as f32)?) } else { None };
         let ft8 = if mode == "ft8" { Some(Ft8Window::new()) } else { None };
@@ -461,6 +463,8 @@ impl Receiver {
         self.nr.configure(config.audio_rate, algorithm, config.nr_strength as f32, config.nr_atten_db);
         let right_algorithm = if config.mode == "wfm" && config.stereo { algorithm } else { NrAlgorithm::Off };
         self.nr_right.configure(config.audio_rate, right_algorithm, config.nr_strength as f32, config.nr_atten_db);
+        self.nr.configure_band(&config.mode, config.if_bw, config.pitch, config.input_rate);
+        self.nr_right.configure_band(&config.mode, config.if_bw, config.pitch, config.input_rate);
         self.nr.ensure_ready()?;self.nr_right.ensure_ready()?;
         self.next_status = 0;
         self.config = config;
@@ -1171,10 +1175,11 @@ mod tests {
     #[test]
     fn neural_receivers_keep_source_clock_delay_and_stereo_cadence() {
         let anchor=(1_u64<<53)+19;
+        for rate in [12000,24000,48000] {
         for mode in ["am","usb","wfm"] {
             for id in ["dfn","gtcrn","ul-unas","fastenhancer"] {
                 let mut config=mode_config(mode);config.nr=true;config.nr_algorithm=id.into();
-                config.audio_rate=48000;config.nr_atten_db=20.0;
+                config.audio_rate=rate;config.nr_atten_db=20.0;
                 let input_rate=config.input_rate;
                 let mut receiver=Receiver::new(config).unwrap();
                 assert_eq!(receiver.nr.status().effective.unwrap().name(),id,"{:?}",receiver.nr.status());
@@ -1192,16 +1197,17 @@ mod tests {
                     for audio in out.audio {
                         let channels=if mode=="wfm" {2} else {1};
                         assert_eq!(audio.channels,channels);
+                        assert_eq!(audio.rate,rate);
                         assert_eq!(audio.first_frame_index,frames);
                         assert!(audio.samples.iter().all(|x|x.is_finite()));
                         let position=audio.source_position.unwrap();
                         let expected=SamplePosition {index:anchor,fraction_num:0,fraction_den:1}
-                            .checked_advance(frames,input_rate,48000).unwrap();
+                            .checked_advance(frames,input_rate,rate).unwrap();
                         assert_eq!(position.index,expected.index);
                         assert_eq!(position.fraction_num as u128*expected.fraction_den as u128,
                             expected.fraction_num as u128*position.fraction_den as u128);
                         let if_delay=if mode=="usb" {192.0} else {64.0};
-                        let expected_delay=8.0+if_delay+nr_delay as f64*input_rate/48000.0;
+                        let expected_delay=8.0+if_delay+nr_delay as f64*input_rate/rate as f64;
                         assert!((audio.clock.delay_input_samples-expected_delay).abs()<1e-8);
                         frames+=(audio.samples.len()/channels as usize) as u64;
                     }
@@ -1210,6 +1216,7 @@ mod tests {
                 assert!(frames>0);
                 assert!(receiver.analog_frames-frames<1920,"unbounded PCM carry {mode}/{id}");
             }
+        }
         }
     }
 

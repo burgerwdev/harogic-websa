@@ -251,7 +251,7 @@ export function renderSdrFilter(): void {
 	}
 	renderedMode = mode;
 	const label = document.querySelector('label[for="input-sdr-ifbw"]');
-	if (label) label.textContent = t(mode === 'usb' || mode === 'lsb' ? 'sdr_filter_cutoff_label' : 'if_filter');
+	if (label) label.textContent = t('if_filter');
 
 	const group = document.getElementById('sdr-ifbw-group');
 	if (group) syncPresetButtons(group, mode, specForMode, shownHz);

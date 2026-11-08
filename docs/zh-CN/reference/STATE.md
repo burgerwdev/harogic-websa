@@ -87,6 +87,10 @@ AM 的 `am_sync` 偏好默认为 false（包络检波），选择其他解调模
 
 频道命令先校验候选配置，再修改状态。非法 CW pitch 返回 `bad_parameter`，不触发接收器故障。NR 切换保留解码历史和连续的 PCM `audio_index`，源位置前移以跳过被丢弃的降噪器尾部。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。所选神经降噪模型的准备或运行失败会明确报告该处理分支故障，不自动换用 Wiener；健康的 IQ 和其他信道继续运行。
 
+工作台可清除已恢复的中断提示。确认在同一浏览器会话内刷新后仍有效，仅针对当次服务、接收器和中断；新中断会重新显示，尚未恢复的故障不可清除。诊断记录和累计中断数继续保留。
+
+瀑布对比度在 1 时为中性。增大时相对历史中保留的平滑底噪抬高黑位；减小时拓宽 dB 显示范围，少量向更低电平延伸，不再整体提亮暗部。固定色表保留黑色底部，参考 [SDR++](https://github.com/AlexandreRouma/SDRPlusPlus/blob/master/core/src/gui/widgets/waterfall.cpp)、[Gqrx](https://github.com/gqrx-sdr/gqrx/blob/master/src/qtgui/plotter.cpp) 和 [OpenWebRX](https://github.com/jketterl/openwebrx/blob/develop/htdocs/openwebrx.js) 的 dB 上下限映射方式。SDR 自动色阶在上端柔和压缩，让超出名义范围的强信号仍可区分。配色和对比度修改可重新着色已有历史，暂停时也有效。
+
 共享接收器工作线程故障时，服务设置 `sdr.receiver_error`，并向全部接收器发送 `RECEIVER_ERROR`。音频和解码订阅停止，控件就地显示错误。采集、PFB、fine DDC、原始 IQ、频谱和瀑布继续运行，频谱不显示错误遮罩。调谐与缩放仍可使用。
 
 显式选择 `mode` 或 `demod` 可请求恢复。停止的工作线程退出且失败订阅关闭前，请求返回 `receiver_retiring`，须稍后重试，不会安排自动重启。成功恢复后清除故障，以新的流身份启动接收器，不拼接缺失区间两侧的样本。事件和订阅关闭契约见 [API](API.md)。

@@ -23,34 +23,52 @@ def api(origin, payload=None, path='/api/sdr/receivers'):
         headers={'Content-Type': 'application/json'})
     with urllib.request.urlopen(request, timeout=60) as response:
         result = json.load(response)
-    assert not result.get('fault') and result.get('cmd') != 'ERROR', result
+    assert not result.get('fault') and result.get('cmd') != 'ERROR', result.get('fault', result)
     return result
 
 
-def config(algorithm, gain, agc):
+def test_receivers(snapshot):
+    return [receiver for receiver in snapshot['receivers'] if receiver['display_number'] != 1]
+
+
+def clear_receivers(origin, prefix):
+    for receiver in api(origin)['receivers']:
+        uid = receiver['receiver_uid']
+        if receiver['display_number'] == 1:
+            if receiver['confirmed']['enabled']:
+                disabled = copy.deepcopy(receiver['confirmed'])
+                disabled['enabled'] = False
+                api(origin, {'type': 'configure', 'request_id': f'{prefix}-stop-current',
+                    'receiver_uid': uid, 'expected_revision': receiver['revision'], 'config': disabled})
+        else:
+            api(origin, {'type': 'retire', 'request_id': f'{prefix}-{uid}', 'receiver_uid': uid})
+
+
+def config(algorithm, gain, agc, audio_rate=48000):
     return {'name': algorithm, 'color': '#4cc99b', 'tags': [], 'enabled': True, 'purpose': 'listen',
         'baseband': {'frequency_hz': 100e6, 'passband_hz': 6000, 'transition_hz': 1000, 'minimum_rate_hz': 8000},
         'processors': [{'id': 'primary', 'kind': 'demodulator', 'mode': 'am', 'minimum_rate_hz': 0,
-            'bandwidth_hz': 6000, 'pcm_gain': gain, 'agc': agc, 'squelch_dbm': -160,
+            'bandwidth_hz': 6000, 'audio_rate': audio_rate, 'pcm_gain': gain, 'agc': agc, 'squelch_dbm': -160,
             'nr': True, 'nr_algorithm': algorithm, 'nr_strength': 0.6, 'nr_atten_db': 12}]}
 
 
 async def listen(origin, receiver, seconds=2):
     trace = {'frames': 0, 'samples': 0, 'energy': 0.0, 'nr': None}
+    rate = receiver['confirmed']['processors'][0].get('audio_rate', 48000)
     query = '?receiver_uid=' + receiver['receiver_uid']
     endpoint = origin.replace('http://', 'ws://')
     async with connect(endpoint + '/ws/audio' + query) as audio, connect(endpoint + '/ws/decode' + query) as decode:
         async def pcm():
             previous = None
             async with asyncio.timeout(max(30, seconds * 2)):
-                while trace['samples'] < round(48000 * seconds):
+                while trace['samples'] < round(rate * seconds):
                     frame = await audio.recv()
                     assert isinstance(frame, bytes) and frame[:4] == b'AUD2'
                     seq, count = struct.unpack_from('<II', frame, 8)
                     channels = struct.unpack_from('<I', frame, 56)[0]
                     index = struct.unpack_from('<Q', frame, 64)[0]
                     identity = struct.unpack_from('<II', frame, 32)
-                    assert struct.unpack_from('<d', frame, 16)[0] == 48000
+                    assert struct.unpack_from('<d', frame, 16)[0] == rate
                     assert len(frame) == 96 + count * channels * 4
                     if previous:
                         assert (seq, index, identity) == (previous[0] + 1, previous[1] + previous[2], previous[3])
@@ -60,7 +78,7 @@ async def listen(origin, receiver, seconds=2):
                     trace['energy'] += sum(sample * sample for sample in samples)
                     trace['frames'] += 1
                     trace['samples'] += count
-            trace['successful_media_seconds'] = trace['samples'] / 48000
+            trace['successful_media_seconds'] = trace['samples'] / rate
             trace['collection_completed_monotonic'] = time.monotonic()
             assert trace['energy'] > 1e-6, trace
 
@@ -74,6 +92,7 @@ async def listen(origin, receiver, seconds=2):
                         expected = receiver['confirmed']['processors'][0]['nr_algorithm']
                         assert event['requested'] == expected and event['effective'] == expected, event
                         assert event['state'] == 'ready', event
+                        assert event['audioRate'] == rate, event
                         trace['nr'] = event
         await asyncio.gather(pcm(), status())
     return trace
@@ -84,43 +103,57 @@ def run(origin, seconds=2, include_multi=False):
     api(origin, {'cmd': 'SET_SDR', 'center': 100e6}, '/api/config')
     results = []
     for algorithm in ['dfn', 'gtcrn', 'ul-unas', 'fastenhancer']:
-        for receiver in api(origin)['receivers']:
-            api(origin, {'type': 'retire', 'request_id': f'clear-{algorithm}-{receiver["receiver_uid"]}',
-                'receiver_uid': receiver['receiver_uid']})
+        clear_receivers(origin, f'clear-{algorithm}')
         for index, requested in enumerate([config('dfn', 0.4, False), config(algorithm, 0.8, True)]):
             reply = api(origin, {'type': 'create', 'request_id': f'add-{algorithm}-{index}', 'config': requested})
-            assert all(reply['snapshot']['receivers'][index]['confirmed']['processors'][0][key] == value for key, value in requested['processors'][0].items())
+            assert all(test_receivers(reply['snapshot'])[index]['confirmed']['processors'][0][key] == value for key, value in requested['processors'][0].items())
         snapshot = api(origin)
-        assert len(snapshot['receivers']) == 2
-        before = copy.deepcopy(snapshot['receivers'][0])
-        traces = asyncio.run(collect(origin, snapshot['receivers'], seconds))
+        receivers = test_receivers(snapshot)
+        assert len(receivers) == 2
+        before = copy.deepcopy(receivers[0])
+        traces = asyncio.run(collect(origin, receivers, seconds))
         current = api(origin)
-        second = current['receivers'][1]
+        second = test_receivers(current)[1]
         changed = copy.deepcopy(second['confirmed'])
         changed['processors'][0].update(pcm_gain=0.3, agc=False)
         reply = api(origin, {'type': 'configure', 'request_id': f'gain-agc-{algorithm}',
             'receiver_uid': second['receiver_uid'], 'expected_revision': second['revision'], 'config': changed})
-        first = reply['snapshot']['receivers'][0]
+        first = test_receivers(reply['snapshot'])[0]
         for field in ['receiver_uid', 'revision', 'confirmed', 'stream']:
             assert first[field] == before[field], (field, first, before)
         assert all(not receiver['fault'] for receiver in reply['snapshot']['receivers'])
         results.append({'second_algorithm': algorithm, 'resources': current['processing_resources'], 'audio': traces})
     if include_multi:
         for count in [4, 8]:
-            for receiver in api(origin)['receivers']:
-                api(origin, {'type': 'retire', 'request_id': f'multi-clear-{count}-{receiver["receiver_uid"]}', 'receiver_uid': receiver['receiver_uid']})
+            clear_receivers(origin, f'multi-clear-{count}')
             algorithms = ['dfn', 'gtcrn', 'ul-unas', 'fastenhancer'] * (count // 4)
             for index, algorithm in enumerate(algorithms):
                 api(origin, {'type': 'create', 'request_id': f'multi-add-{count}-{index}', 'config': config(algorithm, 0.5, True)})
             snapshot = api(origin)
-            traces = asyncio.run(collect(origin, snapshot['receivers'], seconds, report_overload=True))
+            traces = asyncio.run(collect(origin, test_receivers(snapshot), seconds, report_overload=True))
             current = api(origin)
             assert current['capture']['state'] == 'running'
             # All legal choices are accepted; sustained ability is observed, not promised.
-            for row in current['receivers']:
-                assert row['confirmed']['processors'][0]['nr_algorithm'] == algorithms[row['display_number'] - 1]
+            for row in test_receivers(current):
+                assert row['confirmed']['processors'][0]['nr_algorithm'] == algorithms[row['display_number'] - 2]
             results.append({'case': f'{count} independent selected models', 'second_algorithm': f'multi-{count}',
                 'requested_seconds': seconds, 'audio': traces, 'snapshot': current})
+    return results
+
+
+def run_low_rates(origin, seconds=2):
+    results = []
+    for rate in [12000, 24000]:
+        for algorithm in ['dfn', 'gtcrn', 'ul-unas', 'fastenhancer']:
+            clear_receivers(origin, f'low-clear-{rate}-{algorithm}')
+            api(origin, {'type': 'create', 'request_id': f'low-add-{rate}-{algorithm}',
+                'config': config(algorithm, 0.5, True, rate)})
+            receiver = test_receivers(api(origin))[0]
+            traces = asyncio.run(collect(origin, [receiver], seconds))
+            current = test_receivers(api(origin))[0]
+            assert current['processing_state'] == 'active' and current['fault'] is None, current
+            results.append({'case': 'low listener rate', 'second_algorithm': algorithm,
+                'audio_rate': rate, 'audio': traces})
     return results
 
 
@@ -154,6 +187,7 @@ def main():
         process, origin = start_service(free_port(), log=log, startup_timeout=30)
         try:
             results = run(origin, args.seconds, args.include_multi)
+            results.extend(run_low_rates(origin, args.seconds))
             (args.artifacts / 'result.json').write_text(json.dumps(results, indent=2) + '\n')
             passed = all('error' not in stream for result in results for stream in result['audio'])
             print(json.dumps({'passed': passed, 'algorithms': [result['second_algorithm'] for result in results],

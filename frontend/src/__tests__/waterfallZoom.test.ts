@@ -32,6 +32,37 @@ afterEach(() => {
 });
 
 describe('native waterfall history', () => {
+  it('keeps rendered noise dark at minimum contrast and darkens it at maximum across every palette', () => {
+    S.setSdrMode(true);wfPaused.set(true);
+    const count=1024, freq=Float64Array.from({length:count+2},(_,i)=>1e6+i);
+    __testSeedCapture({lo:freq[0],hi:freq.at(-1)!});
+    const levels=Float32Array.from({length:count+2},(_,i)=>i<count
+      ? -110+10*Math.log10(-Math.log1p(-(i+0.5)/count)) : i===count?-60:-20);
+    pushSpectrumRow(levels,freq,freq[0],freq.at(-1)!,100);
+    const row=S.waterfallRows[0], pushes=S.waterfallPushes;
+    let pixels=new Uint8ClampedArray();
+    const context={createImageData:(width:number,height:number)=>({width,height,data:new Uint8ClampedArray(width*height*4)}),
+      putImageData:(image:{data:Uint8ClampedArray})=>{pixels=image.data.slice();}};
+    const canvas={width:count+2,height:1,getContext:()=>context} as unknown as HTMLCanvasElement;
+    for (const mode of ['auto','fixed'] as const) {
+      wfRangeMode.set(mode);wfLoDbm.set(-125);wfHiDbm.set(-50);
+      for (const palette of ['classic','blue','viridis','amber'] as const) {
+        wfPalette.set(palette);
+        const brightness=new Map<number,number>();
+        for (const contrast of [0.5,1,2]) {
+          wfContrast.set(contrast);renderWaterfall(canvas,100);
+          let sum=0;
+          for (let i=0;i<count;i++) sum+=0.2126*pixels[4*i]+0.7152*pixels[4*i+1]+0.0722*pixels[4*i+2];
+          brightness.set(contrast,sum/count);
+          expect([...pixels.slice(4*count,4*count+3)]).not.toEqual([...pixels.slice(4*(count+1),4*(count+1)+3)]);
+        }
+        expect(brightness.get(0.5)!,`${mode}/${palette}: soft background`).toBeLessThan(brightness.get(1)!);
+        expect(brightness.get(2)!,`${mode}/${palette}: hard background`).toBeLessThan(brightness.get(0.5)!);
+      }
+    }
+    expect(S.waterfallRows[0]).toBe(row);expect(S.waterfallPushes).toBe(pushes);
+  });
+
   it('estimates on original RF samples and can browse frozen old axes without live input', () => {
     S.setSdrMode(true); wfPaused.set(true);
     const freq = Float64Array.from({ length: 1000 }, (_, i) => 1e6 + i);

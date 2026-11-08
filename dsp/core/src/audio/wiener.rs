@@ -1,7 +1,7 @@
 //! STFT Wiener denoiser for narrowband voice — the analog path's noise-reduction stage.
 //!
 //! Standard short-time spectral subtraction with a Wiener-shaped gain: a Hann-windowed STFT at 75%
-//! overlap, a smoothed low quantile of each frame's bin powers as the noise floor, and
+//! overlap, a smoothed low quantile of the receive band's bin powers as the noise floor, and
 //! `g = max(floor, 1 - noise/(power + eps))`. The floor is what keeps the residual from turning
 //! into isolated "musical" tones: without it, bins that happen to dip below the estimate get
 //! slammed to zero and the result sounds like a ring modulator.
@@ -36,6 +36,8 @@ pub struct Wiener {
     held_until: usize,
     /// Current frame's power in each FFT bin.
     power: Vec<f64>,
+    noise_bins: core::ops::Range<usize>,
+    noise_scratch: Vec<f64>,
     floor: f64,
     warmed: bool,
     /// Overlap-add accumulator; its first `HOP` samples are complete after each frame.
@@ -87,6 +89,8 @@ impl Wiener {
             filled: 0,
             held_until: 0,
             power: vec![0.0; n],
+            noise_bins: 1..n / 2,
+            noise_scratch: Vec::with_capacity(n / 2),
             floor: 0.0,
             warmed: false,
             out_buf: vec![0.0; n],
@@ -115,6 +119,16 @@ impl Wiener {
         self.gain_floor
     }
 
+    /// Estimate noise inside the receive band: out-of-band filter rejection is
+    /// not a measurement of the in-band noise. Very narrow bands cannot separate
+    /// a Hann-spread CW tone from noise reliably; retain the conservative full
+    /// spectrum estimate when fewer than eight bins are available.
+    pub fn set_noise_band(&mut self, rate: f64, low_hz: f64, high_hz: f64) {
+        let first = ((low_hz * FRAME as f64 / rate).ceil() as usize).clamp(1, FRAME / 2 - 1);
+        let end = ((high_hz * FRAME as f64 / rate).floor() as usize + 1).clamp(first + 1, FRAME / 2);
+        self.noise_bins = if end - first >= 8 { first..end } else { 1..FRAME / 2 };
+    }
+
     /// Per-bin gain: the Wiener shape against the estimated noise floor.
     pub fn gains(&self) -> Vec<f64> {
         let mut gains = vec![0.0; self.power.len()];
@@ -124,33 +138,11 @@ impl Wiener {
         gains
     }
 
-    /// Value at `q` of the low bins' power distribution (no sort: a coarse histogram is enough for
-    /// a floor estimate and stays O(n)).
-    fn quantile(power: &[f64], q: f64) -> f64 {
-        let half = power.len() / 2;
-        let mut bins = [0_usize; 64];
-        let mut max = 0.0_f64;
-        for value in &power[1..half] {
-            if *value > max {
-                max = *value;
-            }
-        }
-        if max <= 0.0 {
-            return 0.0;
-        }
-        for value in &power[1..half] {
-            let index = ((value / max) * 63.0) as usize;
-            bins[index.min(63)] += 1;
-        }
-        let target = ((half as f64 - 1.0) * q) as usize;
-        let mut seen = 0;
-        for (index, count) in bins.iter().enumerate() {
-            seen += count;
-            if seen > target {
-                return (index as f64 + 0.5) / 64.0 * max;
-            }
-        }
-        max
+    /// Exact order statistic, with reusable scratch and no max-power histogram
+    /// bins: one strong carrier must not set the resolution of the noise floor.
+    fn quantile(power: &mut [f64], q: f64) -> f64 {
+        let target = ((power.len() - 1) as f64 * q) as usize;
+        *power.select_nth_unstable_by(target, f64::total_cmp).1
     }
 
     /// Process one frame: window, transform, estimate noise, apply the gain, overlap-add.
@@ -170,7 +162,11 @@ impl Wiener {
             self.power[k] = power;
         }
         if self.held_until == 0 {
-            let floor = Self::quantile(&self.power, 0.25);
+            self.noise_scratch.clear();
+            self.noise_scratch.extend_from_slice(&self.power[self.noise_bins.clone()]);
+            // Gaussian noise has exponential FFT-bin power. Its lower quartile
+            // is -ln(0.75) times the mean noise PSD used in the Wiener gain.
+            let floor = Self::quantile(&mut self.noise_scratch, 0.25) / -0.75_f64.ln();
             self.floor = if self.warmed {
                 self.floor * 0.8 + floor * 0.2
             } else {
@@ -178,10 +174,10 @@ impl Wiener {
                 floor
             };
         }
-        let gains = self.gains();
         for k in 0..FRAME {
-            self.fft_re[k] *= gains[k];
-            self.fft_im[k] *= gains[k];
+            let gain = (1.0 - self.floor / (self.power[k] + 1e-12)).clamp(self.gain_floor, 1.0);
+            self.fft_re[k] *= gain;
+            self.fft_im[k] *= gain;
         }
         self.fft.transform(&mut self.fft_re, &mut self.fft_im, true);
         for k in 0..FRAME {
@@ -329,6 +325,32 @@ mod tests {
     }
 
     #[test]
+    fn noise_quantile_is_not_scaled_by_a_strong_carrier() {
+        let mut power = vec![1.0; 255];
+        power[10] = 1e12;
+        power[11] = 2e11;
+        assert_eq!(Wiener::quantile(&mut power, 0.25), 1.0);
+    }
+
+    #[test]
+    fn receive_band_noise_is_reduced_without_erasing_a_continuous_tone() {
+        use crate::ddc::fir::{design_lowpass, FirState};
+        let input = tone_plus_noise(48_000);
+        let noisy: Vec<f64> = input.iter().enumerate().map(|(i, x)|
+            *x as f64 - 0.3 * (2.0 * PI * 1_000.0 * i as f64 / RATE).sin()).collect();
+        let mut filter = FirState::new(design_lowpass(RATE, 3_000.0, 257));
+        let mut filtered = Vec::new(); filter.process_into(&noisy, &mut filtered);
+        let noise: Vec<f32> = filtered.iter().map(|x| *x as f32).collect();
+        let mut wiener = Wiener::new(); wiener.set_noise_band(RATE, 300.0, 2_400.0);
+        let mut output = Vec::new(); wiener.process_into(&noise, false, &mut output);
+        let rms = |x: &[f32]| (x[24_000..].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 24_000.0).sqrt();
+        assert!(rms(&output) < 0.8 * rms(&noise), "in-band noise: {} -> {}", rms(&noise), rms(&output));
+        let tone: Vec<f32> = (0..48_000).map(|i| (0.3 * (2.0*PI*1_000.0*i as f64/RATE).sin()) as f32).collect();
+        wiener.reset(); wiener.process_into(&tone, false, &mut output);
+        assert!(rms(&output) > 0.98 * rms(&tone), "a continuous carrier must survive");
+    }
+
+    #[test]
     fn the_output_keeps_the_block_length() {
         let mut wiener = Wiener::new();
         let mut out = Vec::new();
@@ -450,14 +472,18 @@ mod tests {
         wiener.process_available_into(&tone_plus_noise(FRAME), false, &mut output);
         let initial_floor = wiener.floor;
         wiener.process_available_into(&[9.0], true, &mut output);
-        let loud: Vec<f32> = tone_plus_noise(HOP).iter().map(|sample| sample * 10.0).collect();
+        // Repeating one hop creates a line spectrum with empty bins, not a
+        // broadband noise floor. Keep the noise continuous across these hops.
+        let loud: Vec<f32> = tone_plus_noise(5 * HOP).iter().map(|sample| sample * 10.0).collect();
+        let mut offset = 0;
         for hop in 0..4 {
             let count = if hop == 0 { HOP - 1 } else { HOP };
-            wiener.process_available_into(&loud[..count], false, &mut output);
+            wiener.process_available_into(&loud[offset..offset + count], false, &mut output);
+            offset += count;
             assert_eq!(output.len(), HOP);
             assert_eq!(wiener.floor, initial_floor, "held input still appears in overlap {hop}");
         }
-        wiener.process_available_into(&loud, false, &mut output);
+        wiener.process_available_into(&loud[offset..offset + HOP], false, &mut output);
         assert!(wiener.floor > initial_floor, "learning resumes after the last held sample leaves");
     }
 }

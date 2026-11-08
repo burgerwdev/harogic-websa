@@ -9,6 +9,7 @@ use websa_dsp::audio::blanker::ImpulseBlanker;
 use websa_dsp::plugin::AudioStage;
 use std::cell::RefCell;
 use crate::nr_neural::NeuralStream;
+use crate::nr_resample::NeuralRateAdapter;
 
 const MODEL: &[u8] = include_bytes!("../../frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz");
 const HOP: usize = 480;
@@ -129,6 +130,7 @@ pub struct NoiseReduction {
     blanker_output: Vec<f32>,
     dfn: Option<DfnStream>,
     neural: Option<NeuralStream>,
+    rate_adapter: Option<NeuralRateAdapter>,
     failure: Option<String>,
 }
 
@@ -136,7 +138,7 @@ impl NoiseReduction {
     pub fn new(rate: u32) -> Self {
         Self {
             rate, algorithm: NrAlgorithm::Off, strength: 1.0, atten_db: 6.0,
-            wiener: Wiener::new(), dfn: None, neural: None, failure: None,
+            wiener: Wiener::new(), dfn: None, neural: None, rate_adapter: None, failure: None,
             wiener_input: [0.0; 512], wiener_filled: 0, wiener_warmed: false,
             wiener_output: Vec::with_capacity(512),
             blanker: ImpulseBlanker::new(), blanker_output: Vec::with_capacity(512),
@@ -154,10 +156,21 @@ impl NoiseReduction {
         self.wiener.set_strength(self.strength as f64);
         self.blanker.set_strength(self.strength as f64);
         if changed { self.reset(); }
-        else {
+        else if self.rate_adapter.is_none() {
             if let Some(dfn) = &mut self.dfn { dfn.runtime.set_atten_lim(self.atten_db); }
             if let Some(neural) = &mut self.neural { neural.set_atten(self.atten_db); }
         }
+    }
+
+    pub fn configure_band(&mut self, mode: &str, if_bw: f64, pitch: f64, input_rate: f64) {
+        let mode = if matches!(mode, "ft8" | "sstv" | "radiofax") { "usb" } else { mode };
+        let (low, high) = if mode == "cw" { (0.0, self.rate as f64 / 2.0) }
+            else if let Some(spec) = websa_dsp::analog::spec_for(mode) {
+                let low = if matches!(mode, "usb" | "lsb") { (if_bw * 0.1).clamp(100.0, 300.0) * 1.2 } else { 100.0 };
+                let high = spec.audio_cut_hz(if_bw, pitch).min(self.rate as f64 * 0.45).min(input_rate * 0.45) * 0.8;
+                (low, high)
+            } else { (0.0, self.rate as f64 / 2.0) };
+        self.wiener.set_noise_band(self.rate as f64, low, high);
     }
 
     /// Clone pristine state: init() alone does not clear the runtime's GRU state.
@@ -165,6 +178,7 @@ impl NoiseReduction {
     pub fn reset(&mut self) {
         self.dfn = None;
         self.neural = None;
+        self.rate_adapter = None;
         self.failure = None;
         self.wiener.reset();
         self.blanker.reset();
@@ -172,21 +186,28 @@ impl NoiseReduction {
         self.wiener_filled = 0;
         self.wiener_warmed = false;
         self.wiener_output.clear();
+        let neural = matches!(self.algorithm, NrAlgorithm::Dfn | NrAlgorithm::Gtcrn | NrAlgorithm::UlUnas | NrAlgorithm::FastEnhancer);
+        if neural && !(8_000..=192_000).contains(&self.rate) {
+            self.failure = Some(format!("unsupported listener rate {}", self.rate));
+            return;
+        }
+        // Converted streams mix their aligned original PCM after returning to
+        // the requested rate. Keep the model's own residual mix fully wet.
+        let atten = if self.rate == 48000 { self.atten_db } else { 100.0 };
         if self.algorithm == NrAlgorithm::Dfn {
-            if self.rate != 48000 {
-                self.failure = Some(format!("rate {}", self.rate));
-            } else {
-                match DfnStream::new(self.atten_db) {
-                    Ok(dfn) => self.dfn = Some(dfn),
-                    Err(error) => self.failure = Some(error),
-                }
+            match DfnStream::new(atten) {
+                Ok(dfn) => self.dfn = Some(dfn),
+                Err(error) => self.failure = Some(error),
             }
         }
         if matches!(self.algorithm,NrAlgorithm::Gtcrn|NrAlgorithm::UlUnas|NrAlgorithm::FastEnhancer) {
-            if self.rate != 48000 { self.failure = Some(format!("rate {}",self.rate)); }
-            else { match NeuralStream::new(self.algorithm,self.atten_db) {
+            match NeuralStream::new(self.algorithm,atten) {
                 Ok(neural)=>self.neural=Some(neural), Err(error)=>self.failure=Some(error),
-            } }
+            }
+        }
+        if neural && self.rate != 48000 && self.failure.is_none() {
+            let model_delay = self.latency_samples().unwrap();
+            self.rate_adapter = Some(NeuralRateAdapter::new(self.rate, model_delay));
         }
     }
 
@@ -205,6 +226,7 @@ impl NoiseReduction {
     /// DFN delay is its STFT overlap plus model lookahead, in output samples.
     pub fn latency_samples(&self) -> Option<u32> {
         if self.failure.is_some() {return None;}
+        if let Some(adapter) = &self.rate_adapter { return Some(adapter.latency()); }
         Some(if self.algorithm == NrAlgorithm::Off { 0 }
             else if let Some(dfn) = &self.dfn {
                 if dfn.runtime.atten_lim == Some(1.0) {0}
@@ -232,6 +254,12 @@ impl NoiseReduction {
             output.clear();
             output.extend_from_slice(input);
             return Ok(());
+        }
+        if let Some(adapter) = &mut self.rate_adapter {
+            adapter.ingest(input);
+            if let Some(dfn) = &mut self.dfn { dfn.process(&adapter.input, &mut adapter.enhanced)?; }
+            else if let Some(neural) = &mut self.neural { neural.process(&adapter.input, &mut adapter.enhanced)?; }
+            return adapter.emit(self.atten_db, output);
         }
         if let Some(dfn) = &mut self.dfn {
             // A failed hop may already have consumed PCM. Do not replay it through another reducer.
@@ -307,7 +335,7 @@ mod tests {
             nr.reset();assert_eq!(run(&mut nr,&input,1),b);
             nr.configure(48000,algorithm,1.0,100.0);
             let at=run(&mut nr,&input,503);assert_ne!(at,b,"attenuation must change rendered samples");
-            nr.configure(24000,algorithm,1.0,20.0);
+            nr.configure(0,algorithm,1.0,20.0);
             assert_eq!(nr.status().state,"failed");assert_eq!(nr.status().effective,None);
             let mut output=vec![1.0];assert!(nr.process(&[0.1;512],&mut output).is_err());assert!(output.is_empty());
         }
@@ -334,13 +362,37 @@ mod tests {
         assert_eq!(used.status().effective,Some(NrAlgorithm::Dfn), "{:?}", used.status());
         assert_eq!(output, expected, "reset must restore pristine recurrent and overlap state");
 
-        fresh.configure(24000, NrAlgorithm::Dfn, 1.0, 12.0);
+        fresh.configure(0, NrAlgorithm::Dfn, 1.0, 12.0);
         let status = fresh.status();
         assert_eq!(status.requested, NrAlgorithm::Dfn);
         assert_eq!(status.effective,None);
         assert_eq!(status.state,"failed");
-        assert_eq!(status.reason.as_deref(), Some("rate 24000"));
+        assert_eq!(status.reason.as_deref(), Some("unsupported listener rate 0"));
         assert!(fresh.process(&input,&mut output).is_err());
         assert!(output.is_empty(),"unsupported selected model cannot publish substitute audio");
+    }
+
+    #[test]
+    fn neural_low_rates_run_selected_models_without_silence_or_callback_gaps() {
+        let input=signal();
+        for rate in [12000,24000] {
+            for algorithm in NEURAL {
+                let mut nr=NoiseReduction::new(rate);nr.configure(rate,algorithm,1.0,20.0);
+                assert_eq!(nr.status().effective,Some(algorithm),"{rate}: {:?}",nr.status());
+                let reference=run(&mut nr,&input,input.len());
+                assert!(reference.iter().all(|x|x.is_finite()));
+                assert!(reference.iter().any(|x|x.abs()>1e-4),"{rate}/{algorithm:?}: silent");
+                assert!(reference.len()<=input.len() && input.len()-reference.len()<(rate/50) as usize);
+                nr.reset();assert_eq!(run(&mut nr,&input,137),reference,"{rate}/{algorithm:?}: packet dependence");
+                nr.configure(rate,algorithm,1.0,0.0);nr.reset();
+                let delay=nr.latency_samples().unwrap() as usize;
+                let mut padded=input.clone();padded.resize(input.len()+delay+2048,0.0);
+                let dry=run(&mut nr,&padded,503);
+                assert_eq!(&dry[delay..delay+input.len()],&input,"{rate}/{algorithm:?}: original alignment");
+                nr.configure(rate,algorithm,1.0,100.0);
+                let wet=run(&mut nr,&input,1799);
+                assert_ne!(wet,reference,"{rate}/{algorithm:?}: live attenuation must apply");
+            }
+        }
     }
 }

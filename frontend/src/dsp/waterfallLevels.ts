@@ -1,5 +1,22 @@
 import { percentileApprox } from './stats';
 
+/** SDR++/Gqrx/OpenWebRX separate dB limits from a fixed colour ramp. Contrast
+ * adjusts these limits, rather than brightening everything above a noise pivot.
+ * The upper limit stays fixed when increasing contrast; lowering contrast
+ * broadens the range with a small extension into quieter detail. */
+export function waterfallDisplayBounds(lo: number, hi: number, floor: number, contrast: number): { lo: number; hi: number } {
+  contrast = Number.isFinite(contrast) ? Math.max(0.5, Math.min(2, contrast)) : 1;
+  const span = hi - lo;
+  if (contrast >= 1) {
+    const lift = Math.min(span * 5 / 55 * (contrast - 1), span * 0.8,
+      Number.isFinite(floor) ? Math.max(0, floor - lo - span / 55) : span * 5 / 55);
+    return { lo: lo + lift, hi };
+  }
+  const softness = 1 - contrast;
+  const bottom = lo - span * 4 / 55 * softness;
+  return { lo: bottom, hi: bottom + span * (1 + 50 / 55 * softness) };
+}
+
 /** Stable SDR colours: a strong carrier must not dim all the weaker stations.
  * Track the lower part of the distribution, leaving 6 dB of visible noise grain
  * and 49 dB for signals. Follow gain/noise changes over 1.5 s, independently of

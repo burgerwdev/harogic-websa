@@ -9,6 +9,7 @@ pub mod receiver;
 pub mod cw;
 pub mod nr;
 mod nr_neural;
+mod nr_resample;
 pub mod catalog;
 pub mod external;
 mod wire;

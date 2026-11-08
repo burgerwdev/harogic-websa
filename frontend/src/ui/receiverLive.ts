@@ -15,8 +15,13 @@ export function liveStatus(r:ReceiverState): {label:string; kind:string; hint:st
   if (r.processing_state==='backlogged') return {label:l('Receiving · processing behind','接收中 · 处理积压'),kind:'waiting',hint:l('Processing is behind the incoming signal.','处理暂时落后于输入信号。')};
   return {label:l('Receiving normally','正常接收'),kind:'healthy',hint:r.confirmed.processors.length?'':l('Raw IQ reception is active.','正在接收原始 IQ。')};
 }
-export function receiverLive(r:ReceiverState,tasks:RecordingTask[],pending=false,expanded=false):string {
+export function canClearInterruption(r:ReceiverState):boolean {
+  return r.reception?.state==='receiving' && r.reception.last_interruption.recovered_at_ms!==null
+    && ['healthy','waiting'].includes(liveStatus(r).kind);
+}
+export function receiverLive(r:ReceiverState,tasks:RecordingTask[],pending=false,expanded=false,interruptionCleared=false):string {
   const status=liveStatus(r), recovery=r.reception, gap=recovery?.last_interruption;
+  const clearable=canClearInterruption(r);
   const interrupted=tasks.filter(t=>t.receiver_uid===r.receiver_uid && t.state==='failed' && ['SOURCE_FAILED','PROCESSING_FAILED'].includes(t.fault?.code??''));
   const last=interrupted.at(-1);
   const reason=gap ? gap.kind==='overload'?l('This channel fell behind.','本路处理积压。'):gap.kind==='source_gap'?l('The shared signal source was interrupted; all active channels were affected.','共享信号源中断，影响当时所有活动信道。'):gap.kind==='device'?l('The receiving device reported an error.','接收设备报告错误。'):l('Signal processing reported an internal error.','信号处理报告内部错误。') : '';
@@ -24,7 +29,7 @@ export function receiverLive(r:ReceiverState,tasks:RecordingTask[],pending=false
     <div class="mc-live-heading"><strong role="status" aria-live="polite">${esc(status.label)}</strong>${recovery?.manual_recovery_allowed?`<button class="btn" type="button" data-action="recover-processing" title="${l('Start a new reception after the recorded gap','保留缺口记录，重新开始接收')}" ${pending?'disabled aria-busy="true"':''}>${pending?l('Submitting…','正在提交…'):l('Resume reception','重新接收')}</button>`:''}</div>
     <p class="mc-live-facts">${(r.confirmed.baseband.frequency_hz/1e6).toLocaleString(undefined,{maximumFractionDigits:6})} MHz <span>·</span> ${esc(r.confirmed.processors[0]?.mode.toUpperCase()??'IQ')} <span>·</span> ${l('Passband','通带')} ${(r.confirmed.baseband.passband_hz/1000).toLocaleString()} kHz</p>
     ${status.hint?`<p class="mc-live-hint">${esc(status.hint)}</p>`:''}
-    ${gap?`<p class="mc-live-interruption">${reason} ${recovery?.state==='recovering'?l('Retry scheduled.','正在等待重试。'):''} ${l('Interruptions','累计中断')} ${recovery!.interruptions}${gap.recovered_at_ms?` · ${l('Last resumed','最近续收')} <time datetime="${new Date(gap.recovered_at_ms).toISOString()}">${esc(new Date(gap.recovered_at_ms).toLocaleTimeString())}</time>`:''}</p>`:''}
+    ${gap && !(clearable && interruptionCleared)?`<p class="mc-live-interruption">${reason} ${recovery?.state==='recovering'?l('Retry scheduled.','正在等待重试。'):''} ${l('Interruptions','累计中断')} ${recovery!.interruptions}${gap.recovered_at_ms!==null?` · ${l('Last resumed','最近续收')} <time datetime="${new Date(gap.recovered_at_ms).toISOString()}">${esc(new Date(gap.recovered_at_ms).toLocaleTimeString())}</time>`:''} ${clearable?`<button class="btn" type="button" data-action="clear-interruption" title="${l('Clear this recovered interruption notice; the record remains in diagnostic details','清除已恢复的中断提示；记录仍可在诊断详情中查看')}">${l('Clear','清除')}</button>`:''}</p>`:''}
     ${last?`<p class="mc-error" data-key="recording-interrupted">${l('Recording ended at the interruption. Its valid prefix is retained; resuming reception does not restart recording.','录制已在中断处结束，有效前缀已保留；恢复接收不会自动重启录制。')} <button type="button" data-action="tab-recording" title="${l('Review the ended recording and its valid prefix','查看已结束录制及有效前缀')}">${l('View recording','查看录制')}</button></p>`:''}
     <label class="mc-reception-policy">${l('Reception policy','接收策略')} <select data-continuity aria-label="${l('Reception policy','接收策略')}" ${pending?'disabled':''}><option value="continuous" ${(r.confirmed.continuity??'continuous')==='continuous'?'selected':''}>${l('Continuous reception','持续接收')}</option><option value="strict" ${r.confirmed.continuity==='strict'?'selected':''}>${l('Strict continuity','严格连续')}</option></select></label>
     <p class="mc-live-hint">${r.confirmed.continuity==='strict'?l('Stop at an unexpected gap. Planned out-of-band pauses resume when covered.','出现异常缺口即停止；计划内的带外暂停在覆盖后恢复。'):l('Attempt reception recovery after unexpected gaps. Recordings end at faults; planned coverage pauses wait and resume a new segment.','异常中断后尝试续收并保留缺口记录。录制遇故障结束；计划内的带外暂停进入等待，覆盖后另起片段。')}</p>

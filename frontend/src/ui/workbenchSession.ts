@@ -2,6 +2,9 @@ import { clone, receiverHasAudio, type ReceiverAdapter, type ServiceSnapshot, ty
   type MonitorRoute, type ViewBinding, type ServiceCommand, type CommandReply } from '../core/multichannel';
 import { ReceiverModeMemory } from './receiverModeMemory';
 import { loadWorkbenchPreferences, saveWorkbenchPreferences, workbenchAudioDefaults } from './workbenchPreferences';
+import { canClearInterruption } from './receiverLive';
+
+const CLEARED_INTERRUPTION_KEY = 'websa-cleared-interruptions';
 
 export class WorkbenchSession {
   snapshot: ServiceSnapshot;
@@ -25,6 +28,22 @@ export class WorkbenchSession {
   private commandSequence = 0;
   private faultSequence = 0;
   private recoveries = new Map<string, Promise<CommandReply>>();
+  private clearedInterruptions = new Map<string, string>();
+  private interruptionKey(uid:string):string {
+    const recovery=this.snapshot.receivers.find(r=>r.receiver_uid===uid)?.reception;
+    return recovery ? `${recovery.last_interruption.at_ms}:${recovery.interruptions}` : '';
+  }
+  interruptionCleared(uid:string):boolean {
+    const receiver=this.snapshot.receivers.find(r=>r.receiver_uid===uid);
+    return !!receiver && canClearInterruption(receiver) && this.clearedInterruptions.get(uid)===this.interruptionKey(uid);
+  }
+  clearInterruption(uid:string):void {
+    const receiver=this.snapshot.receivers.find(r=>r.receiver_uid===uid);
+    if (!receiver || !canClearInterruption(receiver)) return;
+    this.clearedInterruptions.set(uid,this.interruptionKey(uid));
+    try { sessionStorage.setItem(CLEARED_INTERRUPTION_KEY,JSON.stringify({service:this.snapshot.service_id,entries:[...this.clearedInterruptions]})); } catch { /* Session storage is optional. */ }
+    this.notify();
+  }
   recovering(uid:string):boolean {return this.recoveries.has(uid);}
   private retirements = new Map<string, Promise<CommandReply>>();
   private mutationTail: Promise<void> = Promise.resolve();
@@ -43,6 +62,12 @@ export class WorkbenchSession {
   constructor(readonly adapter: ReceiverAdapter, modeMemory = new ReceiverModeMemory()) {
     this.modeMemory=modeMemory;
     this.snapshot = adapter.snapshot(); this.selected = this.snapshot.receivers[0]?.receiver_uid ?? '';
+    try {
+      const saved=JSON.parse(sessionStorage.getItem(CLEARED_INTERRUPTION_KEY)??'null');
+      if (saved?.service===this.snapshot.service_id && Array.isArray(saved?.entries)) {
+        for (const row of saved.entries) if (Array.isArray(row) && row.length===2 && row.every(v=>typeof v==='string')) this.clearedInterruptions.set(row[0],row[1]);
+      }
+    } catch { /* Ignore unavailable storage or stale preferences. */ }
     if (this.snapshot.transport === 'native') this.audioPreferences = loadWorkbenchPreferences();
     this.modeMemory.observe(this.snapshot);
     this.stop = adapter.subscribe(snapshot => this.accept(snapshot));
@@ -60,6 +85,7 @@ export class WorkbenchSession {
     const serviceChanged = snapshot.service_id !== this.snapshot.service_id;
     if (serviceChanged) {
       this.retiredServices.add(this.snapshot.service_id); this.generation++;
+      this.clearedInterruptions.clear();
       this.recoveries.clear(); this.routes.clear(); this.edits.clear(); this.retirements.clear(); this.mutationTail = Promise.resolve();
     }
     this.snapshot = snapshot;
@@ -67,6 +93,7 @@ export class WorkbenchSession {
     const active = new Set(snapshot.receivers.map(r => r.receiver_uid));
     if (serviceChanged || this.fault?.scope === 'request' && this.fault.receiver_uid && !active.has(this.fault.receiver_uid)) this.fault = null;
     for (const uid of this.routes.keys()) if (!active.has(uid)) this.routes.delete(uid);
+    for (const uid of this.clearedInterruptions.keys()) if (!active.has(uid)) this.clearedInterruptions.delete(uid);
     for (const [uid, edit] of this.edits) if (!active.has(uid) && !edit.pending) this.edits.delete(uid);
     if (!snapshot.receivers.some(r => r.receiver_uid === this.selected)) this.selected = snapshot.receivers[0]?.receiver_uid ?? '';
     this.notify();

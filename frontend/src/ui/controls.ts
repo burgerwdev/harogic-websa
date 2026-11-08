@@ -5,7 +5,7 @@ import { clearMainReceiverControls, syncMainReceiverControls } from './mainRecei
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send as sendRaw } from '../core/wsSend';
-import { advanceQueuedControl, channelControlContext, confirmSdrChannels, currentSdrChannel, knownSdrChannelNumbers, sdrChannelMarks, setCurrentSdrChannel, type SdrChannel, type SdrChannelControl } from './sdrChannels';
+import { advanceQueuedControl, channelControlContext, confirmSdrChannels, currentSdrChannel, knownSdrChannelNumbers, setCurrentSdrChannel, type SdrChannel, type SdrChannelControl } from './sdrChannels';
 import { setSdrHoverFrequency } from './sdrHoverPassband';
 import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 import { isKeypadOpen } from './keypad';
@@ -45,7 +45,7 @@ import { measureChannel, clearChannel } from '../meas/channel';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply, repaintPnm } from '../meas/phaseNoise';
 
-import { getLang, t } from '../core/i18n';
+import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { resetTrigger, syncTriggerMode } from './triggerState';
 import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, confirmSdrAxisWindow, rejectAxisRef, resetAxisPreview, sdrAxisOwnsViewport, type Axis } from './axisDrag';
@@ -1166,16 +1166,6 @@ function sdrSet(id: string, value: string) {
 let lastSdrPanelReport: any = null;
 
 function syncSdrChannelButtons(): void {
-  const definitions = sdrChannelMarks();
-  const label = document.getElementById('sdr-current-channel');
-  if (label) {
-    const channel = currentSdrChannel(), selected = definitions.find(row => row.channel === channel);
-    const stopped = !selected?.enabled;
-    label.textContent = `Current${stopped ? getLang() === 'zh' ? ' · 已停止' : ' · Stopped' : ''}`;
-    label.title = stopped
-      ? getLang() === 'zh' ? '调整频点或解调方式可恢复 Current；已保存信道保持独立。' : 'Tune or choose a mode to resume Current; saved channels remain independent.'
-      : getLang() === 'zh' ? '主界面调谐 Current 临时信道；已保存信道在工作台中独立编辑。' : 'Main tuning controls Current; edit saved channels independently in the workbench.';
-  }
   const add = document.querySelector('[data-action="sdr-channel-add"]');
   add?.setAttribute('aria-label', t('sdr_channel_add_tip'));
 }
