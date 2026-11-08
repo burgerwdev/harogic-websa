@@ -4519,8 +4519,8 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                                 state.receiver_slot(uid).is_none_or(|slot| {
                                     let c=state.channel_configs()[(slot-1) as usize].clone();!c.enabled||!c.processing_enabled
                                 })));
-                        failed.then(||service_stream::receiver_end_frame(&state,channel,receiver_uid.as_deref()))};
-                    if let Some(closing)=closing {
+                        failed.then(||(service_stream::receiver_end_frame(&state,channel,receiver_uid.as_deref()),state.swp.mode!="sdr"))};
+                    if let Some((closing,mode_inactive))=closing {
                         if audio||decode {
                             if !rx.is_empty() {continue;}
                             let _=send_frame(&mut sink,closing).await;break false;
@@ -4528,6 +4528,9 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                         let boundary=json!({"type":"stream_boundary","receiver_uid":receiver_uid,
                             "previous":null,"next":null,"clock":null,"reason":"capture_unavailable","drained":false});
                         let _=send_frame(&mut sink,Message::Text(boundary.to_string().into())).await;
+                        if mode_inactive {
+                            let _=send_frame(&mut sink,closing).await;break false;
+                        }
                         break true;
                     }
                 }

@@ -175,6 +175,10 @@ python tools/e2e/native_multichannel.py --artifacts /tmp/websa-p3-native
 解码事件先交付已校验的有界 FIFO 尾部，再发布本地终态。
 不把这两个明确终态当成故障或自动重连；其他关闭原因仍按原有传输／故障规则处理。
 
+离开 SDR 时，IQ／音频／解码订阅以 `1000 / SDR inactive` 正常关闭。
+按 UID 的客户端将其作为传输边界，可在返回 SDR 后恢复；无状态码关闭（1005）按共用传输重连策略处理。
+明确退役、协议错误和有界服务故障重试仍分别分类。
+
 SDE2 增加 `receiver_uid`、`service_id` 和 `baseband_stream`。逐帧归属按实际流映射确定，包括旧尾部，
 不会因槽位复用把旧订阅指向新 UID。仅 IQ 请求音频或结果返回 409。AUD2/SDE2 的二进制布局和旧槽接口保持兼容。
 独立基带的处理分支拥有自己的 `(epoch, channel_id)`；不能再把处理流身份当成 IQ 身份。

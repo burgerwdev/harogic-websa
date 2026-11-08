@@ -21,7 +21,7 @@ export class StreamRetry {
 
   delay(code: number, reason: string): number | null {
     this.progressingSince = null;
-    if ([1000, 1001, 1006, 1012].includes(code)) {
+    if ([1000, 1001, 1005, 1006, 1012].includes(code)) {
       return Math.min(STREAM_RETRY.networkInitialMs * 2 ** Math.min(this.networkAttempts++,
         Math.ceil(Math.log2(STREAM_RETRY.networkMaxMs / STREAM_RETRY.networkInitialMs))), STREAM_RETRY.networkMaxMs);
     }

@@ -188,6 +188,10 @@ buffers and meters, then wait for the directory update or a new enable action. T
 report a fault or trigger automatic reconnection. Verified decode events drain through the bounded local FIFO before its
 terminal notification; other closes retain their existing transport/failure handling.
 
+Leaving SDR normally closes IQ/audio/decode subscriptions with `1000 / SDR inactive`.
+UID clients treat it as a transport boundary and can resume when SDR returns.
+A close without a status code (1005) follows the shared transport retry policy; explicit receiver retirement, protocol errors and bounded server-fault retries keep their own classifications.
+
 SDE2 adds `receiver_uid`, `service_id` and `baseband_stream`. Attribution follows the actual stream mapping,
 including retiring tails. Reusing a slot cannot redirect an old subscription to a new UID. IQ-only processed-output
 requests return 409. Binary layouts and legacy slot endpoints remain compatible. Independent-baseband processors

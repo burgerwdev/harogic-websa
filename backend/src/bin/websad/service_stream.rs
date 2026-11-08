@@ -275,17 +275,16 @@ pub(super) fn publish_receiver_failure(state:&mut DevState,app:&App)->Option<Val
     Some(json!({"cmd":"RECEIVER_ERROR","error":error,"failed":true,"scope":"all_receivers"}))
 }
 
-/// Only a confirmed logical stop on a healthy capture is a normal end. Empty
-/// closes and transport/receiver failures keep their existing failure semantics.
+/// Planned mode exits and confirmed receiver stops end normally.
 pub(super) fn receiver_end_frame(state:&DevState,channel:Option<u32>,uid:Option<&str>)->Message {
-    let reason=channel.zip(uid).and_then(|(slot,uid)| {
-        if !state.link_up || state.swp.mode!="sdr" || state.ddc_error.is_some() || state.receiver_failure.is_some() {
+    let reason=if state.swp.mode!="sdr" {Some("SDR inactive")} else {channel.and_then(|slot| {
+        if !state.link_up || state.ddc_error.is_some() || state.receiver_failure.is_some() {
             return None;
         }
-        if state.receiver_uid_for_slot(slot)!=Some(uid) {return Some("receiver retired");}
+        if uid.is_some_and(|uid|state.receiver_uid_for_slot(slot)!=Some(uid)) {return Some("receiver retired");}
         state.channel_config(slot).filter(|config|!config.enabled||!config.processing_enabled)
             .map(|_|"receiver stopped")
-    });
+    })};
     Message::Close(reason.map(|reason|CloseFrame {code:1000,reason:reason.into()}))
 }
 
@@ -678,7 +677,7 @@ mod tests {
         assert_eq!(reason(&state,Some("retired-uid")),Some("receiver retired".into()));
         state.sdr_channels[0].enabled=false;
         assert_eq!(reason(&state,Some(&uid)),Some("receiver stopped".into()));
-        assert_eq!(reason(&state,None),None,"legacy subscriptions retain their close semantics");
+        assert_eq!(reason(&state,None),Some("receiver stopped".into()));
         state.link_up=false;
         assert_eq!(reason(&state,Some(&uid)),None);
         state.link_up=true;state.ddc_error=Some("capture failed".into());
@@ -686,7 +685,8 @@ mod tests {
         state.ddc_error=None;state.receiver_failure=Some("receiver failed".into());
         assert_eq!(reason(&state,Some(&uid)),None);
         state.receiver_failure=None;state.swp.mode="std".into();
-        assert_eq!(reason(&state,Some("retired-uid")),None);
+        assert_eq!(reason(&state,Some("retired-uid")),Some("SDR inactive".into()));
+        assert_eq!(reason(&state,None),Some("SDR inactive".into()));
     }
 
     #[test]

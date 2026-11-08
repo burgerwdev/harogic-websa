@@ -222,6 +222,41 @@ def test_aux_channel_alias_is_advertised_in_schema(launcher):
     asyncio.run(exercise())
 
 
+def test_leaving_sdr_ends_iq_audio_and_decode_subscriptions_normally(launcher):
+    invoke, env, _, _, _ = launcher
+    started = invoke('run.sh')
+    assert started.returncode == 0, started.stderr
+    origin = f'http://127.0.0.1:{env["WEBSA_PORT"]}'
+
+    async def exercise():
+        async with aiohttp.ClientSession() as client, AsyncExitStack() as stack:
+            async with client.post(origin + '/api/config', json={'cmd': 'SET_MODE', 'mode': 'sdr'}) as response:
+                assert response.status == 200
+                await response.read()
+            async with asyncio.timeout(10):
+                while True:
+                    async with client.get(origin + '/api/sdr/receivers') as response:
+                        receiver = (await response.json())['receivers'][0]
+                    if receiver['processing_state'] == 'active':
+                        uid = receiver['receiver_uid']
+                        break
+                    await asyncio.sleep(0.02)
+            streams = [await stack.enter_async_context(client.ws_connect(origin + path, params={'receiver_uid': uid}))
+                       for path in ['/ws/iq', '/ws/audio', '/ws/decode']]
+            async with client.post(origin + '/api/config', json={'cmd': 'SET_MODE', 'mode': 'rta'}) as response:
+                assert response.status == 200
+                await response.read()
+            for stream in streams:
+                while True:
+                    message = await stream.receive(timeout=5)
+                    assert message.type not in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED)
+                    if message.type == aiohttp.WSMsgType.CLOSE:
+                        assert message.data == 1000 and message.extra == 'SDR inactive'
+                        break
+
+    asyncio.run(exercise())
+
+
 def test_advertised_sdr_ranges_include_values_accepted_by_typed_controls(launcher):
     invoke, env, _, _, _ = launcher
     started = invoke('run.sh')

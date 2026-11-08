@@ -109,7 +109,7 @@ describe('AUD2 audio ingress', () => {
     receive(packet({ seq: 5, frames: 480, input: 3840n, index: 1920n }));
     expect(posted.filter(message => message.type === 'error')).toHaveLength(1);
   });
-  it('reconnects UID transport loss at a fresh boundary and ignores old socket PCM', async () => {
+  it.each([1005, 1006])('reconnects UID transport close %s at a fresh boundary and ignores old socket PCM', async code => {
     vi.useFakeTimers();
     // This option is enabled only by the UID playback owner; legacy remains explicit retry.
     vi.resetModules(); posted = []; sockets = [];
@@ -117,7 +117,7 @@ describe('AUD2 audio ingress', () => {
     send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true });
     send({ type: 'enabled', value: true });
     receive(packet({ seq: 0 })); receive(packet({ seq: 1, frames: 2 }));
-    const old = sockets[0]; old.onclose!({ code: 1006, reason: '' });
+    const old = sockets[0]; old.onclose!({ code, reason: '' });
     expect(posted.at(-1)).toEqual({ type: 'connection', state: 'reconnecting' });
     await vi.advanceTimersByTimeAsync(500);
     expect(sockets).toHaveLength(2);
@@ -128,7 +128,7 @@ describe('AUD2 audio ingress', () => {
     expect(posted.filter(m => m.type === 'samples')).toHaveLength(2);
     expect(posted.filter(m => m.type === 'error')).toEqual([]);
     expect(posted).toContainEqual({ type: 'connection', state: 'connected' });
-    sockets[1].onclose!({ code: 1006, reason: '' });
+    sockets[1].onclose!({ code, reason: '' });
     send({ type: 'enabled', value: false });
     await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(2);
   });
