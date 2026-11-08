@@ -13,7 +13,7 @@ export function liveStatus(r:ReceiverState): {label:string; kind:string; hint:st
   if (r.state!=='running' || r.processing_state==='waiting' && r.confirmed.processors.length>0) return {label:l('Waiting for input','等待输入'),kind:'waiting',hint:l('No valid input has arrived yet.','尚未收到有效输入。')};
   if (r.processing_state==='backlogged') return {label:l('Receiving · processing behind','接收中 · 处理积压'),kind:'waiting',hint:l('Processing is behind the incoming signal.','处理暂时落后于输入信号。')};
   // Decoders receive IQ before listener squelch, including modes with companion audio.
-  if (r.confirmed.processors.some(p=>p.kind==='demodulator') && !r.confirmed.processors.some(p=>p.kind==='decoder') && actual?.squelch?.open===false) return {label:l('Waiting for signal','等待信号'),kind:'waiting',hint:l('Reception is active; squelch has muted the audio.','接收正在进行，静噪已关闭音频输出。')};
+  if (r.confirmed.processors.some(p=>p.kind==='demodulator') && !r.confirmed.processors.some(p=>p.kind==='decoder') && actual?.squelch?.open===false) return {label:l('Audio muted by squelch','静噪已关闭音频'),kind:'waiting',hint:l('Reception is active; squelch has muted the audio.','接收正在进行，静噪已关闭音频输出。')};
   if (actual?.protocol_waiting) return {label:l('Waiting for protocol result','等待协议结果'),kind:'waiting',hint:l('Receiving samples for the next complete protocol window.','正在接收样本，等待下一个完整协议窗口。')};
   return {label:l('Receiving normally','正常接收'),kind:'healthy',hint:r.confirmed.processors.length?'':l('Raw IQ reception is active.','正在接收原始 IQ。')};
 }

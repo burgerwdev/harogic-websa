@@ -12,7 +12,7 @@ it('distinguishes healthy, squelched, protocol waiting and IQ-only reception',()
  setLang('en');const r=structuredClone(base);r.state='running';r.processing_state='active';
  expect(liveStatus(r).kind).toBe('healthy');
  r.processing_runtime={state:'active',processing_generation:'2',oldest_input_wait_ns:0,input_held_bytes:0,input_held_media_ns:0,observed_receiver:{nr_requested:'off',nr_effective:'off',nr_state:'off',squelch:{open:false,gain:0}}};
- expect(liveStatus(r).label).toBe('Waiting for signal');
+ expect(liveStatus(r).label).toBe('Audio muted by squelch');
  r.processing_runtime.observed_receiver!.squelch=null;r.processing_runtime.observed_receiver!.protocol_waiting=true;
  expect(liveStatus(r).label).toBe('Waiting for protocol result');
  r.confirmed.processors=[];r.processing_state='disabled';r.processing_runtime.observed_receiver!.squelch={open:false,gain:0};r.processing_runtime.observed_receiver!.protocol_waiting=false;
