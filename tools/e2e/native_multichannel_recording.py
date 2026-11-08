@@ -19,7 +19,7 @@ import time
 import zlib
 from pathlib import Path
 
-from native_multichannel import api, config
+from native_multichannel import api, config, reset_receivers
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import ROOT, WEBSAD, free_port, post, start_owned_service, start_service, stop
 from viewport_baseline import wait_ui_ready
@@ -279,11 +279,12 @@ def write_failure_gate(artifacts):
 def setup(origin):
     post(origin, {'cmd': 'SET_MODE', 'mode': 'sdr'})
     post(origin, {'cmd': 'SET_SDR', 'center': 100e6})
-    for r in api(origin)['receivers']:
-        reply = api(origin, payload={'type': 'retire', 'request_id': 'clear-' + r['receiver_uid'], 'receiver_uid': r['receiver_uid']})
-        assert reply['fault'] is None, reply
+    current = reset_receivers(origin)['receivers'][0]
     for i in range(3):
-        reply = api(origin, payload={'type': 'create', 'request_id': f'create-{i}', 'config': config(100e6 + i * 10000)})
+        command = {'type': 'create', 'request_id': f'create-{i}', 'config': config(100e6 + i * 10000)}
+        if i == 0:
+            command.update(type='configure', receiver_uid=current['receiver_uid'], expected_revision=current['revision'])
+        reply = api(origin, payload=command)
         assert reply['fault'] is None, reply
 
 

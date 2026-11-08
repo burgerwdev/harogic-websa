@@ -11,7 +11,7 @@ import re
 import struct
 from pathlib import Path
 
-from native_multichannel import api, config
+from native_multichannel import api, config, reset_receivers
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, post, start_service, stop
 from viewport_baseline import wait_async_condition, wait_ui_ready
@@ -19,12 +19,10 @@ from websockets.asyncio.client import connect
 from websockets.sync.client import connect as sync_connect
 
 
-def setup(origin):
+def setup(origin, *, saved_only=False):
     post(origin, {'cmd': 'SET_MODE', 'mode': 'sdr'})
     post(origin, {'cmd': 'SET_SDR', 'center': 100e6})
-    for receiver in api(origin)['receivers']:
-        reply = api(origin, payload={'type': 'retire', 'request_id': 'clear-' + receiver['receiver_uid'], 'receiver_uid': receiver['receiver_uid']})
-        assert reply['fault'] is None, reply
+    current = reset_receivers(origin)['receivers'][0]
     for index, mode in enumerate(['am', 'ft8', None]):
         candidate = config(100e6 + index * 10000)
         candidate['name'] = ['AM native', 'FT8 replay', 'IQ native'][index]
@@ -34,7 +32,10 @@ def setup(origin):
             candidate['processors'] = [{'id': 'primary', 'kind': 'demodulator' if mode == 'am' else 'decoder', 'mode': mode,
                 'minimum_rate_hz': 0, 'pcm_gain': 0.5, 'agc': False,
                 'bandwidth_hz': 6000 if mode == 'am' else 3000, 'squelch_dbm': -160}]
-        reply = api(origin, payload={'type': 'create', 'request_id': f'create-{index}', 'config': candidate})
+        command = {'type': 'create', 'request_id': f'create-{index}-{current["revision"]}', 'config': candidate}
+        if index == 0 and not saved_only:
+            command.update(type='configure', receiver_uid=current['receiver_uid'], expected_revision=current['revision'])
+        reply = api(origin, payload=command)
         assert reply['fault'] is None, reply
     return api(origin)
 

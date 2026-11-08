@@ -37,18 +37,37 @@ def config(frequency):
             'baseband': {'frequency_hz': frequency, 'passband_hz': 3000, 'transition_hz': 1000, 'minimum_rate_hz': 6000}}
 
 
+def saved_receivers(snapshot):
+    return [row for row in snapshot['receivers'] if row['display_number'] != 1]
+
+
+def reset_receivers(origin):
+    """Stop Current and retire saved receivers on the owned fixture service."""
+    for row in api(origin)['receivers']:
+        if row['display_number'] == 1:
+            candidate = json.loads(json.dumps(row['confirmed']))
+            candidate['enabled'] = False
+            command = {'type': 'configure', 'request_id': 'stop-' + row['revision'] + '-' + row['receiver_uid'],
+                'receiver_uid': row['receiver_uid'], 'expected_revision': row['revision'], 'config': candidate}
+        else:
+            command = {'type': 'retire', 'request_id': 'clear-' + row['receiver_uid'], 'receiver_uid': row['receiver_uid']}
+        reply = api(origin, payload=command)
+        assert reply['fault'] is None, reply['fault']
+    return api(origin)
+
+
 async def protocol(origin, channels=3, *, raw_capture=False, center=100e6):
     post(origin, {'cmd': 'SET_MODE', 'mode': 'sdr'})
     post(origin, {'cmd': 'SET_SDR', 'center': center, **({'decimate': 1} if raw_capture else {})})
     initial = api(origin)
     if not 3 <= channels <= initial['capabilities']['max_channels']:
         raise ValueError('This middle-slot reuse scenario needs 3..max_channels receivers')
-    for receiver in initial['receivers']:
-        reply = api(origin, payload={'type': 'retire', 'request_id': 'clear-' + receiver['receiver_uid'], 'receiver_uid': receiver['receiver_uid']})
-        assert reply['fault'] is None, reply
+    current = reset_receivers(origin)['receivers'][0]
     receivers = []
     for i in range(channels):
         request = {'type': 'create', 'request_id': f'create-{i}', 'config': config(center + i * 10000)}
+        if i == 0:
+            request.update(type='configure', receiver_uid=current['receiver_uid'], expected_revision=current['revision'])
         reply = api(origin, payload=request)
         assert reply['fault'] is None, reply
         assert api(origin, payload=request) == reply

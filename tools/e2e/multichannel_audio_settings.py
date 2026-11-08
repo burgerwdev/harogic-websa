@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 
-from native_multichannel import api, config
+from native_multichannel import api, config, saved_receivers
 from native_multichannel_processing import assert_receivers_continue, setup
 from native_multichannel_recording import until
 from playwright.sync_api import expect, sync_playwright
@@ -16,12 +16,14 @@ from rust_iq_browser import free_port, start_service, stop
 from viewport_baseline import wait_ui_ready
 
 
-def bandwidth_gate(page, origin, uid):
+def bandwidth_gate(page, origin):
     """Independent IQ widths and confirmed mode memory must not cap main-panel edits."""
     modes = [('am', 3000, 12000), ('dsb', 3000, 12000), ('usb', 1800, 6000),
              ('lsb', 1800, 6000), ('cw', 100, 2000), ('nfm', 9000, 25000),
              ('wfm', 100000, 250000), ('pm', 6000, 25000)]
     results = []
+    api(origin, '/api/config', {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True})
+    uid = api(origin)['receivers'][0]['receiver_uid']
     for mode, narrow, wide in modes:
         api(origin, '/api/config', {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'mode': mode, 'ifbw': narrow})
         row = next(row for row in api(origin)['receivers'] if row['receiver_uid'] == uid)
@@ -168,6 +170,7 @@ def folded_strip_gate(page, origin, overview, uid, artifacts):
 
 
 def browser_gate(origin, snapshot, artifacts):
+    receivers = saved_receivers(snapshot)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={'width': 1440, 'height': 1000})
@@ -202,7 +205,11 @@ def browser_gate(origin, snapshot, artifacts):
         page.locator('[data-action=sdr-workbench]').click()
         overview = page.locator('[data-view-id=overview-follow]')
         expect(overview).to_be_visible()
-        strip_config = json.loads(json.dumps(snapshot['receivers'][0]['confirmed']))
+        uid = receivers[0]['receiver_uid']
+        overview.locator(f'.mc-row[data-uid="{uid}"] [data-action=listen]').click()
+        page.wait_for_function('''uid => window.websaAudioStatus().some(r => r.channel === uid
+            && r.enabled && r.playedFrames > 2000 && r.rms > 0 && !r.error)''', arg=uid)
+        strip_config = json.loads(json.dumps(receivers[0]['confirmed']))
         strip_config['name'] = 'Folded strip probe'; strip_config['baseband']['frequency_hz'] += 60000
         added = api(origin, payload={'type': 'create', 'request_id': 'strip-probe', 'config': strip_config})
         assert added['fault'] is None, added
@@ -211,7 +218,7 @@ def browser_gate(origin, snapshot, artifacts):
         folded = folded_strip_gate(page, origin, overview, strip_uid, artifacts)
         (artifacts / 'folded-strip-report.json').write_text(json.dumps(folded, indent=2) + '\n')
         probe_uid = folded['replacement']['receiver_uid']
-        uid = snapshot['receivers'][0]['receiver_uid']
+        uid = receivers[0]['receiver_uid']
         healthy_before = page.evaluate('uid => window.websaAudioStatus().find(r => r.channel === uid)', uid)
         assert healthy_before['enabled'] and healthy_before['playing'] and healthy_before['rms'] > 0, healthy_before
         stale_directory = api(origin)
@@ -264,7 +271,8 @@ def browser_gate(origin, snapshot, artifacts):
             and p['nr_strength'] == 0.25 and p['squelch_dbm'] == -105.3 and not p['agc']
             for r in api(origin)['receivers'] for p in r['confirmed']['processors']))
         confirmed = api(origin)
-        assert_receivers_continue(snapshot['receivers'][1:], confirmed['receivers'][1:])
+        assert_receivers_continue([r for r in snapshot['receivers'] if r['receiver_uid'] != uid],
+            [r for r in confirmed['receivers'] if r['receiver_uid'] != uid])
         compact_layout = overview.evaluate('''root=>{
           const box = selector => {const r=root.querySelector(selector).getBoundingClientRect();
             return {x:r.x,y:r.y,width:r.width,height:r.height};};
@@ -296,7 +304,7 @@ def browser_gate(origin, snapshot, artifacts):
         expect(overview.locator('[name=nr-strength]')).not_to_be_visible()
         overview.locator('[name=nr-atten]').evaluate(
             '(input)=>{input.value="14";input.dispatchEvent(new Event("input",{bubbles:true}));}')
-        second = snapshot['receivers'][1]['receiver_uid']
+        second = receivers[1]['receiver_uid']
         overview.locator(f'[data-uid="{second}"] [data-action=select]').click()
         expect(overview.locator('[name=nr]')).not_to_be_checked()
         overview.locator(f'[data-uid="{uid}"] [data-action=select]').click()
@@ -304,31 +312,34 @@ def browser_gate(origin, snapshot, artifacts):
         expect(overview.locator('[name=nr-atten]')).to_have_value('14')
 
         overview.locator('[data-close]').click()
-        bandwidths = bandwidth_gate(page, origin, uid)
+        bandwidths = bandwidth_gate(page, origin)
 
         def delete_all():
             if not overview.is_visible():
                 page.locator('[data-action=sdr-workbench]').click()
-            remaining = len(api(origin)['receivers'])
-            expect(overview.locator('.mc-row')).to_have_count(remaining)
+            current_uid = api(origin)['receivers'][0]['receiver_uid']
+            remaining = len(saved_receivers(api(origin)))
+            expect(overview.locator(f'.mc-row:not([data-uid="{current_uid}"])')).to_have_count(remaining)
             # Burst clicks across every UID also exercise the shared admission queue.
             overview.locator('.mc-row [data-action=retire]').evaluate_all('''buttons => {
               for (const button of buttons) for (let i=0;i<20;i++) button.click();
             }''')
-            expect(overview.locator('.mc-row')).to_have_count(0)
+            expect(overview.locator('.mc-row')).to_have_count(1)
+            expect(overview.locator(f'.mc-row[data-uid="{current_uid}"]')).to_be_visible()
             expect(overview.locator('[data-key=session-fault]')).to_have_count(0)
             overview.locator('[data-close]').click()
+            api(origin, '/api/config', {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': False})
             page.wait_for_function('() => window.websaAudioStatus().every(r=>!r.enabled)')
 
         recoveries = []
         for index, action in enumerate(['spectrum', 'listen', 'center']):
             delete_all()
             if action != 'spectrum':
-                # Reusing C1 for IQ must not retain its absent audio processor after retirement.
                 reply = api(origin, payload={'type': 'create', 'request_id': f'iq-{action}', 'config': config(100e6)})
                 assert reply['fault'] is None, reply
                 delete_all()
-            old_uids = {r['receiver_uid'] for r in confirmed['receivers']}
+            current_uid = api(origin)['receivers'][0]['receiver_uid']
+            prior_audio = page.evaluate('uid=>window.websaAudioStatus().find(r=>r.channel===uid)', current_uid) or {}
             if action == 'spectrum':
                 canvas = page.locator('#spectrum')
                 box = canvas.bounding_box()
@@ -350,9 +361,12 @@ def browser_gate(origin, snapshot, artifacts):
             (artifacts / f'recovery-{action}.json').write_text(json.dumps({'observed': observed, 'after': after}, indent=2) + '\n')
             assert len(after['receivers']) == 1 and after['receivers'][0]['receiver_uid'] == observed['receiver_uid'], after
             receiver = after['receivers'][0]
-            assert receiver['receiver_uid'] not in old_uids
-            page.wait_for_function('''uid => window.websaAudioStatus().some(r=>r.channel===uid
-              && r.owner==='workbench' && r.enabled && r.playedFrames>2000 && !r.error)''', arg=receiver['receiver_uid'])
+            assert receiver['display_number'] == 1 and receiver['receiver_uid'] == current_uid
+            page.wait_for_function('''({uid, frames, stream}) => window.websaAudioStatus().some(r=>r.channel===uid
+              && r.owner==='workbench' && r.enabled && r.playing && r.rms>0 && r.meterAt>0
+              && r.playedFrames>frames+2000 && r.streamKey!==stream && !r.error)''',
+                arg={'uid': receiver['receiver_uid'], 'frames': prior_audio.get('playedFrames', 0),
+                     'stream': prior_audio.get('streamKey')})
             audio = page.evaluate('(uid)=>window.websaAudioStatus().find(r=>r.channel===uid)', receiver['receiver_uid'])
             assert not audio['masterMuted'] and audio['rms'] > 0, audio
             recoveries.append({'action': action, 'receiver': receiver, 'audio': audio})
@@ -373,9 +387,9 @@ def main():
     with (args.artifacts / 'service.log').open('w') as log:
         proc, origin = start_service(free_port(), log=log)
         try:
-            report = browser_gate(origin, setup(origin), args.artifacts)
+            report = browser_gate(origin, setup(origin, saved_only=True), args.artifacts)
             (args.artifacts / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
-            print('PASS: audio controls, all eight editable bandwidth modes, mode memory, and playback after retiring all channels')
+            print('PASS: audio controls, eight editable bandwidth modes, mode memory, saved-channel retirement and Current restart')
         finally:
             stop(proc)
 

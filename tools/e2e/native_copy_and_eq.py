@@ -7,7 +7,7 @@ import copy
 import json
 from pathlib import Path
 
-from native_multichannel import api, config
+from native_multichannel import api, config, reset_receivers
 from native_multichannel_processing import assert_receivers_continue
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, post, start_service, stop
@@ -17,16 +17,7 @@ from viewport_baseline import wait_ui_ready
 def setup(origin):
     post(origin, {'cmd': 'SET_MODE', 'mode': 'sdr'})
     post(origin, {'cmd': 'SET_SDR', 'center': 100e6, 'listen': 100e6})
-    for row in api(origin)['receivers']:
-        if row['display_number'] == 1:
-            stopped = copy.deepcopy(row['confirmed'])
-            stopped['enabled'] = False
-            reply = api(origin, payload={'type': 'configure', 'request_id': 'stop-current',
-                        'receiver_uid': row['receiver_uid'], 'expected_revision': row['revision'], 'config': stopped})
-        else:
-            reply = api(origin, payload={'type': 'retire', 'request_id': 'clear-' + row['receiver_uid'],
-                        'receiver_uid': row['receiver_uid']})
-        assert reply['fault'] is None, reply['fault']
+    reset_receivers(origin)
     for index in range(3):
         candidate = config(100e6 + index * 10000)
         candidate.update(name=f'Acceptance {index}', purpose='listen')

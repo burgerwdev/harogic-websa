@@ -175,6 +175,11 @@ does not treat capability discovery or an empty status table as decoding.
 See [acceptance record](../docs/en/ACCEPTANCE.md)
 ([中文](../docs/zh-CN/ACCEPTANCE.md)) for measured results and limits.
 
+Native fixture resets stop Current and retire saved receivers. Processing fixtures
+configure Current by default; `setup(origin, saved_only=True)` keeps it stopped
+and creates saved channels. Current retains its UID across stop and tune actions;
+playback recovery checks require a new stream and fresh rendered PCM.
+
 Stage and check a local candidate from matching current builds:
 
 ```sh

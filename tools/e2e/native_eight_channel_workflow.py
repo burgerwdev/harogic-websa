@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
-from native_multichannel import api, config
+from native_multichannel import api, config, reset_receivers
 from native_multichannel_audio import finish_audio, read_journal
 from native_multichannel_processing import assert_receivers_continue
 from native_multichannel_recording import task, until
@@ -31,10 +31,7 @@ def setup(origin, *, center=100e6, frequencies=None, reference=None, agc=False, 
     if reference is not None:
         post(origin, {'cmd': 'SET_REF', 'ref': reference})
         until(lambda: api(origin)['capture']['state'] == 'running', timeout=30)
-    for receiver in api(origin)['receivers']:
-        reply = api(origin, payload={'type': 'retire', 'request_id': 'clear-' + receiver['receiver_uid'],
-            'receiver_uid': receiver['receiver_uid']})
-        assert reply['fault'] is None, reply['fault']
+    current = reset_receivers(origin)['receivers'][0]
     for index, mode in enumerate(modes):
         candidate = config(frequencies[index])
         candidate.update(name=f'Channel {index + 1}', purpose='listen')
@@ -47,7 +44,10 @@ def setup(origin, *, center=100e6, frequencies=None, reference=None, agc=False, 
             candidate['processors'][0].update(kind='decoder', bandwidth_hz=3000)
         elif mode == 'iq':
             candidate.update(purpose='iq', processors=[])
-        reply = api(origin, payload={'type': 'create', 'request_id': f'eight-create-{index}', 'config': candidate})
+        command = {'type': 'create', 'request_id': f'eight-create-{index}', 'config': candidate}
+        if index == 0:
+            command.update(type='configure', receiver_uid=current['receiver_uid'], expected_revision=current['revision'])
+        reply = api(origin, payload=command)
         assert reply['fault'] is None, reply['fault']
     snapshot = api(origin)
     assert snapshot['capture']['usable_bandwidth_hz'] == 50e6 and snapshot['capture']['input_rate_hz'] == 62500000
