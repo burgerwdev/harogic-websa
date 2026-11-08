@@ -771,6 +771,7 @@ fn neural_nr_api_modes_keep_capture_settings_and_confirm_real_ids() {
 fn am_sync_partial_configuration_is_strict_persistent_and_resettable() {
     let (golden, schema) = load_golden();
     let mut state = DevState::new(golden, schema);
+    assert!(state.channel_configs().iter().all(|config| config.squelch == websa_dsp::audio::SQUELCH_OPEN_DBM));
     state.swp.mode = "sdr".into();
     dispatch(&mut state, "SET_SDR_CHANNEL", &json!({"channel":1,"mode":"am",
         "volume":0.37,"agc":false,"squelch":-140.0,"nr":true,"nr_strength":0.2,
@@ -805,6 +806,7 @@ fn am_sync_partial_configuration_is_strict_persistent_and_resettable() {
     }
     dispatch(&mut state,"SET_PRESET",&json!({})).unwrap();
     assert!(state.channel_configs().iter().all(|config| !config.am_sync));
+    assert!(state.channel_configs().iter().all(|config| config.squelch == websa_dsp::audio::SQUELCH_OPEN_DBM));
     let decoded: receiver_workers::ChannelConfig = serde_json::from_value(json!({})).unwrap();
     assert!(!decoded.am_sync);
     assert!(serde_json::from_value::<receiver_workers::ChannelConfig>(json!({"am_sync":"true"})).is_err());
@@ -2730,7 +2732,10 @@ fn preset_keeps_hardware_and_uses_device_defaults() {
     )
     .unwrap();
     dispatch(&mut state, "SET_FRAMEDET", &json!({"mode":"max_power"})).unwrap();
+    state.sdr_squelch = -90.0;
     dispatch(&mut state, "SET_PRESET", &json!({})).unwrap();
+    assert_eq!(state.sdr_squelch, websa_dsp::audio::SQUELCH_OPEN_DBM);
+    assert!(state.channel_configs().iter().all(|config| config.squelch == websa_dsp::audio::SQUELCH_OPEN_DBM));
     assert!(state.hardware_shim.is_some() && state.swp_hw.is_some());
     let status = state.status();
     assert!(!status["device"].as_str().unwrap().contains("FAKE"));

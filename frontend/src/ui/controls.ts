@@ -1837,7 +1837,7 @@ export function bindActions() {
   squelchEl?.addEventListener('change', () => {
     if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
     const wanted = Number.parseFloat(squelchEl.value);
-    sdrSquelch.set(Number.isFinite(wanted) ? wanted : -110);
+    sdrSquelch.set(Number.isFinite(wanted) ? wanted : -160);
     applySdrDemod();
   });
   // All catalog selections use the same acknowledged receiver edit path.

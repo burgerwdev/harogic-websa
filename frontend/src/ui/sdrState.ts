@@ -194,9 +194,9 @@ export const sdrVolume = createParam<number>('sdr.volume', {
 	serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
 });
-/** Squelch threshold in the SDK's tuned-bin dBm, before either audio AGC. */
+/** Squelch threshold in the SDK's tuned-bin dBm; -160 disables it by default and on Preset. */
 export const sdrSquelch = createParam<number>('sdr.squelch', {
-	fallback: -110, scope: 'sdr', persistKey: 'web-sa-sdr-squelch',
+	fallback: -160, scope: 'sdr', persistKey: 'web-sa-sdr-squelch',
 	parse: Number, serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.05,
 });

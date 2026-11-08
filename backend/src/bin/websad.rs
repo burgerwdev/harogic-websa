@@ -563,7 +563,7 @@ impl DevState {
             sdr_listen: 1e9,
             sdr_demod: "am".into(),
             sdr_if_bw: 6000.0,
-            sdr_squelch: -110.0,
+            sdr_squelch: websa_dsp::audio::SQUELCH_OPEN_DBM,
             sdr_volume: 0.8,
             sdr_agc: true,
             sdr_pitch: 700.0,
@@ -922,7 +922,7 @@ impl DevState {
             self.sdr_listen = 1e9;
             self.sdr_demod = "am".into();
             self.sdr_if_bw = 6000.0;
-            self.sdr_squelch = -110.0;
+            self.sdr_squelch = websa_dsp::audio::SQUELCH_OPEN_DBM;
             self.sdr_volume = 0.8;
             self.sdr_agc = true;
             self.sdr_pitch = 700.0;

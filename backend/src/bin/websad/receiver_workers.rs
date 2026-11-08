@@ -77,7 +77,7 @@ impl Default for ChannelConfig {
             freq: 0.0, mode: "am".into(), if_bw: 6000.0,
             am_sync: false,
             am_sync_generation: 0,
-            squelch: -110.0, volume: 0.8, agc: true, pitch: 700.0, deemph_us: -1.0,
+            squelch: websa_dsp::audio::SQUELCH_OPEN_DBM, volume: 0.8, agc: true, pitch: 700.0, deemph_us: -1.0,
             nr: false, nr_strength: 0.6, nr_algorithm: "wiener".into(), nr_atten_db: 10.0,
             stereo: true, audio_rate: 48_000, sstv_mode: None,
             radiofax_acquisition: "auto".into(), radiofax_ioc: "auto".into(),

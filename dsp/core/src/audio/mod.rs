@@ -44,7 +44,7 @@ pub struct AudioPolicy {
 
 impl Default for AudioPolicy {
     fn default() -> Self {
-        Self { nr: false, nr_strength: 0.6, squelch_dbm: -110.0 }
+        Self { nr: false, nr_strength: 0.6, squelch_dbm: SQUELCH_OPEN_DBM }
     }
 }
 
@@ -139,15 +139,16 @@ mod tests {
                 (noise + 0.05 * (2.0 * PI * 1_000.0 * k as f64 / 48_000.0).sin()) as f32
             })
             .collect();
-        let mut chain = default_chain(DEFAULT_AUDIO_RATE);
+        let mut chain = chain_for_mode("am", DEFAULT_AUDIO_RATE, AudioPolicy::default());
+        chain.set_squelch_level_dbm(-200.0);
         let mut pcm = crate::pipeline::AnalogPcm::default();
         pcm.samples_mut().extend_from_slice(&input);
         chain.process(&mut pcm, false);
         assert_eq!(pcm.samples(), &input[..], "the default policy is a bit-exact pass-through");
-        assert!(chain.active_ids().is_empty(), "a bare chain starts with no stages enabled");
+        assert!(chain.active_ids().is_empty(), "the default policy leaves all stages disabled");
 
         apply_policy(&mut chain, AudioPolicy { nr: true, ..AudioPolicy::default() });
-        assert_eq!(chain.active_ids(), vec!["squelch", "wiener", "blanker"]);
+        assert_eq!(chain.active_ids(), vec!["wiener", "blanker"]);
         assert!(!chain.is_stage_enabled("notch"), "the notch is not part of any policy");
         assert!(!chain.is_stage_enabled("agc"), "the demodulator already runs the reference AGC");
         let mut pcm = crate::pipeline::AnalogPcm::default();

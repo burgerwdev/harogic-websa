@@ -56,7 +56,7 @@ impl Default for ReceiverConfig {
     fn default() -> Self {
         Self { mode: "am".into(), center_hz: 0, input_rate: 48_000.0, audio_rate: 48_000,
             if_bw: 6_000.0, pitch: 700.0, agc: true, am_sync: false, am_sync_generation: 0, gain: 1.0,
-            squelch_dbm: -110.0, nr: false, nr_strength: 0.6,
+            squelch_dbm: audio::SQUELCH_OPEN_DBM, nr: false, nr_strength: 0.6,
             nr_algorithm: "wiener".into(), nr_atten_db: 10.0, deemph_us: -1.0,
             stereo: true, sstv_mode: None,
             radiofax_acquisition: "auto".into(), radiofax_ioc: "auto".into(),

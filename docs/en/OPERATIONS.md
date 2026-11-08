@@ -41,7 +41,8 @@ Delivery queue age is not USB thread scheduling delay; neither value alone estab
   uses fresh data and has bounded recovery. The display viewport and hardware reference have
   different limits, so compare the actual readback when the display still looks clipped.
 - Audio AGC, RF frontend gain and squelch are independent. Squelch uses the pre-AGC tuned-bin
-  peak, not integrated channel power; the far-left −160 dBm setting disables it. Decoder RMS,
+  peak, not integrated channel power; the far-left −160 dBm setting disables it. Squelch is off
+  by default for every mode, and Preset restores it to off. Decoder RMS,
   RF IQ power and the playback meter are different readings; see [User guide](USER_GUIDE.md).
 - Zero-IF DC/LO leakage appears at the capture centre. Integer-GHz internal spurs can also
   appear in SWP/RTA/SDR, and their apparent level may rise with attenuation. Retune the capture

@@ -20,7 +20,7 @@ import { send } from '../core/wsSend';
 import { updateStatus } from '../core/ws';
 import { presetAll, syncPresetStatus } from '../ui/controls';
 import { resetGraphMode } from '../ui/graphMode';
-import { hasStoredSdrPrefs, resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { hasStoredSdrPrefs, resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz, sdrSquelch } from '../ui/sdrState';
 import { resetTraceFamilyModes, SDR_DEFAULT_AVG, setTraceAverage, setTraceMode } from '../ui/traceOps';
 import { getView, isZoomed, setCapture, setView } from '../ui/spectrumViewport';
 import { commitRefLevel } from '../ui/panels/refAmp';
@@ -189,16 +189,17 @@ describe('Preset clears the persisted SDR preferences', () => {
 			'<span id="trace-avg-status"></span>';
 		// Native STATUS has sibling sdr and req.sdr objects; channel records use mode,
 		// while both SDR objects report demod. Effective capture geometry is in sdr.actual.
-		const status = (center: number, decimate: number, demod: string, if_bw: number) => {
-			const request = { center, listen: center, decimate, demod, if_bw, ref: 0, ref_set: false };
+		const status = (center: number, decimate: number, demod: string, if_bw: number, squelch = -160) => {
+			const request = { center, listen: center, decimate, demod, if_bw, squelch, ref: 0, ref_set: false };
 			const span = 50e6 / decimate;
 			return { cmd: 'STATUS', mode: 'sdr', connected: true, center, span, ref: 0,
 				req: { swp: {}, rta: {}, sdr: request }, actual: {},
 				sdr: { ...request, actual: { start: center - span / 2, stop: center + span / 2 },
 					channels: [{ channel: 1, enabled: true, freq: center, mode: demod, if_bw,
-						am_sync: false, am_sync_generation: 0 }] } };
+						squelch, am_sync: false, am_sync_generation: 0 }] } };
 		};
-		updateStatus(status(14.2e6, 64, 'cw', 900));
+		updateStatus(status(14.2e6, 64, 'cw', 900, -92.3));
+		expect(sdrSquelch.get()).toBe(-92.3);
     expect(waterfallOn.get()).toBe(true);
     document.body.insertAdjacentHTML('beforeend', '<div class="spectrum-area"><div id="wf-split"></div><div id="waterfall-container"></div></div>');
     setWaterfall(false);
@@ -214,6 +215,8 @@ describe('Preset clears the persisted SDR preferences', () => {
 		presetAll();
 		const preset = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
 		updateStatus({ ...status(1e9, 16, 'am', 6000), response_to: 'SET_PRESET', request_id: preset.request_id });
+		expect(sdrSquelch.get()).toBe(-160);
+		expect(localStorage.getItem('web-sa-sdr-squelch')).toBe('-160');
     expect(waterfallOn.get()).toBe(true);
     expect(document.querySelector('.spectrum-area')!.classList.contains('wf-equal-split')).toBe(true);
 		expect([sdrCenterHz.get(), sdrListenHz.get(), sdrDecimate.get(), sdrDemod.get(), sdrIfbw.get()])

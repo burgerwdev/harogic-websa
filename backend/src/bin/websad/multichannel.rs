@@ -1109,7 +1109,7 @@ mod tests {
         assert_eq!(processor["nr"],false);assert_eq!(processor["agc"],true);
         assert_eq!(processor["nr_strength"].as_f64(),Some(0.6));
         assert_eq!(processor["nr_atten_db"].as_f64(),Some(10.0));
-        assert_eq!(processor["squelch_dbm"].as_f64(),Some(-110.0));
+        assert_eq!(processor["squelch_dbm"].as_f64(),Some(websa_dsp::audio::SQUELCH_OPEN_DBM));
         let state=app.state.lock().unwrap();let actual=&state.channel_configs()[0];
         assert_eq!(processor["nr"],actual.nr);assert_eq!(processor["pcm_gain"].as_f64(),Some(actual.volume));
     }
