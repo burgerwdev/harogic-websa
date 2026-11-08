@@ -69,9 +69,8 @@ pub(super) fn validate_source_frequency(center:f64, bandwidth:f64, fs:f64, taps:
 
 pub(super) fn service_capture_decimate(center:f64,display:i32,taps:usize,
     configs:&[ChannelConfig])->Result<i32,String> {
-    let frequencies:Vec<_>=configs.iter().filter(|c|c.enabled).map(|c|c.freq).collect();
-    let listen=frequencies.first().copied().unwrap_or(center);
-    let maximum=capture_decimate(center,listen,&frequencies,display,taps);
+    let listen=configs.iter().find(|config|config.channel==1&&config.enabled).map_or(center,|config|config.freq);
+    let maximum=capture_decimate(center,listen,&[],display,taps);
     for power in (0..=6).rev() {
         let decimate=1<<power;
         if decimate>maximum {continue;}

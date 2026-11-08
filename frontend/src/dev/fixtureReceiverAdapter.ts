@@ -1,4 +1,4 @@
-import { clone, type ReceiverAdapter, type ReceiverConfig, type ServiceSnapshot, type ServiceCommand,
+import { clone, receiverInCapture, type ReceiverAdapter, type ReceiverConfig, type ServiceSnapshot, type ServiceCommand,
   type ConfigureCommand, type SceneCommand, type Impact, type Fault, type CommandReply,
   type RecordingTask, type TaskState, type ReceiverState, type TrackKind } from '../core/multichannel';
 import capacity from '../../../contracts/service-capacity.json';
@@ -35,6 +35,7 @@ export function fixtureSnapshot(maxChannels: number = capacity.MAX_CHANNELS): Se
       input_rate_hz: 976_562.5, epoch: '1', state: 'running' },
     receivers: DEMO_PURPOSES.slice(0, maxChannels).map((purpose, i) => ({
       receiver_uid: `fixture-c${i + 1}`, source_id: 'fixture-rf', display_number: i + 1, revision: '1',
+      created_at_ms: String(Date.now() - (3 - i) * 60_000),
       confirmed: fixtureConfig(purpose, i + 1), state: 'running', fault: null,
       stream: { source_id: 'fixture-rf', epoch: '1', channel_id: String(i + 1) },
       clock: { input_index: '9007199254740993', output_index: '0', fraction_num: '0', fraction_den: '1',
@@ -54,6 +55,11 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
   constructor(maxChannels: number = capacity.MAX_CHANNELS, private latency = 180) { this.state = fixtureSnapshot(maxChannels); }
   snapshot(): ServiceSnapshot {
     const snapshot = clone(this.state), max = snapshot.capabilities.max_recording_tasks!;
+    for (const receiver of snapshot.receivers) {
+      const covered = receiverInCapture(snapshot, receiver.confirmed) !== false;
+      receiver.coverage = { state: covered ? 'in_band' : 'out_of_band' };
+      if (receiver.confirmed.enabled && !covered) { receiver.state = 'interrupted'; receiver.stream = null; receiver.clock = null; }
+    }
     const active = snapshot.recordings.filter(t => !['completed', 'failed'].includes(t.state)).length;
     snapshot.recording_resources = { active_tasks: active, max_tasks: max, available_tasks: Math.max(0, max - active) };
     return snapshot;
@@ -95,13 +101,11 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
       if (c.purpose === 'iq' && c.processors.length) fail('IQ purpose has no processors');
       if (!Number.isFinite(fixtureRate(c))) fail('Baseband demand exceeds source rate');
       if (c.processors.some(p => !this.state.capabilities.modes.includes(p.mode))) fail('Processor unavailable');
+      if (old?.display_number === 1 && c.enabled && Math.abs(b.frequency_hz - center) + b.passband_hz / 2 + b.transition_hz
+        > (this.state.capture.usable_bandwidth_hz ?? 0) / 2) fail('Current must fit shared capture');
     }
     const all = this.state.receivers.map(r => changes.find(c => c.receiver_uid === r.receiver_uid)?.config ?? r.confirmed);
     if (all.filter(c => c.enabled).length > this.state.capabilities.max_channels) fail('Channel limit exceeded');
-    for (const c of all.filter(c => c.enabled)) {
-      if (Math.abs(c.baseband.frequency_hz - center) + c.baseband.passband_hz / 2 + c.baseband.transition_hz
-          > (this.state.capture.usable_bandwidth_hz ?? 0) / 2) fail('Full passband and transition must fit shared capture');
-    }
     return { accepted: !faults.length, faults, capture_change: center !== this.state.capture.center_hz,
       affected_receivers: affected, candidate_center_hz: center,
       affected_tracks: this.state.recordings.filter(t => affected.includes(t.receiver_uid) && t.state === 'recording')
@@ -210,6 +214,7 @@ export class FixtureReceiverAdapter implements ReceiverAdapter {
       if (this.state.receivers.length >= this.state.capabilities.max_channels) return fault('LIMIT', `Fixture runtime limit reached (${this.state.capabilities.max_channels}); ${this.state.capabilities.capacity_target} is a validation target`);
       const id = this.nextId;
       const r = clone(fixtureSnapshot().receivers[2]); r.receiver_uid = `fixture-c${id}`;
+      r.created_at_ms = String(Date.now());
       r.display_number = id; r.confirmed = clone(command.config); r.stream!.channel_id = String(id);
       r.stream!.epoch = this.state.capture.epoch; r.clock!.actual_rate_hz = fixtureRate(r.confirmed);
       if (!r.confirmed.enabled) { r.state = 'stopped'; r.stream = null; }

@@ -42,7 +42,7 @@ const VOLUME_BLOCKS: u64 = 4096;
 fn io_error(message: impl ToString) -> io::Error {
     io::Error::other(message.to_string())
 }
-fn millis() -> String {
+pub(super) fn millis() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -95,13 +95,14 @@ enum WorkInput {
     Iq(Input),
     Results(Bytes),
     Audio(audio::Input),
+    Coverage { paused: bool, at_ms: String },
 }
 impl WorkInput {
     fn bytes(&self) -> usize {
-        match self { Self::Iq(input) => input.bytes.len(), Self::Results(bytes) => bytes.len(), Self::Audio(input) => input.bytes.len() + input.source.len() + 4 }
+        match self { Self::Iq(input) => input.bytes.len(), Self::Results(bytes) => bytes.len(), Self::Audio(input) => input.bytes.len() + input.source.len() + 4, Self::Coverage { .. } => 0 }
     }
     fn raw_bytes(&self) -> usize {
-        match self { Self::Iq(input) => input.bytes.len() - 56, Self::Results(bytes) => bytes.len(), Self::Audio(input) => input.bytes.len().saturating_sub(96) }
+        match self { Self::Iq(input) => input.bytes.len() - 56, Self::Results(bytes) => bytes.len(), Self::Audio(input) => input.bytes.len().saturating_sub(96), Self::Coverage { .. } => 0 }
     }
 }
 struct Queue {
@@ -111,6 +112,7 @@ struct Queue {
     in_flight_items: usize,
     sealed: bool,
     prepared: bool,
+    coverage_paused: bool,
     failure: Option<(String, String)>,
     reason: String,
     accepted: u64,
@@ -207,6 +209,9 @@ impl Lane {
             } else if queue.sealed {
                 value["state"] = json!("finalizing");
                 value["tracks"][0]["state"] = json!("finalizing");
+            } else if queue.coverage_paused {
+                value["state"] = json!("waiting");
+                value["tracks"][0]["state"] = json!("waiting");
             }
         }
         value
@@ -417,6 +422,7 @@ impl Manager {
                 in_flight_items: 0,
                 sealed: false,
                 prepared: false,
+                coverage_paused: false,
                 failure: None,
                 reason: "record_stopped".into(),
                 accepted: 0,
@@ -472,7 +478,7 @@ impl Manager {
         for handle in self.lanes.iter().filter(|h| h.lane.uid == uid && h.lane.kind == kind) {
             let lane = &handle.lane;
             let mut queue = lane.queue.lock().unwrap();
-            if queue.sealed || !queue.prepared {
+            if queue.sealed || queue.coverage_paused || !queue.prepared {
                 continue;
             }
             let bytes = input.bytes();
@@ -510,6 +516,22 @@ impl Manager {
             handle.lane.seal("receiver_stopped", None);
         }
     }
+    /// A planned coverage gap retains the task and orders a durable segment boundary
+    /// behind accepted input. A sealed task can never be resumed by later coverage.
+    pub(super) fn coverage(&self, uid: &str, paused: bool) {
+        for handle in self.lanes.iter().filter(|handle|handle.lane.uid==uid) {
+            let mut queue=handle.lane.queue.lock().unwrap();
+            if queue.sealed || queue.coverage_paused==paused {continue;}
+            if queue.items.len()+queue.in_flight_items>=MAX_ITEMS {
+                Lane::fail(&mut queue,"RECORDING_BACKLOG","recording boundary queue full");
+            } else {
+                queue.coverage_paused=paused;
+                queue.last_input=Instant::now();
+                queue.items.push_back(Queued {input:WorkInput::Coverage {paused,at_ms:millis()},at:Instant::now()});
+            }
+            handle.lane.wake.notify_one();
+        }
+    }
     /// A quiet decoder may legitimately publish no events for arbitrarily long periods.
     /// Processing removal/failure is observed explicitly after its retiring FIFO is delivered.
     pub(super) fn processing_sources(&self, active: &[String], error: Option<&str>) {
@@ -527,7 +549,7 @@ impl Manager {
     }
     pub(super) fn processing_kind_sources(&self, kind: &str, active: &[String], error: Option<&str>) {
         for handle in self.lanes.iter().filter(|h| h.lane.kind == kind) {
-            if handle.lane.queue.lock().unwrap().sealed { continue; }
+            if {let queue=handle.lane.queue.lock().unwrap();queue.sealed||queue.coverage_paused} { continue; }
             if let Some(error) = error {
                 handle.lane.seal("processing_failed", Some(("PROCESSING_FAILED", error)));
             } else if !active.contains(&handle.lane.uid) {
@@ -547,7 +569,7 @@ impl Manager {
                         "RECORDING_BACKLOG",
                         "recording backlog exceeded 2 seconds",
                     );
-                } else if handle.lane.kind == "iq" && queue.last_input.elapsed() > Duration::from_secs(5) {
+                } else if !queue.coverage_paused && handle.lane.kind == "iq" && queue.last_input.elapsed() > Duration::from_secs(5) {
                     Lane::fail(
                         &mut queue,
                         "SOURCE_INTERRUPTED",
@@ -611,7 +633,7 @@ fn update_block(task: &mut Value, index: &v2::Index) -> io::Result<()> {
             return Err(io_error("recording segment limit reached"));
         }
         if let Some(last) = segments.last_mut() {
-            last["end_reason"] = json!("reconfigured");
+            if last["end_reason"].is_null() {last["end_reason"] = json!("reconfigured");}
         }
         segments.push(json!({"segment_id":index.meta.segment_id,
             "stream":{"source_id":index.meta.clock.source_id,"epoch":index.meta.clock.epoch,"channel_id":index.meta.clock.channel_id},
@@ -706,11 +728,14 @@ fn run(lane: Arc<Lane>, path: PathBuf) {
         task["tracks"][0]["state"] = json!("completed");
     }
     let failed = task["state"] == "failed";
+    if let Some(gap)=task["coverage_interruptions"].as_array_mut().and_then(|gaps|gaps.last_mut()) {
+        if gap["ended_at_ms"].is_null() {gap["ended_at_ms"]=json!(millis());}
+    }
     if let Some(last) = task["tracks"][0]["segments"]
         .as_array_mut()
         .and_then(|s| s.last_mut())
     {
-        last["end_reason"] = json!(if failed { "failed" } else { reason.as_str() });
+        if last["end_reason"].is_null() {last["end_reason"] = json!(if failed { "failed" } else { reason.as_str() });}
     }
     task["updated_at_ms"] = json!(millis());
     if lane.owned_path.get().is_some() {
@@ -728,6 +753,25 @@ fn run(lane: Arc<Lane>, path: PathBuf) {
     drop(queue);
     lane.done.store(true, Ordering::Release);
 }
+fn coverage_event(task: &mut Value, paused: bool, at_ms: &str) -> io::Result<()> {
+    task["state"]=json!("waiting");task["tracks"][0]["state"]=json!("waiting");
+    if paused {
+        if let Some(last)=task["tracks"][0]["segments"].as_array_mut().and_then(|segments|segments.last_mut()) {
+            if last["end_reason"].is_null() {last["end_reason"]=json!("out_of_band");last["ended_at_ms"]=json!(at_ms);}
+        }
+        if task.get("coverage_interruptions").is_none() {task["coverage_interruptions"]=json!([]);}
+        let gaps=task["coverage_interruptions"].as_array_mut().ok_or_else(||io_error("invalid coverage interruptions"))?;
+        if gaps.len()>=MAX_SEGMENTS {return Err(io_error("recording coverage interruption limit reached"));}
+        gaps.push(json!({"reason":"out_of_band","started_at_ms":at_ms,"ended_at_ms":null,"resumed":false}));
+    } else {
+        if let Some(gap)=task["coverage_interruptions"].as_array_mut().and_then(|gaps|gaps.last_mut()) {
+            if gap["ended_at_ms"].is_null() {gap["ended_at_ms"]=json!(at_ms);gap["resumed"]=json!(true);}
+        }
+        task["coverage_generation"]=json!(task["coverage_generation"].as_u64().unwrap_or(0)+1);
+    }
+    Ok(())
+}
+
 fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
     let mut task = lane.task.lock().unwrap().clone();
     persist(path, &task)?;
@@ -754,6 +798,14 @@ fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
         let size: usize = batch.iter().map(|item| item.input.bytes()).sum();
         let outcome = (|| -> io::Result<()> {
             for item in batch {
+                if let WorkInput::Coverage {paused,at_ms}=&item.input {
+                    if *paused {
+                        volume.writer.as_mut().unwrap().event(&json!({"type":"segment_end","reason":"out_of_band","at_ms":at_ms,"drained":true}))?;
+                        previous=None;
+                    }
+                    coverage_event(&mut task,*paused,at_ms)?;
+                    continue;
+                }
                 let WorkInput::Iq(mut input) = item.input else {
                     return Err(io_error("wrong recording lane input"));
                 };
@@ -1249,6 +1301,53 @@ mod tests {
         drop(file);drop(manager);fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn coverage_waits_then_resumes_a_new_iq_segment_and_stopped_tasks_stay_stopped() {
+        let root=directory();let mut manager=Manager::open(root.clone()).unwrap();
+        manager.start("uid-A","service-A","coverage-test").unwrap().wait().unwrap();
+        manager.admit("uid-A",input(0,7));
+        manager.coverage("uid-A",true);
+        manager.admit("uid-A",input(1,7)); // input during the gap is not accepted
+        let until=Instant::now()+Duration::from_secs(5);
+        while manager.snapshots()[0]["coverage_interruptions"].as_array().is_none_or(|gaps|gaps.is_empty()) {
+            assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(manager.snapshots()[0]["state"],"waiting");
+        manager.lanes[0].lane.queue.lock().unwrap().last_input=Instant::now()-Duration::from_secs(6);
+        manager.tick(None);
+        assert!(manager.snapshots()[0]["fault"].is_null());
+        manager.coverage("uid-A",false);
+        manager.admit("uid-A",input(0,8));
+        let id=manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        manager.stop(&id).unwrap();
+        manager.coverage("uid-A",false);manager.admit("uid-A",input(0,9));
+        wait(&mut manager);
+        let task=manager.snapshots()[0].clone();
+        assert_eq!(task["state"],"completed");
+        assert_eq!(task["tracks"][0]["raw_bytes"],"128");
+        assert_eq!(task["tracks"][0]["segments"].as_array().unwrap().len(),2);
+        assert_eq!(task["tracks"][0]["segments"][0]["end_reason"],"out_of_band");
+        assert_eq!(task["coverage_interruptions"][0]["resumed"],true);
+        assert!(task["coverage_interruptions"][0]["started_at_ms"].is_string());
+        assert!(task["coverage_interruptions"][0]["ended_at_ms"].is_string());
+        drop(manager);fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn stopping_during_a_coverage_gap_never_restarts_the_task() {
+        let root=directory();let mut manager=Manager::open(root.clone()).unwrap();
+        manager.start("uid-A","service-A","stop-during-coverage").unwrap().wait().unwrap();
+        manager.admit("uid-A",input(0,7));manager.coverage("uid-A",true);
+        let id=manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        manager.stop(&id).unwrap();manager.coverage("uid-A",false);manager.admit("uid-A",input(0,8));
+        wait(&mut manager);
+        let task=manager.snapshots()[0].clone();
+        assert_eq!(task["state"],"completed");
+        assert_eq!(task["tracks"][0]["segments"].as_array().unwrap().len(),1);
+        assert_eq!(task["coverage_interruptions"][0]["resumed"],false);
+        assert!(task["coverage_interruptions"][0]["ended_at_ms"].is_string());
+        drop(manager);fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn drain_identity_segments_persistent_history_and_no_slot_rebind() {
         let root = directory();
         let mut manager = Manager::open(root.clone()).unwrap();
@@ -1367,6 +1466,7 @@ mod tests {
                 in_flight_items: 32,
                 sealed: false,
                 prepared: true,
+                coverage_paused: false,
                 failure: None,
                 reason: "record_stopped".into(),
                 accepted: 64 * 8 * 8,

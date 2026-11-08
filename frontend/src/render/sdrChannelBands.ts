@@ -32,7 +32,7 @@ export function renderSdrChannelBands(ctx: CanvasRenderingContext2D, lo: number,
     }
     if (labels) {
       ctx.font = `${selected ? 'bold ' : ''}10px monospace`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      const text = `C${channel.channel} · ${channel.processing_enabled === false ? 'IQ' : channel.mode.toUpperCase()}`;
+      const text = `${channel.channel === 1 ? 'Current' : `C${channel.channel}`} · ${channel.processing_enabled === false ? 'IQ' : channel.mode.toUpperCase()}`;
       const width = ctx.measureText(text).width + 4;
       const x = Math.max(p.x + 3, Math.min(dial + 4, p.x + p.w - width));
       let y = p.y + 4;

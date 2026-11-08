@@ -1,6 +1,6 @@
 import { receiverHasAudio } from '../core/multichannel';
 import { onCommandReply, onCommandSent } from '../core/wsSend';
-import { claimNativeAudio, forgetNativeAudio, getSdrAudioStatus, setNativeAudioRoute, setNativeMaster } from '../audio/sdrAudio';
+import { claimNativeAudio, forgetNativeAudio, getSdrAudioStatus, sampleNativeAudioWaveform, setNativeAudioRoute, setNativeMaster } from '../audio/sdrAudio';
 import { acknowledgeDecoderLog, addDecoderRaster, addDecoderResult, annotateDecoderResult, clearDecoderStatuses, clearGpsSnapshots, decoderLog, endDecoderRasters, forgetDecoderLog } from '../sdr/decoderLog';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import type { WorkbenchSession } from './workbenchSession';
@@ -10,6 +10,19 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   const release = claimNativeAudio(session.snapshot);
   const toggleMute = (): void => { session.masterMuted = !session.masterMuted; session.notify(); };
   const playbackStatus = (): void => session.notify();
+  const waveformConsumers = new Map<string, string>();
+  const playbackOwner = (uid: string): string => session.duplicateMonitor(uid) ?? uid;
+  const releaseWaveform = (uid: string): void => {
+    const owner = waveformConsumers.get(uid); waveformConsumers.delete(uid);
+    if (owner && ![...waveformConsumers.values()].includes(owner)) sampleNativeAudioWaveform(owner, null);
+  };
+  const waveform = (uid: string, samples: Float32Array<ArrayBuffer> | null): boolean => {
+    if (!samples) { releaseWaveform(uid); return false; }
+    const owner = playbackOwner(uid);
+    if (waveformConsumers.get(uid) !== owner) releaseWaveform(uid);
+    if (!sampleNativeAudioWaveform(owner, samples)) { releaseWaveform(uid); return false; }
+    waveformConsumers.set(uid, owner); return true;
+  };
   document.addEventListener('websa:monitor-toggle-mute', toggleMute);
   document.addEventListener('websa:monitor-status', playbackStatus);
   let pendingMainMonitor: { service: string | undefined; channel: number; frequency: number | null;
@@ -63,6 +76,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   };
   const sync = (): void => {
     const snapshot = session.snapshot;
+    for (const [uid, owner] of waveformConsumers) if (service !== snapshot.service_id || !session.playbackActive(owner) || playbackOwner(uid) !== owner) releaseWaveform(uid);
     if (pendingMainMonitor) {
       const pending = pendingMainMonitor;
       if (pending.service !== snapshot.service_id || Date.now() >= pending.expires) pendingMainMonitor = null;
@@ -156,11 +170,12 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   const unsubscribe = session.subscribe(sync); sync();
   return {
     results: (uid: string) => ({ ...(session.snapshot.receivers.some(r => r.receiver_uid === uid) ? decoderLog(uid) : { entries: [], evicted: 0 }), source: processingSources.get(uid) ?? null }),
-    playback: (uid: string) => getSdrAudioStatus().find(row => row.channel === uid),
-    status: (uid: string): string => errors.get(uid) ?? String(getSdrAudioStatus().find(row => row.channel === uid)?.error ?? ''),
+    playback: (uid: string) => getSdrAudioStatus().find(row => row.channel === playbackOwner(uid)),
+    waveform,
+    status: (uid: string): string => errors.get(uid) ?? String(getSdrAudioStatus().find(row => row.channel === playbackOwner(uid))?.error ?? ''),
     retry(uid: string): void { errors.delete(uid); stopDecoder(uid); audioKeys.delete(uid); forgetNativeAudio(uid); sync(); session.notify(); },
     hasAudio: (uid: string) => { const r = session.snapshot.receivers.find(r => r.receiver_uid === uid); return !!r && receiverHasAudio(session.snapshot, r.confirmed); },
-    dispose(): void { stopMainCommands(); stopMainReplies(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); release(); },
+    dispose(): void { stopMainCommands(); stopMainReplies(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of waveformConsumers.keys()) releaseWaveform(uid); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); release(); },
   };
 }
 

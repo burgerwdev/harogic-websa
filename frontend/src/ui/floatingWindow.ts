@@ -8,6 +8,8 @@ export interface FloatingLayout { geometry: Geometry; hidden: boolean; collapsed
 export interface FloatingWindow {
   root: HTMLElement; body: HTMLElement; portal: SurfacePortal;
   show(): void; hide(): void; recall(reset?: boolean): void; sync(): void; dispose(): void;
+  geometry(): Geometry; setGeometry(geometry: Partial<Geometry>): void;
+  setCollapsed(collapsed: boolean): void; setDockHandler(handler: (() => void) | undefined): void;
 }
 let top = 50;
 /** Decode's viewport-pixel geometry convention, reusable without global DOM queries. */
@@ -19,6 +21,7 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   root.innerHTML = '<header class="mc-head"><strong></strong><div class="mc-window-actions"><button data-collapse>−</button><button data-pop>Pop out</button><button data-dock hidden>Dock</button><button data-close>×</button></div></header><p data-popup-error role="alert" hidden></p><div class="mc-body"></div>';
   const head = root.querySelector<HTMLElement>('.mc-head')!, body = root.querySelector<HTMLElement>('.mc-body')!;
   const key = `websa-workbench-layout:${id}`;
+  let dockHandler: (() => void) | undefined;
   let layout: FloatingLayout = { geometry: { ...initial }, hidden: false, collapsed: false };
   try {
     const stored = JSON.parse(localStorage.getItem(key) ?? 'null') as Partial<FloatingLayout> | null;
@@ -66,16 +69,21 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
     ]) { const control = head.querySelector<HTMLButtonElement>(selector)!; const symbol = selector === '[data-pop]' ? 'external' : selector === '[data-dock]' ? 'dock'
       : selector === '[data-close]' ? 'close' : layout.collapsed ? 'expand' : 'minus';
       control.innerHTML = `${workbenchIcon(symbol)}<span>${text}</span>`; control.title = tip; control.setAttribute('aria-label', tip); }
+    if (dockHandler) {
+      const dock = head.querySelector<HTMLButtonElement>('[data-dock]')!;
+      dock.hidden = false; dock.title = zh ? '放回信道概览' : 'Return to channel overview';
+      dock.setAttribute('aria-label', dock.title);
+    } else head.querySelector<HTMLButtonElement>('[data-dock]')!.hidden = !portal.isPoppedOut();
   };
   let gesture: { start: Geometry; px: number; py: number; direction: string } | null = null;
   const portal = createSurfacePortal(root, { title, beforeMove: () => { gesture = null; },
     afterMove: () => { apply(); onChange?.(); }, popSelector: '[data-pop]', dockSelector: '[data-dock]', errorSelector: '[data-popup-error]' });
   const front = (): void => { root.style.zIndex = String(++top); };
-  const show = (): void => { layout.hidden = false; apply(); save(); front(); root.focus(); };
-  const hide = (): void => { portal.dock(); layout.hidden = true; apply(); save(); };
+  const show = (): void => { layout.hidden = false; apply(); save(); front(); root.focus(); onChange?.(); };
+  const hide = (): void => { portal.dock(); layout.hidden = true; apply(); save(); onChange?.(); };
   root.querySelector('[data-close]')!.addEventListener('click', hide);
   root.querySelector('[data-pop]')!.addEventListener('click', () => portal.popout());
-  root.querySelector('[data-dock]')!.addEventListener('click', () => portal.dock());
+  root.querySelector('[data-dock]')!.addEventListener('click', () => dockHandler ? dockHandler() : portal.dock());
   root.querySelector('[data-collapse]')!.addEventListener('click', () => { layout.collapsed = !layout.collapsed; apply(); save(); });
   root.addEventListener('pointerdown', front);
   root.addEventListener('keydown', event => {
@@ -123,6 +131,10 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   observer?.observe(root);
   parent.addEventListener('resize', resize); doc.body.appendChild(root); apply(); front();
   return { root, body, portal, show, hide, sync: () => portal.sync(),
+    geometry: () => ({ ...layout.geometry }),
+    setGeometry: geometry => { layout.geometry = { ...layout.geometry, ...geometry }; apply(); save(); },
+    setCollapsed: collapsed => { layout.collapsed = collapsed; apply(); save(); },
+    setDockHandler: handler => { dockHandler = handler; apply(); },
     recall: (reset = false) => { portal.dock(); if (reset) { layout.geometry = { ...initial }; layout.collapsed = false; } show(); },
     dispose: () => { observer?.disconnect(); if (resizeFrame !== null) parent.cancelAnimationFrame(resizeFrame); portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
 }

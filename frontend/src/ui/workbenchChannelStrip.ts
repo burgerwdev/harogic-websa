@@ -14,12 +14,15 @@ const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, 
 export interface ChannelStripReadouts {
   results(uid: string): { entries: readonly DecoderLogEntry[]; evicted: number; source?: string | null };
   playback?(uid: string): Record<string, string | number | boolean> | undefined;
+  waveform?(uid: string, samples: Float32Array<ArrayBuffer> | null): boolean;
 }
 interface ChannelStripOptions {
   receiverUid(): string;
   available(command: string): boolean;
   recording(uid: string): { kind: TrackKind; task?: RecordingTask; pending: boolean } | undefined;
   readouts?: ChannelStripReadouts;
+  current?(): boolean;
+  matchesCurrent?(): boolean;
 }
 export interface WorkbenchChannelStrip {
   update(): void;
@@ -69,14 +72,16 @@ export function mountWorkbenchChannelStrip(root: HTMLElement, session: Workbench
     const result = native?.results(uid), entries = result?.entries ?? [];
     const control = (action: string, glyph: string, label: string, extra = ''): string => `<button type="button" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}" ${extra}>${icon(glyph)}</button>`;
     const route = session.route(uid);
+    const temporary = options.current?.() ?? false, name = temporary ? 'Current' : r.confirmed.name;
+    strip.dataset.frequencyMatch = String(options.matchesCurrent?.() ?? false);
     const recordLabel = kind === 'audio' ? l('audio', '音频') : kind === 'results' ? l('results', '结果') : 'IQ';
-    patchWorkbench(strip, `<div class="mc-strip-identity" title="${esc(`${r.confirmed.name} · ${reception.label}`)}"><span><i class="mc-state-dot" data-state="${state}"></i>${rename ? `<input data-strip-name-edit data-key="strip-name-${esc(uid)}" data-no-drag aria-label="${l('Channel name', '信道名称')}" value="${esc(rename.value)}" maxlength="128">` : `<b data-strip-name data-no-drag tabindex="0" role="button" title="${l('Double-click to rename; Enter to save, Escape to cancel', '双击改名；回车提交，Esc 取消')}">${esc(r.confirmed.name)}</b>`}</span><small>${(r.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} <span>MHz</span></small></div>
+    patchWorkbench(strip, `<div class="mc-strip-identity" title="${esc(`${name} · ${reception.label}`)}"><span><i class="mc-state-dot" data-state="${state}"></i>${temporary ? '<b>Current</b>' : rename ? `<input data-strip-name-edit data-key="strip-name-${esc(uid)}" data-no-drag aria-label="${l('Channel name', '信道名称')}" value="${esc(rename.value)}" maxlength="128">` : `<b data-strip-name data-no-drag tabindex="0" role="button" title="${l('Double-click to rename; Enter to save, Escape to cancel', '双击改名；回车提交，Esc 取消')}">${esc(name)}</b>`}</span><small>${(r.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} <span>MHz</span>${options.matchesCurrent?.() ? `<span class="mc-strip-current" title="${l('Matches Current frequency', '与 Current 调谐频率一致')}">${icon('crosshair')}Current</span>` : ''}</small></div>
       <div data-strip-text data-key="strip-text"></div>
       <div class="mc-strip-level" data-strip-meter data-no-drag role="meter" aria-valuemax="0"><span class="mc-strip-level-fill"></span><span class="mc-strip-level-peak"></span><small></small></div>
       <div class="mc-strip-actions">${monitor ? control('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), `aria-pressed="${session.listening(uid)}" ${r.state !== 'running' || r.fault ? 'disabled' : ''}`) : ''}
       ${kind && available('record_start') ? control(`rec-${kind}`, 'record', task ? l(`Stop ${recordLabel} recording`, `停止${recordLabel}录制`) : l(`Record ${recordLabel}`, `录制${recordLabel}`), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${recording?.pending || session.retiring(uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running') ? 'disabled' : ''}`) : ''}
       ${monitor ? `<div class="mc-strip-volume">${control('strip-volume', route.gain ? 'volume' : 'muted', l('Channel volume', '信道音量'), `aria-expanded="${volume}"`)}<div class="mc-strip-volume-panel" data-no-drag ${volume ? '' : 'hidden'}><label>${l('Volume', '音量')}<input data-strip-gain data-key="strip-gain-${esc(uid)}" type="range" min="0" max="1" step="0.01" value="${route.gain}" aria-label="${l('Channel volume', '信道音量')}"></label><output data-strip-volume-value>${Math.round(route.gain * 100)}%</output></div></div>` : ''}
-      ${available('retire') ? control('retire', 'trash', session.retiring(uid) ? l('Deleting…', '正在删除…') : l('Delete channel', '删除信道'), `class="mc-strip-delete" ${session.retiring(uid) || session.edits.get(uid)?.pending ? 'disabled' : ''}`) : ''}</div>`, element => element.hasAttribute('data-strip-text') || element.hasAttribute('data-strip-meter') || element === strip.ownerDocument.activeElement && element.matches('input'));
+      ${temporary ? control('save-current', 'plus', l('Save current channel', '保存当前信道')) : available('retire') ? control('retire', 'trash', session.retiring(uid) ? l('Deleting…', '正在删除…') : l('Delete channel', '删除信道'), `class="mc-strip-delete" ${session.retiring(uid) || session.edits.get(uid)?.pending ? 'disabled' : ''}`) : ''}</div>`, element => element.hasAttribute('data-strip-text') || element.hasAttribute('data-strip-meter') || element === strip.ownerDocument.activeElement && element.matches('input'));
     updateMeter();
     ticker ??= mountReceiverTicker(strip.querySelector<HTMLElement>('[data-strip-text]')!, root);
     ticker.update(entries, r, session.snapshot.service_id ?? 'fixture', result?.source);
@@ -87,7 +92,7 @@ export function mountWorkbenchChannelStrip(root: HTMLElement, session: Workbench
   }
   const beginRename = (): void => {
     const uid = currentOwner(), r = uid ? receiver(uid) : undefined;
-    if (!uid || !r || uid !== options.receiverUid() || session.retiring(uid) || session.edits.get(uid)?.pending || !available('configure')) return;
+    if (!uid || !r || options.current?.() || uid !== options.receiverUid() || session.retiring(uid) || session.edits.get(uid)?.pending || !available('configure')) return;
     rename = { uid, service: service(), value: r.confirmed.name };
     update();
     const input = strip.querySelector<HTMLInputElement>('[data-strip-name-edit]'); input?.focus(); input?.select();

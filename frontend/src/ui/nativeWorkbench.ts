@@ -6,11 +6,12 @@ import { mountNativeWorkbenchStreams } from './nativeWorkbenchStreams';
 import { mountWorkbench } from './workbenchApp';
 import { mountSdrQuickChannel } from './sdrQuickChannel';
 import { confirmSdrReceiverNumbers, currentSdrChannel } from './sdrChannels';
-import { sdrAudioOn } from './sdrState';
+import { sdrAudioOn, sdrListenHz } from './sdrState';
 
 interface NativeWorkbenchOwner {
   quickChannel: ReturnType<typeof mountSdrQuickChannel>;
   showOverview(): void;
+  showChannels(): void;
   dispose(): void;
 }
 let owner: NativeWorkbenchOwner | null = null;
@@ -45,15 +46,20 @@ async function ensureNativeWorkbench(): Promise<NativeWorkbenchOwner | null> {
     }
     const host = document.createElement('div'); host.hidden = true; document.body.append(host);
     const streams = session.snapshot.capabilities.monitor_mixing ? mountNativeWorkbenchStreams(session) : undefined;
-    const quickChannel = mountSdrQuickChannel(session, document.body);
     let opened: ReturnType<typeof mountWorkbench> | null = null;
+    const views = () => opened ??= mountWorkbench(session, host, streams, () => sdrListenHz.get(), {
+      receiverUid: () => session.snapshot.receivers.find(r => r.display_number === 1)?.receiver_uid ?? null,
+      save: () => quickChannel.add(),
+    });
+    const quickChannel = mountSdrQuickChannel(session, document.body, () => views().showChannels());
     const select = () => {
       const receiver = session.snapshot.receivers.find(r => r.display_number === currentSdrChannel());
       if (receiver) session.select(receiver.receiver_uid);
     };
     document.addEventListener('websa:sdr-channel-selection', select);
     owner = { quickChannel,
-      showOverview: () => { opened ??= mountWorkbench(session, host, streams); opened.showOverview(); },
+      showOverview: () => views().showOverview(),
+      showChannels: () => views().showChannels(),
       dispose: () => {
         document.removeEventListener('websa:sdr-channel-selection', select); stopReceivers(); confirmSdrReceiverNumbers(null);
         quickChannel.dispose(); opened?.dispose(); streams?.dispose(); session.dispose(); adapter.dispose(); host.remove();
@@ -72,6 +78,10 @@ async function ensureNativeWorkbench(): Promise<NativeWorkbenchOwner | null> {
 export async function openNativeWorkbench(): Promise<void> {
   const current = await ensureNativeWorkbench();
   if (current && current === owner) current.showOverview();
+}
+export async function openNativeChannelOverview(): Promise<void> {
+  const current = await ensureNativeWorkbench();
+  if (current && current === owner) current.showChannels();
 }
 
 export async function addCurrentSdrChannel(): Promise<string | null> {

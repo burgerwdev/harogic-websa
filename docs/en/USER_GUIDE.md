@@ -9,19 +9,67 @@ receivers, audio and decoders. Center and span configure acquisition; display zo
 Top/Bottom controls change the view. Display zoom does not improve the captured resolution.
 Ref Level, attenuation and preamp control hardware range; Auto Scale is a one-shot action.
 
-In SDR, Center moves shared capture and C1 together. IQ bandwidth changes shared capture
+In SDR, Center moves shared capture and Current together. IQ bandwidth changes shared capture
 while preserving receiver tuning. To Center moves capture to the selected receiver. Moving
 capture can interrupt all receivers and create recording boundaries.
 
 ## Channels and listening
 
-Channels opens the shared workbench. Up to sixteen receiver definitions share one capture;
-disabled definitions keep their slots, and deleting a definition frees its slot. Complete
-passbands and transitions must fit capture. Choose a mode and frequency, inspect the preview,
+Channels opens the shared workbench. Current permanently reserves one of sixteen slots,
+leaving up to fifteen saved channels. Saved definitions retain their slots while in band,
+out of band or manually stopped. Only deleting a saved channel frees its slot; closing a
+window, stopping monitoring or hiding a card does not. Reception requires the full passband
+and transition to fit the actual capture. Choose a mode and frequency, inspect the preview,
 and apply. Closing a window does not stop its receiver or recording.
 
-The channel beside main Listen selects the receiver controlled by main tuning, mode and audio
-settings. Workbench editor selection is local to that view. Monitor volume, pan, mute and Solo
+The grid button beside Channels opens the single all-channel overview. Overview in any
+channel window turns that window into the overview and restores the previous overview's
+editor. Cards show frequency, mode, bandwidth, creation time and live level; listening uses
+an icon button. Sort by creation time, frequency, name, type or activity; the arrow reverses
+time, frequency, name and type order. Chinese names use pinyin collation. The count shows
+defined channels against service capacity, including channels in separate windows.
+Click a card name to edit it; Enter or leaving the field saves, and Escape cancels.
+Cards matching the main spectrum frequency show a crosshair and highlighted border,
+independently of the workbench's editing selection.
+
+Choose an automatic grid, 1–8 columns or free placement. Drag cards to reorder or position
+them; a moving placeholder previews the drop position. Alt+arrow keys also move a focused
+card. With snapping enabled, dragging reveals a grid of card-sized cells and the placeholder
+previews the nearest empty cell. Enabling snapping aligns existing cards too. With snapping
+disabled, cards move freely by the pixel on a canvas without grid lines.
+Fit sizes the window to its cards; overflowing layouts scroll without shrinking the controls.
+Double-click a card or use its separate-window button to take it out. Dock returns that
+channel to the overview; Collect all returns every independent channel window. The overview
+itself can move to a separate browser window and return to the page.
+
+Visible cards show the existing playback PCM waveform at ten frames per second, before
+local monitor volume. The waveform is normalized for visibility; the dBFS meter retains its
+absolute scale. Unmonitored channels retain status text, and decoded text keeps its ticker.
+Channels sharing one playback route share its waveform and level readouts. Hidden cards
+release their waveform references; opening the overview creates no audio subscriptions.
+
+Current is a fixed temporary tuning source. Main tuning always controls it; editing or
+monitoring a saved channel never changes this role. In both the overview and workbench,
+Current stays first when no saved channel has its frequency. When one or more saved channels
+match, the Current entry is hidden and every matching saved channel is highlighted with a
+crosshair. This merges presentation while preserving reception, monitoring and capacity.
+Editing selection is separate from the frequency indication. Current has a fixed name and
+can be stopped or saved, but cannot be deleted. The main plus button saves an independent
+copy; subsequent tuning leaves the saved frequency and settings intact. Repeating the same
+save locates an existing copy. Different modes, bandwidths or processing settings at the
+same frequency can be saved independently. Use Duplicate channel
+to create another identical channel. Existing duplicates remain independent until explicitly
+removed; the monitor layer continues to prevent identical audio from playing twice.
+
+Capture center or IQ bandwidth changes pause enabled channels whose full passband and
+transition no longer fit. They retain all settings and show Out of band · waiting for coverage.
+Full coverage automatically restores reception and the previous local monitor route; manually
+stopped channels stay stopped. Display-only zoom and pan do not change reception. Both views
+keep out-of-band channels by default and offer a filter for the current band. Waveform and level
+updates pause while decoded history remains. Frequency highlighting can coexist with an
+out-of-band state.
+
+Main tuning always controls Current. Workbench editor selection is local to that view. Monitor volume, pan, mute and Solo
 are local speaker settings. Backend gain, AGC, squelch and noise reduction affect shared PCM
 and therefore published-audio recordings. A stopped or failed receiver cannot be monitored.
 
@@ -48,6 +96,8 @@ an entire scene or resume recordings. Session mode memory restores editor candid
 application still requires confirmation.
 
 ## Record and replay
+
+Planned out-of-band gaps finish the current segment and keep the task waiting. Full coverage resumes a fresh segment with interruption timestamps; stopped tasks never resume automatically. Unexpected device or processing faults retain their failure handling.
 
 Choose IQ, published audio or decoded results. These share sixteen service-wide task slots;
 recording multiple kinds on one receiver uses multiple slots. Tasks continue when the browser

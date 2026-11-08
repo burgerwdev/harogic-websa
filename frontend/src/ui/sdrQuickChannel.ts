@@ -28,8 +28,8 @@ export function currentChannelConfig(session: WorkbenchSession): ReceiverConfig 
       nr: sdrNr.get(), nr_algorithm: sdrNrAlgo.get(), nr_strength: sdrNrStrength.get(), nr_atten_db: sdrNrAtten.get() }] };
 }
 
-/** Add the main panel's current frequency; a full service always requires an explicit target. */
-export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElement) {
+/** Save an independent copy of the tuning source; reuse an already saved copy. */
+export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElement, onReuse?: (uid: string) => void) {
   const doc = host.ownerDocument, dialog = doc.createElement('dialog');
   dialog.className = 'mc-create-dialog sdr-replace-dialog'; dialog.dataset.replaceChannel = '';
   dialog.innerHTML = '<form><header><strong data-title></strong><button type="button" data-dismiss>×</button></header><p data-frequency></p><div data-targets></div><p data-error class="mc-error" role="alert"></p><footer><button type="button" data-dismiss></button><button type="submit" class="mc-primary"></button></footer></form>';
@@ -49,6 +49,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
     dialog.querySelector('[data-frequency]')!.textContent = `${l('Channels full · add', '信道已满 · 加入')} ${formatFreqHz(candidate.config.baseband.frequency_hz)} · ${candidate.config.processors[0].mode.toUpperCase()}`;
     const targets = dialog.querySelector('[data-targets]')!, known = new Set<string>();
     for (const receiver of session.snapshot.receivers) {
+      if (receiver.display_number === currentSdrChannel()) continue;
       const uid = receiver.receiver_uid; known.add(uid);
       let option = [...targets.querySelectorAll<HTMLLabelElement>('label')].find(label => label.dataset.uid === uid);
       if (!option) {
@@ -122,14 +123,19 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
       if (disposed || busy) return null;
       if (dialog.open) { dialog.focus(); return null; }
       const config = currentChannelConfig(session);
-      // C1/current receiver is the tuning source. Repeated saves reuse an existing independent copy.
-      const duplicate = session.snapshot.receivers.find(r => r.display_number !== currentSdrChannel()
+      // The source already has these settings because the main panel tunes it live.
+      // It cannot satisfy a request to save a copy that stays put while tuning on.
+      const duplicate = [...session.snapshot.receivers].sort((a, b) => a.display_number - b.display_number).find(r =>
+        r.display_number !== currentSdrChannel()
         && Math.abs(r.confirmed.baseband.frequency_hz - config.baseband.frequency_hz) < 0.5
+        && r.confirmed.processors.length === config.processors.length
+        && (['passband_hz', 'transition_hz', 'minimum_rate_hz'] as const).every(field => r.confirmed.baseband[field] === config.baseband[field])
         && ([...modeControlKeys, 'mode', 'bandwidth_hz', 'pcm_gain', 'agc', 'squelch_dbm', 'nr', 'nr_algorithm', 'nr_strength', 'nr_atten_db'] as const)
           .every(field => ({ ...copyModeControls(r.confirmed.processors[0]), ...r.confirmed.processors[0] })[field] === config.processors[0]?.[field]));
       if (duplicate) {
         if (receiverHasAudio(session.snapshot, duplicate.confirmed) && duplicate.state === 'running') session.monitor(duplicate.receiver_uid, { enabled: true });
-        return l(`Already added to C${duplicate.display_number}`, `已加入 C${duplicate.display_number}`);
+        session.select(duplicate.receiver_uid); onReuse?.(duplicate.receiver_uid);
+        return l(`Already saved as C${duplicate.display_number}`, `已保存至 C${duplicate.display_number}`);
       }
       if (session.snapshot.receivers.length < session.snapshot.capabilities.max_channels) {
         busy = true;

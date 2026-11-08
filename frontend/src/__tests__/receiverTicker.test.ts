@@ -44,6 +44,17 @@ it('does not replay retained text from an old processing stream after recovery',
   ticker.update([{ ...entry(2, 'cw', 'NEW CQ'), source: '100:102' }, old], r, 'a', '100:102');
   expect(displayed().textContent).toBe('NEW CQ');
 });
+it('pauses overview tickers inside hidden windows and after detachment', async () => {
+  root.className = 'mc-overview-card';
+  const container = document.createElement('section'); document.body.append(container); container.append(root);
+  ticker.update([entry(1, 'ft8', { decodes: [{ msg: 'CQ W1ABC FN42 VERY LONG MESSAGE' }] }, 'table')], receiver('ft8'), 'a');
+  await vi.advanceTimersByTimeAsync(2200);
+  const position = displayed().style.transform;
+  container.hidden = true; await vi.advanceTimersByTimeAsync(1200);
+  expect(displayed().style.transform).toBe(position);
+  container.hidden = false; root.remove(); await vi.advanceTimersByTimeAsync(1200);
+  expect(displayed().style.transform).toBe(position);
+});
 it('scrolls overflowing FT8 text according to available pixels and pauses on hover', async () => {
   const r = receiver('ft8'), entries = [entry(1, 'ft8', { decodes: [{ msg: 'CQ W1ABC FN42 VERY LONG MESSAGE' }] }, 'table')];
   ticker.update(entries, r, 'a'); await vi.advanceTimersByTimeAsync(2200);
@@ -73,6 +84,17 @@ it('freezes when expanded or hidden and resumes without replaying hidden animati
   ticker.update([first], r, 'a'); ticker.update([entry(2, 'cw', 'HELLO'), first], r, 'a');
   root.hidden = true; await vi.advanceTimersByTimeAsync(3000); expect(displayed().textContent).toBe('CQ ');
   root.hidden = false; await vi.advanceTimersByTimeAsync(40); expect(displayed().textContent).toBe('CQ H');
+});
+it('retains decoded text during an out-of-band pause and waits for fresh results after resuming', async () => {
+  const r = receiver('cw'), entries = [entry(1, 'cw', 'RETAINED CQ')];
+  ticker.update(entries, r, 'a');
+  ticker.update(entries, { ...r, coverage: { state: 'out_of_band' }, state: 'interrupted', stream: null }, 'a', null);
+  expect(displayed().textContent).toBe('RETAINED CQ');
+  const position = displayed().style.transform;
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(displayed().textContent).toBe('RETAINED CQ'); expect(displayed().style.transform).toBe(position);
+  ticker.update(entries, { ...r, coverage: { state: 'in_band' }, stream: { ...r.stream!, epoch: '99' } }, 'a');
+  expect(displayed().textContent).toBe('Waiting for decoded text…');
 });
 it('respects reduced motion while retaining waiting states and the latest full message', async () => {
   vi.mocked(window.matchMedia).mockReturnValue({ matches: true } as MediaQueryList);

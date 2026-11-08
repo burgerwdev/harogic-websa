@@ -8,6 +8,7 @@ pub(super) struct CaptureConfig {
     pub device_decimate: i32,
     pub source_rate: f64,
     pub bandwidth: f64,
+    pub band_paused: std::collections::BTreeSet<u32>,
 }
 
 impl DevState {
@@ -24,7 +25,7 @@ impl DevState {
         let d=(requested as i64).clamp(1,2048);
         let display=1i64<<(63-d.leading_zeros());
         let requested_center=finite("center",self.sdr_center)?;
-        let mut configs=self.channel_configs();
+        let mut configs=self.channel_intents();
         let tune=data.get("listen").is_some();
         if tune {
             let listen=finite("listen",self.sdr_listen)?;
@@ -97,22 +98,25 @@ impl DevState {
             // it to the listenable companion here: capture fitting has no other mode
             // validation, and this path also runs while a receiver failure is latched.
             super::channel_controls::reconcile_external_band(&mut next[0], true, false);
-            let frequencies:Vec<_>=next.iter().filter(|c|c.enabled).map(|c|c.freq).collect();
-            let listen=frequencies.first().copied().unwrap_or(center);
-            let actual_decimate=if hardware {capture_decimate(center,listen,&frequencies,display as i32,taps)} else {1};
-            if actual_decimate<device_decimate {continue;}
             let mut fits=true;
-            for config in next.iter().filter(|c|c.enabled) {
+            let mut band_paused=std::collections::BTreeSet::new();
+            for config in next.iter_mut().filter(|c|c.enabled) {
                 if !(minimum..=maximum).contains(&config.freq) {
                     return Err(format!("channel frequency outside device limits: channel {} requested {} Hz; valid RF range {minimum}..={maximum} Hz", config.channel, config.freq));
                 }
-                let Ok(source)=service_ddc::source_plan(fs,config) else {fits=false;break;};
-                if service_ddc::validate_source_frequency(center,bandwidth,fs,taps,config.freq,&source).is_err() {
-                    fits=false;break;
+                let covered=service_ddc::source_plan(fs,config).and_then(|source|
+                    service_ddc::validate_source_frequency(center,bandwidth,fs,taps,config.freq,&source)).is_ok();
+                if !covered {
+                    if config.channel==1 {fits=false;break;}
+                    config.enabled=false;
+                    band_paused.insert(config.channel);
                 }
             }
             if !fits {continue;}
-            return Ok(CaptureConfig {center,display,taps,configs:next,device_decimate,source_rate:fs,bandwidth});
+            let listen=next.iter().find(|config|config.channel==1&&config.enabled).map_or(center,|config|config.freq);
+            let actual_decimate=if hardware {capture_decimate(center,listen,&[],display as i32,taps)} else {1};
+            if actual_decimate<device_decimate {continue;}
+            return Ok(CaptureConfig {center,display,taps,configs:next,device_decimate,source_rate:fs,bandwidth,band_paused});
         }
         Err("requested capture window exceeds device limits".into())
     }
@@ -124,7 +128,7 @@ impl DevState {
 
     pub(super) fn apply_service_capture_candidate(&mut self,next:CaptureConfig,front_end:FrontEnd,
         force:bool)->Result<(),String> {
-        let CaptureConfig {center,display,taps,configs,device_decimate,..}=next;
+        let CaptureConfig {center,display,taps,configs,device_decimate,band_paused,..}=next;
         let hardware=self.hardware_shim.is_some();
         let previous_decimate=self.pipeline.as_ref().map(|p|p.snapshot.device_decimate)
             .or_else(||self.ddc.as_ref().map(|d|d.0.device_decimate));
@@ -159,6 +163,7 @@ impl DevState {
         self.sdr_deemph=primary.deemph_us;
         self.sdr_aux=json!({"2":configs[1],"3":configs[2]});
         self.sdr_channels=configs;
+        self.receivers.band_paused=band_paused;
         self.config_version+=1;
         self.freq_version+=1;
         Ok(())
@@ -224,9 +229,10 @@ mod tests {
         state.sdr_channels[1].enabled=true;
         state.sdr_channels[1].freq=90e6;
         let old=state.channel_configs();
-        assert!(state.apply_service_capture(&json!({"center":140e6,"listen":140e6})).is_err());
-        assert_eq!(state.sdr_center,100e6);
-        assert_eq!(state.channel_configs(),old);
+        state.apply_service_capture(&json!({"center":140e6,"listen":140e6})).unwrap();
+        assert_eq!(state.sdr_center,140e6);
+        assert!(state.receivers.band_paused.contains(&2));
+        let intended=state.channel_intents();assert_eq!(intended[1],old[1]);
     }
 
     fn state_with_expanded_sweep_limits() -> DevState {
@@ -362,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_auxiliary_pan_rejects_without_changing_capture_or_listen() {
+    fn incompatible_auxiliary_pan_keeps_saved_settings_and_pauses_reception() {
         let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
         state.sdr_center=100e6;
         state.sdr_listen=100e6;
@@ -371,11 +377,12 @@ mod tests {
         configs[1].enabled=true;
         configs[1].freq=90e6;
         state.sdr_channels=configs.clone();
-        assert!(state.apply_service_capture(&json!({"center":140e6})).is_err());
-        assert_eq!(state.sdr_center,100e6);
-        assert_eq!(state.sdr_listen,100e6);
-        assert_eq!(state.channel_configs(),configs);
-        assert_eq!(state.config_version,0);
+        state.apply_service_capture(&json!({"center":140e6})).unwrap();
+        assert_eq!(state.sdr_center,140e6);
+        assert!(state.receivers.band_paused.contains(&2));
+        assert_eq!(state.channel_intents()[1],configs[1]);
+        assert!(!state.channel_configs()[1].enabled);
+        assert_eq!(state.config_version,1);
     }
 
     #[test]
@@ -438,6 +445,8 @@ mod tests {
             16,center+edge+1.0,&source).is_err());
         configs[1].enabled=true;
         configs[1].freq=center+30_000_000.0;
-        assert!(state.fit_service_capture(center,2048,16,configs,false).is_err());
+        let paused=state.fit_service_capture(center,2048,16,configs,false).unwrap();
+        assert_eq!(paused.source_rate,capture.source_rate);
+        assert!(paused.band_paused.contains(&2));assert!(!paused.configs[1].enabled);
     }
 }

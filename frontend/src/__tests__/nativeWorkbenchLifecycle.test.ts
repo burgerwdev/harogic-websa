@@ -4,11 +4,11 @@ import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountNativeWorkbenchStreams } from '../ui/nativeWorkbenchStreams';
 import { decoderLog, forgetDecoderLog } from '../sdr/decoderLog';
-import { forgetNativeAudio, setNativeAudioRoute } from '../audio/sdrAudio';
+import { forgetNativeAudio, getSdrAudioStatus, sampleNativeAudioWaveform, setNativeAudioRoute } from '../audio/sdrAudio';
 import { publishCommandReply, send, setWS } from '../core/wsSend';
 
 vi.mock('../audio/sdrAudio', () => ({ claimNativeAudio: () => vi.fn(), forgetNativeAudio: vi.fn(),
-  getSdrAudioStatus: () => [], setNativeAudioRoute: vi.fn(), setNativeMaster: vi.fn() }));
+  getSdrAudioStatus: vi.fn(() => []), sampleNativeAudioWaveform: vi.fn(() => false), setNativeAudioRoute: vi.fn(), setNativeMaster: vi.fn() }));
 class Worker {
   static instances: Worker[] = [];
   onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -24,6 +24,7 @@ class Worker {
 }
 let adapter: FixtureReceiverAdapter, session: WorkbenchSession, streams: ReturnType<typeof mountNativeWorkbenchStreams>;
 beforeEach(() => {
+  vi.mocked(getSdrAudioStatus).mockReset().mockReturnValue([]); vi.mocked(sampleNativeAudioWaveform).mockReset().mockReturnValue(false);
   Worker.instances = []; vi.stubGlobal('Worker', Worker);
   adapter = new FixtureReceiverAdapter(); session = new WorkbenchSession(adapter); streams = mountNativeWorkbenchStreams(session);
 });
@@ -33,6 +34,35 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.clearAllMocks();
 });
 describe('UID consumer lifecycle', () => {
+  it('shares waveform and level readouts for duplicate audio without releasing a visible sibling probe', () => {
+    session.snapshot = clone(session.snapshot);
+    const [first, second] = session.snapshot.receivers;
+    second.confirmed = clone(first.confirmed);
+    for (const r of [first, second]) session.routes.set(r.receiver_uid, { enabled: true, gain: .7, pan: 0, solo: false });
+    session.notify();
+    const playback = { channel: first.receiver_uid, enabled: true, playing: true, rms: .2, peak: .4 };
+    vi.mocked(getSdrAudioStatus).mockReturnValue([playback]);
+    vi.mocked(sampleNativeAudioWaveform).mockImplementation((_, samples) => !!samples);
+    const a = new Float32Array(256), b = new Float32Array(256);
+    expect(streams.playback(second.receiver_uid)).toBe(playback);
+    expect(streams.waveform(first.receiver_uid, a)).toBe(true); expect(streams.waveform(second.receiver_uid, b)).toBe(true);
+    expect(sampleNativeAudioWaveform).toHaveBeenCalledWith(first.receiver_uid, b);
+    vi.mocked(sampleNativeAudioWaveform).mockClear();
+    streams.waveform(first.receiver_uid, null); expect(sampleNativeAudioWaveform).not.toHaveBeenCalled();
+    expect(streams.waveform(second.receiver_uid, b)).toBe(true);
+    vi.mocked(sampleNativeAudioWaveform).mockClear();
+    streams.waveform(second.receiver_uid, null); expect(sampleNativeAudioWaveform).toHaveBeenCalledExactlyOnceWith(first.receiver_uid, null);
+  });
+  it('rebinds duplicate waveform consumers when the shared playback owner is disabled', () => {
+    session.snapshot = clone(session.snapshot);
+    const [first, second] = session.snapshot.receivers; second.confirmed = clone(first.confirmed);
+    for (const r of [first, second]) session.routes.set(r.receiver_uid, { enabled: true, gain: .7, pan: 0, solo: false });
+    session.notify(); vi.mocked(sampleNativeAudioWaveform).mockImplementation((_, samples) => !!samples);
+    const samples = new Float32Array(256); streams.waveform(first.receiver_uid, samples); streams.waveform(second.receiver_uid, samples);
+    vi.mocked(sampleNativeAudioWaveform).mockClear(); session.monitor(first.receiver_uid, { enabled: false });
+    expect(sampleNativeAudioWaveform).toHaveBeenCalledExactlyOnceWith(first.receiver_uid, null);
+    expect(streams.waveform(second.receiver_uid, samples)).toBe(true); expect(sampleNativeAudioWaveform).toHaveBeenLastCalledWith(second.receiver_uid, samples);
+  });
   it.each(['receiver retired', 'receiver stopped'])('holds ended %s until confirmed ownership changes', reason => {
     const old = Worker.instances[0], neighbor = Worker.instances[1];
     old.result();

@@ -1167,19 +1167,14 @@ let lastSdrPanelReport: any = null;
 
 function syncSdrChannelButtons(): void {
   const definitions = sdrChannelMarks();
-  const multiple = definitions.length > 1 || definitions.length === 1 && definitions[0].channel !== currentSdrChannel();
-  document.querySelectorAll<HTMLButtonElement>('.sdr-channel-nav').forEach(button => {
-    setDomProperty(button, 'hidden', !multiple);
-    button.setAttribute('aria-label', t(button.dataset.action === 'sdr-channel-prev' ? 'sdr_channel_prev' : 'sdr_channel_next'));
-  });
   const label = document.getElementById('sdr-current-channel');
   if (label) {
     const channel = currentSdrChannel(), selected = definitions.find(row => row.channel === channel);
     const stopped = !selected?.enabled;
-    label.textContent = `C${channel}${stopped ? getLang() === 'zh' ? ' · 已停止' : ' · Stopped' : ''}`;
+    label.textContent = `Current${stopped ? getLang() === 'zh' ? ' · 已停止' : ' · Stopped' : ''}`;
     label.title = stopped
-      ? getLang() === 'zh' ? `调整频点或解调方式可恢复 C${channel}；其他信道保持独立。` : `Tune or choose a mode to resume C${channel}; other channels remain independent.`
-      : getLang() === 'zh' ? `主界面正在调整 C${channel}` : `Main panel controls C${channel}`;
+      ? getLang() === 'zh' ? '调整频点或解调方式可恢复 Current；已保存信道保持独立。' : 'Tune or choose a mode to resume Current; saved channels remain independent.'
+      : getLang() === 'zh' ? '主界面调谐 Current 临时信道；已保存信道在工作台中独立编辑。' : 'Main tuning controls Current; edit saved channels independently in the workbench.';
   }
   const add = document.querySelector('[data-action="sdr-channel-add"]');
   add?.setAttribute('aria-label', t('sdr_channel_add_tip'));
@@ -1196,6 +1191,7 @@ function resetMainReceiverInteraction(): void {
 }
 
 export function selectMainSdrChannel(channel: SdrChannel): void {
+  if (channel !== 1) return;
   if (channel === currentSdrChannel() || !lastSdrPanelReport) return;
   resetMainReceiverInteraction();
   setCurrentSdrChannel(channel);
@@ -1203,17 +1199,6 @@ export function selectMainSdrChannel(channel: SdrChannel): void {
   syncSdrPanel({ ...lastSdrPanelReport, response_to: 'STATUS', request_id: undefined });
   document.dispatchEvent(new CustomEvent('websa:sdr-channel-selection'));
   requestRender();
-}
-
-function cycleSdrChannel(direction: number): void {
-  const channels = sdrChannelMarks();
-  if (!channels.length) return;
-  const index = channels.findIndex(c => c.channel === currentSdrChannel());
-  const next = index < 0 ? (direction > 0 ? 0 : channels.length - 1)
-    : (index + direction + channels.length) % channels.length;
-  selectMainSdrChannel(channels[next].channel);
-  void import('./nativeWorkbench').then(module => module.focusNativeSdrChannel())
-    .catch(error => postRefNotice(String(error.message ?? error), 4000));
 }
 
 export function syncSdrPanel(s: any) {
@@ -1760,6 +1745,8 @@ export function bindActions() {
     'sdr-to-center': () => sdrToCenter(),
     'sdr-workbench': () => { void import('./nativeWorkbench').then(module => module.openNativeWorkbench())
       .catch(error => postRefNotice(String(error), 4000)); },
+    'sdr-overview': () => { void import('./nativeWorkbench').then(module => module.openNativeChannelOverview())
+      .catch(error => postRefNotice(String(error), 4000)); },
     'sdr-channel-add': (el) => {
       setDomProperty((el as HTMLButtonElement), 'disabled', true);
       void import('./nativeWorkbench').then(module => module.addCurrentSdrChannel())
@@ -1767,8 +1754,6 @@ export function bindActions() {
         .catch(error => postRefNotice(String(error.message ?? error), 5000))
         .finally(() => { setDomProperty((el as HTMLButtonElement), 'disabled', false); });
     },
-    'sdr-channel-prev': () => cycleSdrChannel(-1),
-    'sdr-channel-next': () => cycleSdrChannel(1),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': () => toggleSdrAgc(),
     'toggle-sdr-nr': () => toggleSdrNr(),

@@ -20,7 +20,7 @@ const leave = (): void => { window.dispatchEvent(new Event('pagehide')); };
 beforeEach(() => {
   vi.useFakeTimers(); vi.resetModules(); localStorage.clear(); sessionStorage.clear();
   Object.values(mocks).forEach(mock => mock.mockReset());
-  mocks.views.mockImplementation(() => ({ showOverview: vi.fn(), dispose: vi.fn(), recall: vi.fn() }));
+  mocks.views.mockImplementation(() => ({ showOverview: vi.fn(), showChannels: vi.fn(), dispose: vi.fn(), recall: vi.fn() }));
   mocks.quick.mockImplementation(() => ({ add: vi.fn().mockResolvedValue(null), dispose: vi.fn() }));
   mocks.streams.mockImplementation(() => ({ dispose: vi.fn() }));
 });
@@ -30,6 +30,15 @@ afterEach(() => {
 });
 
 describe('native workbench page ownership', () => {
+  it('shares one session for workbench, overview and quick channel actions', async () => {
+    const current = adapter('shared-service'); mocks.connect.mockResolvedValue(current);
+    const native = await import('../ui/nativeWorkbench');
+    await native.openNativeChannelOverview(); await native.openNativeWorkbench(); await native.openNativeChannelOverview();
+    expect(mocks.connect).toHaveBeenCalledOnce(); expect(mocks.views).toHaveBeenCalledOnce();
+    expect(mocks.views.mock.results[0].value.showChannels).toHaveBeenCalledTimes(2);
+    expect(mocks.views.mock.results[0].value.showOverview).toHaveBeenCalledOnce();
+    expect(current.dispatch).not.toHaveBeenCalled();
+  });
   it('recreates disposed owners only after a new action following pagehide', async () => {
     const first = adapter('first-service'), second = adapter('second-service');
     mocks.connect.mockResolvedValueOnce(first).mockResolvedValueOnce(second);

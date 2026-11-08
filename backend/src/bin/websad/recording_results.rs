@@ -48,7 +48,9 @@ fn update(task: &mut Value, row: &Value, raw: usize) -> io::Result<()> {
     validate(task, row)?;
     let e = &row["envelope"];
     let source = &row["source"];
-    let id = format!("{}-{}", e["epoch"], e["channel_id"]);
+    let coverage_generation=task["coverage_generation"].as_u64().unwrap_or(0);
+    let id = if coverage_generation==0 {format!("{}-{}",e["epoch"],e["channel_id"])}
+        else {format!("{}-{}-coverage-{}",e["epoch"],e["channel_id"],coverage_generation)};
     let segments = task["tracks"][0]["segments"]
         .as_array_mut()
         .ok_or_else(|| io_error("missing result segments"))?;
@@ -59,7 +61,7 @@ fn update(task: &mut Value, row: &Value, raw: usize) -> io::Result<()> {
             return Err(io_error("result segment limit reached"));
         }
         if let Some(old) = segments.last_mut() {
-            old["end_reason"] = json!("processing_changed");
+            if old["end_reason"].is_null() {old["end_reason"] = json!("processing_changed");}
         }
         segments.push(json!({"segment_id":id,"stream":{"source_id":"primary","epoch":e["epoch"].as_u64().unwrap().to_string(),"channel_id":e["channel_id"].as_u64().unwrap().to_string()},
             "first_input_index":e["input_index"],"fraction_num":e["input_fraction_num"],"fraction_den":e["input_fraction_den"],
@@ -121,6 +123,10 @@ pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
         let size = batch.iter().map(|item| item.input.bytes()).sum();
         let outcome = (|| -> io::Result<()> {
             for item in batch {
+                if let WorkInput::Coverage {paused,at_ms}=&item.input {
+                    coverage_event(&mut task,*paused,at_ms)?;
+                    continue;
+                }
                 let WorkInput::Results(raw) = item.input else {
                     return Err(io_error("wrong result lane input"));
                 };
@@ -392,6 +398,26 @@ mod tests {
         }
         manager.reap();
     }
+    #[test]
+    fn coverage_pause_keeps_result_history_and_continues_in_a_new_segment() {
+        let root=directory();let mut manager=Manager::open(root.clone()).unwrap();
+        manager.start_kind("uid","service","coverage-results","results").unwrap().wait().unwrap();
+        manager.admit_result("uid",row(4,0));manager.coverage("uid",true);
+        manager.processing_sources(&[],None);
+        assert_eq!(manager.snapshots()[0]["state"],"waiting");
+        manager.coverage("uid",false);manager.admit_result("uid",row(4,0));
+        manager.coverage("uid",true);manager.coverage("uid",false);manager.admit_result("uid",row(4,0));
+        let id=manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();
+        finish(&mut manager,&id);
+        let task=manager.snapshots()[0].clone();
+        assert_eq!(task["state"],"completed","{task}");
+        assert_eq!(task["tracks"][0]["segments"].as_array().unwrap().len(),3);
+        assert_eq!(task["tracks"][0]["segments"][0]["end_reason"],"out_of_band");
+        assert_eq!(task["coverage_interruptions"][0]["resumed"],true);
+        assert_eq!(task["coverage_generation"],2);
+        drop(manager);fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn result_fraction_validation_preserves_u64_edges_and_rejects_improper_fractions() {
         let task = json!({"receiver_uid":"uid","service_id":"service"});

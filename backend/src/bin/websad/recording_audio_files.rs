@@ -279,6 +279,11 @@ pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
             let size = batch.iter().map(|item| item.input.bytes()).sum();
             let outcome = (|| -> io::Result<()> {
                 for item in batch {
+                    if let WorkInput::Coverage {paused,at_ms}=&item.input {
+                        if *paused {finish_segment(&mut writer,&mut task)?;}
+                        coverage_event(&mut task,*paused,at_ms)?;
+                        continue;
+                    }
                     let WorkInput::Audio(input) = item.input else {
                         return Err(io_error("wrong audio lane input"));
                     };

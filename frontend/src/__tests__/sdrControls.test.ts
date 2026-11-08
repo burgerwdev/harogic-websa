@@ -234,7 +234,7 @@ describe('SDR zoom follows confirmed tuning', () => {
     confirmSdrReceiverNumbers(null);
   });
 
-  it('switches the main receiver without retuning C1, then sends edits to C2', async () => {
+  it('keeps main tuning on Current when a saved channel is selected for editing', async () => {
     const { controls, state, send } = await load();
     const snapshot = status();
     snapshot.sdr.channels.push({ channel: 2, enabled: true, freq: 98.1e6, mode: 'usb', if_bw: 2400, am_sync_generation: 0 });
@@ -242,14 +242,14 @@ describe('SDR zoom follows confirmed tuning', () => {
     vi.mocked(send).mockClear();
     controls.selectMainSdrChannel(2);
     expect(send).not.toHaveBeenCalled();
-    expect(state.sdrListenHz.get()).toBe(98.1e6);
-    expect(state.sdrDemod.get()).toBe('usb');
-    expect(state.sdrIfbw.get()).toBe(2400);
+    expect(state.sdrListenHz.get()).toBe(98e6);
+    expect(state.sdrDemod.get()).toBe('am');
+    expect(state.sdrIfbw.get()).toBe(12000);
     document.body.insertAdjacentHTML('beforeend', '<input id="input-sdr-listen" value="98.12">');
     controls.applySdrTune();
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', channel: 2, freq: 98.12e6 }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 98.12e6 }));
     controls.selectMainSdrChannel(1);
-    expect(state.sdrListenHz.get()).toBe(98e6);
+    expect(state.sdrListenHz.get()).toBe(98.12e6);
     expect(state.sdrDemod.get()).toBe('am');
   });
   it('keeps a retired C1 as the tuning target while C2 remains saved, discarding queued edits and stale replies', async () => {

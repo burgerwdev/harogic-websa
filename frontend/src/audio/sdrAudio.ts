@@ -121,6 +121,22 @@ class AudioChain {
   private fadeTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly displayNumber: number | null;
   private probe: AnalyserNode | null = null;
+  private waveformProbe: AnalyserNode | null = null;
+  waveform(samples: Float32Array<ArrayBuffer> | null): boolean {
+    if (!samples) {
+      if (this.waveformProbe) {
+        this.node?.disconnect(this.waveformProbe); this.waveformProbe.disconnect(); this.waveformProbe = null;
+      }
+      return false;
+    }
+    if (!this.node || !this.enabled || !this.playing || this.error || ctx?.state !== 'running' || Date.now() - this.meterAt > 500) return false;
+    if (!this.waveformProbe) {
+      this.waveformProbe = ctx.createAnalyser(); this.waveformProbe.fftSize = 256;
+      this.node.connect(this.waveformProbe);
+    }
+    this.waveformProbe.getFloatTimeDomainData(samples);
+    return true;
+  }
   constructor(public channel: number | string, private readonly source?: MainAudioSource) {
     this.displayNumber = typeof channel === 'number' ? channel : null;
     if (source?.receiver_uid) this.localGain = 1;
@@ -221,6 +237,7 @@ class AudioChain {
       this.node.disconnect();
     }
     this.node = null;
+    this.waveformProbe?.disconnect(); this.waveformProbe = null;
     this.gainNode?.disconnect(); this.panNode?.disconnect(); this.gainNode = null; this.panNode = null;
     if (this.probe) {
       this.probe.disconnect();
@@ -541,6 +558,9 @@ export function setNativeAudioRoute(uid: string, mode: string, on: boolean, gain
   playback.local(gain, pan); playback.setMode(mode); playback.monitorEnabled(on);
 }
 export function forgetNativeAudio(uid: string): void { chains.get(uid)?.setEnabled(false); chains.delete(uid); }
+export function sampleNativeAudioWaveform(uid: string, samples: Float32Array<ArrayBuffer> | null): boolean {
+  return chains.get(uid)?.waveform(samples) ?? false;
+}
 export function nativeAudioOwnsSpeakers(): boolean { return nativeOwner; }
 export function nativeAudioIsMuted(): boolean { return masterMuted; }
 export function setNativeMaster(gain: number, muted: boolean): void {

@@ -100,7 +100,7 @@ pub(super) fn update(task: &mut Value, row: &Value, bytes: usize) -> io::Result<
         .ok_or_else(|| io_error("missing audio segments"))?;
     let mut boundary = segments.is_empty() || a["sequence"] == 0;
     if let Some(last) = segments.last() {
-        let same = last["stream"] == a["stream"];
+        let same = last["stream"] == a["stream"] && last["end_reason"].is_null();
         if same
             && a["sequence"] != 0
             && (last["last_sequence"]
@@ -131,7 +131,7 @@ pub(super) fn update(task: &mut Value, row: &Value, bytes: usize) -> io::Result<
             return Err(io_error("audio segment limit reached"));
         }
         if let Some(last) = segments.last_mut() {
-            last["end_reason"] = json!("audio_source_changed");
+            if last["end_reason"].is_null() {last["end_reason"] = json!("audio_source_changed");}
         }
         let id = format!("audio-{:06}", segments.len());
         segments.push(json!({"segment_id":id,"stream":a["stream"],"first_input_index":a["input_index"],
@@ -193,6 +193,10 @@ pub(super) fn work(lane: &Lane, path: &FsPath) -> io::Result<()> {
         let size = batch.iter().map(|item| item.input.bytes()).sum();
         let outcome = (|| -> io::Result<()> {
             for item in batch {
+                if let WorkInput::Coverage {paused,at_ms}=&item.input {
+                    coverage_event(&mut task,*paused,at_ms)?;
+                    continue;
+                }
                 let WorkInput::Audio(input) = item.input else {
                     return Err(io_error("wrong audio lane input"));
                 };
@@ -566,6 +570,36 @@ mod tests {
         manager.reap();
         manager.snapshots()[0].clone()
     }
+    #[test]
+    fn coverage_pause_finalizes_each_audio_format_and_resumes_a_new_playable_segment() {
+        for format in ["wav","flac","opus"] {
+            let root=directory();let mut manager=Manager::open(root.clone()).unwrap();
+            manager.start_configured("uid","service","coverage-audio","audio",format,"saved channel").unwrap().wait().unwrap();
+            manager.admit_audio("uid",input(0,0,1,48000.0,0.5));
+            manager.admit_audio("uid",input(1,0,1,48000.0,0.5));
+            manager.coverage("uid",true);
+            let deadline=Instant::now()+Duration::from_secs(10);
+            while manager.snapshots()[0]["coverage_interruptions"].as_array().is_none_or(|gaps|gaps.is_empty()) {
+                assert!(Instant::now()<deadline,"{format}");std::thread::sleep(Duration::from_millis(5));
+            }
+            let paused=manager.snapshots()[0].clone();
+            assert_eq!(paused["state"],"waiting");
+            assert_eq!(paused["tracks"][0]["segments"][0]["file_complete"],true,"{format}");
+            manager.processing_kind_sources("audio",&[],None);
+            assert_eq!(manager.snapshots()[0]["state"],"waiting");
+            manager.coverage("uid",false);
+            manager.admit_audio("uid",input(0,0,1,48000.0,0.5));
+            manager.admit_audio("uid",input(1,0,1,48000.0,0.5));
+            let task=finish(&mut manager);
+            assert_eq!(task["state"],"completed","{task}");
+            assert_eq!(task["tracks"][0]["segments"].as_array().unwrap().len(),2);
+            assert_eq!(task["tracks"][0]["segments"][0]["end_reason"],"out_of_band");
+            assert_eq!(task["coverage_interruptions"][0]["resumed"],true);
+            assert!(task["tracks"][0]["segments"].as_array().unwrap().iter().all(|segment|segment["file_complete"]==true));
+            drop(manager);fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn selected_formats_are_encoded_during_recording_and_download_copies_saved_bytes() {
         assert!(opus::available(), "FFmpeg/libopus required for recording integration tests");

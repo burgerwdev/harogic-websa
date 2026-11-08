@@ -36,6 +36,9 @@ mod service_fixture;
 mod service_stream;
 #[path = "websad/service_capture.rs"]
 mod service_capture;
+#[cfg(test)]
+#[path = "websad/coverage_tests.rs"]
+mod coverage_tests;
 #[path = "websad/service_cost.rs"]
 mod service_cost;
 #[path = "websad/service_power.rs"]

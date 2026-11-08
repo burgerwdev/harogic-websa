@@ -3,7 +3,7 @@ import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { currentChannelConfig, mountSdrQuickChannel } from '../ui/sdrQuickChannel';
 import { sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength } from '../ui/sdrState';
-import { setCurrentSdrChannel } from '../ui/sdrChannels';
+import { currentSdrChannel, setCurrentSdrChannel } from '../ui/sdrChannels';
 import { receiverPlugin } from './pluginFixtures';
 
 let adapter: FixtureReceiverAdapter, session: WorkbenchSession, ui: ReturnType<typeof mountSdrQuickChannel>;
@@ -71,10 +71,10 @@ describe('main spectrum quick channel', () => {
     }
     const before = structuredClone(session.snapshot.receivers);
     const target = before.find(receiver => receiver.display_number === 16)!;
-    setCurrentSdrChannel(16); sdrListenHz.confirm(7_130_000);
+    setCurrentSdrChannel(1); sdrListenHz.confirm(7_130_000);
     vi.mocked(adapter.dispatch).mockClear();
     await ui.add();
-    expect(document.querySelectorAll('[name=replace]')).toHaveLength(16);
+    expect(document.querySelectorAll('[name=replace]')).toHaveLength(15);
     expect(adapter.dispatch).not.toHaveBeenCalled();
     choose(target.receiver_uid); submit(); await settle();
     expect(session.snapshot.receivers).toHaveLength(16);
@@ -106,7 +106,7 @@ describe('main spectrum quick channel', () => {
   });
   it('requires an explicit replacement when full and cancels without a command', async () => {
     mount(); await ui.add();
-    expect(document.querySelectorAll('[name=replace]')).toHaveLength(3);
+    expect(document.querySelectorAll('[name=replace]')).toHaveLength(2);
     expect(document.querySelector<HTMLButtonElement>('[type=submit]')!.disabled).toBe(true);
     expect(document.querySelector('[data-targets]')!.textContent).toContain('FT8');
     expect(document.querySelector('[data-targets]')!.textContent).toContain('IQ');
@@ -145,19 +145,47 @@ describe('main spectrum quick channel', () => {
     expect(session.snapshot.receivers).toHaveLength(5);
     expect(session.snapshot.receivers.slice(3).map(r => r.confirmed.processors[0].nr_atten_db)).toEqual([12, 18]);
   });
-  it('copies an already running neural receiver without requiring another algorithm or changing its gain and AGC', async () => {
+  it.each([1, 2])('saves the live tuning source C%i independently and reuses its saved copy on repeat', async channel => {
     mount(4);
+    setCurrentSdrChannel(channel);
+    const sourceUid = `fixture-c${channel}`;
+    session.select(sourceUid);
     const config = currentChannelConfig(session);
-    const configured = session.configure('fixture-c1', config); await settle(); await configured;
+    const configured = session.configure(sourceUid, config); await settle(); await configured;
     const before = structuredClone(session.snapshot.receivers);
     vi.mocked(adapter.dispatch).mockClear();
     const added = ui.add(); await settle(); await added;
     expect(document.querySelector('dialog')!.open).toBe(false);
     expect(adapter.dispatch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(adapter.dispatch).mock.calls[0][0].type).toBe('create');
     expect(session.snapshot.receivers.slice(0, 3)).toEqual(before);
-    const copy = session.snapshot.receivers[3];
-    expect(copy.confirmed.processors[0]).toMatchObject({ nr: true, nr_algorithm: 'dfn',
-      pcm_gain: config.processors[0].pcm_gain, agc: config.processors[0].agc });
-    expect(session.route(copy.receiver_uid).enabled).toBe(true);
+    const saved = session.snapshot.receivers[3];
+    expect(saved.receiver_uid).not.toBe(sourceUid);
+    expect(saved.confirmed.baseband).toEqual(config.baseband);
+    expect(session.route(saved.receiver_uid).enabled).toBe(true);
+    expect(currentSdrChannel()).toBe(channel);
+    expect(session.selected).toBe(sourceUid);
+
+    vi.mocked(adapter.dispatch).mockClear();
+    expect(await ui.add()).toContain(`C${saved.display_number}`);
+    expect(adapter.dispatch).not.toHaveBeenCalled();
+    expect(session.snapshot.receivers).toHaveLength(4);
+    expect(currentSdrChannel()).toBe(channel);
+    expect(session.selected).toBe(saved.receiver_uid);
+
+    const retuned = structuredClone(config); retuned.baseband.frequency_hz += 10_000;
+    const tuning = session.configure(sourceUid, retuned); await settle(); await tuning;
+    expect(session.snapshot.receivers.find(r => r.receiver_uid === saved.receiver_uid)).toEqual(saved);
+  });
+  it('offers explicit replacement at capacity even when the tuning source already matches', async () => {
+    mount();
+    const configured = session.configure('fixture-c1', currentChannelConfig(session)); await settle(); await configured;
+    const before = structuredClone(session.snapshot.receivers);
+    vi.mocked(adapter.dispatch).mockClear();
+    await ui.add();
+    expect(document.querySelector('dialog')!.open).toBe(true);
+    expect(document.querySelectorAll('[name=replace]')).toHaveLength(2);
+    expect(adapter.dispatch).not.toHaveBeenCalled();
+    expect(session.snapshot.receivers).toEqual(before);
   });
 });

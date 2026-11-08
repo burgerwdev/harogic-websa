@@ -88,7 +88,7 @@ export class WorkbenchSession {
   private monitorEligible(uid: string): boolean {
     if (this.retiring(uid)) return false;
     const r = this.snapshot.receivers.find(r => r.receiver_uid === uid);
-    if (!r || r.reception && r.reception.state!=='receiving' || r.fault || r.processing_state === 'failed' || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
+    if (!r || r.coverage?.state === 'out_of_band' || r.reception && r.reception.state!=='receiving' || r.fault || r.processing_state === 'failed' || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
     const route = this.route(uid);
     if (this.monitorMode === 'follow') return uid === this.selected;
     const solo = this.snapshot.receivers.some(r => r.state === 'running' && receiverHasAudio(this.snapshot, r.confirmed) && this.route(r.receiver_uid).enabled && this.route(r.receiver_uid).solo);

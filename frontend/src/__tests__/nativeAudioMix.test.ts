@@ -7,6 +7,7 @@ class Param {
 class Node {
   gain = new Param(); pan = new Param(); threshold = new Param(); knee = new Param(); ratio = new Param(); attack = new Param(); release = new Param();
   connect = vi.fn(); disconnect = vi.fn(); onaudioprocess = null;
+  getFloatTimeDomainData = vi.fn((data: Float32Array) => data.fill(.25));
 }
 class Context extends EventTarget {
   static instances: Context[] = []; gains: Node[] = []; pans: Node[] = []; compressors: Node[] = [];
@@ -36,6 +37,25 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers();
 });
 describe('local speaker graph', () => {
+  it('samples an existing playing channel on demand and releases its waveform probe without another consumer', async () => {
+    const audio = await import('../audio/sdrAudio');
+    const release = audio.claimNativeAudio(directory);
+    audio.setNativeAudioRoute('uid-a', 'am', true, .7, 0);
+    const worker = Worker.instances[0], context = Context.instances[0];
+    const samples = new Float32Array(256);
+    expect(audio.sampleNativeAudioWaveform('uid-a', samples)).toBe(false);
+    worker.onmessage!({ data: { type: 'meter', generation: 0, rms: .2, peak: .4, playing: true } });
+    expect(audio.sampleNativeAudioWaveform('uid-a', samples)).toBe(true);
+    expect(samples[0]).toBe(.25); expect(Worker.instances).toHaveLength(1);
+    const probe = context.analysers.at(-1)!;
+    expect(context.processors[0].connect).toHaveBeenCalledWith(probe);
+    audio.sampleNativeAudioWaveform('uid-a', samples);
+    expect(context.analysers).toHaveLength(1);
+    context.state = 'suspended'; expect(audio.sampleNativeAudioWaveform('uid-a', samples)).toBe(false);
+    audio.sampleNativeAudioWaveform('uid-a', null);
+    expect(context.processors[0].disconnect).toHaveBeenCalledWith(probe); expect(probe.disconnect).toHaveBeenCalledOnce();
+    release();
+  });
   it('shares one context/master, ramps gain and pan locally, and prevents legacy duplicate playback', async () => {
     const audio = await import('../audio/sdrAudio');
     audio.setSdrAudioEnabled(true); const legacy = Worker.instances[0];

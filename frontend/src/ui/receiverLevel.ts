@@ -14,7 +14,7 @@ const dbfs = (value: number): number => 20 * Math.log10(Math.max(1e-8, value));
 
 /** Prefer audio-clock measurements; arrival-time telemetry leads buffered playback. */
 export function receiverLevel(receiver: ReceiverState, entries: readonly DecoderLogEntry[], playback?: Record<string, unknown>, source?: string | null): ReceiverLevel | null {
-  if (receiver.state !== 'running' || receiver.fault || receiver.processing_state === 'failed'
+  if (receiver.coverage?.state === 'out_of_band' || receiver.state !== 'running' || receiver.fault || receiver.processing_state === 'failed'
     || receiver.reception && receiver.reception.state !== 'receiving') return null;
   if (playback) {
     if (!playback.enabled || !playback.playing || playback.muted || playback.error

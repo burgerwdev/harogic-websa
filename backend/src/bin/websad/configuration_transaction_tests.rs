@@ -3,6 +3,7 @@ mod configuration_transactions {
 
     #[test]
     fn owner_recovery_rta_trigger_readback_failure_during_wait() {
+        let recovered_shim=compile_fake_swp_source("rta_trigger",FAKE_RTA_SHIM);
         for status in [-8, -9, -110] {
             let source = FAKE_RTA_SHIM.replace("*out = dev->trigger; return 0;", &format!(
                 "if (dev->trigger.last_sdk_status == -10) return {status}; *out = dev->trigger; return 0;"
@@ -20,7 +21,7 @@ mod configuration_transactions {
             let error = state.rta_error.clone().expect("query failure must remain visible");
             assert!(error.contains(&format!("trigger readback status={status}")), "{error}");
             assert!(state.rta_retry_at.is_some());
-            state.hardware_shim = Some(compile_fake_swp_source("rta_trigger", FAKE_RTA_SHIM));
+            state.hardware_shim = Some(recovered_shim.clone());
             assert!(state.step_rta().is_empty());
             assert!(state.rta_hw.is_none(), "cooldown must prevent an immediate reopen");
             state.rta_retry_at = None;

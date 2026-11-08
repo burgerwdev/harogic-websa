@@ -929,9 +929,9 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .sdr-hint-note { color: var(--label); font-size: 11px; flex: 1 1 100%; }
 .sdr-channel-actions { padding-left: 62px; }
 .sdr-channel-buttons { display: flex; align-items: center; gap: 4px; width: 234px; max-width: 100%; min-width: 0; }
+.sdr-channel-buttons > .btn { display:inline-flex; align-items:center; justify-content:center; height:20px; min-height:20px; padding:2px 0; box-sizing:border-box; line-height:1; }
 .sdr-channel-buttons > [data-action="sdr-workbench"] { flex: 1; min-width: 0; white-space: nowrap; }
-.sdr-channel-buttons > [data-action="sdr-channel-add"] { flex: 0 0 28px; padding: 2px 0; }
-.sdr-channel-buttons > .sdr-channel-nav { flex: 0 0 24px; padding: 2px 0; }
+.sdr-channel-buttons > :is([data-action="sdr-overview"], [data-action="sdr-channel-add"], .sdr-channel-nav) { flex:0 0 24px; width:24px; }
 .sdr-channel-nav[hidden] { display: none; }
 #sdr-current-channel { font-size: 10px; color: var(--text); }
 /* Filter presets wrap within the parameter column. */

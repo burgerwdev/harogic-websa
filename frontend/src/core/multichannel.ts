@@ -37,6 +37,8 @@ export interface ReceptionState {
   last_interruption:{kind:'overload'|'source_gap'|'device'|'internal';scope:string;reason:string;at_ms:number;recovered_at_ms:number|null;before:unknown;after:unknown;missing_input_samples:string|null};
 }
 export interface ReceiverState {
+  created_at_ms?: U64;
+  coverage?: { state: 'in_band' | 'out_of_band' };
   reception?:ReceptionState|null;
   /** Confirmed audio settings, excluding logical identity and independent IQ planning. */
   audio_signature?: string;
@@ -66,6 +68,7 @@ export interface RecordingTrack {
   raw_bytes: U64; stored_bytes: U64;
 }
 export interface RecordingTask {
+  coverage_interruptions?: { reason: 'out_of_band'; started_at_ms: U64; ended_at_ms: U64 | null; resumed: boolean }[];
   name?: string; receiver_name?: string; audio_format?: AudioRecordingFormat;
   task_id: string; receiver_uid: ReceiverUid; state: TaskState;
   tracks: RecordingTrack[]; fault: Fault | null;
@@ -100,6 +103,12 @@ export interface ServiceSnapshot {
 export interface ConfigureCommand {
   type: 'configure'; request_id: string; expected_revision: U64;
   receiver_uid: ReceiverUid; config: ReceiverConfig; recover?:boolean;
+}
+/** Viewport zoom and pan never enter the actual RF coverage calculation. */
+export function receiverInCapture(snapshot: ServiceSnapshot, config: ReceiverConfig): boolean | null {
+  const capture = snapshot.capture, baseband = config.baseband;
+  if (capture.state !== 'running' || capture.parameters_state === 'unknown' || capture.usable_bandwidth_hz === null) return null;
+  return Math.abs(baseband.frequency_hz - capture.center_hz) + baseband.passband_hz / 2 + baseband.transition_hz <= capture.usable_bandwidth_hz / 2;
 }
 export interface Impact {
   accepted: boolean; faults: Fault[]; capture_change: boolean;

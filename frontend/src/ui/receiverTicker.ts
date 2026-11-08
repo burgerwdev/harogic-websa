@@ -68,10 +68,11 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
   const tick = (): void => {
     if (disposed) return;
     const now = performance.now(), delta = Math.min(80, Math.max(0, now - lastTick)); lastTick = now;
-    const active = !host.hidden && !root.hidden && root.classList.contains('mc-collapsed') && !host.ownerDocument.hidden;
+    const active = root.isConnected && !host.hidden && !root.closest('[hidden]')
+      && (root.classList.contains('mc-collapsed') || root.classList.contains('mc-overview-card')) && !host.ownerDocument.hidden;
     if (!active) { if (wasActive) cancelMotion(); wasActive = false; return; }
     if (!wasActive) { elapsed = 0; wasActive = true; }
-    if (!items.length) return;
+    if (!items.length || !receiving) return;
     const reduced = host.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     if (hovered || focused) return;
     if (width !== viewport.clientWidth) { width = viewport.clientWidth; elapsed = 0; }
@@ -107,20 +108,27 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
     update(entries, receiver, service, source): void {
       const languageChanged = language !== getLang(); language = getLang();
       const nextMode = receiver?.confirmed.processors[0]?.mode ?? '';
-      const nextIdentity = `${service}:${receiver?.receiver_uid}:${nextMode}:${receiver?.stream?.epoch}:${receiver?.stream?.channel_id}:${receiver?.processing_runtime?.processing_generation ?? ''}:${source ?? ''}`;
+      const paused = receiver?.coverage?.state === 'out_of_band';
+      const logicalIdentity = `${service}:${receiver?.receiver_uid}:${nextMode}:`;
+      const nextIdentity = paused && identity.startsWith(logicalIdentity) ? identity
+        : `${logicalIdentity}${receiver?.stream?.epoch}:${receiver?.stream?.channel_id}:${receiver?.processing_runtime?.processing_generation ?? ''}:${source ?? ''}`;
       const reset = identity !== nextIdentity;
       if (reset) {
         cancelMotion(); identity = nextIdentity; mode = nextMode; continuous = continuousModes.has(mode);
         items = []; index = 0; target = ''; glyphs = []; written = 0; write(''); text.style.transform = ''; elapsed = 0; wasActive = false;
       }
-      receiving = !!receiver && receiver.state === 'running' && !receiver.fault && receiver.processing_state !== 'failed'
+      receiving = !!receiver && !paused && receiver.state === 'running' && !receiver.fault && receiver.processing_state !== 'failed'
         && (!receiver.reception || receiver.reception.state === 'receiving');
-      const next = receiver && receiving ? stripMessages(entries, receiver, source) : [];
+      const historicalStream = paused ? entries.find(entry => entry.mode === nextMode && entry.timing?.baseband_stream)?.timing?.baseband_stream : undefined;
+      const retained = receiver && paused && !receiver.stream && historicalStream ? { ...receiver, stream: historicalStream } as ReceiverState : receiver;
+      const next = retained && (receiving || paused) ? stripMessages(entries, retained, paused ? undefined : source) : [];
+      if (paused) { cancelMotion(); if (continuous && target) { written = glyphs.length; write(target); } }
       host.hidden = !receiver || !textModes.has(mode) && !next.length;
       root.classList.toggle('mc-has-strip-text', !host.hidden);
       host.dataset.presentation = continuous ? 'typing' : 'messages';
       badge.textContent = mode.toUpperCase();
-      const waiting = getLang() === 'zh' ? receiving ? '等待解码文字…' : '接收已暂停' : receiving ? 'Waiting for decoded text…' : 'Reception paused';
+      const waiting = paused ? getLang() === 'zh' ? '带外 · 等待覆盖' : 'Out of band · waiting for coverage'
+        : getLang() === 'zh' ? receiving ? '等待解码文字…' : '接收已暂停' : receiving ? 'Waiting for decoded text…' : 'Reception paused';
       viewport.setAttribute('aria-label', getLang() === 'zh' ? '解码文字；悬停或聚焦暂停滚动' : 'Decoded text; hover or focus to pause');
       if (!next.length) {
         cancelMotion(); items = []; target = ''; glyphs = []; written = 0; write(waiting); text.style.transform = ''; viewport.title = waiting; return;
@@ -132,7 +140,7 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
         const extendsPrevious = !!target && nextText.startsWith(target);
         glyphs = segmenter ? [...segmenter.segment(nextText)].map(part => part.segment) : Array.from(nextText);
         target = nextText;
-        if (!extendsPrevious) { written = glyphs.length; write(target); }
+        if (!extendsPrevious || paused) { written = glyphs.length; write(target); }
         // The next frame types only newly received graphemes, keeping the live tail in view.
       } else {
         const existing = items.findIndex(item => item.key === oldKey);

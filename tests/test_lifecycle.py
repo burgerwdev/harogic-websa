@@ -400,7 +400,7 @@ def test_normal_receiver_end_closes_only_its_subscriptions_and_can_restart(launc
                                          'enabled': True, 'freq': frequency + 100_000,
                                          'mode': 'am', 'ifbw': 6000})
             snapshot = await request('/api/sdr/receivers')
-            target, healthy = snapshot['receivers'][:2]
+            healthy, target = snapshot['receivers'][:2]
             uid = target['receiver_uid']
             original = copy.deepcopy(target['confirmed'])
             async with AsyncExitStack() as stack:

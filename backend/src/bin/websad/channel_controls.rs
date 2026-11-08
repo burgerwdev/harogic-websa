@@ -82,6 +82,12 @@ pub(super) fn reconcile_external_band(config: &mut receiver_workers::ChannelConf
 }
 
 impl DevState {
+    /// The receiver definition remains enabled while its execution is paused outside capture.
+    pub(super) fn channel_intents(&self) -> Vec<ChannelConfig> {
+        let mut configs=self.channel_configs();
+        for config in &mut configs {config.enabled |= self.receivers.band_paused.contains(&config.channel);}
+        configs
+    }
     pub(super) fn channel_configs(&self) -> Vec<ChannelConfig> {
         let mut configs: Vec<_> = (1..=MAX_CHANNELS as u32).map(|slot| self.sdr_channels.iter()
             .find(|config| config.channel == slot).cloned()
@@ -314,7 +320,7 @@ impl DevState {
                     return Ok(None);
                 }
             }
-            let mut configs = self.channel_configs();
+            let mut configs = self.channel_intents();
             *configs.iter_mut().find(|old|old.channel==config.channel).ok_or("channel not found")? = config.clone();
             let fit=self.fit_service_capture(self.sdr_center,self.sdr_decimate,
                 self.sdr_pfb_taps_per_phase,configs.clone(),false);
@@ -337,7 +343,7 @@ impl DevState {
                 return Ok(None);
             }
         }
-        let mut configs = self.channel_configs();
+        let mut configs = self.channel_intents();
         *configs.iter_mut().find(|old|old.channel==config.channel).ok_or("channel not found")? = config.clone();
         let requested_center = if config.channel == 1 && config.freq != self.sdr_listen { config.freq } else { center };
         self.fit_service_capture(requested_center,self.sdr_decimate,self.sdr_pfb_taps_per_phase,configs,false).map(Some)
@@ -368,6 +374,7 @@ impl DevState {
             self.config_version+=1;
         }
         if config == old && !source_recovery {
+            if data.get("enabled").is_some() {self.receivers.band_paused.remove(&channel);}
             if data["defer_receipt"]!=true {self.track_receiver_control(channel,data)?;}
             return Ok(());
         }
@@ -392,15 +399,16 @@ impl DevState {
             || old.radiofax_acquisition!=config.radiofax_acquisition || old.radiofax_ioc!=config.radiofax_ioc
             || old.radiofax_lpm!=config.radiofax_lpm || old.radiofax_modulation!=config.radiofax_modulation
             || old.radiofax_polarity!=config.radiofax_polarity || old.radiofax_clock_recovery!=config.radiofax_clock_recovery;
+        let recapture = self.channel_recapture(&config)?;
+        let target_paused=recapture.as_ref().is_some_and(|capture|capture.band_paused.contains(&channel));
         let staged_fixtures = if geometry_changed && self.hardware_shim.is_none() && self.swp.mode == "sdr" {
-            let mut candidate = configs.clone();
-            *candidate.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = config.clone();
+            let mut candidate = recapture.as_ref().map_or_else(||configs.clone(),|capture|capture.configs.clone());
+            if recapture.is_none() {*candidate.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = config.clone();}
             Some(match self.fixture_sources.as_ref() {
                 Some(current) => current.staged(&candidate)?,
                 None => service_fixture::FixtureSources::new().staged(&candidate)?,
             })
         } else { None };
-        let recapture = self.channel_recapture(&config)?;
         if geometry_changed && config.enabled && recapture.is_none() {
             // Replay IQ clocks describe receiver output, not the shared RF capture grid.
             let fs = self.capture_input_rate();
@@ -457,15 +465,20 @@ impl DevState {
         }
         if let Some(capture) = recapture {
             self.sdr_center = capture.center;
+            configs=capture.configs;
+            self.receivers.band_paused=capture.band_paused;
             self.invalidate_observation();
             self.channel_power = vec![None; MAX_CHANNELS];
-            for slot in 1..=MAX_CHANNELS as u32 { self.decode_snapshots.clear_channel(slot); }
+            for slot in 1..=MAX_CHANNELS as u32 {
+                if !self.receivers.band_paused.contains(&slot) {self.decode_snapshots.clear_channel(slot);}
+            }
             self.freq_version += 1;
         }
         if geometry_changed {
             self.channel_power[(channel-1) as usize]=None;
         }
-        *configs.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = config.clone();
+        let mut effective=config.clone();effective.enabled &= !target_paused;
+        *configs.iter_mut().find(|old|old.channel==channel).ok_or("channel not found")? = effective.clone();
         if channel == 1 {
             self.sdr_listen = config.freq;
             self.sdr_demod = config.mode.clone();
@@ -478,11 +491,12 @@ impl DevState {
         }
         self.sdr_aux = json!({"2":configs[1], "3":configs[2]});
         self.sdr_channels = configs;
-        if !config.enabled || !config.processing_enabled {self.processing_branches.retire_channel(channel);}
+        if data.get("enabled").is_some()&&!target_paused {self.receivers.band_paused.remove(&channel);}
+        if !effective.enabled || !effective.processing_enabled {self.processing_branches.retire_channel(channel);}
         if let Some(fixtures) = staged_fixtures { self.fixture_sources = Some(fixtures); }
         // Native and legacy stops share the same ordered drain boundary. Keep it
         // behind pending tails; only the UID-based transport exposes this marker.
-        if old.enabled && !config.enabled {
+        if old.enabled && !effective.enabled {
             if let Some(entry)=retiring_iq {
                 let mut end=b"IQEN".to_vec();
                 end.extend_from_slice(&channel.to_le_bytes());
@@ -499,7 +513,7 @@ impl DevState {
         // Commit the new processing generation before checking its failure.
         // A retired generation's fault cannot block repair; actual new input
         // must still confirm recovery before the supervisor reports receiving.
-        if (geometry_changed || repair_nr) && config.enabled && self.receiver_failure.is_none()
+        if (geometry_changed || repair_nr) && effective.enabled && self.receiver_failure.is_none()
             && !self.fine_faults().iter().any(|f|f.channel==channel)
             && !self.receiver_workers.as_ref().is_some_and(|w|w.channel_failure(channel).is_some()) {
             self.reception.configured(channel, config.processing_enabled);
@@ -927,11 +941,13 @@ mod tests {
         assert_eq!(capture.configs[1].freq, 120e6);
         assert!(capture.configs[1].enabled);
         let aux = state.parse_channel_config(&json!({"channel": 2, "freq": 130e6})).unwrap();
-        assert!(state.channel_recapture(&aux).is_err());
+        let outside=state.channel_recapture(&aux).unwrap().unwrap();
+        assert!(outside.band_paused.contains(&2));assert_eq!(outside.configs[1].freq,130e6);
         let inside = state.parse_channel_config(&json!({"channel": 1, "freq": 105e6, "mode": "am", "ifbw": 6000})).unwrap();
         assert!(state.channel_recapture(&inside).unwrap().is_none());
         state.sdr_channels[1].freq = 90e6;
-        assert!(state.channel_recapture(&config).is_err());
+        let outside=state.channel_recapture(&config).unwrap().unwrap();
+        assert!(outside.band_paused.contains(&2));assert_eq!(outside.configs[1].freq,90e6);
     }
 
     #[test]
@@ -964,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn auxiliary_outside_narrow_capture_widens_without_moving_primary() {
+    fn auxiliary_outside_narrow_capture_waits_without_moving_primary_or_widening_capture() {
         let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
         state.sdr_center = 100e6;
         state.sdr_listen = 100e6;
@@ -980,9 +996,11 @@ mod tests {
         let capture = state.channel_recapture(&aux).unwrap().unwrap();
         assert_eq!(capture.center, 100e6);
         assert_eq!(capture.configs[0].freq, 100e6);
-        assert_eq!(capture.configs[1], aux);
-        assert!(capture.source_rate > fs);
-        assert!(capture.bandwidth > bandwidth);
+        let mut paused=aux.clone();paused.enabled=false;
+        assert_eq!(capture.configs[1], paused);
+        assert!(capture.band_paused.contains(&2));
+        assert!(capture.source_rate <= fs);
+        assert!(capture.bandwidth <= bandwidth);
         assert_eq!(state.capture_bandwidth(), bandwidth);
     }
 

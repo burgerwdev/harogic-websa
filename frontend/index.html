@@ -266,7 +266,7 @@
                 <option value="1024">48.8 kHz</option>
                 <option value="2048">24.4 kHz</option>
               </select></div>
-            <div class="param-row"><label><span data-i18n="listen">Listen</span> <span id="sdr-current-channel">C1</span></label>
+            <div class="param-row"><label><span data-i18n="listen">Listen</span> <span id="sdr-current-channel">Current</span></label>
               <input type="number" id="input-sdr-listen" value="1000" step="any" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
               <span class="sdr-tail"><span class="cur-val">MHz</span><button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></span></div>
             <div class="param-row"><label data-i18n="step">Step</label>
@@ -294,9 +294,8 @@
               <button class="btn span-full-button" data-action="sdr-to-center" data-i18n="to_center" data-i18n-title="sdr_to_center_tip" title="Set the wideband centre to the listen frequency">To Center</button></div>
             <div class="param-row sdr-channel-actions"><div class="sdr-channel-buttons">
               <button class="btn" data-action="sdr-workbench" data-i18n="sdr_workbench" data-i18n-title="sdr_workbench_tip">Channels</button>
-              <button class="btn" data-action="sdr-channel-add" data-i18n="sdr_channel_add_tip" data-i18n-attr="title" title="Add the current frequency and demodulation settings to an independent channel" aria-label="Add current frequency to a channel">＋</button>
-              <button class="btn sdr-channel-nav" data-action="sdr-channel-prev" data-i18n="sdr_channel_prev" data-i18n-attr="title" title="Previous receiving channel" aria-label="Previous channel" hidden>‹</button>
-              <button class="btn sdr-channel-nav" data-action="sdr-channel-next" data-i18n="sdr_channel_next" data-i18n-attr="title" title="Next receiving channel" aria-label="Next channel" hidden>›</button>
+              <button class="btn" data-action="sdr-overview" data-i18n="sdr_overview_tip" data-i18n-attr="title" title="All channels overview" aria-labelledby="sdr-overview-label" aria-pressed="false"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span id="sdr-overview-label" data-i18n="sdr_overview_tip" hidden>All channels overview</span></button>
+              <button class="btn" data-action="sdr-channel-add" data-i18n="sdr_channel_add_tip" data-i18n-attr="title" title="Save the current reception as an independent channel; locate an existing saved copy on repeated saves" aria-label="Save current reception as an independent channel">＋</button>
             </div></div>
             <!-- Click positioning: the buttons pick what a plot click does; the inline grid
                  settings serve Channel mode. -->
@@ -897,7 +896,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.12.10 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.12.11 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

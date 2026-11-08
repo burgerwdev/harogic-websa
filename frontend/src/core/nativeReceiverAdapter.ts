@@ -74,7 +74,8 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
         faults.push(fault('request', 'INVALID_BASEBAND', 'Baseband requirements must be finite positive values'));
       if (config.enabled && (c.state !== 'running' || c.usable_bandwidth_hz === null || c.parameters_state === 'unknown'))
         faults.push(fault('request', 'NO_SOURCE', 'Start or recover the shared capture first'));
-      else if (config.enabled && Math.abs(b.frequency_hz - c.center_hz) + b.passband_hz / 2 + b.transition_hz > c.usable_bandwidth_hz! / 2)
+      else if (config.enabled && command.type === 'configure' && this.current.receivers.find(r => r.receiver_uid === command.receiver_uid)?.display_number === 1
+        && Math.abs(b.frequency_hz - c.center_hz) + b.passband_hz / 2 + b.transition_hz > c.usable_bandwidth_hz! / 2)
         faults.push(fault('request', 'RF_RANGE', 'Full passband and transition exceed the shared capture'));
     }
     return { accepted: !faults.length, faults, capture_change: false, affected_receivers: command.type === 'configure' ? [command.receiver_uid] : [],

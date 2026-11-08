@@ -20,6 +20,7 @@ fn audio_signature(channel: &ChannelConfig) -> String {
 
 struct LogicalReceiver {
     uid: String,
+    created_at_ms: String,
     revision: u64,
     config: Value,
     channel: ChannelConfig,
@@ -38,6 +39,7 @@ pub(super) struct IqIdentity {
 
 pub(super) struct Directory {
     pub(super) boot: String,
+    pub(super) band_paused: std::collections::BTreeSet<u32>,
     next: u64,
     snapshot_revision: u64,
     receivers: BTreeMap<u32, LogicalReceiver>,
@@ -54,7 +56,7 @@ impl Default for Directory {
     fn default() -> Self {
         Self { boot: format!("{}-{}",std::process::id(),std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()), next:0,snapshot_revision:0,
-            receivers:BTreeMap::new(),history:VecDeque::new(),replies:VecDeque::new(),recording_requests:BTreeMap::new(),started:std::time::Instant::now(),actions:VecDeque::new(),action_floor:None,idle_receipts:VecDeque::new() }
+            receivers:BTreeMap::new(),band_paused:std::collections::BTreeSet::new(),history:VecDeque::new(),replies:VecDeque::new(),recording_requests:BTreeMap::new(),started:std::time::Instant::now(),actions:VecDeque::new(),action_floor:None,idle_receipts:VecDeque::new() }
     }
 }
 
@@ -198,6 +200,7 @@ pub(super) fn config_value(channel: &ChannelConfig, previous: Option<&Value>) ->
     let mut config = previous.cloned().unwrap_or_else(||json!({
         "name":format!("C{}",channel.channel),"color":"#4cc99b","tags":[],
     }));
+    if channel.channel==1 {config["name"]=json!("Current");}
     config["enabled"]=json!(channel.enabled);
     config["continuity"]=json!(channel.continuity);
     config["purpose"]=json!(if !channel.processing_enabled {"iq"}
@@ -229,19 +232,24 @@ impl DevState {
         let configs=self.channel_configs();
         let registry=self.stream_registry();
         for channel in configs {
-            if !channel.enabled && !self.receivers.receivers.contains_key(&channel.channel) {continue;}
+            if !channel.enabled && !self.receivers.band_paused.contains(&channel.channel) && !self.receivers.receivers.contains_key(&channel.channel) {continue;}
             if !self.receivers.receivers.contains_key(&channel.channel) {
                 self.receivers.next+=1;
                 self.receivers.receivers.insert(channel.channel,LogicalReceiver {
                     uid:format!("receiver-{}-{}",self.receivers.boot,self.receivers.next),
+                    created_at_ms:recording::millis(),
                     revision:self.config_version,config:config_value(&channel,None),channel:channel.clone(),
                 });
             }
             let receiver=self.receivers.receivers.get_mut(&channel.channel).unwrap();
+            if channel.channel==1 {receiver.config["name"]=json!("Current");}
             self.reception.bind(channel.channel,&receiver.uid);
-            if receiver.channel!=channel {
+            if receiver.channel!=channel || receiver.config["enabled"]!=json!(channel.enabled||self.receivers.band_paused.contains(&channel.channel)) {
                 receiver.revision=self.config_version;
-                receiver.config=config_value(&channel,Some(&receiver.config));
+                let mut intended=channel.clone();
+                intended.enabled |= self.receivers.band_paused.contains(&channel.channel);
+                let mut previous=receiver.channel.clone();previous.enabled=receiver.config["enabled"].as_bool().unwrap_or(previous.enabled);
+                if previous!=intended {receiver.config=config_value(&intended,Some(&receiver.config));}
                 receiver.channel=channel;
             }
             if let Some(entry)=registry.iter().find(|entry|entry.channel==receiver.channel.channel) {
@@ -271,7 +279,9 @@ impl DevState {
             let fine_fault=fine_faults.iter().find(|fault|entry.is_some_and(|entry|entry.channel_id==fault.channel_id && entry.epoch==fault.epoch));
             let runtime=self.receiver_workers.as_ref().map(|w|w.runtime_status(receiver.channel.channel,&receiver.uid));
             json!({"receiver_uid":receiver.uid,"source_id":SOURCE,"display_number":receiver.channel.channel,
+                "created_at_ms":receiver.created_at_ms,
                 "revision":receiver.revision.to_string(),"confirmed":receiver.config,
+                "coverage":{"state":if self.receivers.band_paused.contains(&receiver.channel.channel) {"out_of_band"} else {"in_band"}},
                 "control_receipts":self.receiver_workers.as_ref().map(|w|w.control_receipts(receiver.channel.channel,&receiver.uid))
                     .unwrap_or_else(||json!(self.receivers.idle_receipts.iter().filter(|r|r["receiver_uid"]==receiver.uid).collect::<Vec<_>>())),
                 "audio_signature":audio_signature(&receiver.channel),
@@ -281,7 +291,7 @@ impl DevState {
                 "reception":self.reception.snapshot(receiver.channel.channel),
                 "processing_runtime":runtime,
                 "processing_fault":self.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(receiver.channel.channel)),
-                "state":if !receiver.channel.enabled {"stopped"} else if capture_fault.is_some() || fine_fault.is_some() {"failed"}
+                "state":if self.receivers.band_paused.contains(&receiver.channel.channel) {"interrupted"} else if !receiver.channel.enabled {"stopped"} else if capture_fault.is_some() || fine_fault.is_some() {"failed"}
                     else if entry.is_some() {"running"} else {"interrupted"},
                 "stream":entry.map(|e|json!({"source_id":SOURCE,"epoch":e.epoch.to_string(),"channel_id":e.channel_id.to_string()})),
                 "clock":entry.and_then(|e|self.receivers.history.iter().find(|known|
@@ -361,7 +371,7 @@ fn fault(scope:&str,code:&str,message:&str)->Value {
     json!({"scope":scope,"code":code,"message":message,"retryable":false})
 }
 
-struct Change {slot:u32,config:Value,data:Value,retire:bool,revision:u64,output_bytes:f64}
+struct Change {slot:u32,config:Value,data:Value,retire:bool,band_paused:bool,revision:u64,output_bytes:f64}
 
 fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     if request.get("service_id").is_some_and(|id|id!=&state.receivers.boot) {
@@ -371,13 +381,14 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     state.remember_receiver_streams();
     let kind=request["type"].as_str().ok_or("receiver command type missing")?;
     let slot=if kind=="create" {
-        (1..=MAX_CHANNELS as u32).find(|slot|!state.receivers.receivers.contains_key(slot))
+        (2..=MAX_CHANNELS as u32).find(|slot|!state.receivers.receivers.contains_key(slot))
             .ok_or("receiver capacity reached")?
     } else {
         let uid=request["receiver_uid"].as_str().ok_or("receiver_uid missing")?;
         state.receiver_slot(uid).ok_or("receiver not found")?
     };
     let previous=state.receivers.receivers.get(&slot);
+    if kind=="retire" && slot==1 {return Err("Current is reserved for temporary tuning; stop it instead of deleting it".into());}
     if kind=="configure" {
         let expected=request["expected_revision"].as_str().and_then(|v|v.parse::<u64>().ok()).ok_or("expected_revision must be a decimal string")?;
         if previous.is_none_or(|r|r.revision!=expected) {return Err("receiver revision changed; refresh before retrying".into());}
@@ -385,6 +396,7 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     let mut config=if kind=="retire" {previous.ok_or("receiver absent")?.config.clone()}
         else if matches!(kind,"create"|"configure") {request["config"].clone()}
         else {return Err("unsupported receiver command".into());};
+    if slot==1 {config["name"]=json!("Current");}
     if kind=="retire" {config["enabled"]=json!(false);}
     if config["name"].as_str().is_none_or(|v|v.is_empty()||v.len()>128)
         || config["color"].as_str().is_none_or(|v|v.len()!=7||!v.starts_with('#')||!v[1..].bytes().all(|c|c.is_ascii_hexdigit()))
@@ -451,17 +463,20 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
             ["id","kind","mode","minimum_rate_hz","bandwidth_hz","pcm_gain","agc","squelch_dbm","nr","nr_algorithm","nr_strength","nr_atten_db"].contains(&key.as_str()));
     }
     let fs=state.capture_input_rate();
-    let plan=service_ddc::source_plan(fs,&channel)?;
+    let logical_plan=service_ddc::source_plan(IQ_FS.max(fs),&channel)?;
+    let band_paused=enabled && (slot!=1 && ((frequency-state.capture_center()).abs()+logical_plan.plan().stopband_hz>state.capture_bandwidth()/2.0
+        || service_ddc::source_plan(fs,&channel).is_err()));
+    let plan=if band_paused {logical_plan} else {service_ddc::source_plan(fs,&channel)?};
     if enabled {
         let (lo,hi)=state.freq_limits();
         if !(lo..=hi).contains(&frequency) {return Err("frequency outside device RF limits".into());}
-        if (frequency-state.capture_center()).abs()+plan.plan().stopband_hz>state.capture_bandwidth()/2.0 {
+        if !band_paused && (frequency-state.capture_center()).abs()+plan.plan().stopband_hz>state.capture_bandwidth()/2.0 {
             return Err("full passband and transition exceed shared capture".into());
         }
-        service_ddc::validate_source_frequency(state.capture_center(),state.capture_bandwidth(),fs,
-            state.sdr_pfb_taps_per_phase,frequency,&plan)?;
+        if !band_paused {service_ddc::validate_source_frequency(state.capture_center(),state.capture_bandwidth(),fs,
+            state.sdr_pfb_taps_per_phase,frequency,&plan)?;}
     }
-    let mut data=json!({"cmd":"SET_SDR_CHANNEL","channel":slot,"enabled":enabled,"freq":frequency,
+    let mut data=json!({"cmd":"SET_SDR_CHANNEL","channel":slot,"enabled":enabled&&!band_paused,"freq":frequency,
         "mode":channel.mode,"if_bw":channel.if_bw,"baseband":channel.baseband,
         "continuity":channel.continuity,"processing_enabled":channel.processing_enabled,"volume":channel.volume,"agc":channel.agc,"squelch":channel.squelch,
         "nr":channel.nr,"nr_algorithm":channel.nr_algorithm,"nr_strength":channel.nr_strength,"nr_atten_db":channel.nr_atten_db,
@@ -471,8 +486,8 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     // A retained compatibility mode is irrelevant to IQ-only. Sending it would
     // also look like an explicit legacy decoder-recovery request after a fault.
     if !channel.processing_enabled {data.as_object_mut().unwrap().remove("mode");}
-    Ok(Change {slot,config,data,retire:kind=="retire",revision:state.config_version,
-        output_bytes:if enabled {plan.plan().output_rate*8.0} else {0.0}})
+    Ok(Change {slot,config,data,retire:kind=="retire",band_paused,revision:state.config_version,
+        output_bytes:if enabled&&!band_paused {plan.plan().output_rate*8.0} else {0.0}})
 }
 
 pub(super) async fn snapshot(State(app):State<Arc<App>>)->Response {
@@ -545,6 +560,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
                     }
                     else {
                         if state.config_version==change.revision {state.config_version+=1;}
+                        if change.band_paused {state.receivers.band_paused.insert(change.slot);} else {state.receivers.band_paused.remove(&change.slot);}
                         state.remember_receiver_streams();
                         if !state.receivers.receivers.contains_key(&change.slot) {
                             state.receivers.next+=1;
@@ -552,12 +568,17 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
                             let channel=state.channel_config(change.slot).expect("admitted receiver slot");
                             let revision=state.config_version;
                             state.receivers.receivers.insert(change.slot,LogicalReceiver {uid,revision,
-                                channel,config:change.config.clone()});
+                                created_at_ms:recording::millis(),channel,config:change.config.clone()});
                         }
                         let revision=state.config_version;
                         if let Some(receiver)=state.receivers.receivers.get_mut(&change.slot) {receiver.config=change.config;receiver.revision=revision;}
                         if let Err(error)=state.track_receiver_control(change.slot,&change.data) {failure=Some(error);}
-                        if change.retire {state.receivers.receivers.remove(&change.slot);}
+                        if change.retire {
+                            if let Some(receiver)=state.receivers.receivers.remove(&change.slot) {
+                                if let Some(recordings)=&state.recordings {recordings.source_end(&receiver.uid);}
+                            }
+                            state.receivers.band_paused.remove(&change.slot);
+                        }
                     }
                     service_stream::deliver_retiring(&mut state,&worker_app);
                     state.publish_identities(&worker_app.identities);
@@ -647,7 +668,7 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
                     return Err("enable a healthy processor before recording its published results".into());
                 }
                 if state.swp.mode!="sdr" || !state.link_up || state.ddc_error.is_some()
-                    || !state.channel_config(slot).is_some_and(|config|config.enabled) {return Err("enable a healthy IQ receiver before recording".into());}
+                    || !(state.channel_config(slot).is_some_and(|config|config.enabled)||state.receivers.band_paused.contains(&slot)) {return Err("enable a healthy IQ receiver before recording".into());}
                 if !preview {
                     let service=state.receivers.boot.clone();
                     let pending=state.recordings.as_mut().unwrap().start_configured(uid,&service,&id,kind,audio_format,&name)?;
@@ -663,6 +684,13 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
             "capture_change":false,"affected_receivers":[],"affected_tracks":[],"candidate_center_hz":state.capture_center(),"estimated_cf32_bytes_per_second":0});}
         if let Some(ticket)=ticket {
             drop(state);result=ticket.wait();state=app.state.lock().unwrap();
+            if result.is_ok() {
+                if let Some(uid)=request["receiver_uid"].as_str() {
+                    if state.receiver_slot(uid).is_some_and(|slot|state.receivers.band_paused.contains(&slot)) {
+                        if let Some(manager)=&state.recordings {manager.coverage(uid,true);}
+                    }
+                }
+            }
             // Concurrent retries share the preparation ticket and the first committed receipt.
             if let Some((_,old,reply))=state.receivers.replies.iter().find(|(key,_,_)|key==&id) {
                 if old==&request {return reply.clone();}
@@ -700,6 +728,7 @@ pub(super) fn record_result(state:&DevState,bytes:Bytes) {
                 "actual_rate_hz":known.entry.output_rate,"input_rate_hz":known.entry.input_rate},"envelope":envelope});
         serde_json::to_vec(&row).map(Bytes::from).map_err(|e|e.to_string())
     })();
+    if !state.receivers.band_paused.contains(&known.slot) {manager.coverage(&known.uid,false);}
     match result {Ok(bytes)=>manager.admit_result(&known.uid,bytes),Err(error)=>manager.processing_failed(&known.uid,&error)}
 }
 
@@ -712,11 +741,18 @@ pub(super) fn record_audio(state:&DevState,bytes:Bytes,config:&ChannelConfig) {
     let source=json!({"receiver_uid":known.uid,"service_id":state.receivers.boot,
         "baseband_stream":{"source_id":SOURCE,"channel_id":known.entry.channel_id.to_string(),"epoch":known.entry.epoch.to_string()},
         "baseband":known.baseband,"baseband_revision":known.revision.to_string(),"config":config});
+    if !state.receivers.band_paused.contains(&known.slot) {manager.coverage(&known.uid,false);}
     if let Ok(source)=serde_json::to_vec(&source) {manager.admit_audio(&known.uid,recording::audio::Input {bytes,source:source.into()});}
 }
 
 pub(super) fn recording_processing_sources(state:&DevState) {
     if let Some(manager)=&state.recordings {
+        for receiver in state.receivers.receivers.values() {
+            let paused=state.receivers.band_paused.contains(&receiver.channel.channel);
+            let draining=state.receiver_workers.as_ref().is_some_and(|workers|workers.retiring_uid(receiver.channel.channel,&receiver.uid));
+            if !paused||!draining {manager.coverage(&receiver.uid,paused);}
+            if !paused&&!receiver.channel.enabled {manager.source_end(&receiver.uid);}
+        }
         let mut active=state.receivers.receivers.values().filter(|r|r.channel.enabled&&r.channel.processing_enabled
             && websa_channelizer::catalog::mode(&r.channel.mode).is_some_and(|m|m.outputs.iter().any(|kind|kind!="audio"))).map(|r|r.uid.clone()).collect::<Vec<_>>();
         for known in &state.receivers.history {
@@ -776,9 +812,14 @@ pub(super) fn tag_iq_selected(state:&mut DevState,frames:IqFrames,all:bool,wante
         let recording=uid.as_deref().is_some_and(|uid|state.recordings.as_ref().is_some_and(|manager|manager.wants_iq_for(uid)));
         if !all && !uid.as_ref().is_some_and(|uid|wanted.contains(uid)) && !recording {return None;}
         let bytes=Bytes::from(input.into_wire());
+        let band_paused=uid.as_deref().is_some_and(|uid|state.receivers.receivers.iter()
+            .any(|(slot,receiver)|receiver.uid==uid&&state.receivers.band_paused.contains(slot)));
         if let (Some(uid),Some(recordings))=(&uid,&state.recordings) {
-            if bytes.starts_with(b"IQEN") {recordings.source_end(uid);}
+            if bytes.starts_with(b"IQEN") {
+                if !band_paused {recordings.source_end(uid);}
+            }
             else if bytes.len()>=56 && u32::from_le_bytes(bytes[12..16].try_into().unwrap())>0 {
+                if !band_paused {recordings.coverage(uid,false);}
                 if let Some((id,epoch))=key {
                     if let Some(known)=state.receivers.history.iter().find(|known|known.entry.channel_id==id&&known.entry.epoch==epoch) {
                         let read=|at|u32::from_le_bytes(bytes[at..at+4].try_into().unwrap());
@@ -913,6 +954,28 @@ mod tests {
         serde_json::from_slice(&axum::body::to_bytes(response.into_body(),2*1024*1024).await.unwrap()).unwrap()
     }
 
+    #[tokio::test]
+    async fn creation_time_survives_metadata_edits_and_changes_with_a_new_receiver() {
+        let app=app();
+        let mut config=iq_config(100e6);config["enabled"]=json!(false);
+        let created=run(&app,json!({"type":"create","request_id":"created-time","config":config})).await;
+        assert!(created["fault"].is_null(),"{created}");
+        let row=created["snapshot"]["receivers"][0].clone();
+        let timestamp=row["created_at_ms"].as_str().unwrap().parse::<u64>().unwrap();
+        assert!(timestamp>0);
+        config["name"]=json!("Renamed channel");
+        let edited=run(&app,json!({"type":"configure","request_id":"rename-time","receiver_uid":row["receiver_uid"],
+            "expected_revision":row["revision"],"config":config})).await;
+        assert!(edited["fault"].is_null(),"{edited}");
+        assert_eq!(edited["snapshot"]["receivers"][0]["created_at_ms"],row["created_at_ms"]);
+        let retired=run(&app,json!({"type":"retire","request_id":"retire-time","receiver_uid":row["receiver_uid"]})).await;
+        assert!(retired["fault"].is_null());
+        let replacement=run(&app,json!({"type":"create","request_id":"replacement-time","config":config})).await;
+        assert!(replacement["fault"].is_null(),"{replacement}");
+        assert_ne!(replacement["snapshot"]["receivers"][0]["receiver_uid"],row["receiver_uid"]);
+        assert!(replacement["snapshot"]["receivers"][0]["created_at_ms"].as_str().unwrap().parse::<u64>().unwrap()>=timestamp);
+    }
+
     fn listen_config(frequency:f64)->Value {
         let mut config=iq_config(frequency);
         config["purpose"]=json!("listen");
@@ -1015,7 +1078,7 @@ mod tests {
             if value.is_number() {assert_eq!(processor[field].as_f64(),value.as_f64(),"{field}");}
             else {assert_eq!(processor[field],value,"{field}");}
         }
-        let channel=app.state.lock().unwrap().channel_configs()[0].clone();
+        let channel=app.state.lock().unwrap().channel_config(after["receivers"][0]["display_number"].as_u64().unwrap() as u32).unwrap();
         assert!(channel.nr);assert_eq!(channel.nr_algorithm,"dfn");
         assert_eq!(channel.nr_strength,0.25);assert_eq!(channel.nr_atten_db,18.0);
         for (index,(field,value)) in [("nr",json!("yes")),("nr_algorithm",json!("unknown")),
@@ -1052,31 +1115,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn main_tuning_after_retiring_c1_preserves_saved_c2() {
+    async fn current_cannot_be_retired_and_restarting_it_preserves_saved_c2() {
         let app=app();
-        let first=run(&app,json!({"type":"create","request_id":"main","config":listen_config(100e6)})).await;
-        let old_uid=first["snapshot"]["receivers"][0]["receiver_uid"].clone();
+        {
+            let mut state=app.state.lock().unwrap();
+            state.apply_channel_config(&json!({"channel":1,"enabled":true,"freq":100e6,"mode":"am","ifbw":6000})).unwrap();
+        }
         let mut config=listen_config(100_010_000.0);
-        config["processors"][0]["mode"]=json!("usb");
-        config["processors"][0]["bandwidth_hz"]=json!(2700);
-        config["baseband"]["passband_hz"]=json!(5400);
-        config["baseband"]["minimum_rate_hz"]=json!(7400);
-        let second=run(&app,json!({"type":"create","request_id":"saved","config":config})).await;
-        assert!(second["fault"].is_null(),"{second}");
-        let saved=second["snapshot"]["receivers"][1].clone();
+        config["processors"][0]["mode"]=json!("usb");config["processors"][0]["bandwidth_hz"]=json!(2700);
+        config["baseband"]["passband_hz"]=json!(5400);config["baseband"]["minimum_rate_hz"]=json!(7400);
+        let created=run(&app,json!({"type":"create","request_id":"saved","config":config})).await;
+        assert!(created["fault"].is_null(),"{created}");
+        let primary=created["snapshot"]["receivers"][0].clone();
+        assert_eq!(primary["confirmed"]["name"],"Current");
+        let saved=created["snapshot"]["receivers"][1].clone();
         let before=app.state.lock().unwrap().channel_configs()[1].clone();
-        let retired=run(&app,json!({"type":"retire","request_id":"remove-main","receiver_uid":old_uid})).await;
-        assert!(retired["fault"].is_null(),"{retired}");
+        let retired=run(&app,json!({"type":"retire","request_id":"remove-current","receiver_uid":primary["receiver_uid"]})).await;
+        assert!(!retired["fault"].is_null());
+        assert_eq!(retired["snapshot"]["receivers"].as_array().unwrap().len(),2);
+        let mut stopped_config=primary["confirmed"].clone();stopped_config["enabled"]=json!(false);
+        let stopped=run(&app,json!({"type":"configure","request_id":"stop-current","receiver_uid":primary["receiver_uid"],
+            "expected_revision":primary["revision"],"config":stopped_config})).await;
+        assert!(stopped["fault"].is_null(),"{stopped}");
         let mut state=app.state.lock().unwrap();
         dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"channel":1,"enabled":true,"freq":100_005_000.0})).unwrap();
         dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"channel":1,"enabled":true,"mode":"usb","ifbw":2400})).unwrap();
         let snapshot=state.receiver_snapshot();
         assert_eq!(snapshot["receivers"].as_array().unwrap().len(),2);
-        assert_ne!(snapshot["receivers"][0]["receiver_uid"],old_uid);
+        assert_eq!(snapshot["receivers"][0]["receiver_uid"],primary["receiver_uid"]);
         assert_eq!(state.channel_configs()[1],before);
-        for field in ["receiver_uid","revision","confirmed","stream"] {
-            assert_eq!(snapshot["receivers"][1][field],saved[field],"{field}");
-        }
+        for field in ["receiver_uid","revision","confirmed","stream"] {assert_eq!(snapshot["receivers"][1][field],saved[field],"{field}");}
     }
 
     #[tokio::test]
@@ -1206,8 +1274,10 @@ mod tests {
     #[tokio::test]
     async fn dynamic_uids_revision_admission_and_stop_preserve_other_receivers() {
         let app=app();
+        {let mut state=app.state.lock().unwrap();state.apply_channel_config(&json!({"channel":1,"enabled":true,"freq":100e6,"mode":"am",
+            "processing_enabled":false,"baseband":{"passband_hz":3000.0,"transition_hz":1000.0,"minimum_rate_hz":6000.0}})).unwrap();}
         let mut uids=Vec::new();
-        for index in 0..MAX_CHANNELS {
+        for index in 0..MAX_CHANNELS-1 {
             let frequency=100e6+index as f64*10_000.0;
             let request=json!({"type":"create","request_id":format!("create-{index}"),"config":iq_config(frequency)});
             let reply=run(&app,request.clone()).await;
@@ -1220,7 +1290,7 @@ mod tests {
         let full=run(&app,json!({"type":"create","request_id":"full","config":iq_config(100e6)})).await;
         assert!(!full["fault"].is_null());
         let before=app.state.lock().unwrap().receiver_snapshot();
-        let mut invalid=before["receivers"][1]["confirmed"].clone();invalid["baseband"]["frequency_hz"]=json!(200e6);
+        let mut invalid=before["receivers"][1]["confirmed"].clone();invalid["baseband"]["frequency_hz"]=json!(-1.0);
         let rejected=run(&app,json!({"type":"configure","request_id":"invalid","receiver_uid":uids[1],
             "expected_revision":before["receivers"][1]["revision"],"config":invalid})).await;
         assert!(!rejected["fault"].is_null());
@@ -1248,7 +1318,7 @@ mod tests {
         state.remember_receiver_streams();
         assert!(state.receivers.history.len()<=HISTORY_LIMIT);
         assert_eq!(state.iq_identity(active.channel_id,active.epoch).unwrap().uid,original.uid);
-        let tune=state.parse_channel_config(&json!({"channel":1,"freq":100_001_000.0})).unwrap();
+        let tune=state.parse_channel_config(&json!({"channel":3,"freq":100_001_000.0})).unwrap();
         assert!(!tune.processing_enabled);assert!(tune.baseband.is_some());
         let legacy=state.parse_channel_config(&json!({"channel":1,"mode":"am","ifbw":6000})).unwrap();
         assert!(legacy.processing_enabled);assert!(legacy.baseband.is_none());
@@ -1478,7 +1548,8 @@ mod tests {
     #[tokio::test]
     async fn complete_mode_controls_round_trip_on_c1_and_c16_with_the_shared_parser() {
         let app=app();
-        for index in 0..MAX_CHANNELS {
+        {let mut state=app.state.lock().unwrap();state.apply_channel_config(&json!({"channel":1,"enabled":true,"freq":100e6,"mode":"am"})).unwrap();}
+        for index in 0..MAX_CHANNELS-1 {
             let reply=run(&app,json!({"type":"create","request_id":format!("parity-create-{index}"),"config":listen_config(100e6+index as f64*10000.0)})).await;
             assert!(reply["fault"].is_null(),"{reply}");
         }

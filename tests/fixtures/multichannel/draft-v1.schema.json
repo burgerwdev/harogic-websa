@@ -597,6 +597,15 @@
     "receiver": {
       "type": "object",
       "properties": {
+        "coverage": {
+          "type": "object",
+          "properties": {"state": {"enum": ["in_band", "out_of_band"]}},
+          "required": ["state"],
+          "additionalProperties": false
+        },
+        "created_at_ms": {
+          "$ref": "#/$defs/u64"
+        },
         "receiver_uid": {
           "type": "string"
         },
@@ -814,6 +823,7 @@
             }
           ]
         },
+        "ended_at_ms": {"$ref": "#/$defs/u64"},
         "end_reason": {
           "anyOf": [
             {
@@ -1052,6 +1062,21 @@
     "recording": {
       "type": "object",
       "properties": {
+        "coverage_generation": {"type": "integer", "minimum": 0},
+        "coverage_interruptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "reason": {"const": "out_of_band"},
+              "started_at_ms": {"$ref": "#/$defs/u64"},
+              "ended_at_ms": {"anyOf": [{"$ref": "#/$defs/u64"}, {"type": "null"}]},
+              "resumed": {"type": "boolean"}
+            },
+            "required": ["reason", "started_at_ms", "ended_at_ms", "resumed"],
+            "additionalProperties": false
+          }
+        },
         "name": {
           "type": "string",
           "maxLength": 128
