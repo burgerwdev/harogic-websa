@@ -12,12 +12,11 @@ pub(super) const DECODE_PENDING_BYTE_LIMIT: u64 = MAX_CHANNELS as u64
 pub(super) const IQ_PENDING_BYTES: u64 = 4 * 1024 * 1024;
 pub(super) const INPUT_JOBS: usize = 1024;
 pub(super) const INPUT_BYTES_MIN: u64 = 4 * 1024 * 1024;
-pub(super) const INPUT_BYTES_MAX: u64 = 32 * 1024 * 1024;
-pub(super) const INPUT_BURST_NS: u64 = 500_000_000;
+pub(super) const INPUT_BYTES_MAX: u64 = 64 * 1024 * 1024;
 pub(super) const INPUT_MEDIA_NS: u64 = 2_000_000_000;
 
 pub(super) fn input_bytes_limit(rate: f64, bytes_per_complex: usize) -> u64 {
-    (rate * bytes_per_complex as f64 * INPUT_BURST_NS as f64 / 1e9)
+    (rate * bytes_per_complex as f64 * INPUT_MEDIA_NS as f64 / 1e9)
         .ceil().clamp(INPUT_BYTES_MIN as f64, INPUT_BYTES_MAX as f64) as u64
 }
 pub(super) const SEND_TIMEOUT: Duration = Duration::from_secs(2);
@@ -31,8 +30,8 @@ mod tests {
     #[test]
     fn input_budget_follows_sample_rate_and_representation_with_a_memory_ceiling() {
         assert_eq!(input_bytes_limit(48_000.0, 8), INPUT_BYTES_MIN);
-        assert_eq!(input_bytes_limit(7_812_500.0, 4), 15_625_000);
-        assert_eq!(input_bytes_limit(7_812_500.0 / 3.0, 8), 10_416_667);
+        assert_eq!(input_bytes_limit(7_812_500.0, 4), 62_500_000);
+        assert_eq!(input_bytes_limit(7_812_500.0 / 3.0, 8), 41_666_667);
         assert_eq!(input_bytes_limit(31_250_000.0, 8), INPUT_BYTES_MAX);
     }
 

@@ -602,7 +602,7 @@ impl PipelinePresentation {
         actual["fine_owners"] = json!({"input_jobs_per_channel":super::fine_workers::INPUT_JOBS,
             "input_bytes_per_channel_min":super::receiver_limits::INPUT_BYTES_MIN,
             "input_bytes_per_channel_max":super::receiver_limits::INPUT_BYTES_MAX,
-            "input_burst_ns":super::receiver_limits::INPUT_BURST_NS,
+            "input_media_ns_per_channel":super::receiver_limits::INPUT_MEDIA_NS,
             "output_jobs_per_channel":32,"output_bytes_per_channel":8388608,
             "shared_coarse_columns":true,"channels":&*snapshot.fine_lanes});
         actual["fine_faults"] = json!(&*snapshot.fine_faults);

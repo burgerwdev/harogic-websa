@@ -15,8 +15,7 @@ mod metrics;
 pub(super) const WORKERS: usize = MAX_CHANNELS;
 pub(super) fn worker_for(channel:u32)->usize {channel.saturating_sub(1) as usize}
 // Item protection plus real retained bytes/media duration, including execution.
-const INPUT_CAPACITY: usize = 64;
-use super::receiver_limits::{input_bytes_limit, INPUT_MEDIA_NS as INPUT_MEDIA_NS_PER_CHANNEL};
+use super::receiver_limits::{input_bytes_limit, INPUT_JOBS as INPUT_CAPACITY, INPUT_MEDIA_NS as INPUT_MEDIA_NS_PER_CHANNEL};
 const RESULT_CAPACITY: usize = 32;
 // Two pending protocol windows per UID, independent of the number of receivers.
 const SEARCH_CAPACITY: usize = 2;
@@ -1172,7 +1171,7 @@ impl ReceiverWorkers {
             "limits":{"workers":WORKERS,"input_per_worker":INPUT_CAPACITY,"results":RESULT_CAPACITY,
                 "input_bytes_per_channel_min":super::receiver_limits::INPUT_BYTES_MIN,
                 "input_bytes_per_channel_max":super::receiver_limits::INPUT_BYTES_MAX,
-                "input_burst_ns":super::receiver_limits::INPUT_BURST_NS,"input_media_ns_per_channel":INPUT_MEDIA_NS_PER_CHANNEL,
+                "input_media_ns_per_channel":INPUT_MEDIA_NS_PER_CHANNEL,
                 "results_per_channel":RESULT_CAPACITY,"output_bytes_per_channel":OUTPUT_BYTES_PER_CHANNEL,
                 "ft8_jobs":SEARCH_CAPACITY,"max_iq_samples":MAX_BASEBAND_SAMPLES,"max_event_bytes":MAX_EVENT_BYTES}
         })
@@ -1863,13 +1862,12 @@ mod tests {
         let workers=ReceiverWorkers::new().unwrap();
         let shared=&workers.shared;
         for rate in [2_604_166.666_666_666_5,4_000_000.0] {
-            let samples=(rate*0.2) as usize;
-            let a=InputPermit::reserve(shared,0,samples,rate).unwrap();
-            let b=InputPermit::reserve(shared,0,samples,rate).unwrap();
+            let samples=(rate*0.25) as usize;
+            let held:Vec<_>=(0..7).map(|_|InputPermit::reserve(shared,0,samples,rate).unwrap()).collect();
             assert!(shared.branches[0].input_bytes.load(Ordering::Acquire)>4*1024*1024);
-            assert!(InputPermit::reserve(shared,0,samples,rate).is_err());
+            assert!(InputPermit::reserve(shared,0,samples*2,rate).is_err());
             assert!(InputPermit::reserve(shared,1,samples,rate).is_ok());
-            drop((a,b));
+            drop(held);
             assert_eq!(shared.branches[0].input_bytes.load(Ordering::Acquire),0);
             assert_eq!(shared.branches[0].input_media_ns.load(Ordering::Acquire),0);
         }
@@ -1975,14 +1973,14 @@ mod tests {
         assert!(events.iter().all(|event|event["event"]["type"]!="radiofax-image"));
         assert_eq!(events.last().unwrap()["epoch"],8);
         assert_eq!(events.last().unwrap()["event"]["type"],"start");
-        for seq in 1..=INPUT_CAPACITY as u32 * 4 {
+        for seq in 1..=256 {
             workers.submit(&frame(seq,u64::from(seq-1)*1_500,8,config.freq,&vec![0.1,0.0].repeat(1_500)),&registry).unwrap();
             workers.finish().unwrap();
         }
         let stats=workers.stats();
         assert_eq!(stats["submitted"],stats["completed"]);
         assert_eq!(stats["submitted_samples"],stats["completed_samples"]);
-        assert_eq!(stats["completed_samples"],(16+INPUT_CAPACITY*4)*1_500);
+        assert_eq!(stats["completed_samples"],(16+256)*1_500);
         assert_eq!(stats["queue_full"],0);
     }
 
@@ -2379,7 +2377,7 @@ mod tests {
     }
 
     #[test]
-    fn mode_switch_discards_a_full_slow_decoder_queue_without_failing() {
+    fn mode_switch_discards_pending_decoder_input_without_failing() {
         let mut workers = ReceiverWorkers::new().unwrap();
         let drm = ChannelConfig { mode: "drm".into(), freq: 100e6, if_bw: 10_000.0, ..ChannelConfig::default() };
         workers.configure(&[drm]).unwrap();
@@ -2391,7 +2389,7 @@ mod tests {
         let start = encode_baseband(BasebandMagic::Primary, 0, 48_000.0, 100e6, 4, 7, 0, 0.0, &[]).unwrap();
         workers.submit(&start, &old).unwrap();
         workers.finish().unwrap();
-        for seq in 1..=INPUT_CAPACITY as u32 {
+        for seq in 1..=16 {
             workers.submit(&frame(seq, u64::from(seq - 1) * 4096), &old).unwrap();
         }
         // Whether the worker has already consumed part of the batch depends on
@@ -2531,7 +2529,7 @@ mod tests {
         let registry = [ChannelRegistryEntry { channel: 1, channel_id: 43, epoch: 8,
             frequency_hz: config.freq, output_rate: 48_000.0, input_rate: 48_000.0,
             group_delay_samples: 0.0, state: "active" }];
-        let blocks = INPUT_CAPACITY * 4;
+        let blocks = 256;
         let mut audio_sequence = 0;
         let mut audio_index = 0;
         for seq in 0..=blocks as u32 {

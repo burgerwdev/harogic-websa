@@ -3,7 +3,7 @@
 ## Changes and regression
 
 - External decoder admission, recovery and retirement share PreparedDecoders across multimon, rtl_433, OnAir, RTTY and GNSS. Failed preparation stays local; unaffected receivers continue.
-- Pipe input retains at most 32 MiB and 1,024 blocks, including execution. Fine and processor burst budgets use 500 ms at the actual rate/format, clamped to 4–32 MiB. Processor input also has 64-entry and two-second media limits; fine input has 1,024 queued blocks plus one executing block.
+- Pipe input retains at most 32 MiB and 1,024 blocks, including execution. Fine and processor byte budgets use two seconds at the actual rate/format, clamped to 4–64 MiB. Processor input also has a two-second media limit. Both queues allow 1,024 entries; fine input includes one executing block.
 - Digital reception is independent of companion audio squelch. Modes without an analog listener report `squelch:null`; fault, recovery and backlog take priority over waiting status.
 - Decode and overview subscribe to existing receivers. Enabled receivers drive reception without an open view. Current and a saved receiver at the same frequency own separate processing and external decoder processes.
 - Wide-mode default transition is max(1 kHz, occupied bandwidth / 8): 225 kHz for ADS-B. Existing explicit configurations remain explicit.
@@ -20,7 +20,6 @@
 | GPS | Synthetic 90-second scenario, 234,000,000 complex input samples at 2.6 MS/s; 196 valid PVT snapshots and 132 navigation rows. |
 | Browser/audio | Clipboard copies verified; −6 dB EQ amplitude ratio approximately 0.50; full right pan; zero PCM under master mute; bypass/unmute restoration; no local-control configuration writes. |
 | Channel lifecycle | Three concurrent native channels, 16 mode changes, four delete/recreate cycles; healthy neighbour configuration/stream preserved. |
-| Dual hardware ADS-B | Original Current and saved 1090 MHz configurations restored on SAN-90, 7.8125 MS/s; 90 seconds, both active, advancing source clocks, zero new interruptions or faults. |
 | Reception without views | HTTP-only fixture regression creates a second receiver; both process and advance without browser or output subscriptions. |
 
 Known-payload tests qualify integration. Sustained sixteen-channel RF capacity, sensitivity and passive GPS sky reception remain unqualified. No RF transmission was performed.
