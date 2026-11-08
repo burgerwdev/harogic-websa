@@ -21,6 +21,7 @@
 | Browser/audio | Clipboard copies verified; −6 dB EQ amplitude ratio approximately 0.50; full right pan; zero PCM under master mute; bypass/unmute restoration; no local-control configuration writes. |
 | Channel lifecycle | Three concurrent native channels, 16 mode changes, four delete/recreate cycles; healthy neighbour configuration/stream preserved. |
 | Reception without views | HTTP-only fixture regression creates a second receiver; both process and advance without browser or output subscriptions. |
+| Dual hardware ADS-B | SAN-90, original Current and saved 1090 MHz settings, 7.8125 MS/s; 304 seconds during CI, backlog peaked at 0.87 s and drained, both active at completion, zero interruptions/faults, unchanged stream identities and advancing clocks. |
 
 Known-payload tests qualify integration. Sustained sixteen-channel RF capacity, sensitivity and passive GPS sky reception remain unqualified. No RF transmission was performed.
 
