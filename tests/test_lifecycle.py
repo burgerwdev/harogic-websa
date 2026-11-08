@@ -693,8 +693,6 @@ def test_status_exposes_recovery_permission_and_rejection_preserves_failed_recei
                 'mode': 'am', 'audio_rate': 24000, 'nr': True, 'nr_algorithm': 'fastenhancer'})
             assert accepted['cmd'] == 'STATUS', accepted
             receiver = (await snapshot('/api/sdr/receivers'))['receivers'][0]
-            await subscriptions.enter_async_context(client.ws_connect(
-                origin + '/ws/audio', params={'receiver_uid': receiver['receiver_uid']}))
             try:
                 async with asyncio.timeout(15):
                     while True:
