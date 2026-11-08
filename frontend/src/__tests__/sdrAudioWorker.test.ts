@@ -51,8 +51,115 @@ beforeEach(async () => {
   send({ type: 'init', url: 'ws://localhost/ws/audio?channel=2', targetRate: 48000 });
   send({ type: 'enabled', value: true });
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('AUD2 audio ingress', () => {
+  it.each(['receiver retired', 'receiver stopped'])('ends %s without retry, stale PCM or pending sink delivery', async reason => {
+    vi.useFakeTimers(); vi.resetModules(); posted = []; sockets = [];
+    await import('../audio/sdrAudioWorker');
+    send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true, flowControl: true });
+    send({ type: 'enabled', value: true });
+    receive(packet({ seq: 0 }));
+    const generation = Number(posted.filter(message => message.type === 'reset').at(-1)!.generation);
+    send({ type: 'credit', generation, limit: 1 });
+    receive(packet({ seq: 1, frames: 4 }));
+    const old = sockets[0], count = posted.length;
+    old.onclose!({ code: 1000, reason });
+    expect(posted.slice(count)).toContainEqual({ type: 'ended', reason });
+    expect(posted.slice(count)).toContainEqual({ type: 'enabled', value: false });
+    expect(posted.slice(count).some(message => message.type === 'meter-reset')).toBe(true);
+    const reset = Number(posted.filter(message => message.type === 'reset').at(-1)!.generation);
+    send({ type: 'credit', generation: reset, limit: 100 });
+    send({ type: 'meter', generation: reset, rms: 1, peak: 1, playing: true });
+    old.onmessage!({ data: packet({ seq: 2, frames: 4, input: 8n, index: 4n }) });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(sockets).toHaveLength(1);
+    expect(posted.filter(message => message.type === 'samples')).toHaveLength(1);
+    expect(posted.filter(message => message.type === 'meter' || message.type === 'error')).toEqual([]);
+    send({ type: 'enabled', value: true });
+    expect(sockets).toHaveLength(2);
+    const resumed = posted.length;
+    old.onclose!({ code: 1011, reason: 'receiver failed' });
+    old.onmessage!({ data: packet({ seq: 0, epoch: 3 }) });
+    expect(posted).toHaveLength(resumed);
+    sockets[1].onmessage!({ data: packet({ seq: 0, epoch: 2 }) });
+    expect(posted.at(-1)).toEqual({ type: 'enabled', value: true });
+  });
+  it.each([[1000, ''], [1005, 'receiver retired'], [1011, 'receiver stopped'], [1013, 'receiver retired']] as const)
+    ('does not classify audio close %s/%s as normal receiver end', async (code, reason) => {
+      vi.useFakeTimers(); vi.resetModules(); posted = []; sockets = [];
+      await import('../audio/sdrAudioWorker');
+      send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true });
+      send({ type: 'enabled', value: true });
+      sockets[0].onclose!({ code, reason });
+      expect(posted.some(message => message.type === 'ended')).toBe(false);
+      expect(posted.some(message => message.type === 'error' || message.type === 'connection' && message.state === 'reconnecting')).toBe(true);
+    });
+  it('keeps source PCM continuous across forward and backward UTC jumps', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-05T12:00:00Z'));
+    receive(packet({ seq: 0 }));
+    receive(packet({ seq: 1, frames: 480 }));
+    vi.setSystemTime(new Date('2026-11-06T12:00:00Z'));
+    receive(packet({ seq: 2, frames: 480, input: 960n, index: 480n }));
+    vi.setSystemTime(new Date('2026-11-04T12:00:00Z'));
+    receive(packet({ seq: 3, frames: 480, input: 1920n, index: 960n }));
+    expect(posted.filter(message => message.type === 'samples')).toHaveLength(3);
+    expect(posted.filter(message => message.type === 'error')).toEqual([]);
+    // Real source loss must remain detectable independently of host UTC.
+    receive(packet({ seq: 5, frames: 480, input: 3840n, index: 1920n }));
+    expect(posted.filter(message => message.type === 'error')).toHaveLength(1);
+  });
+  it('reconnects UID transport loss at a fresh boundary and ignores old socket PCM', async () => {
+    vi.useFakeTimers();
+    // This option is enabled only by the UID playback owner; legacy remains explicit retry.
+    vi.resetModules(); posted = []; sockets = [];
+    await import('../audio/sdrAudioWorker');
+    send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true });
+    send({ type: 'enabled', value: true });
+    receive(packet({ seq: 0 })); receive(packet({ seq: 1, frames: 2 }));
+    const old = sockets[0]; old.onclose!({ code: 1006, reason: '' });
+    expect(posted.at(-1)).toEqual({ type: 'connection', state: 'reconnecting' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sockets).toHaveLength(2);
+    old.onmessage!({ data: packet({ seq: 2, frames: 2, input: 4n, index: 2n }) });
+    expect(posted.filter(m => m.type === 'samples')).toHaveLength(1);
+    sockets[1].onmessage!({ data: packet({ seq: 0, input: 1000n, index: 500n }) });
+    sockets[1].onmessage!({ data: packet({ seq: 1, input: 1000n, index: 500n, frames: 2 }) });
+    expect(posted.filter(m => m.type === 'samples')).toHaveLength(2);
+    expect(posted.filter(m => m.type === 'error')).toEqual([]);
+    expect(posted).toContainEqual({ type: 'connection', state: 'connected' });
+    sockets[1].onclose!({ code: 1006, reason: '' });
+    send({ type: 'enabled', value: false });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(2);
+  });
+  it('backs off UID failures and bounds receiver and slow-consumer subscription retries', async () => {
+    vi.useFakeTimers(); vi.resetModules(); posted = []; sockets = [];
+    await import('../audio/sdrAudioWorker');
+    send({ type: 'init', url: 'ws://localhost/ws/audio?receiver_uid=uid-a', targetRate: 48000, reconnect: true });
+    send({ type: 'enabled', value: true });
+    sockets[0].onerror!(); sockets[0].onclose!({ code: 1006, reason: '' });
+    await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(2);
+    sockets[1].onclose!({ code: 1006, reason: '' });
+    await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(500); expect(sockets).toHaveLength(3);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      sockets[2 + attempt].onclose!({ code: 1011, reason: 'receiver failed' });
+      await vi.advanceTimersByTimeAsync(1000 * 2 ** attempt);
+      expect(sockets).toHaveLength(4 + attempt);
+    }
+    sockets[5].onclose!({ code: 1011, reason: 'receiver failed' });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(6);
+    expect(posted.at(-1)?.message).toBe('Backend audio receiver failed');
+    send({ type: 'enabled', value: false });
+    send({ type: 'enabled', value: true });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      sockets[6 + attempt].onclose!({ code: 1013, reason: 'slow consumer' });
+      await vi.advanceTimersByTimeAsync(1000 * 2 ** attempt);
+    }
+    sockets[9].onclose!({ code: 1013, reason: 'slow consumer' });
+    await vi.advanceTimersByTimeAsync(10000); expect(sockets).toHaveLength(10);
+    expect(posted.at(-1)?.message).toContain('slow consumer');
+  });
   it('preserves stereo and source positions beyond Number integer precision', () => {
     const input = 9007199254740993n;
     receive(packet({ seq: 0, input, num: 1n, den: 3n, channels: 2 }));
@@ -195,6 +302,18 @@ describe('AUD2 audio ingress', () => {
     receive(packet({ seq: 2, index: index + 2n, input: 404n, frames: 2 }));
     expect(posted.filter((message) => message.type === 'error')).toEqual([]);
     expect(posted.filter((message) => message.type === 'samples')).toHaveLength(2);
+  });
+  it('forwards only current output-meter measurements and never replaces them with ingress RMS', () => {
+    receive(packet({ seq: 0 }));
+    const generation = posted.filter(message => message.type === 'meter-reset').at(-1)!.generation;
+    send({ type: 'meter', generation, rms: .1, peak: .3, playing: true });
+    expect(posted.at(-1)).toMatchObject({ type: 'meter', rms: .1, peak: .3 });
+    receive(packet({ seq: 0, epoch: 2 }));
+    send({ type: 'meter', generation, rms: .9, peak: 1, playing: true });
+    expect(posted.filter(message => message.type === 'meter')).toHaveLength(1);
+    const current = posted.filter(message => message.type === 'meter-reset').at(-1)!.generation;
+    send({ type: 'status', generation: current, available: 0 });
+    expect(posted.at(-1)?.type).toBe('stats'); expect(posted.at(-1)).not.toHaveProperty('rms');
   });
   it('rejects an older source identity after tuning forward', () => {
     receive(packet({ seq: 0, epoch: 3 }));

@@ -1,10 +1,55 @@
+import { AUDIO_QUEUE_SECONDS } from '../sdr/streamLimits';
+import { isChannelNumber } from '../core/channelState';
+import { connectEqualizer, equalizerActive, onEqualizerChange } from './equalizer';
 // Backend AUD2 playback: each channel has one ingress worker and one output node.
 let ctx: AudioContext | null = null;
 let spectrumProbe: AnalyserNode | null = null;
 let spectrumProbeBin = 1;
 let modulePromise: Promise<void> | null = null;
 const WORKLET_URL = new URL('./sdrAudioWorklet.js', import.meta.url).href;
-const chains = new Map<number, AudioChain>();
+const chains = new Map<number | string, AudioChain>();
+let nativeOwner = false;
+const legacyWanted = new Map<number, boolean>();
+interface MainAudioSource { service_id: string; receiver_uid: string | null; available: boolean }
+interface NativeAudioDirectory {
+  service_id?: string;
+  receivers: readonly { display_number: number; receiver_uid: string }[];
+}
+const mainSources = new Map<number, MainAudioSource>();
+let master: GainNode | null = null;
+let limiter: DynamicsCompressorNode | null = null;
+let masterVolume = 0.7;
+let masterMuted = false;
+function ramp(param: AudioParam, value: number): void {
+  const now = ctx!.currentTime;
+  param.cancelScheduledValues(now); param.setValueAtTime(param.value, now);
+  param.linearRampToValueAtTime(value, now + 0.015);
+}
+function nativeBus(audio: AudioContext): GainNode {
+  if (!master) {
+    master = audio.createGain(); limiter = audio.createDynamicsCompressor();
+    // Prepare the shared graph at unity before workbench gain/compression takes over.
+    limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = nativeOwner || equalizerActive() ? 20 : 1;
+    limiter.attack.value = 0.003; limiter.release.value = 0.1;
+    connectEqualizer(audio, master, limiter); limiter.connect(audio.destination);
+    master.gain.value = nativeOwner ? (masterMuted ? 0 : masterVolume) : 1;
+  }
+  return master;
+}
+onEqualizerChange(() => { if (limiter) ramp(limiter.ratio, nativeOwner || equalizerActive() ? 20 : 1); });
+
+/** True while autoplay policy holds the context suspended with playback wanted. */
+export function sdrAudioNeedsGesture(): boolean {
+  return ctx?.state === 'suspended'
+    && Array.from(chains.values()).some((playback) => playback.wantsPlayback());
+}
+let gesturePending: boolean | null = null;
+function notifyGestureState(): void {
+  const pending = sdrAudioNeedsGesture();
+  if (pending === gesturePending) return;
+  gesturePending = pending;
+  document.dispatchEvent(new CustomEvent('websa:sdr-audio-gesture', { detail: { pending } }));
+}
 
 function context(): AudioContext {
   if (!ctx) {
@@ -14,8 +59,15 @@ function context(): AudioContext {
     const resume = () => {
       for (const playback of chains.values()) playback.resume();
     };
-    document.addEventListener('click', resume);
-    document.addEventListener('keydown', resume);
+    // Capture gestures before tuning controls can stop propagation. Autoplay may
+    // leave resume() pending until the first interaction after a reload.
+    document.addEventListener('pointerdown', resume, true);
+    document.addEventListener('click', resume, true);
+    document.addEventListener('keydown', resume, true);
+    ctx.addEventListener('statechange', () => {
+      for (const playback of chains.values()) playback.syncContext();
+      notifyGestureState();
+    });
   }
   return ctx;
 }
@@ -37,6 +89,9 @@ class AudioChain {
   private buffered = 0;
   private underruns = 0;
   private rms = 0;
+  private peak = 0;
+  private meterAt = 0;
+  private meterGeneration = 0;
   private playing = false;
   private playedFrames = 0;
   private renderedFrames = 0;
@@ -58,22 +113,89 @@ class AudioChain {
   private read = 0;
   private write = 0;
   private channels = 1;
+  private connectionState = '';
+  private sourceEnded = false;
 
-  constructor(readonly channel: number) {}
+  private gainNode: GainNode | null = null;
+  private panNode: StereoPannerNode | null = null;
+  private localGain = 0.7;
+  private localPan = 0;
+  private fadeTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly displayNumber: number | null;
+  private probe: AnalyserNode | null = null;
+  private waveformProbe: AnalyserNode | null = null;
+  waveform(samples: Float32Array<ArrayBuffer> | null): boolean {
+    if (!samples) {
+      if (this.waveformProbe) {
+        this.node?.disconnect(this.waveformProbe); this.waveformProbe.disconnect(); this.waveformProbe = null;
+      }
+      return false;
+    }
+    if (!this.node || !this.enabled || !this.playing || this.error || ctx?.state !== 'running' || Date.now() - this.meterAt > 500) return false;
+    if (!this.waveformProbe) {
+      this.waveformProbe = ctx.createAnalyser(); this.waveformProbe.fftSize = 256;
+      this.node.connect(this.waveformProbe);
+    }
+    this.waveformProbe.getFloatTimeDomainData(samples);
+    return true;
+  }
+  constructor(public channel: number | string, private readonly source?: MainAudioSource) {
+    this.displayNumber = typeof channel === 'number' ? channel : null;
+    if (source?.receiver_uid) this.localGain = 1;
+  }
+  /** Transfer control without touching the UID subscription, sink or buffered PCM. */
+  adoptNative(uid: string, service: string | undefined): boolean {
+    if (!this.source || this.source.receiver_uid !== uid || this.source.service_id !== service) return false;
+    this.channel = uid;
+    return true;
+  }
+  private destination(audio: AudioContext): AudioNode {
+    if (typeof this.channel === 'number' && !this.source?.receiver_uid) return nativeBus(audio);
+    if (!this.gainNode) {
+      this.gainNode = audio.createGain(); this.panNode = audio.createStereoPanner();
+      this.gainNode.gain.value = 0; this.panNode.pan.value = this.localPan;
+      this.gainNode.connect(this.panNode); this.panNode.connect(nativeBus(audio));
+      ramp(this.gainNode.gain, this.localGain);
+    }
+    return this.gainNode;
+  }
+  local(gain: number, pan: number): void {
+    const previousGain = this.localGain, previousPan = this.localPan;
+    this.localGain = Math.max(0, Math.min(1, gain)); this.localPan = Math.max(-1, Math.min(1, pan));
+    if (this.gainNode && this.fadeTimer === null && this.localGain !== previousGain) ramp(this.gainNode.gain, this.localGain);
+    if (this.panNode && this.localPan !== previousPan) ramp(this.panNode.pan, this.localPan);
+  }
+  monitorEnabled(on: boolean): void {
+    if (!on && this.fadeTimer !== null) return;
+    if (this.fadeTimer !== null) { clearTimeout(this.fadeTimer); this.fadeTimer = null; }
+    if (on) {
+      if (this.gainNode) ramp(this.gainNode.gain, this.localGain);
+      if (!this.enabled) this.setEnabled(true);
+    } else if (this.enabled && this.gainNode) {
+      ramp(this.gainNode.gain, 0);
+      this.fadeTimer = setTimeout(() => { this.fadeTimer = null; this.setEnabled(false); }, 20);
+    } else if (this.enabled) this.setEnabled(false);
+  }
 
+  /** Enabled playback with no terminal or receiver error: the state autoplay blocks. */
+  wantsPlayback(): boolean {
+    return this.enabled && !this.sourceEnded && !this.receiverFailed && !this.error;
+  }
   status(): Record<string, string | number | boolean> {
     return { channel: this.channel, enabled: this.enabled, muted: this.muted, error: this.error,
       frames: this.frames, playedFrames: this.playedFrames, playing: this.playing,
       renderedFrames: this.renderedFrames, starvedFrames: this.starvedFrames, resets: this.resets, ratio: this.ratio,
-      bufferedFrames: this.buffered, underruns: this.underruns, rms: this.rms,
+      bufferedFrames: this.buffered, underruns: this.underruns, rms: this.rms, peak: this.peak, meterAt: this.meterAt,
       streamKey: this.streamKey, inputIndex: this.inputIndex, audioIndex: this.audioIndex,
       totalDelayUnknown: this.delayUnknown, causalPresentation: this.causal,
-      sampleRate: ctx?.sampleRate || 0, playbackRate: this.playbackRate, bufferMode: this.bufferMode,
+      localGain: this.localGain, pan: this.localPan, owner: typeof this.channel === 'string' ? 'workbench' : 'legacy',
+      connectionState: this.connectionState,
+      masterGain: masterVolume, masterMuted, outputChannels: ctx?.destination.maxChannelCount ?? 2, sampleRate: ctx?.sampleRate || 0, playbackRate: this.playbackRate, bufferMode: this.bufferMode,
       primeFrames: this.primeFrames, maxFillFrames: this.maxFillFrames, contextState: ctx?.state || 'none' };
   }
 
   private debug(): void {
-    if (this.channel !== 1) return;
+    if (this.displayNumber !== 1 || nativeOwner && typeof this.channel === 'number') return;
     const canvas = document.getElementById('spectrum');
     if (canvas) canvas.dataset.sdrAudio =
       `enabled=${this.enabled} muted=${this.muted} frames=${this.frames}` +
@@ -85,24 +207,29 @@ class AudioChain {
       ` playback_rate=${this.playbackRate} buffer_mode=${this.bufferMode} prime_frames=${this.primeFrames} max_fill_frames=${this.maxFillFrames}` +
       ` ctx=${ctx?.state || 'none'} worklet=${typeof AudioWorkletNode !== 'undefined' && this.node instanceof AudioWorkletNode} worker=${!!this.worker}` +
       ` error=${this.error}`;
+    notifyGestureState();
   }
   private clearRing(): void {
     this.read = this.write = this.available = this.buffered = 0;
     this.playing = false;
+    this.rms = this.peak = this.meterAt = 0;
   }
   private fail(message: string): void {
     if (message === 'Backend audio receiver failed') {
       this.setReceiverError(message);
-      document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'audio', message } }));
+      document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'audio', channel: this.channel, message } }));
       return;
     }
     this.error = message;
     this.dispose();
     console.error(`SDR audio channel ${this.channel}: ${message}`);
     this.debug();
+    if (typeof this.channel === 'string') document.dispatchEvent(new CustomEvent('websa:monitor-status'));
   }
   private dispose(): void {
     this.generation++;
+    if (this.fadeTimer !== null) clearTimeout(this.fadeTimer);
+    this.fadeTimer = null;
     this.clearWatchdog();
     this.worker?.terminate();
     this.worker = null;
@@ -112,25 +239,61 @@ class AudioChain {
       this.node.disconnect();
     }
     this.node = null;
-    if (this.channel === 1) { spectrumProbe?.disconnect(); spectrumProbe = null; }
+    this.waveformProbe?.disconnect(); this.waveformProbe = null;
+    this.gainNode?.disconnect(); this.panNode?.disconnect(); this.gainNode = null; this.panNode = null;
+    if (this.probe) {
+      this.probe.disconnect();
+      if (spectrumProbe === this.probe) spectrumProbe = null;
+      this.probe = null;
+    }
     this.initialization = null;
+    this.connectionState = '';
     this.rms = 0;
     this.clearRing();
   }
   resume(): void {
-    if (!this.enabled || this.receiverFailed || this.error || !ctx) return;
+    if (!this.enabled || this.sourceEnded || this.receiverFailed || this.error || !ctx) return;
+    this.syncContext();
+    if (ctx.state === 'running') return;
     const generation = this.generation;
-    void ctx.resume().catch((error) => {
+    void ctx.resume().then(() => {
+      if (generation === this.generation) this.syncContext();
+    }).catch((error) => {
+      // An autoplay refusal is recoverable on a later gesture; it must not
+      // dispose the chain or require the user to change their mute preference.
+      if (error instanceof DOMException && error.name === 'NotAllowedError') return;
       if (generation === this.generation && this.enabled) this.fail(error instanceof Error ? error.message : String(error));
     });
   }
+  syncContext(): void {
+    if (!this.enabled || this.sourceEnded || this.receiverFailed || this.error || !ctx) return;
+    if (ctx.state !== 'running') {
+      // Never subscribe to live PCM while the consumer clock is stopped: its
+      // bounded queue would overflow before autoplay can be unlocked.
+      this.worker?.postMessage({ type: 'enabled', value: false });
+      this.clearRing();
+      this.debug();
+      return;
+    }
+    if (!this.initialization) {
+      const generation = this.generation;
+      this.initialization = this.initialize().catch((error) => {
+        if (generation !== this.generation) return;
+        this.initialization = null;
+        this.fail(error instanceof Error ? error.message : String(error));
+      });
+    }
+    this.worker?.postMessage({ type: 'enabled', value: true });
+    this.debug();
+  }
   private legacy(context: AudioContext): void {
-    this.ring = new Float32Array(Math.ceil(context.sampleRate * 3) * 2);
+    this.ring = new Float32Array(Math.ceil(context.sampleRate * AUDIO_QUEUE_SECONDS) * 2);
     const node = context.createScriptProcessor(2048, 0, 2);
     node.onaudioprocess = (event: AudioProcessingEvent) => {
       const left = event.outputBuffer.getChannelData(0);
       const right = event.outputBuffer.getChannelData(1);
-      let starved = false;
+      let starved = false, rendered = false;
+      let power = 0, peak = 0;
       for (let i = 0; i < left.length; i++) {
         if (!this.enabled || this.muted || this.available === 0) {
           left[i] = right[i] = 0;
@@ -139,22 +302,46 @@ class AudioChain {
         }
         left[i] = this.ring[this.read];
         right[i] = this.channels === 2 ? this.ring[(this.read + 1) % this.ring.length] : left[i];
+        rendered = true;
+        power += (left[i] * left[i] + right[i] * right[i]) / 2;
+        peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
         this.read = (this.read + this.channels) % this.ring.length;
         this.available -= this.channels;
       }
+      this.playing = rendered;
+      this.rms = Math.sqrt(power / left.length); this.peak = peak; this.meterAt = Date.now();
       if (starved) this.underruns++;
       this.buffered = this.available / this.channels;
       this.debug();
     };
-    node.connect(context.destination);
+    node.connect(this.destination(context));
     this.node = node;
   }
   private message(data: Record<string, unknown>): void {
+    if (data.type === 'ended') {
+      // Directory polling may still show this UID as running. Keep its local
+      // intent latched until disable/restart, while releasing the old sink now.
+      this.sourceEnded = true;
+      this.dispose(); this.connectionState = 'stopped'; this.debug();
+      if (typeof this.channel === 'string') document.dispatchEvent(new CustomEvent('websa:monitor-status'));
+      return;
+    }
+    if (data.type === 'meter-reset') {
+      this.meterGeneration = Number(data.generation);
+      this.playing = false; this.rms = this.peak = this.meterAt = 0;
+      return;
+    }
+    if (data.type === 'meter') {
+      if (data.generation !== this.meterGeneration) return;
+      this.rms = Number(data.rms); this.peak = Number(data.peak); this.meterAt = Date.now();
+      this.playing = Boolean(data.playing);
+      return; // Meter traffic must not trigger whole-workbench status rendering.
+    }
     if (data.type === 'samples' && data.samples instanceof Float32Array) {
       const channels = data.stereo ? 2 : 1;
       const samples = data.samples;
       if (channels !== this.channels) { this.clearRing(); this.channels = channels; }
-      if (this.available + samples.length > ctx!.sampleRate * 3 * channels) {
+      if (this.available + samples.length > ctx!.sampleRate * AUDIO_QUEUE_SECONDS * channels) {
         this.fail('Audio consumer is too slow: compatibility queue exceeded three seconds');
         return;
       }
@@ -175,11 +362,13 @@ class AudioChain {
       this.muted = false;
       this.clearWatchdog();
       this.worker?.postMessage({ type: 'mute', value: false });
+    } else if (data.type === 'connection') {
+      this.connectionState = String(data.state ?? '');
+      if (this.connectionState === 'reconnecting') { this.playing = false; this.rms = this.peak = this.meterAt = 0; }
     } else if (data.type === 'error') {
       this.fail(String(data.message));
     } else if (data.type === 'stats') {
       if (typeof data.frames === 'number') this.frames = data.frames;
-      if (typeof data.rms === 'number') this.rms = data.rms;
       if (typeof data.bufferedSamples === 'number') this.buffered = data.bufferedSamples;
       if (typeof data.underruns === 'number') this.underruns = data.underruns;
       if (typeof data.playing === 'boolean') this.playing = data.playing;
@@ -199,6 +388,7 @@ class AudioChain {
       if (typeof data.maxFillFrames === 'number') this.maxFillFrames = data.maxFillFrames;
     }
     this.debug();
+    if (typeof this.channel === 'string' && ['connection', 'identity'].includes(String(data.type))) document.dispatchEvent(new CustomEvent('websa:monitor-status'));
   }
   setReceiverError(message: string | null): void {
     if (message === null) {
@@ -241,7 +431,7 @@ class AudioChain {
               resolve();
             }
           };
-          output.connect(audio.destination);
+          output.connect(this.destination(audio));
         });
         if (generation !== this.generation) { candidate.disconnect(); candidate.port.close(); return; }
         this.node = candidate;
@@ -255,8 +445,8 @@ class AudioChain {
         this.legacy(audio);
       }
     } else this.legacy(audio);
-    if (this.channel === 1 && this.node) {
-      spectrumProbe = audio.createAnalyser();
+    if (this.displayNumber === 1 && this.node) {
+      spectrumProbe = this.probe = audio.createAnalyser();
       spectrumProbe.fftSize = 16384;
       this.node.connect(spectrumProbe);
       spectrumProbeBin = audio.sampleRate / spectrumProbe.fftSize;
@@ -266,8 +456,11 @@ class AudioChain {
     this.worker = worker;
     worker.onmessage = (event: MessageEvent) => { if (this.worker === worker) this.message(event.data || {}); };
     worker.onerror = (event: ErrorEvent) => { if (this.worker === worker) this.fail(event.message || 'Audio worker failed'); };
-    worker.postMessage({ type: 'init', url: audioUrl(this.channel), targetRate: playbackRate, mode: this.mode, flowControl: Boolean(port), port }, port ? [port] : []);
-    worker.postMessage({ type: 'enabled', value: this.enabled });
+    const uid = this.source?.receiver_uid ?? (typeof this.channel === 'string' ? this.channel : null);
+    worker.postMessage({ type: 'init', url: uid
+      ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/audio?receiver_uid=${encodeURIComponent(uid)}`
+      : audioUrl(this.channel as number), reconnect: uid !== null, targetRate: playbackRate, mode: this.mode, flowControl: Boolean(port), port }, port ? [port] : []);
+    worker.postMessage({ type: 'enabled', value: this.enabled && audio.state === 'running' });
     worker.postMessage({ type: 'mute', value: this.muted });
   }
   setMode(mode: string): void {
@@ -278,7 +471,8 @@ class AudioChain {
     this.worker?.postMessage({ type: 'mode', mode: next });
   }
   setEnabled(on: boolean): void {
-    if (on && this.enabled && this.error && !this.receiverFailed) return;
+    if (on && this.enabled && (this.sourceEnded || this.error && !this.receiverFailed)) return;
+    if (!on) this.sourceEnded = false;
     this.clearWatchdog();
     this.enabled = on;
     if (this.receiverFailed) { this.debug(); return; }
@@ -288,17 +482,8 @@ class AudioChain {
     if (!on) { this.dispose(); this.debug(); return; }
     if (on) {
       try { context(); } catch (error) { this.fail(error instanceof Error ? error.message : String(error)); return; }
-      if (!this.initialization) {
-        const generation = this.generation;
-        this.initialization = this.initialize().catch((error) => {
-          if (generation !== this.generation) return;
-          this.initialization = null;
-          this.fail(error instanceof Error ? error.message : String(error));
-        });
-      }
       this.resume();
     }
-    this.worker?.postMessage({ type: 'enabled', value: on });
     this.worker?.postMessage({ type: 'mute', value: false });
     this.debug();
   }
@@ -322,13 +507,71 @@ class AudioChain {
   }
 }
 function chain(channel: number): AudioChain {
-  if (!Number.isInteger(channel) || channel < 1 || channel > 3) throw new Error('Audio channel must be 1, 2, or 3');
+  if (!isChannelNumber(channel)) throw new Error('Invalid audio receiver number');
   let playback = chains.get(channel);
-  if (!playback) { playback = new AudioChain(channel); chains.set(channel, playback); }
+  if (!playback) { playback = new AudioChain(channel, mainSources.get(channel)); chains.set(channel, playback); }
   return playback;
 }
-export function setSdrAudioMode(channel: number, mode: string): void { chain(channel).setMode(mode); }
-export function setSdrChannelAudioEnabled(channel: number, on: boolean): void { chain(channel).setEnabled(on); }
+export function setSdrAudioMode(channel: number, mode: string, source?: MainAudioSource | null): void {
+  const previous = mainSources.get(channel);
+  const changed = source !== undefined && (previous?.service_id !== source?.service_id
+    || previous?.receiver_uid !== source?.receiver_uid);
+  if (source !== undefined) {
+    if (source) mainSources.set(channel, { ...source });
+    else mainSources.delete(channel);
+    if (changed) { chains.get(channel)?.setEnabled(false); chains.delete(channel); }
+  }
+  const playback = chain(channel);
+  playback.setMode(mode);
+  if (!nativeOwner && legacyWanted.get(channel) && source !== undefined
+      && (changed || previous?.available !== source?.available)) playback.setEnabled(source?.available ?? true);
+}
+export function setSdrChannelAudioEnabled(channel: number, on: boolean): void {
+  legacyWanted.set(channel, on);
+  if (!nativeOwner) chain(channel).setEnabled(on && (mainSources.get(channel)?.available ?? true));
+}
+/** The workbench owns local speakers for this page; legacy STATUS must not duplicate playback. */
+export function claimNativeAudio(snapshot?: NativeAudioDirectory): () => void {
+  if (nativeOwner) throw new Error('Native audio already has an owner');
+  nativeOwner = true;
+  for (const [key, playback] of chains) if (typeof key === 'number') {
+    const receiver = snapshot?.receivers.find(row => row.display_number === key);
+    if (receiver && !chains.has(receiver.receiver_uid) && playback.adoptNative(receiver.receiver_uid, snapshot?.service_id)) {
+      chains.delete(key); chains.set(receiver.receiver_uid, playback);
+    } else playback.setEnabled(false);
+  }
+  setNativeMaster(masterVolume, masterMuted);
+  document.dispatchEvent(new CustomEvent('websa:monitor-owner', { detail: { native: true } }));
+  return () => {
+    for (const [key, playback] of chains) if (typeof key === 'string') { playback.setEnabled(false); chains.delete(key); }
+    nativeOwner = false;
+    if (master) ramp(master.gain, 1);
+    if (limiter) ramp(limiter.ratio, equalizerActive() ? 20 : 1);
+    for (const [key, wanted] of legacyWanted) setSdrChannelAudioEnabled(key, wanted);
+    document.dispatchEvent(new CustomEvent('websa:monitor-owner', { detail: { native: false } }));
+  };
+}
+export function setNativeAudioRoute(uid: string, mode: string, on: boolean, gain: number, pan: number, restart = false): void {
+  if (!nativeOwner) throw new Error('Native monitor has no owner');
+  let playback = chains.get(uid);
+  if (!playback && !on) return;
+  if (!playback) { playback = new AudioChain(uid); chains.set(uid, playback); }
+  if (restart) { playback.setEnabled(false); playback.setReceiverError(null); }
+  playback.local(gain, pan); playback.setMode(mode); playback.monitorEnabled(on);
+}
+export function forgetNativeAudio(uid: string): void { chains.get(uid)?.setEnabled(false); chains.delete(uid); }
+export function sampleNativeAudioWaveform(uid: string, samples: Float32Array<ArrayBuffer> | null): boolean {
+  return chains.get(uid)?.waveform(samples) ?? false;
+}
+export function nativeAudioOwnsSpeakers(): boolean { return nativeOwner; }
+export function nativeAudioIsMuted(): boolean { return masterMuted; }
+export function setNativeMaster(gain: number, muted: boolean): void {
+  const changed = masterVolume !== gain || masterMuted !== muted;
+  masterVolume = Math.max(0, Math.min(1, gain)); masterMuted = muted;
+  if (limiter && limiter.ratio.value !== 20) ramp(limiter.ratio, 20);
+  if (master && (changed || master.gain.value !== (muted ? 0 : masterVolume))) ramp(master.gain, muted ? 0 : masterVolume);
+  if (changed) document.dispatchEvent(new CustomEvent('websa:monitor-master'));
+}
 export function prepareSdrChannelAudioTransition(channel: number): void { chain(channel).transition(); }
 export function getSdrChannelAudioError(channel: number): string { return chain(channel).error; }
 export function setSdrReceiverAudioError(channel: number, message: string | null): void { chain(channel).setReceiverError(message); }
@@ -376,3 +619,22 @@ export async function sampleEnvelope(ms = 1000): Promise<Record<string, number |
   const mean = levels.reduce((sum, value) => sum + value, 0) / levels.length;
   return { stepMs: 20, count: levels.length, min, mean, max, ratio: max / Math.max(min, 1e-9), levels };
 }
+
+export function resumeNativeAudio(): void { for (const playback of chains.values()) playback.resume(); }
+
+let mixProbe: [AnalyserNode, AnalyserNode] | null = null;
+/** Diagnostic samples from the actual post-limiter stereo output; creates no additional playback path. */
+export function nativeMixLevels(): { left: number; right: number } {
+  if (!ctx || !limiter) return { left: 0, right: 0 };
+  if (!mixProbe) {
+    const splitter = ctx.createChannelSplitter(2); limiter.connect(splitter);
+    mixProbe = [ctx.createAnalyser(), ctx.createAnalyser()];
+    mixProbe.forEach((probe, index) => { probe.fftSize = 2048; splitter.connect(probe, index); });
+  }
+  const levels = mixProbe.map(probe => {
+    const data = new Float32Array(probe.fftSize); probe.getFloatTimeDomainData(data);
+    return Math.sqrt(data.reduce((power, value) => power + value * value, 0) / data.length);
+  });
+  return { left: levels[0], right: levels[1] };
+}
+Object.assign(window, { websaNativeMixLevels: nativeMixLevels });

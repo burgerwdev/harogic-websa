@@ -51,9 +51,14 @@ export function clearRtaAccum() {
 // entirely (see dsp/rtaDensity.ts).
 const defaultHalflife = () => S.sdrMode ? 0.2 : 0.5;
 const RTA_HALFLIFE_GEARS = [0, 0.2, 0.5, 2, 5, 10];
+const RTA_DENSITY_BINS = [64, 96, 128, 192];
 
 function normalizeHalflife(value: number): number {
   return RTA_HALFLIFE_GEARS.includes(value) ? value : defaultHalflife();
+}
+
+function normalizeBins(value: number): number {
+  return RTA_DENSITY_BINS.includes(value) ? value : 128;
 }
 
 /** Persist density settings across the slot, form and storage; zero is a valid Off value. */
@@ -134,24 +139,35 @@ export function resetRtaDensityCfg() {
 export function restoreRtaDensityCfg() {
   // Saved user choices take precedence over the mode's default.
   try { localStorage.removeItem('rta-fade'); } catch { /* ignore */ }
+  let storedHalflife: string | null = null, src: string | null = null, bn: string | null = null;
+  try {
+    storedHalflife = localStorage.getItem('rta-halflife');
+    src = localStorage.getItem('rta-dens-source');
+    bn = localStorage.getItem('rta-bins');
+  } catch { /* Optional browser preferences; retain usable session defaults. */ }
   const fadeSel = document.getElementById('select-rta-fade') as HTMLSelectElement | null;
-  const storedHalflife = localStorage.getItem('rta-halflife');
   const halflife = normalizeHalflife(storedHalflife === null ? defaultHalflife() : Number(storedHalflife));
   if (fadeSel) fadeSel.value = String(halflife);
   rtaHalflife.set(halflife);
-  const src = localStorage.getItem('rta-dens-source');
   if (src === 'trace' || src === 'live') {
     rtaDensSource.set(src);
     const srcSel = document.getElementById('select-rta-dens-source') as HTMLSelectElement | null;
     if (srcSel) srcSel.value = src;
   }
-  const bn = localStorage.getItem('rta-bins');
-  if (bn) { const s = document.getElementById('select-rta-bins') as HTMLSelectElement | null; if (s) s.value = bn; rtaAmpBins.set(parseInt(bn) || 128); }
+  if (bn !== null) {
+    const bins = normalizeBins(Number(bn));
+    const select = document.getElementById('select-rta-bins') as HTMLSelectElement | null;
+    if (select) select.value = String(bins);
+    rtaAmpBins.set(bins);
+  }
 }
 
 // A grain change invalidates amplitude history immediately, including while paused.
 export function setRtaBins(bins: number) {
+  bins = normalizeBins(bins);
   rtaAmpBins.set(bins);
+  const select = document.getElementById('select-rta-bins') as HTMLSelectElement | null;
+  if (select) select.value = String(bins);
   S.setRtaDensity2d(null);
   try { localStorage.setItem('rta-bins', String(bins)); } catch { /* ignore */ }
   requestRender();

@@ -5,7 +5,7 @@ Registrations (`setRenderer`, `registerViewRenderer`, `registerMeasurementTab`) 
 effects of importing a module. After the render/spectrum cycles were broken, nothing imported
 render/spectrum.ts any more, so its `setRenderer(renderAll)` never ran: the canvas stayed
 blank with no exception and no console error, and every test that asserted frames, datasets
-or counters still passed (report finding / lesson §9.3).
+or counters still passed.
 
 This check walks the import graph from `frontend/src/main.ts` and fails when a module
 that registers something at module scope is not reachable. Reachability is computed from the

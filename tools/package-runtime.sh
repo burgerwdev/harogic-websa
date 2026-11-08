@@ -10,7 +10,11 @@ esac
 SHIM="${1:-${SDK_SHIM:-$HOME/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so}}"
 [[ -x backend/target/release/websad ]] || { echo 'Rust service missing: run make native' >&2; exit 1; }
 [[ -f frontend/dist/index.html && -d frontend/dist/assets ]] || { echo 'Frontend missing: run make frontend' >&2; exit 1; }
+[[ -f frontend/dist/legal.html ]] || { echo 'License page missing: rebuild the frontend' >&2; exit 1; }
+python3 tools/prepare_legal.py --check --output frontend/dist/legal
 [[ -f "$SHIM" ]] || { echo "SDK adapter missing at $SHIM: run make sdk-shim" >&2; exit 1; }
+ORT_LIB="${WEBSA_ORT_DYLIB:-$PWD/runtime/linux-x86_64/libonnxruntime.so.1.23.2}"
+[[ -f "$ORT_LIB" ]] || { echo "Native ONNX Runtime missing: $ORT_LIB" >&2; exit 1; }
 command -v strip >/dev/null || { echo 'strip is required to package runtime binaries (install binutils)' >&2; exit 1; }
 mkdir -p runtime
 STAGING="$(mktemp -d runtime/.package-XXXXXX)"
@@ -18,8 +22,14 @@ trap 'rm -rf -- "$STAGING"' EXIT
 mkdir -p "$STAGING/linux-x86_64" "$STAGING/frontend"
 install -m 755 backend/target/release/websad "$STAGING/linux-x86_64/websad"
 install -m 755 "$SHIM" "$STAGING/linux-x86_64/libwebsa_san90_sdk_session.so"
+install -m 755 "$ORT_LIB" "$STAGING/linux-x86_64/libonnxruntime.so.1.23.2"
+mkdir -p "$STAGING/linux-x86_64/nr-notices"
+cp backend/models/nr/LICENSE.* backend/models/nr/ThirdPartyNotices.onnxruntime.txt backend/models/nr/README.txt "$STAGING/linux-x86_64/nr-notices/"
 strip --strip-unneeded "$STAGING/linux-x86_64/websad" "$STAGING/linux-x86_64/libwebsa_san90_sdk_session.so"
 cp -R frontend/dist "$STAGING/frontend/dist"
+mkdir -p "$STAGING/linux-x86_64/licenses"
+cp LICENSE LICENSE-EXCEPTION LICENSE-PACKAGE LICENSING.md THIRD_PARTY_NOTICES.md "$STAGING/linux-x86_64/licenses/"
+cp frontend/dist/legal/THIRD-PARTY-NOTICES.txt frontend/dist/legal/source-manifest.json "$STAGING/linux-x86_64/licenses/"
 # Replace the published output so obsolete Vite chunks cannot accumulate.
 rm -rf runtime/linux-x86_64 runtime/frontend
 mv "$STAGING/linux-x86_64" runtime/linux-x86_64

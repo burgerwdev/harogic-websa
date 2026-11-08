@@ -1,0 +1,31 @@
+#sdr-demod-group { flex: 1; min-width: 0; }
+.sdr-mode-picker { display: flex; flex-direction: column; gap: 5px; }
+.sdr-mode-common { flex-wrap: wrap; }
+.sdr-mode-tools { display: flex; gap: 5px; }
+.sdr-mode-tools input { flex: 1; min-width: 0; width: 0; }
+.sdr-mode-picker input, .sdr-mode-drawer select {
+  box-sizing: border-box; background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--input-border); border-radius: 3px; padding: 5px;
+}
+.sdr-mode-quick { max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+.sdr-mode-quick[hidden] { display: none; }
+.sdr-mode-drawer {
+  position: fixed; inset: 0 0 0 auto; margin: 0; box-sizing: border-box;
+  width: min(390px, calc(100vw / var(--ui, 1))); max-width: none;
+  height: calc(100dvh / var(--ui, 1)); max-height: none;
+  padding: 14px; border: 0; border-left: 1px solid var(--input-border);
+  background: var(--panel); color: var(--text); box-shadow: -6px 0 24px #0006;
+}
+.sdr-mode-drawer[open] { display: flex; flex-direction: column; gap: 10px; animation: sdr-mode-slide 160ms ease-out; }
+.sdr-mode-drawer::backdrop { background: #0006; }
+.sdr-mode-drawer-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sdr-mode-drawer h2 { margin: 0; font-size: 15px; }
+.sdr-mode-results { min-height: 0; flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.sdr-mode-result.btn { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; white-space: normal; padding: 8px; }
+.sdr-mode-result span { font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.sdr-mode-result:disabled { opacity: .65; }
+.sdr-mode-unavailable { font-style: italic; }
+.sdr-mode-picker :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.sdr-mode-results, .sdr-mode-quick { scrollbar-width: thin; scrollbar-color: var(--input-border) var(--panel); }
+@keyframes sdr-mode-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) { .sdr-mode-drawer[open] { animation: none; } }

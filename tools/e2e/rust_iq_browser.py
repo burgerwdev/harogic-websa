@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native fixture IQ -> AUD2 -> browser audio worker/AudioWorklet, up to three slots.
+"""Native fixture IQ -> AUD2 -> browser audio worker/AudioWorklet, using the advertised receiver capacity.
 
 Uses the production websad service and committed AM fixture (1 kHz, 50% depth).
 Requires an already built backend/target/release/websad and frontend/dist.
@@ -13,19 +13,21 @@ import os
 import socket
 import subprocess
 import sys
-import time
 import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.native_service import start_owned_service  # noqa: E402 — repository root bootstrap above
+
 WEBSAD = ROOT / 'backend/target/release/websad'
 CHANNELS = [100_000_000.0, 100_100_000.0, 100_200_000.0]
 
 
 def asset(pattern: str) -> str:
-    found = sorted((ROOT / 'frontend/dist/assets').glob(pattern))
+    found = sorted((Path(os.environ.get('WEBSA_STATIC', str(ROOT / 'frontend'))) / 'dist/assets').glob(pattern))
     if len(found) != 1:
         raise SystemExit(f'expected one built {pattern}, found {found}; rebuild the frontend')
     return '/static/dist/assets/' + found[0].name
@@ -61,7 +63,7 @@ def state(origin):
         return json.load(response)
 
 
-def start_service(port, *, hardware=False, log=None):
+def start_service(port, *, hardware=False, log=None, startup_timeout=10.0, binary=None):
     env = {**os.environ, 'WEBSA_PORT': str(port), 'WEBSA_HOST': '127.0.0.1'}
     if hardware:
         shim = os.environ.get('WEBSA_RUST_IQS_SHIM')
@@ -70,28 +72,19 @@ def start_service(port, *, hardware=False, log=None):
         env['WEBSA_RUST_IQS_SHIM'] = shim
     else:
         env.pop('WEBSA_RUST_IQS_SHIM', None)
-    proc = subprocess.Popen([str(WEBSAD)], cwd=ROOT, env=env,
-                            stdout=log or subprocess.DEVNULL,
-                            stderr=log or subprocess.DEVNULL)
-    origin = f'http://127.0.0.1:{port}'
-    try:
-        for _ in range(100):
-            if proc.poll() is not None:
-                break
-            try:
-                state(origin)
-                return proc, origin
-            except OSError:
-                time.sleep(0.1)
-        raise RuntimeError('native websad did not start; inspect the service log')
-    except BaseException:
-        stop(proc)
-        raise
+    return start_owned_service([str(binary or WEBSAD)], port=port, cwd=ROOT, env=env,
+                               stdout=log or subprocess.DEVNULL,
+                               stderr=log or subprocess.DEVNULL,
+                               startup_timeout=startup_timeout)
 
 
 def configure(origin, frequencies):
     post(origin, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-    for slot in range(1, 4):
+    available = state(origin)['sdr']['channels']
+    if not frequencies or len(frequencies) > len(available):
+        raise ValueError(f'requested {len(frequencies)} channels; service advertises {len(available)}')
+    for channel in available:
+        slot = channel['channel']
         payload = {'cmd': 'SET_SDR_CHANNEL', 'channel': slot,
                    'enabled': slot <= len(frequencies)}
         if slot <= len(frequencies):
@@ -194,7 +187,7 @@ def shutdown(page):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--channels', type=int, default=3, choices=range(1, 4))
+    parser.add_argument('--channels', type=int, default=len(CHANNELS))
     parser.add_argument('--seconds', type=float, default=3.0)
     args = parser.parse_args()
     if args.seconds <= 0:
@@ -202,7 +195,11 @@ def main() -> int:
     worklet, worker = asset('sdrAudioWorklet-*.js'), asset('sdrAudioWorker-*.js')
     service, origin = start_service(free_port())
     try:
-        configure(origin, CHANNELS[:args.channels])
+        capacity = len(state(origin)['sdr']['channels'])
+        if not 1 <= args.channels <= capacity:
+            parser.error(f'--channels must be between 1 and the service capacity ({capacity})')
+        frequencies = [CHANNELS[0] + index * 100_000 for index in range(args.channels)]
+        configure(origin, frequencies)
         with sync_playwright() as driver:
             browser = driver.chromium.launch(
                 headless=True, args=['--autoplay-policy=no-user-gesture-required'])

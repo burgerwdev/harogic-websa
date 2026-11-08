@@ -1,9 +1,10 @@
 //! Audio enhancement for the analog PCM path.
 //!
-//! Everything in this module is speech/listening oriented (DC block, LPF, AGC, squelch, STFT
-//! Wiener, adaptive notch, IF noise blanker) and is reachable **only** through
-//! [`crate::pipeline::AudioChain`], which takes an [`crate::pipeline::AnalogPcm`]. The digital
-//! path does not have one of those, so a denoiser cannot touch a decoder's samples.
+//! These stages process decoded listening PCM (DC block, LPF, AGC, squelch, STFT Wiener,
+//! adaptive notch and impulse blanker). [`crate::pipeline::AudioChain`] accepts
+//! [`crate::pipeline::AnalogPcm`] and is bypassed by the digital decoder path. The native
+//! service also uses Wiener and the blanker directly in its separate listening NR owner;
+//! that owner never feeds their output back into protocol-input IQ.
 //!
 //! Stages are registered in `plugin::AUDIO_PLUGINS`; a stage that is not implemented there yet is
 //! skipped rather than stubbed, and `stage_factories()` must list exactly the implemented ones in
@@ -43,7 +44,7 @@ pub struct AudioPolicy {
 
 impl Default for AudioPolicy {
     fn default() -> Self {
-        Self { nr: false, nr_strength: 0.6, squelch_dbm: -110.0 }
+        Self { nr: false, nr_strength: 0.6, squelch_dbm: SQUELCH_OPEN_DBM }
     }
 }
 
@@ -58,8 +59,8 @@ impl AudioPolicy {
             stages.push("squelch");
         }
         if self.nr {
-            // The reducer is the noise reduction; the blanker removes impulse noise (clicks), which
-            // is the other half of a quiet band and cannot hurt a tonal signal.
+            // Wiener reduces stationary noise; the blanker repairs short clicks.
+            // Blanking changes samples, so sustained tones/transients are tested separately.
             stages.push("wiener");
             stages.push("blanker");
         }
@@ -81,10 +82,9 @@ pub fn apply_policy(chain: &mut crate::pipeline::AudioChain, policy: AudioPolicy
 
 /// The chain as a specific mode should run it.
 ///
-/// CW turns the adaptive notch **off**: the notch removes the strongest single tone in the channel,
-/// which for CW is the carrier the operator is listening to (and for a lone test tone is the signal
-/// itself). Voice modes keep it, because there a single steady tone is interference. This is the one
-/// place that knows the difference; the stages themselves stay mode-agnostic.
+/// Current policies leave the adaptive notch off. CW additionally enforces that rule here:
+/// its carrier is the signal, so a future listening policy must not classify it as interference.
+/// The stages themselves stay mode-agnostic.
 pub fn chain_for_mode(mode: &str, rate: f64, policy: AudioPolicy) -> crate::pipeline::AudioChain {
     let mut chain = default_chain(rate);
     apply_policy(&mut chain, policy);
@@ -118,7 +118,9 @@ mod tests {
 
     #[test]
     fn the_chain_preserves_the_block_length_and_leaves_silence_quiet() {
-        let mut chain = default_chain(DEFAULT_AUDIO_RATE);
+        let mut chain = chain_for_mode("am", DEFAULT_AUDIO_RATE,
+            AudioPolicy { nr: true, squelch_dbm: -60.0, ..AudioPolicy::default() });
+        chain.set_squelch_level_dbm(-90.0);
         let mut pcm = crate::pipeline::AnalogPcm::default();
         pcm.samples_mut().extend(std::iter::repeat(0.0).take(960));
         chain.process(&mut pcm, false);
@@ -137,15 +139,16 @@ mod tests {
                 (noise + 0.05 * (2.0 * PI * 1_000.0 * k as f64 / 48_000.0).sin()) as f32
             })
             .collect();
-        let mut chain = default_chain(DEFAULT_AUDIO_RATE);
+        let mut chain = chain_for_mode("am", DEFAULT_AUDIO_RATE, AudioPolicy::default());
+        chain.set_squelch_level_dbm(-200.0);
         let mut pcm = crate::pipeline::AnalogPcm::default();
         pcm.samples_mut().extend_from_slice(&input);
         chain.process(&mut pcm, false);
         assert_eq!(pcm.samples(), &input[..], "the default policy is a bit-exact pass-through");
-        assert!(chain.active_ids().is_empty(), "a bare chain starts with no stages enabled");
+        assert!(chain.active_ids().is_empty(), "the default policy leaves all stages disabled");
 
         apply_policy(&mut chain, AudioPolicy { nr: true, ..AudioPolicy::default() });
-        assert_eq!(chain.active_ids(), vec!["squelch", "wiener", "blanker"]);
+        assert_eq!(chain.active_ids(), vec!["wiener", "blanker"]);
         assert!(!chain.is_stage_enabled("notch"), "the notch is not part of any policy");
         assert!(!chain.is_stage_enabled("agc"), "the demodulator already runs the reference AGC");
         let mut pcm = crate::pipeline::AnalogPcm::default();

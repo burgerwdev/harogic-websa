@@ -1,5 +1,13 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) struct CaptureParameters {
+    pub center: f64,
+    pub bandwidth: f64,
+    pub input_rate: f64,
+    pub epoch: u64,
+}
+
 pub(super) struct HardwarePresentation {
     pipeline: sdr_pipeline::PipelinePresentation,
     output: sdr_pipeline::PipelineOutput,
@@ -19,12 +27,12 @@ pub(super) struct HardwarePresentation {
 }
 pub(super) struct PresentedHardware {
     pub pan: Vec<Vec<u8>>,
-    pub frames: Vec<Vec<u8>>,
+    pub frames: IqFrames,
     actual: Value,
     version: u64,
     timing: Timing,
     peak: Option<(f64, f64, i32, u64)>,
-    channel_power: Option<[Option<(std::time::Instant, f64)>; 3]>,
+    channel_power: Option<Vec<Option<(std::time::Instant, f64)>>>,
 }
 impl HardwarePresentation {
     pub fn finish(mut self) -> Result<PresentedHardware, String> {
@@ -42,7 +50,7 @@ impl HardwarePresentation {
         let window = hi.max(lo) - lo;
         let mut actual = self.pipeline.encode();
         actual.as_object_mut().unwrap().extend(json!({
-            "iq_rate":snapshot.usable_bandwidth / 0.8,"ddc_rate":snapshot.rate,
+            "iq_rate":snapshot.input_rate,"ddc_rate":snapshot.rate,
             "bandwidth":bandwidth,"capture_bandwidth":snapshot.usable_bandwidth,
             "iq_center":self.center,"center":self.center,"decimate":self.decimate,
             "pfb_taps_per_phase":snapshot.taps,"capture_decimate":snapshot.device_decimate,
@@ -51,7 +59,7 @@ impl HardwarePresentation {
             "start":lo,"stop":hi,
             "packet_samples":16240,"packet_bytes":64960,"pan_available":false,
             "listen":self.listen,"demod":self.demod,"if_bw":self.if_bw,
-            "ddc_decimate":snapshot.registry.iter().find(|c|c.channel==1).map(|c| snapshot.usable_bandwidth/0.8/c.output_rate),"ddc_batch":1,
+            "ddc_decimate":snapshot.registry.iter().find(|c|c.channel==1).map(|c| snapshot.input_rate/c.output_rate),"ddc_batch":snapshot.batch_packets,
             "audio_rate":null,"deemph_us":self.deemph,
             "timing_scope":"capture_lifetime_cumulative","timing_quantiles":"histogram_upper_bound_ns",
             "ddc_error_count":self.errors,"ddc_error_last":self.last_error,
@@ -59,12 +67,19 @@ impl HardwarePresentation {
         let mut pan = Vec::with_capacity(self.output.pan.len());
         let mut peak = None;
         let mut channel_power = None;
-        for (freq, power, warning, generation, seq) in self.output.pan {
+        let fft_size = snapshot.display_fft["size"].as_u64().unwrap_or(0) as usize;
+        for (freq, power, warning, generation, seq, observation_size) in self.output.pan {
             if generation != snapshot.generation { continue; }
+            // RF levels, auto gain and receiver power keep the original analysis
+            // bandwidth even when the user requests finer display observations.
+            if observation_size != 0 {
+                if observation_size == fft_size { pan.push(hardware_pan(self.frequency_version, lo, window, &freq, &power)?); }
+                continue;
+            }
             peak = None;
             channel_power = Some(service_power::measure_channel_power(&freq, &power, &self.channel_configs));
             let started = std::time::Instant::now();
-            pan.push(hardware_pan(self.frequency_version, lo, window, &freq, &power)?);
+            if fft_size == 0 { pan.push(hardware_pan(self.frequency_version, lo, window, &freq, &power)?); }
             self.timing.observe(started.elapsed());
             let mut inside: Vec<f32> = freq.iter().zip(&power)
                 .filter(|(f, p)| **f >= lo && **f <= hi && p.is_finite())
@@ -83,18 +98,80 @@ impl HardwarePresentation {
     }
 }
 impl DevState {
+    pub(super) fn live_capture_parameters(&self) -> Option<CaptureParameters> {
+        self.pipeline
+            .as_ref()
+            .map(|p| CaptureParameters {
+                center: p.snapshot.capture_center,
+                bandwidth: p.snapshot.usable_bandwidth,
+                input_rate: p.snapshot.input_rate,
+                epoch: p.snapshot.epoch,
+            })
+            .or_else(|| {
+                self.ddc.as_ref().map(|d| CaptureParameters {
+                    center: d.0.capture_center,
+                    bandwidth: d.0.usable_bandwidth,
+                    input_rate: d.0.stream.input_sample_rate(),
+                    epoch: d.0.stream.epoch(),
+                })
+            })
+    }
+    fn remember_capture_parameters(&mut self) {
+        if let Some(parameters) = self.live_capture_parameters() {
+            self.last_capture = Some(parameters);
+        }
+    }
+    pub(super) fn capture_snapshot(&self) -> Value {
+        let live = self.live_capture_parameters();
+        // Fixture lanes are independent baseband producers, without an RF/PFB
+        // input clock. Their common window is simulated; per-lane clocks apply.
+        let simulated = self.hardware_shim.is_none() && self.fixture_sources.is_some();
+        let parameters = live
+            .or_else(|| {
+                simulated.then_some(CaptureParameters {
+                    center: self.sdr_center,
+                    bandwidth: 50e6,
+                    input_rate: IQ_FS,
+                    epoch: 0,
+                })
+            })
+            .or(self.last_capture);
+        let running = (live.is_some() || simulated)
+            && self.ddc_error.is_none()
+            && self.link_up
+            && self.swp.mode == "sdr";
+        json!({"source_id":"primary","center_hz":parameters.map_or(self.sdr_center,|p|p.center),
+            "usable_bandwidth_hz":parameters.map(|p|p.bandwidth),"input_rate_hz":parameters.map(|p|p.input_rate),
+            "epoch":parameters.map_or_else(||"0".to_owned(),|p|p.epoch.to_string()),
+            "parameters_state":if running && simulated {"simulated"} else if running {"live"} else if parameters.is_some() {"last_known"} else {"unknown"},
+            "source_kind":if self.hardware_shim.is_some() {"hardware"} else {"fixture"},
+            "state":if self.ddc_error.is_some() || !self.link_up || self.swp.mode!="sdr" {"failed"}
+                else if running {"running"} else {"idle"}})
+    }
     pub(super) fn capture_bandwidth(&self) -> f64 {
         self.pipeline.as_ref().map(|p| p.snapshot.usable_bandwidth)
-            .or_else(|| self.ddc.as_ref().map(|d| d.0.usable_bandwidth)).unwrap_or(50e6)
+            .or_else(|| self.ddc.as_ref().map(|d| d.0.usable_bandwidth))
+            .or(self.last_capture.map(|p|p.bandwidth)).unwrap_or(50e6)
+    }
+    pub(super) fn capture_input_rate(&self) -> f64 {
+        self.live_capture_parameters().or(self.last_capture)
+            .map_or(IQ_FS, |parameters| parameters.input_rate)
     }
     pub(super) fn capture_center(&self) -> f64 {
         self.pipeline.as_ref().map(|p| p.snapshot.capture_center)
-            .or_else(|| self.ddc.as_ref().map(|d| d.0.capture_center)).unwrap_or(self.sdr_center)
+            .or_else(|| self.ddc.as_ref().map(|d| d.0.capture_center))
+            .or(self.last_capture.map(|p|p.center)).unwrap_or(self.sdr_center)
     }
-    pub(super) fn ddc_command(&mut self, command: impl FnOnce(&mut Ddc) -> Result<Vec<Vec<u8>>, String> + Send + 'static) -> Result<(), String> {
+    pub(super) fn ddc_channel_command(&mut self, command: impl FnOnce(&mut Ddc)->Result<IqFrames,String>+Send+'static)->Result<(),String> {
+        self.ddc_command_inner(command,true)
+    }
+    pub(super) fn ddc_command(&mut self, command: impl FnOnce(&mut Ddc) -> Result<IqFrames, String> + Send + 'static) -> Result<(), String> {
+        self.ddc_command_inner(command,false)
+    }
+    fn ddc_command_inner(&mut self, command:impl FnOnce(&mut Ddc)->Result<IqFrames,String>+Send+'static,local:bool)->Result<(),String> {
         let registry = self.stream_registry();
         let frames = if let Some(pipeline) = self.pipeline.as_mut() {
-            match pipeline.command(command) {
+            match if local {pipeline.command_channel(command)} else {pipeline.command(command)} {
                 Ok(frames) => frames,
                 // boundary already retained drained frames and spectra; the next poll
                 // delivers them, and a fatal pipeline reports itself there.
@@ -102,20 +179,20 @@ impl DevState {
             }
         } else if let Some(ddc) = self.ddc.as_mut() { command(&mut ddc.0)? }
         else { Vec::new() };
-        // Even an empty fine tail can follow a batch already queued by a
-        // detached presentation. Finish it before configuration generations
-        // advance, so that the worker cannot discard that retiring batch.
+        // Preserve immutable old configuration/identity at admission. A single
+        // source control must not wait for synchronous inference on any lane;
+        // changed generations explicitly cancel unfinished old processing.
         if !frames.is_empty() || self.receiver_workers.is_some() {
             let mut retiring = std::mem::take(&mut self.pending_iq);
             retiring.extend(frames);
-            match self.process_receiver_frames_with_registry(&retiring, &registry, true) {
+            match self.process_control_receiver_frames(&retiring, &registry) {
                 Ok(output)=>{
-                    self.pending_receiver.audio.extend(output.audio);
-                    self.pending_receiver.decode.extend(output.decode);
+                    self.pending_receiver.append(output);
                 }
                 Err(error)=>self.latch_receiver_failure(error),
             }
-            for frame in retiring.iter().filter(|_|self.receiver_failure.is_none()) {
+            for input in retiring.iter().filter(|_|self.receiver_failure.is_none()) {
+                let frame=input.iq_header();
                 if frame.len()>=56 && matches!(frame.get(..4),Some(b"IQBF"|b"IQAX")) {
                     self.consumed_receiver_iq.insert((u32::from_le_bytes(frame[32..36].try_into().unwrap()),
                         u32::from_le_bytes(frame[36..40].try_into().unwrap()),u32::from_le_bytes(frame[8..12].try_into().unwrap())));
@@ -126,7 +203,7 @@ impl DevState {
                 new.channel==old.channel && new.channel_id==old.channel_id && new.epoch==old.epoch))
                 .map(|old|old.channel).collect();
             if !changed.is_empty() {
-                if let Err(error)=self.finish_radiofax_channels(&changed,registry.clone()) {self.latch_receiver_failure(error);}
+                if let Err(error)=self.retire_receiver_channels(&changed,registry.clone()) {self.latch_receiver_failure(error);}
             }
             self.retiring_registry = registry;
             self.pending_iq.extend(retiring);
@@ -134,6 +211,7 @@ impl DevState {
         Ok(())
     }
     pub(super) fn stop_pipeline(&mut self) -> Result<(), String> {
+        self.remember_capture_parameters();
         if let Some(mut pipeline) = self.pipeline.take() {
             let output = pipeline.stop()?;
             self.pending_iq.extend(output.frames);
@@ -151,25 +229,29 @@ impl DevState {
         Ok(output)
     }
     pub(super) fn take_hardware_presentation(&mut self, listeners: usize) -> Result<Option<HardwarePresentation>, String> {
-        let blocked = self.ddc_error.is_some() && !Self::retry_due(&self.ddc_retry_at);
+        let blocked = self.ddc_error.is_some() && (!self.reception.capture_allowed() || !Self::retry_due(&self.ddc_retry_at));
         if self.pipeline.is_none() && listeners > 0 && !blocked {
             // Compile receiver models before arming capture; startup must not
             // stall the consumer while the hardware IQ queue is filling.
-            if self.receiver_workers.is_none() && self.receiver_failure.is_none() {
+            if self.receiver_workers.is_none() && self.receiver_failure.is_none()
+                && self.channel_configs().iter().any(|config|config.enabled&&config.processing_enabled) {
                 match receiver_workers::ReceiverWorkers::new() {
                     Ok(workers)=>self.receiver_workers=Some(workers),
                     Err(error)=>self.latch_receiver_failure(error),
                 }
             }
-            let configs=self.channel_configs();
+            let mut configs=self.channel_configs();
+            for config in &mut configs {config.recovery_settle=self.ddc_error.is_some();if self.reception.source_stopped(config.channel) {config.enabled=false;}}
             let aux=configs.iter().filter(|c|c.channel>1 && c.enabled).map(|c|(c.channel,c.freq)).collect();
+            if self.ddc_error.is_some() {self.reception.begin_capture();}
             self.pipeline = Some(Pipeline::start_service(PipelineConfig {
                 center:self.sdr_center, listen:self.sdr_listen, fine:2, display_decimate:self.sdr_decimate as i32,
                 front_end:self.front_end(self.sdr_ref), shim:self.hardware_shim.clone().unwrap(),
-                taps:self.sdr_pfb_taps_per_phase, aux, channel_budget:3,
-                output_rate_budget:COARSE_RATE*3.0,
+                taps:self.sdr_pfb_taps_per_phase, aux, channel_budget:MAX_CHANNELS,
+                output_rate_budget:COARSE_RATE*MAX_CHANNELS as f64,
             },configs)?);
             self.device_detail = self.pipeline.as_ref().and_then(|pipeline| pipeline.device_info).map(|info| info.detail());
+            self.remember_capture_parameters();
             let (refclk, refclk_src) = self.pipeline.as_ref().unwrap().clock();
             let front_end = self.pipeline.as_ref().unwrap().front_end();
             self.sdr_actual = json!({"refclk":refclk, "refclk_src":refclk_src,
@@ -227,7 +309,13 @@ impl DevState {
         }
     }
     pub(super) fn hardware_presentation_failed(&mut self, error: String) {
-        if let Err(failure)=self.finish_radiofax() {self.latch_receiver_failure(failure);}
+        self.reception_capture_failed(&error);
+        self.remember_capture_parameters();
+        // The source ended with a gap. Failed owners must discard their old
+        // windows, not receive normal finish commands after their mailbox exits.
+        self.pending_receiver=receiver_workers::ReceiverFrames::default();
+        self.pending_iq.clear();
+        self.consumed_receiver_iq.clear();
         self.note_auto_acquisition(i32::MIN);
         if let Some(pipeline) = &self.pipeline {
             let mut diagnostics = pipeline.failure_diagnostics();
@@ -249,6 +337,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn independent_fixture_lanes_report_a_simulated_window() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.swp.mode = "sdr".into();
+        state.fixture_sources = Some(service_fixture::FixtureSources::new());
+        let capture = state.capture_snapshot();
+        assert_eq!(capture["state"], "running");
+        assert_eq!(capture["parameters_state"], "simulated");
+        assert_eq!(capture["source_kind"], "fixture");
+        assert_eq!(capture["usable_bandwidth_hz"], 50e6);
+        assert!(state.live_capture_parameters().is_none());
+    }
+
+    #[test]
+    fn capture_parameters_are_unknown_until_a_source_exists() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.swp.mode = "sdr".into();
+        state.hardware_shim = Some("geometry-only".into());
+        let capture = state.receiver_snapshot()["capture"].clone();
+        assert_eq!(capture["state"], "idle");
+        assert_eq!(capture["parameters_state"], "unknown");
+        assert!(capture["usable_bandwidth_hz"].is_null());
+        assert!(capture["input_rate_hz"].is_null());
+        state.hardware_presentation_failed("open failed".into());
+        let capture = state.receiver_snapshot()["capture"].clone();
+        assert_eq!(capture["state"], "failed");
+        assert_eq!(capture["parameters_state"], "unknown");
+        assert!(capture["input_rate_hz"].is_null());
+    }
+
+    #[test]
+    fn capture_failure_retains_geometry_and_recovery_has_a_new_dsp_epoch() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 14_277_240.0;
+        state.sdr_listen = 14_270_000.0;
+        let fs = 3_906_250.0;
+        let source = Ddc::configured_service(
+            state.sdr_center,
+            fs * 0.8,
+            &mut None,
+            16,
+            fs,
+            &state.channel_configs(),
+        )
+        .unwrap();
+        state.ddc = Some(SendDdc(source));
+        let before = state.receiver_snapshot();
+        assert_eq!(before["capture"]["input_rate_hz"], fs);
+        assert_ne!(before["capture"]["epoch"], "0");
+        state.hardware_presentation_failed("SDK capture stall".into());
+        state.ddc = None;
+        state.sdr_center = 100e6; // A requested center cannot rewrite the failed source.
+        let failed = state.receiver_snapshot();
+        assert_eq!(failed["capture"]["parameters_state"], "last_known");
+        assert_eq!(failed["capture"]["state"], "failed");
+        assert_eq!(failed["capture"]["center_hz"], 14_277_240.0);
+        assert_eq!(failed["capture"]["usable_bandwidth_hz"], 3_125_000.0);
+        assert_eq!(failed["capture"]["epoch"], before["capture"]["epoch"]);
+        state.sdr_center = 14_277_240.0;
+        state.ddc = Some(SendDdc(
+            Ddc::configured_service(
+                state.sdr_center,
+                fs * 0.8,
+                &mut None,
+                16,
+                fs,
+                &state.channel_configs(),
+            )
+            .unwrap(),
+        ));
+        state.ddc_error = None;
+        let after = state.receiver_snapshot();
+        assert_eq!(after["capture"]["parameters_state"], "live");
+        assert_eq!(after["capture"]["state"], "running");
+        assert_ne!(after["capture"]["epoch"], before["capture"]["epoch"]);
+        assert_eq!(
+            after["receivers"][0]["receiver_uid"],
+            before["receivers"][0]["receiver_uid"]
+        );
+    }
+    #[test]
     fn receiver_submit_failure_preserves_current_and_later_capture_products() {
         let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
         state.swp.mode="sdr".into();
@@ -258,7 +427,7 @@ mod tests {
         state.fixture_sources=Some(source);
         // Valid IQ transport and identity; deliberately inconsistent receiver rate.
         frames[0][16..24].copy_from_slice(&(-1.0_f64).to_le_bytes());
-        let pan=vec![(vec![100e6],vec![-40.0],0,0,1)];
+        let pan=vec![(vec![100e6],vec![-40.0],0,0,1,0)];
         let output=state.prepare_hardware_output(sdr_pipeline::PipelineOutput {frames:frames.clone(),pan:pan.clone()}).unwrap();
         assert_eq!(output.frames,frames,"receiver validation cannot consume raw IQ");
         assert_eq!(output.pan,pan,"receiver validation cannot discard queued spectra");
@@ -266,7 +435,7 @@ mod tests {
         assert!(state.ddc_error.is_none());
         for sequence in 2..10 {
             let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
-            let pan=vec![(vec![100e6],vec![-40.0],0,0,sequence)];
+            let pan=vec![(vec![100e6],vec![-40.0],0,0,sequence,0)];
             let output=state.prepare_hardware_output(sdr_pipeline::PipelineOutput {frames:frames.clone(),pan:pan.clone()}).unwrap();
             assert_eq!(output.frames,frames);
             assert_eq!(output.pan,pan);
@@ -329,7 +498,10 @@ mod tests {
             frames:next.clone(),pan:Vec::new(),
         }).unwrap();
         state.ddc_command(|_|Ok(Vec::new())).unwrap();
-        let actual = std::mem::take(&mut state.pending_receiver);
+        let mut actual = std::mem::take(&mut state.pending_receiver);
+        // The control admits immutable work without waiting for inference.
+        // This finite test explicitly waits before comparing the complete PCM.
+        actual.append(state.receiver_workers.as_mut().unwrap().finish().unwrap());
         assert_eq!(actual.audio,expected.audio);
         assert_eq!(actual.decode,expected.decode);
         let mut raw = tail;
@@ -345,7 +517,7 @@ mod tests {
         state.sdr_actual = json!({"center":200e6});
         state.auto.last_peak = Some(-20.0);
         let mut output = PresentedHardware {
-            pan:vec![vec![1]], frames:vec![vec![2], vec![3]],
+            pan:vec![vec![1]], frames:vec![vec![2].into(), vec![3].into()],
             actual:json!({"center":100e6}), version:state.config_version,
             timing:Timing::default(), peak:Some((-40.0, -80.0, 0, 1)),
             channel_power:None,
@@ -371,17 +543,17 @@ mod tests {
         state.sdr_actual=json!({"center":100e6,"ref":-10.0});
         state.rta_actual=json!({"center":100e6});
         state.gnss_value=Some(json!({"lock":1}));
-        state.channel_power=[Some((std::time::Instant::now(),-21.0));3];
+        state.channel_power=vec![Some((std::time::Instant::now(),-21.0));MAX_CHANNELS];
         state.note_auto_acquisition(-12);
         state.auto.last_peak=Some(-20.0);
         state.auto.last_floor=Some(-80.0);
         state.auto_scale(None,false);
         let old_version=state.config_version;
         let mut output=PresentedHardware {
-            pan:vec![b"old-pan".to_vec()],frames:vec![b"retiring-iq".to_vec()],
+            pan:vec![b"old-pan".to_vec()],frames:vec![b"retiring-iq".to_vec().into()],
             actual:json!({"center":200e6,"ref":3.0}),version:old_version,
             timing:Timing::default(),peak:Some((-2.0,-50.0,0,999)),
-            channel_power:Some([Some((std::time::Instant::now(),-1.0));3]),
+            channel_power:Some(vec![Some((std::time::Instant::now(),-1.0));MAX_CHANNELS]),
         };
         let error=dispatch(&mut state,"SET_MODE",&json!({"mode":"server"})).unwrap_err();
         assert_eq!(error.code,"device_error");
@@ -414,7 +586,7 @@ mod tests {
         let mut state = DevState::new(golden, schema);
         state.swp.mode = "sdr".into();
         let mut output = PresentedHardware {
-            pan:vec![vec![1]], frames:vec![vec![2]],
+            pan:vec![vec![1]], frames:vec![vec![2].into()],
             actual:json!({"center":100e6,"ref":-7.5,"atten":12,"preamp":1,"ifgain":2}), version:state.config_version,
             timing:Timing::default(), peak:Some((-40.0, -80.0, 0, 1)),
             channel_power:None,

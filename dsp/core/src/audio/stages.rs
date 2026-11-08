@@ -17,6 +17,8 @@ pub const DEFAULT_AUDIO_RATE: f64 = 48_000.0;
 /// narrow modes benefit and a wider setting is one constructor argument away.
 pub struct Lpf {
     filter: FirState,
+    input: Vec<f64>,
+    filtered: Vec<f64>,
     cutoff_hz: f64,
     rate: f64,
 }
@@ -27,6 +29,8 @@ impl Lpf {
         let cutoff = cutoff_hz.clamp(100.0, 0.45 * rate);
         Self {
             filter: FirState::new(design_lowpass(rate, cutoff, 129)),
+            input: Vec::new(),
+            filtered: Vec::new(),
             cutoff_hz: cutoff,
             rate,
         }
@@ -51,11 +55,12 @@ impl AudioStage for Lpf {
     }
 
     fn process_into(&mut self, input: &[f32], _hold: bool, out: &mut Vec<f32>) {
-        let x: Vec<f64> = input.iter().map(|v| *v as f64).collect();
-        let mut y = Vec::new();
-        self.filter.process_into(&x, &mut y);
+        // Retain conversion buffers across blocks, just like the FIR history.
+        self.input.clear();
+        self.input.extend(input.iter().map(|v| f64::from(*v)));
+        self.filter.process_into(&self.input, &mut self.filtered);
         out.clear();
-        out.extend(y.iter().map(|v| *v as f32));
+        out.extend(self.filtered.iter().map(|v| *v as f32));
     }
 
     fn reset(&mut self) {
@@ -63,7 +68,7 @@ impl AudioStage for Lpf {
     }
 }
 
-/// The reference AGC (target 0.2, attack 0.2, release 0.08) as a chain stage.
+/// The reference AGC (target 0.1, attack 0.2, release 0.02) as a chain stage.
 pub struct AgcStage {
     agc: RmsAgc,
 }
@@ -275,7 +280,7 @@ mod tests {
     fn the_squelch_mutes_noise_and_opens_on_signal() {
         let mut squelch = Squelch::new(-40.0, AUDIO_RATE);
         let mut out = Vec::new();
-        // -60 dBFS noise: closed.
+        // -60 dBm RF is below the -40 dBm gate threshold.
         squelch.set_level_dbm(-60.0);
         squelch.process_block(&tone(960, 1_000.0, 0.001), &mut out);
         let muted = rms(&out);

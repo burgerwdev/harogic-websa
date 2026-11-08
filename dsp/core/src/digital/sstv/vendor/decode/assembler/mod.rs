@@ -35,6 +35,11 @@ const HEADER_LOOKBACK: Duration = ms!(200);
 /// one sequence before the first of them.
 const SYNC_LOCK_LOOKBACK_SEQUENCES: u32 = 3;
 
+fn correct_frequency(frequency: Frequency, offset_hz: i32) -> Frequency {
+    Frequency::from_hz((i64::from(frequency.hz()) - i64::from(offset_hz))
+        .clamp(0, i64::from(u32::MAX)) as u32)
+}
+
 /// The frequency track as it is read: the frequencies still to come, the
 /// estimates kept, and the tones split from them where the frequency
 /// changes.
@@ -125,7 +130,8 @@ impl<I: Iterator<Item = Frequency>> ImageSearch<I> {
     fn image_starting_at(&mut self, completed: CompletedTone) -> Option<SequenceCutter> {
         let clock = self.track.clock;
         if let Some(mode) = self.header.push(completed.tone) {
-            return Some(SequenceCutter::after_header(mode, clock, completed.end));
+            return Some(SequenceCutter::after_header(mode, clock, completed.end,
+                self.header.frequency_offset_hz()));
         }
 
         let lock = self.sync_lock.as_mut()?;

@@ -32,9 +32,8 @@ fn the_phone_decodable_slot_decodes() {
             message.text, message.frequency_hz, message.snr_db, message.time_offset_s
         );
     }
-    // The phone decoded "JA0TXU BG7BVP -73" from this slot's audio. It is a weak signal, so allow
-    // the odd bit error the sum-product LDPC leaves uncorrected (the phone's decoder has an
-    // a-posteriori pass ours does not): the station is what must be right.
+    // The independent phone result was "JA0TXU BG7BVP -73". The confirmed
+    // station identity is this recording's oracle; its full payload is unconfirmed.
     assert!(
         result.iter().any(|m| m.text.contains("BG7BVP") || m.text.contains("JA0TXU")),
         "decoded {:?}",

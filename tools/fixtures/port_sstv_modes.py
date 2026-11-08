@@ -183,7 +183,6 @@ def parse_mode(path: Path, names: dict[str, str]) -> dict:
             else:
                 raise SystemExit(f'{path.name}: a scan entry must name its channel: {entry!r}')
 
-    constant = path.stem
     constant = path.stem.upper()
     key = path.stem
     total_ns = sum((step.get('control') or step['scan'])['ns'] for step in sequence)

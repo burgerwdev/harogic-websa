@@ -43,7 +43,7 @@ export function measurementOwnsDevice(): boolean {
 export const graphMode = createParam<GraphMode>('graph.mode', {
 	fallback: 'std',
 	scope: 'mode',
-	ttlMs: GRAPH_MODE_TTL_MS,
+	ttlMs: Infinity, // The request watchdog owns the mode-specific deadline.
 });
 
 /** The mode the backend reported (what the UI renders). */
@@ -83,11 +83,10 @@ function clearWatchdog(): void {
  * Record a request. A newer request replaces the previous one (discipline 2) and restarts
  * the timeout; asking for the current mode is a no-op.
  */
-export function requestGraphMode(target: GraphMode): void {
+export function requestGraphMode(target: GraphMode, timeoutMs = GRAPH_MODE_TTL_MS): void {
 	if (pendingGraphMode() === null && target === currentGraphMode()) return;
 	graphMode.set(target);
-	// Re-clicking a pending target restarts both the intent expiry and watchdog so their
-	// deadlines stay aligned and an unconfirmed request still reports its timeout.
+	// Re-clicking a pending target restarts its watchdog.
 	graphMode.touch(target);
 	clearWatchdog();
 	const id = graphMode.epoch;
@@ -97,7 +96,7 @@ export function requestGraphMode(target: GraphMode): void {
 		const have = currentGraphMode();
 		graphMode.reset();                                            // stop waiting, follow the backend
 		timeoutHandler?.(target, have);
-	}, GRAPH_MODE_TTL_MS);
+	}, timeoutMs);
 }
 
 /**

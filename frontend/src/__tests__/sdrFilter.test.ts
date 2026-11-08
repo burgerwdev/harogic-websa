@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { receiverPlugin } from './pluginFixtures';
 
 const markup = `
 	<input id="input-sdr-ifbw"><div id="unit-sdr_ifbw-group"></div>
@@ -18,6 +19,8 @@ afterEach(() => {
 
 async function load(mode = 'am', ifbw = 6000) {
 	const state = await import('../ui/sdrState');
+	const { setPluginManifest } = await import('../sdr/registry');
+	setPluginManifest(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm', 'ft8', 'sstv', 'radiofax', 'drm', 'drmplus'].map((id) => receiverPlugin(id)));
 	state.sdrDemod.confirm(mode);
 	state.sdrIfbw.confirm(ifbw);
 	state.sdrListenHz.confirm(100_000_000);
@@ -27,6 +30,17 @@ async function load(mode = 'am', ifbw = 6000) {
 	const filter = await import('../ui/sdrFilter');
 	return { state, filter };
 }
+
+it('keeps filter editing disabled until the receiver catalog arrives', async () => {
+	const { state, filter } = await load('am', 9_000);
+	// Share the fresh registry used by load() after resetModules.
+	const { setPluginManifest } = await import('../sdr/registry');
+	setPluginManifest(null);
+	filter.renderSdrFilter();
+	expect(document.querySelector<HTMLInputElement>('#input-sdr-ifbw')!.disabled).toBe(true);
+	expect(document.querySelectorAll('#sdr-ifbw-group button')).toHaveLength(0);
+	expect(state.sdrIfbw.get()).toBe(9_000);
+});
 
 describe('SDR Filter panel', () => {
 	it('renders the actual AM passband and applies a preset through the shared IF slot', async () => {
@@ -186,6 +200,20 @@ describe('SDR Filter panel', () => {
 });
 
 describe('confirmed Filter memory', () => {
+	it('uses catalog geometry and rejects remembered widths outside its bounds', async () => {
+		const { state, filter } = await load();
+		// This registry must share the isolated slot modules loaded above.
+		const { setPluginManifest } = await import('../sdr/registry');
+		setPluginManifest([receiverPlugin('packet', { defaultBandwidthHz: 12_500,
+			minBandwidthHz: 10_000, maxBandwidthHz: 25_000, bandwidthPresetsHz: [12_500, 25_000] })]);
+		expect(filter.filterSpec('packet')).toMatchObject({ defaultHz: 12_500, minimumHz: 10_000, maximumHz: 25_000 });
+		state.sdrFilterByMode.set({ packet: 30_000 });
+		expect(filter.filterValueForMode('packet')).toBe(12_500);
+		state.sdrFilterLimits.confirm({ mode: 'packet', min_hz: 11_000, max_hz: 20_000 });
+		expect(filter.filterRange('packet')).toEqual({ min: 11_000, max: 20_000 });
+		filter.rememberConfirmedFilter('packet', 30_000);
+		expect(filter.filterValueForMode('packet')).toBe(12_500);
+	});
 	it('uses first-mode recommendations and stores only valid editable confirmations', async () => {
 		const { state, filter } = await load();
 		expect(filter.filterValueForMode('cw')).toBe(500);

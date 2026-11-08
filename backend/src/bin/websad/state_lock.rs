@@ -86,6 +86,10 @@ impl DevState {
 
     pub(super) fn status_snapshot(&self) -> StatusSnapshot {
         let mut sdr_actual = self.sdr_actual.clone();
+        if self.swp.mode == "sdr" {
+            sdr_actual["receiver_workers"] = self.receiver_workers.as_ref()
+                .map(|workers| workers.stats()).unwrap_or(Value::Null);
+        }
         if let Some(pipeline) = self.pipeline.as_ref().filter(|_| self.swp.mode == "sdr") {
             pipeline.snapshot.write_channel_status(&mut sdr_actual);
             let (refclk, refclk_src) = pipeline.clock();
@@ -111,6 +115,10 @@ impl DevState {
                     sdr_actual["ifgain"] = json!(front_end.map(|f| f.ifgain));
                 }
             }
+        }
+        if self.swp.mode=="sdr" && self.pipeline.is_none() {
+            sdr_actual["display_fft"]=self.ddc.as_ref().map(|d|d.0.display_fft_status())
+                .unwrap_or_else(||json!({"size":0,"available":false}));
         }
         StatusSnapshot {
             revision: STATUS_REVISION.fetch_add(1, Ordering::Relaxed),
@@ -150,7 +158,8 @@ impl DevState {
             sweep_ms_meas: self.sweep_ms_meas.clone(),
             config_version: self.config_version.clone(),
             ddc_error: self.ddc_error.clone(),
-            ddc_failure_diagnostics: self.ddc_failure_diagnostics.clone(),
+            ddc_failure_diagnostics: self.pipeline.as_ref().and_then(|pipeline|pipeline.terminal_failure())
+                .or_else(||self.ddc_failure_diagnostics.clone()),
             rta_error: self.rta_error.clone(),
             swp_error: self.swp_error.clone(),
             pnm_error: self.pnm_error.clone(),
@@ -245,13 +254,15 @@ impl StatusSnapshot {
                 set_path(&mut s, &format!("/req/{key}"), value.clone());
             }
         }
+        // New diagnostics have no key in the embedded compatibility fixture.
+        // set_path deliberately updates existing keys only, so insert this one.
+        s["sdr_last_failure"] = json!(self.ddc_failure_diagnostics);
         for (path, value) in [
             (
                 "/connected",
                 json!(mode != "server" && (!self.hardware || self.link_up)),
             ),
             ("/status_warning", json!(self.status_warning)),
-            ("/sdr_last_failure", json!(self.ddc_failure_diagnostics)),
             ("/ref_clock", json!(self.ref_clock)),
             ("/refclk_out", json!(self.refclk_out)),
             ("/refclk_ppm", json!(self.refclk_ppm)),
@@ -411,6 +422,7 @@ impl StatusSnapshot {
         s["has_premium_ref_clock"] = json!(self.has_premium_ref_clock);
         s["channel_registry"] = registry.clone();
         s["sdr"]["channels"] = self.channels.clone();
+        s["sdr"]["receiver_api"] = json!("multichannel-draft-v1");
         s["sdr"]["filter_limits"] = self.sdr_filter_limits.clone();
         s["sdr"]["receiver_error"] = json!(self.receiver_failure);
         for name in ["am_sync", "am_sync_generation"] {
@@ -476,6 +488,18 @@ impl Drop for StateGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_failure_evidence_is_published_without_a_fixture_key_and_survives_recovery() {
+        let (golden,schema)=load_golden();
+        assert!(golden.get("sdr_last_failure").is_none());
+        let mut state=DevState::new(golden,schema);
+        let failure=json!({"error":"SDK timeout","actual":{"iqs_capture":{"fail_calls":3,"recovery_stall_ms":751.0}}});
+        state.ddc_failure_diagnostics=Some(failure.clone());
+        state.ddc_error=Some("SDK timeout".into());
+        assert_eq!(state.status_snapshot().build()["sdr_last_failure"],failure);
+        state.ddc_error=None;
+        assert_eq!(state.status_snapshot().build()["sdr_last_failure"],failure);
+    }
 
     #[test]
     fn status_gain_uses_each_modes_actual_and_keeps_unknown_null() {

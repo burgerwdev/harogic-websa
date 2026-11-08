@@ -14,7 +14,8 @@ import {
 } from '../ui/refAutoScale';
 import { refLevel } from '../ui/refState';
 
-vi.mock('../audio/sdrAudio', () => ({ prepareSdrAudioTransition: vi.fn() }));
+vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false), prepareSdrAudioTransition: vi.fn() }));
 
 const sent: Record<string, unknown>[] = [];
 

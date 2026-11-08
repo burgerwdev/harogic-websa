@@ -39,6 +39,7 @@ file instead (resized, nearest neighbour, to the mode's own resolution).
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -87,6 +88,8 @@ def stream_tones(tones: list[tuple[int, int]], rate: int, scale: float, chunk_sa
     Every yielded chunk is exactly `chunk_samples` long, the last one padded with silence, because the
     driver's one-shot `tx()` requires one length for the whole session.
     """
+    if rate <= 0 or chunk_samples <= 0:
+        raise ValueError('sample rate and stream chunk size must be positive')
     buffer = np.empty(chunk_samples, dtype=np.complex64)
     filled = 0
     for hz, ns in tones:
@@ -146,7 +149,7 @@ def transmit(args: argparse.Namespace) -> int:
         head = _truncate(tones, int(limit * 1e9))
         built = 0
         peak = 0.0
-        for chunk in stream_tones(head, int(args.rate), args.scale, int(args.rate * CHUNK_S)):
+        for chunk in stream_tones(head, int(args.rate), args.scale, max(1, int(args.rate * CHUNK_S))):
             built += chunk.size
             peak = max(peak, float(np.max(np.abs(chunk))))
         print(f'\n--dry-run: built {built / args.rate:.2f}s of baseband '
@@ -160,7 +163,8 @@ def transmit(args: argparse.Namespace) -> int:
     with radio.Radio(args) as tx:
         chunk_samples = max(1024, int(tx.rate * CHUNK_S))
         print(f'\nactual rate    : {tx.rate} Hz (driver may differ from --rate)')
-        tx.open_stream()
+        tx.open_stream(kernel_buffers=4)
+        zero = np.zeros(chunk_samples, dtype=np.complex64)
         try:
             while args.repeat == 0 or sent < args.repeat:
                 sent += 1
@@ -175,7 +179,9 @@ def transmit(args: argparse.Namespace) -> int:
                 elapsed = time.time() - started
                 print(f'  done in {elapsed:.1f}s ({pushed} chunks)', flush=True)
                 if args.pause > 0 and (args.repeat == 0 or sent < args.repeat):
-                    time.sleep(args.pause)
+                    for _ in range(math.ceil(args.pause * tx.rate / chunk_samples)):
+                        tx.push_chunk(zero)
+            tx.drain_stream(zero)
         except KeyboardInterrupt:
             print('\ninterrupted')
     return 0
@@ -229,6 +235,10 @@ def main(argv: list[str] | None = None) -> int:
         return list_modes()
     if args.repeat < 0:
         parser.error('--repeat cannot be negative')
+    for name in ('seconds', 'pause', 'dry_run_seconds'):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value < 0:
+            parser.error(f'--{name.replace("_", "-")} must be finite and nonnegative')
     return transmit(args)
 
 

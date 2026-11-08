@@ -47,22 +47,18 @@ mod tests {
         let declared: Vec<&str> = plugins(PluginKind::Digital).iter().map(|p| p.id).collect();
         assert!(!declared.is_empty());
         for descriptor in plugins(PluginKind::Digital) {
-            let built = build(descriptor.id, 48_000.0).is_some();
+            let demod = build(descriptor.id, 48_000.0);
+            let built = demod.is_some();
             assert_eq!(
                 built, descriptor.implemented,
                 "{}: registry says implemented={} but build() says {built}",
                 descriptor.id, descriptor.implemented
             );
+            if let Some(demod) = demod {
+                assert_eq!(demod.id(), descriptor.id);
+            }
         }
         assert!(build("no_such_protocol", 48_000.0).is_none());
     }
 
-    #[test]
-    fn a_built_protocol_reports_its_registry_id() {
-        for descriptor in plugins(PluginKind::Digital) {
-            if let Some(demod) = build(descriptor.id, 48_000.0) {
-                assert_eq!(demod.id(), descriptor.id);
-            }
-        }
-    }
 }

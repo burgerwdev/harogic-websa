@@ -4,6 +4,8 @@
 // render pass; the blocks are drawn stacked and right-aligned. Putting them in one place is
 // what keeps them from overlapping each other (trigger chip, limit verdict, ...).
 import { ctx, noticeText, statusError, statusWarnings } from '../core/store';
+import { t } from '../core/i18n';
+import { sdrAudioNeedsGesture } from '../audio/sdrAudio';
 import { plotRect } from './plot';
 
 export interface StatusBlock {
@@ -51,6 +53,9 @@ export function renderStatusBlocks(): void {
   // canvas indicator lives in one place. Pushed here, not by a view, so it shows in every
   // mode (an unarmed SWP view never pushes the trigger chip).
   if (statusWarnings.length) pushStatus({ lines: statusWarnings, accent: '#ff7043' });
+  // Autoplay holds a fresh AudioContext suspended until one gesture; without this
+  // the receiver looks alive but stays silent after a reload.
+  if (sdrAudioNeedsGesture()) pushStatus({ lines: [t('audio_gesture_pending')], accent: '#ffb300' });
   // Transient feedback (Auto Scale outcome) below the warnings, in the normal (green) colour: the
   // stack is where the condition it answers is drawn, so cause and result sit together.
   if (noticeText) pushStatus({ lines: [noticeText], accent: '#00cc00' });

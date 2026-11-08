@@ -86,8 +86,8 @@ def main() -> int:
             return 1
 
     print('\n== Rust/WASM kernels vs the Python reference ==')
-    tests = run(['cargo', 'test', '--release', '--test', 'ddc_reference', '--test', 'demod_reference',
-                 '--test', 'ft8_reference', '--', '--nocapture'], WASM_DIR)
+    tests = run(['cargo', 'test', '--release', '-j', '1', '--test', 'ddc_reference', '--test', 'demod_reference',
+                 '--test', 'ft8_reference', '--', '--test-threads=1', '--nocapture'], WASM_DIR)
     output = tests.stdout + tests.stderr
     if tests.returncode != 0:
         print(output[-3000:], file=sys.stderr)

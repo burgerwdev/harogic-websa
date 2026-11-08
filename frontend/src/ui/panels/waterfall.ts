@@ -1,3 +1,4 @@
+import { syncSelectValue } from '../selectControl';
 // Waterfall controls and the sweep-speed field.
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
@@ -7,6 +8,7 @@ import { getUiScale } from '../../core/uiScale';
 import { waterfallOn, wfPaused } from '../waterfallState';
 import { pushSpectrumRow } from '../../render/waterfall';
 import { createParam } from '../../core/params';
+import { syncWfRangeUi } from '../wfRange';
 
 /// The waterfall's default height: the CSS box the panel always had.
 const WF_DEFAULT_H = 135;
@@ -42,13 +44,21 @@ function readWfHeight(): number {
 }
 
 let wfHeight = readWfHeight();
+let equalSplit = false;
+
+/** Mode entry uses equal panels; a manual divider drag switches back to a fixed height. */
+export function setWfEqualSplit(on: boolean): void {
+  equalSplit = on;
+  syncWfSplit();
+}
 
 /** Apply the remembered split: the container's height and the divider's visibility. Closing the
  * waterfall hides both, which is what returns the area to the spectrum. */
 export function syncWfSplit(): void {
   const container = document.getElementById('waterfall-container');
   const split = document.getElementById('wf-split');
-  if (container) container.style.height = `${wfHeight}px`;
+  document.querySelector('.spectrum-area')?.classList.toggle('wf-equal-split', equalSplit && waterfallOn.get());
+  if (container) container.style.height = equalSplit ? '' : `${wfHeight}px`;
   if (split) split.style.display = waterfallOn.get() ? '' : 'none';
 }
 
@@ -69,6 +79,9 @@ export function initWfSplit(): void {
     // Height is assigned to a border-box container; clientHeight excludes its borders and
     // would move the grab point by another two CSS pixels on every new drag.
     startH = container.offsetHeight || wfHeight;
+    equalSplit = false;
+    area?.classList.remove('wf-equal-split');
+    container.style.height = `${startH}px`;
     columnH = area?.clientHeight ?? 0;
     split.classList.add('dragging');
     try {
@@ -110,8 +123,9 @@ export function initWfSplit(): void {
 
 /** Preset: drop the dragged split (and its stored value) so the panels come up at the factory
  * split, like every other panel preference a Preset resets. */
-export function resetWfSplit(): void {
+export function resetWfSplit(half = false): void {
   wfHeight = WF_DEFAULT_H;
+  equalSplit = half;
   try {
     localStorage.removeItem(WF_SPLIT_KEY);
   } catch {
@@ -124,6 +138,7 @@ export function resetWfSplit(): void {
 export function setWaterfall(on: boolean) {
   if (waterfallOn.get() === on) return;
   waterfallOn.set(on);
+  syncWfRangeUi();
   if (on) S.resetWaterfall();
   const wf = document.getElementById('waterfall');
   if (wf) wf.style.display = on ? '' : 'none';
@@ -186,7 +201,7 @@ function fillSweepEditor() {
   // Mode, time and visibility form one editor; never mix a report with a draft.
   if (!sweepElements().some(el => el && (document.activeElement === el || el.dataset.edited === '1'))) {
     const value = sweep.get();
-    if (select) select.value = String(value.mode);
+    syncSelectValue(select, String(value.mode));
     if (input) input.value = String(value.time);
   }
   syncSweepInput();

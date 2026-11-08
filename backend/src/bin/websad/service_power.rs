@@ -1,5 +1,5 @@
 use super::receiver_workers::ChannelConfig;
-use super::DevState;
+use super::{DevState, MAX_CHANNELS};
 use std::time::{Duration, Instant};
 
 const POWER_MAX_AGE: Duration = Duration::from_millis(1500);
@@ -27,13 +27,13 @@ pub(super) fn measure_channel_power(
     freq: &[f64],
     power: &[f32],
     configs: &[ChannelConfig],
-) -> [Option<(Instant, f64)>; 3] {
+) -> Vec<Option<(Instant, f64)>> {
     let now = Instant::now();
-    std::array::from_fn(|index| {
+    (0..MAX_CHANNELS).map(|index| {
         configs.iter().find(|config| config.enabled && config.channel as usize == index + 1)
             .and_then(|config| estimate_channel_power(freq, power, config))
             .map(|level| (now, level))
-    })
+    }).collect()
 }
 
 impl DevState {
@@ -41,11 +41,11 @@ impl DevState {
         self.channel_power = measure_channel_power(freq, power, &self.channel_configs());
     }
 
-    pub(super) fn fresh_channel_power(&self) -> [Option<f64>; 3] {
+    pub(super) fn fresh_channel_power(&self) -> Vec<Option<f64>> {
         let now = Instant::now();
-        self.channel_power.map(|measurement| {
+        self.channel_power.iter().map(|measurement| {
             measurement.filter(|(measured, _)| now.saturating_duration_since(*measured) < POWER_MAX_AGE)
                 .map(|(_, level)| level)
-        })
+        }).collect()
     }
 }

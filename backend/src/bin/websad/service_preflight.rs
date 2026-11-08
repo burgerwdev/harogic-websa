@@ -1,8 +1,76 @@
 use super::*;
 
-/// Calibrate candidate kernels without holding the device state or pausing capture.
-pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result<u64, String> {
+pub(super) struct Admission {
+    revision: u64,
+    command: String,
+    request: Value,
+    prepared: Option<receiver_workers::PreparedDecoders>,
+    retired: Option<receiver_workers::PreparedDecoders>,
+    released: Option<receiver_workers::PreparedDecoders>,
+    consumed: bool,
+    processing:Option<Value>,
+    workers:Option<receiver_workers::ReceiverWorkers>,
+}
+
+impl Admission {
+    fn empty(revision: u64, command: &str, request: &Value) -> Self {
+        Self { revision, command: command.into(), request: request.clone(), prepared: None, retired: None, released: None, consumed: false,processing:None,workers:None }
+    }
+
+    pub(super) fn dispatch(&mut self, state: &mut DevState, command: &str, request: &Value) -> Result<bool, CommandError> {
+        if self.consumed || state.config_version != self.revision || self.command != command || self.request != *request {
+            return Err(CommandError::new("configuration_changed", "configuration changed during admission; retry command"));
+        }
+        self.consumed = true;
+        prepare_receiver_recovery(state, command, request)?;
+        if state.receiver_workers.is_none() {
+            state.receiver_workers=self.workers.take();
+        }
+        if self.prepared.is_some() {
+            if state.receiver_workers.is_none() {
+                state.receiver_workers = Some(receiver_workers::ReceiverWorkers::new()
+                    .map_err(|error| CommandError::new("device_error", &error))?);
+            }
+            self.retired = Some(state.receiver_workers.as_mut().unwrap().exchange_prepared(self.prepared.take().unwrap()));
+        }
+        let previous_auto = state.auto.clone();
+        if matches!(command, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET")
+            && !(command == "SET_REF" && request["mode"] == "auto") {
+            state.cancel_auto_session();
+        }
+        let result = dispatch_ready(state, command, request);
+        if !matches!(result, Ok(true)) {
+            if result.is_err() && state.config_version == self.revision { state.auto = previous_auto; }
+            if let Some(previous) = self.retired.take() {
+                if let Some(workers) = state.receiver_workers.as_mut() {
+                    self.prepared = Some(workers.exchange_prepared(previous));
+                }
+            }
+            // A recovery attempt may have created replacement workers after the
+            // latched failure; retire them so the retry can reap.
+            if state.receiver_failure.is_some() {
+                if let Some(workers) = state.receiver_workers.as_mut() { workers.stop_failed(); }
+            }
+        } else {
+            if let Some(report)=self.processing.as_ref() {state.receiver_admission=Some(report.clone());}
+            let configs = if state.swp.mode == "sdr" { state.channel_configs() } else { Vec::new() };
+            if let Some(workers) = state.receiver_workers.as_mut() {
+                self.released = Some(workers.release_prepared(&configs));
+            }
+        }
+        result
+    }
+}
+
+/// Prepare kernels and decoder processes without holding device state or pausing capture.
+pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result<Admission, String> {
+    preflight_with(app, cmd, data, receiver_workers::PreparedDecoders::new).await
+}
+
+async fn preflight_with<F>(app: &Arc<App>, cmd: &str, data: &Value, prepare: F) -> Result<Admission, String>
+where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::PreparedDecoders, String> + Send + 'static {
     static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    static WAITING:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(64);
     {
         let state = app.state.lock().unwrap();
         if state.swp.mode == "server" && !matches!(cmd, "STATUS" | "SET_MODE" | "SET_SERVER") {
@@ -12,8 +80,8 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
     let display_only = matches!(cmd, "AUTO_SCALE" | "SET_REF")
         && data["display_only"] == true
         && (cmd == "AUTO_SCALE" || data["mode"] == "auto");
-    if display_only { return Ok(app.state.lock().unwrap().config_version); }
-    if !matches!(cmd, "AUTO_SCALE" | "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET") { return Ok(app.state.lock().unwrap().config_version); }
+    if display_only { return Ok(Admission::empty(app.state.lock().unwrap().config_version, cmd, data)); }
+    if !matches!(cmd, "AUTO_SCALE" | "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET") { return Ok(Admission::empty(app.state.lock().unwrap().config_version, cmd, data)); }
     {
         let state = app.state.lock().unwrap();
         if !data.is_object() { return Err("JSON message must be an object".into()); }
@@ -26,24 +94,20 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
                 return Err("tune requires listen or freq".into());
             }
             let config = state.parse_channel_config(data)?;
+            state.receivers.check_control(config.channel,data)?;
             if state.channel_recapture(&config)?.is_none() && config.enabled {
-                let plan = service_ddc::channel_plan(COARSE_RATE, &config)?;
-                Ddc::validate_service_frequency(state.capture_center(), state.capture_bandwidth(),
-                    state.capture_bandwidth() / 0.8, state.sdr_pfb_taps_per_phase, config.freq, &plan)?;
+                let fs = state.capture_input_rate();
+                let source = service_ddc::source_plan(fs, &config)?;
+                service_ddc::validate_source_frequency(state.capture_center(), state.capture_bandwidth(),
+                    fs, state.sdr_pfb_taps_per_phase, config.freq, &source)?;
             }
         } else {
             validate(&state.schema, cmd, data).map_err(|(_, message)| message)?;
             if cmd == "SET_SDR" { state.parse_service_capture(data)?; }
         }
     }
-    let supersede = cmd != "AUTO_SCALE" && !(cmd == "SET_REF" && data["mode"] == "auto")
-        && app.state.lock().unwrap().cancel_auto_session();
-    if supersede {
-        let snapshot = app.state.lock().unwrap().status_snapshot();
-        let built = snapshot.build();
-        app.state.publish_status(snapshot.revision, built);
-    }
     // Wait for admission before snapshotting the configuration revision.
+    let _queued=WAITING.try_acquire().map_err(|_|"admission_busy: command preparation queue full (64)")?;
     let permit = ADMISSION.acquire().await.map_err(|_| "admission_busy: service admission already running")?;
     let candidate = {
         let state = app.state.lock().unwrap();
@@ -53,32 +117,34 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
         let preset = cmd == "SET_PRESET";
         let capture = cmd == "SET_SDR" || front_end || preset;
         let starting = (cmd == "SET_MODE" && data["mode"] == "sdr") || (cmd == "CONNECT" && state.swp.mode == "sdr");
-        if !channels && !capture && !starting { return Ok(revision); }
-        if !starting && state.swp.mode != "sdr" { return Ok(revision); }
-        if state.hardware_shim.is_none() && state.ddc.is_none() && state.pipeline.is_none() {
-            if channels {state.parse_channel_config(data)?;}
-            if capture {
-                if preset {state.preset_service_capture()?;} else {state.parse_service_capture(data)?;}
-            }
-            return Ok(revision);
-        }
+        if !channels && !capture && !starting { return Ok(Admission::empty(revision, cmd, data)); }
+        if !starting && state.swp.mode != "sdr" { return Ok(Admission::empty(revision, cmd, data)); }
         let mut configs = state.channel_configs();
         let mut live_channels = channels;
+        let mut capture_restart = false;
         let (center, fs, bandwidth, taps, existing) = if capture || starting {
             let requested = if cmd == "SET_SDR" { data.clone() } else { json!({}) };
             let next = if preset {state.preset_service_capture()?} else {state.parse_service_capture(&requested)?};
+            let previous_decimate = state.pipeline.as_ref().map(|p| p.snapshot.device_decimate)
+                .or_else(|| state.ddc.as_ref().map(|d| d.0.device_decimate));
+            capture_restart = preset || (front_end && cmd != "AUTO_SCALE" && !(cmd == "SET_REF" && data["mode"] == "auto"))
+                || (cmd == "SET_SDR" && (next.center != state.sdr_center || next.taps != state.sdr_pfb_taps_per_phase
+                    || next.configs != state.channel_configs()
+                    || (state.hardware_shim.is_some() && previous_decimate != Some(next.device_decimate as u64))));
             configs = next.configs;
             (next.center, next.source_rate, next.bandwidth, next.taps, None)
         } else {
             let next = state.parse_channel_config(data)?;
+            live_channels = !service_ddc::is_direct(&next);
             if let Some(capture) = state.channel_recapture(&next)? {
                 live_channels = false;
+                capture_restart = true;
                 configs = capture.configs;
                 (capture.center, capture.source_rate, capture.bandwidth, capture.taps, None)
             } else {
-                let slot = next.channel as usize - 1;
-                configs[slot] = next;
-                let fs = state.capture_bandwidth() / 0.8;
+                let target=configs.iter_mut().find(|old|old.channel==next.channel).ok_or("channel not found")?;
+                *target = next;
+                let fs = state.capture_input_rate();
                 let bins = state.pipeline.as_ref().map(|p| p.snapshot.selected_bins)
                     .or_else(|| state.ddc.as_ref().map(|d| d.0.stream.bins().len()));
                 (state.capture_center(), fs, state.capture_bandwidth(), state.sdr_pfb_taps_per_phase, bins)
@@ -87,8 +153,10 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
         let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
         let mut bins = Vec::new();
         for config in configs.iter().filter(|c| c.enabled) {
-            let plan = service_ddc::channel_plan(COARSE_RATE, config)?;
-            Ddc::validate_service_frequency(center, bandwidth, fs, taps, config.freq, &plan)?;
+            let source = service_ddc::source_plan(fs, config)?;
+            service_ddc::validate_source_frequency(center, bandwidth, fs, taps, config.freq, &source)?;
+            // Direct channels consume capture IQ and do not select coarse bins.
+            if source.is_direct() { continue; }
             let signed = signed_bin(config.freq, center);
             for neighbour in signed - PLAN_NEIGHBOURS..=signed + PLAN_NEIGHBOURS {
                 if (-m / 2..m / 2).contains(&neighbour) {
@@ -98,26 +166,69 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
             }
         }
         // Live channel changes retain old selected bins and can add one new bin.
-        (revision, configs, fs, taps, existing.unwrap_or(bins.len().max(1)), m as usize, live_channels)
-    };
-    let (revision, configs, fs, taps, selected, maximum, channels) = candidate;
-    let result = tokio::task::spawn_blocking(move || {
-        if channels {
-            service_cost::admit_service(&configs, fs, taps, selected)?;
-            if selected < maximum { service_cost::admit_service(&configs, fs, taps, selected + 1)?; }
-            Ok(())
+        let recovery = state.receiver_failure.is_some()
+            && channels && ["mode", "demod"].iter().any(|field| data.get(*field).is_some());
+        let restart = starting || capture_restart || recovery || data["recover"]==true;
+        // A reset needs an owned replacement: the publisher may consume an
+        // already-staged decoder without advancing config_version during admission.
+        let prepare_configs = if state.receiver_failure.is_some() && !recovery && !starting {
+            Vec::new()
+        } else if restart {
+            let target=data["channel"].as_u64().unwrap_or(1) as u32;
+            configs.iter().filter(|config| (data["recover"]!=true||starting||capture_restart||recovery||config.channel==target)
+                && config.enabled && config.processing_enabled
+                && websa_channelizer::catalog::is_external(&config.mode)).cloned().collect()
         } else {
-            service_cost::admit_service(&configs, fs, taps, selected)
-        }
+            match state.receiver_workers.as_ref() {
+                Some(workers) => workers.preparation_needed(&configs, false),
+                None => configs.iter().filter(|config| config.enabled && config.processing_enabled
+                    && websa_channelizer::catalog::is_external(&config.mode)).cloned().collect(),
+            }
+        };
+        let validate_geometry = state.hardware_shim.is_some() || state.ddc.is_some() || state.pipeline.is_some();
+        let needs_workers=(state.receiver_failure.is_none() || recovery || starting)
+            && (state.receiver_workers.is_none() || recovery)
+            && configs.iter().any(|c|c.enabled&&c.processing_enabled);
+        (revision, configs, fs, taps, existing.unwrap_or(bins.len().max(1)), m as usize, live_channels, prepare_configs, validate_geometry,needs_workers)
+    };
+    let (revision, configs, fs, taps, selected, maximum, channels, prepare_configs, validate_geometry,needs_workers) = candidate;
+    let needs_preparation = !prepare_configs.is_empty();
+    let result = tokio::task::spawn_blocking(move || {
+        if validate_geometry {service_cost::prepare_service(&configs,fs,taps,selected,channels && selected<maximum)?;}
+        let processing=processing_admission::prepare(&configs,fs)?;
+        let workers=if needs_workers {Some(receiver_workers::ReceiverWorkers::new()?)} else {None};
+        Ok::<_,String>((prepare(&prepare_configs)?,processing,workers))
     }).await.map_err(|error| format!("service admission worker: {error}"))?;
     drop(permit);
-    result?;
-    Ok(revision)
+    let mut ticket = Admission::empty(revision, cmd, data);
+    let (prepared,processing,workers) = result?;
+    ticket.processing=Some(processing);
+    ticket.workers=workers;
+    if needs_preparation { ticket.prepared = Some(prepared); }
+    Ok(ticket)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor="current_thread")]
+    async fn first_processor_has_a_warm_pool_before_the_commit_lock() {
+        let (golden,schema)=load_golden();
+        let mut state=DevState::new(golden,schema);
+        state.swp.mode="sdr".into();state.sdr_center=100e6;state.sdr_listen=100e6;
+        for config in &mut state.sdr_channels {config.enabled=false;}
+        let app=Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
+            next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
+            identities:channel_identities(),display_version:Arc::new(AtomicU64::new(0))});
+        let request=json!({"channel":MAX_CHANNELS,"enabled":true,"freq":100e6,"mode":"am"});
+        let mut ticket=preflight(&app,"SET_SDR_CHANNEL",&request).await.unwrap();
+        assert!(ticket.workers.is_some(),"bounded mailboxes must be allocated before commit");
+        let mut state=app.state.lock().unwrap();
+        assert!(state.receiver_workers.is_none());
+        ticket.dispatch(&mut state,"SET_SDR_CHANNEL",&request).unwrap();
+        assert!(state.receiver_workers.is_some());
+    }
 
     #[tokio::test(flavor="current_thread")]
     async fn radiofax_preflight_never_queues_page_break_and_rejects_atomically() {
@@ -134,7 +245,7 @@ mod tests {
         let before=state.channel_configs();
         let app=Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
             next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
-            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            identities:channel_identities(),
             display_version:Arc::new(AtomicU64::new(0))});
         for data in [json!({"radiofax_lpm":"180","radiofax_new_page":true}),
             json!({"radiofax_acquisition":"manual","radiofax_new_page":true})] {
@@ -146,10 +257,13 @@ mod tests {
             assert!(state.receiver_failure.is_none());
             assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
         }
-        preflight(&app,"SET_SDR_CHANNEL",&json!({"radiofax_new_page":true})).await.unwrap();
+        let page={let mut state=app.state.lock().unwrap();state.remember_receiver_streams();let context=state.receivers.control_metadata(1);
+            json!({"radiofax_new_page":true,"action_id":"preflight-page","action_token":context["action_token"],
+                "service_id":context["service_id"],"receiver_uid":context["receiver_uid"]})};
+        preflight(&app,"SET_SDR_CHANNEL",&page).await.unwrap();
         let mut state=app.state.lock().unwrap();
         assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
-        state.apply_channel_config(&json!({"radiofax_new_page":true})).unwrap();
+        state.apply_channel_config(&page).unwrap();
         assert!(state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
     }
 
@@ -164,7 +278,7 @@ mod tests {
         let sequence = state.auto.seq;
         let app = Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
             next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
-            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            identities:channel_identities(),
             display_version:Arc::new(AtomicU64::new(0))});
         for (cmd, data) in [
             ("SET_SDR_CHANNEL", json!({"mode":"cw", "pitch":1601})),
@@ -293,15 +407,123 @@ mod tests {
         state.ddc=Some(SendDdc(ddc));
         Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
             next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
-            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            identities:channel_identities(),
             display_version:Arc::new(AtomicU64::new(0))})
     }
 
     async fn command(app:&Arc<App>,cmd:&str,data:Value)->Result<bool,CommandError> {
-        let revision=preflight(app,cmd,&data).await.map_err(|e|CommandError::new("bad_parameter",&e))?;
+        let mut admission=preflight(app,cmd,&data).await.map_err(|e|CommandError::new("bad_parameter",&e))?;
         let mut state=app.state.lock().unwrap();
-        assert_eq!(state.config_version,revision);
-        dispatch(&mut state,cmd,&data)
+        admission.dispatch(&mut state,cmd,&data)
+    }
+
+    #[tokio::test(flavor="current_thread")]
+    async fn failed_decoder_preparation_preserves_capture_and_auto_session() {
+        let _guard=hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        let app=app();
+        let before={
+            let mut state=app.state.lock().unwrap();
+            state.auto_scale(None,false);
+            (state.channel_configs(),state.config_version,state.freq_version,
+                state.ddc.as_ref().unwrap().0.generation,state.stream_registry(),state.auto.view())
+        };
+        for (cmd,data) in [
+            ("SET_SDR_CHANNEL",json!({"freq":100.1e6})),
+            ("SET_SDR",json!({"center":101e6})),
+            ("SET_REF",json!({"ref":-30.0})),
+            ("SET_PRESET",json!({})),
+        ] {
+            let preparing_app=app.clone();
+            let result=preflight_with(&app,cmd,&data,move |_| {
+                // Process startup can take seconds; capture state must remain available.
+                assert_eq!(preparing_app.state.lock().unwrap().swp.mode,"sdr");
+                Err("injected decoder process startup failure".into())
+            }).await;
+            assert!(matches!(result,Err(error) if error=="injected decoder process startup failure"));
+            let mut state=app.state.lock().unwrap();
+            assert_eq!((state.channel_configs(),state.config_version,state.freq_version,
+                state.ddc.as_ref().unwrap().0.generation,state.stream_registry(),state.auto.view()),before);
+            assert!(state.receiver_failure.is_none());
+            // An unchanged owner generation and continued packets prove no SDK cutover.
+            let packet=state.ddc.as_mut().unwrap().0.hardware.as_ref().unwrap().next().unwrap();
+            assert_eq!(packet.generation,before.3);
+        }
+    }
+
+    #[tokio::test(flavor="current_thread")]
+    async fn admission_rejects_superseded_revision_and_different_request() {
+        let (golden,schema)=load_golden();
+        let app=Arc::new(App {state:StateMutex::new(DevState::new(golden,schema)),clients:PLMutex::new(Vec::new()),
+            next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
+            identities:channel_identities(),display_version:Arc::new(AtomicU64::new(0))});
+        let request=json!({"mode":"sdr"});
+        let mut ticket=preflight_with(&app,"SET_MODE",&request,|_|Ok(receiver_workers::PreparedDecoders::default())).await.unwrap();
+        let mut state=app.state.lock().unwrap();
+        assert_eq!(ticket.dispatch(&mut state,"SET_MODE",&json!({"mode":"rta"})).unwrap_err().code,"configuration_changed");
+        state.config_version+=1;
+        assert_eq!(ticket.dispatch(&mut state,"SET_MODE",&request).unwrap_err().code,"configuration_changed");
+        assert_eq!(state.swp.mode,"std");
+    }
+
+    #[test]
+    fn automatic_overflow_waits_for_external_preparation_before_reconfiguring() {
+        let (golden,schema)=load_golden();
+        let mut state=DevState::new(golden,schema);
+        state.swp.mode="sdr".into();
+        state.sdr_demod="wspr".into();
+        state.sdr_center=14_095_600.0;
+        state.sdr_listen=14_095_600.0;
+        state.auto_scale(None,false);
+        state.note_auto_acquisition(-12);
+        let before=(state.sdr_ref,state.config_version,state.auto.view());
+        assert!(state.auto_receiver_preparation_required());
+        assert!(!state.advance_auto());
+        assert_eq!((state.sdr_ref,state.config_version,state.auto.view()),before);
+        assert!(state.ddc.is_none() && state.pipeline.is_none());
+        // A display-only Auto reports overflow without preparing or changing capture.
+        state.auto_scale(None,true);
+        state.note_auto_acquisition(-12);
+        assert!(!state.auto_receiver_preparation_required());
+        assert!(state.advance_auto());
+        assert_eq!(state.auto.view()["result"],"overflow");
+    }
+
+    #[tokio::test(flavor="current_thread")]
+    async fn front_end_recapture_keeps_usb_audio_without_a_demodulator_change() {
+        let _guard=hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        let app=app();
+        command(&app,"SET_SDR_CHANNEL",json!({"channel":1,"mode":"usb","if_bw":2400.0,"squelch":-160.0})).await.unwrap();
+        let mut previous_epoch=None;
+        for (cmd,data) in [("SET_REF",json!({"ref":-50.0})),("SET_REF",json!({"ref":-40.0})),
+            ("SET_AMP",json!({"atten":10})),("SET_REFCK",json!({"mode":"external"}))] {
+            {
+                let mut state=app.state.lock().unwrap();
+                let registry=state.stream_registry();
+                let mut frames=Vec::new();
+                for _ in 0..160 {frames.extend(state.ddc.as_mut().unwrap().0.packet().unwrap());}
+                let output=state.process_receiver_frames_with_registry(&frames,&registry,true).unwrap();
+                assert!(output.audio.iter().any(|frame|frame.len()>96),"audio before {cmd}");
+                if let Some(epoch)=previous_epoch {assert_ne!(registry[0].epoch,epoch);}
+                previous_epoch=Some(registry[0].epoch);
+                // Leave source data to be admitted as old-stream tails during
+                // the command, without waiting for receiver execution.
+                let pending=state.ddc.as_mut().unwrap().0.packet().unwrap();
+                state.pending_iq.extend(pending);
+            }
+            command(&app,cmd,data).await.unwrap();
+            let mut state=app.state.lock().unwrap();
+            let registry=state.stream_registry();
+            let mut frames=std::mem::take(&mut state.pending_iq);
+            for _ in 0..160 {frames.extend(state.ddc.as_mut().unwrap().0.packet().unwrap());}
+            let output=state.process_receiver_frames_with_registry(&frames,&registry,false).unwrap();
+            let mut output=output;
+            output.append(state.receiver_workers.as_mut().unwrap().finish().unwrap());
+            assert!(output.audio.iter().any(|frame|frame.len()>96
+                && u32::from_le_bytes(frame[36..40].try_into().unwrap())==registry[0].epoch),"new stream audio after {cmd}");
+            assert!(state.receiver_failure.is_none(),"{:?}",state.receiver_failure);
+            assert!(state.receiver_workers.as_ref().unwrap().channel_failure(1).is_none());
+            assert_eq!(state.channel_configs()[0].mode,"usb");
+        }
     }
 
     #[tokio::test(flavor="current_thread")]
@@ -436,7 +658,11 @@ mod tests {
             let registry=state.stream_registry();
             let mut frames=Vec::new();
             for _ in 0..160 {frames.extend(state.ddc.as_mut().unwrap().0.packet().unwrap());}
-            state.submit_receiver_frames(&frames).unwrap();
+            // Only already-produced PCM is retained across this boundary.
+            // Queued old-generation input is intentionally cancelled on retirement.
+            let output=state.process_receiver_frames_with_registry(&frames,&registry,true).unwrap();
+            assert!(!output.audio.is_empty());
+            state.pending_receiver.append(output);
             registry
         };
         command(&app,"SET_PRESET",json!({})).await.unwrap();

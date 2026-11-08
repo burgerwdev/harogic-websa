@@ -5,7 +5,8 @@
 //! `no_std`-capable and its decode side needs only `alloc`, which is why it can live inside this
 //! crate at all.
 //!
-//! Changes this project made. The protocol code is unchanged.
+//! Local changes retain the upstream mode/timing tables and add the streaming and acquisition
+//! behavior described below.
 //!
 //! * This is a *module* of `websa-dsp`, not a crate: the crate-level attributes are gone, the module
 //!   table below is public, and `include!(concat!(env!("OUT_DIR"), ...))` became `include!` of a
@@ -20,7 +21,14 @@
 //!   `if let`s with the same semantics.
 //! * The one upstream test helper that used the `rand`/`rand_distr` dev-dependencies is rewritten on
 //!   a small deterministic generator (`decode/demodulator.rs`, `noise`), so the whole upstream test
-//!   suite runs here. The rest of the test code is untouched.
+//!   suite runs here. Local regression tests also cover the extensions below.
+//! * `decode/streaming.rs` owns resumable search/row state across input blocks. The assembler exposes
+//!   incremental reads; a temporary empty input does not finish an image.
+//! * The header's leader calibrates frequency offsets up to 400 Hz. The cutter corrects sync and
+//!   pixel frequencies by that offset. Tone classification smooths crossing-estimator jitter over
+//!   about 0.5 ms; the pixel frequency track retains its original timing.
+//! * The demodulator saturates the first half-period after a long silence, so a returning crossing
+//!   recovers rather than overflowing the elapsed fixed-point counter.
 //! * The crate keeps one local cargo feature, `alloc` (on by default), so the upstream
 //!   `#[cfg(feature = "alloc")]` gates keep their meaning without editing them. The upstream `wav`,
 //!   `mp3` and `image` features are simply not enabled, which drops the code that needs those crates.

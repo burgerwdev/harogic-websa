@@ -708,6 +708,11 @@ impl FmStereo {
         self.side_delayed = out;
     }
 
+    /// Samples waiting for the next drain, before applying the mono gain trace.
+    pub fn pending_side_samples(&self) -> usize {
+        self.side_out.len()
+    }
+
     pub fn take_side(&mut self) -> Vec<f32> {
         let last_gain = self.gain_trace.last().copied().unwrap_or(1.0);
         for (k, v) in self.side_out.iter_mut().enumerate() {

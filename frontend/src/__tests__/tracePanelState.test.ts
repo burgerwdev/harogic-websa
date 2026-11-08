@@ -171,6 +171,33 @@ describe('the peak-count editor', () => {
 		expect(S.peakMarks).toHaveLength(4);
 	});
 
+	it('keeps four complete rows as signals appear and disappear', () => {
+		setGrid(1e9, 200, 1e6);
+		for (const count of [0, 1, 5, 6, 11, 20, 4, 0]) {
+			const powers = new Float32Array(200).fill(-100);
+			for (let i = 0; i < count; i++) powers[5 + i * 9] = -20;
+			updatePeakTable(powers);
+			const rows = [...document.querySelectorAll('#peak-tbody tr')];
+			expect(rows).toHaveLength(4);
+			expect(rows.every(row => row.children.length === 5)).toBe(true);
+			expect(cells()).toHaveLength(count);
+			expect(S.peakMarks).toHaveLength(count);
+			expect(document.querySelectorAll('#peak-tbody .pk-empty')).toHaveLength(20 - count);
+			expect(document.getElementById('peak-table')!.style.display).toBe('');
+		}
+	});
+
+	it.each([1, 5, 6, 10, 11, 20])('reserves rows for the configured count %s while waiting for data', count => {
+		input().value = String(count);
+		updatePeakTable(null);
+		const rows = [...document.querySelectorAll('#peak-tbody tr')];
+		expect(rows).toHaveLength(Math.ceil(count / 5));
+		expect(rows.every(row => row.children.length === 5)).toBe(true);
+		expect(cells()).toHaveLength(0);
+		expect(S.peakMarks).toEqual([]);
+		expect(document.getElementById('peak-table')!.style.display).toBe('');
+	});
+
 	it('20→2 shrinks the table and peakMarks on the same input event', () => {
 		input().value = '2';
 		input().dispatchEvent(new Event('input', { bubbles: true }));

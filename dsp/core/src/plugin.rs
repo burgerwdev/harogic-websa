@@ -144,6 +144,11 @@ impl DemodConfig {
 /// without resetting the caller's level control (`pipeline` owns that).
 pub trait AnalogDemodulator: Send {
     fn id(&self) -> &'static str;
+    /// PCM samples the next block will produce, using current streaming state.
+    /// None means the implementation does not provide a preallocation bound.
+    fn output_length_hint(&self, _complex_samples: usize) -> Option<usize> {
+        None
+    }
     /// Demodulate `iq` (interleaved complex) into `out` (cleared first).
     fn process_into(&mut self, iq: &[f32], out: &mut Vec<f32>);
     /// New centre within the same capture: drop the channel history, keep the level.
@@ -174,6 +179,11 @@ pub trait AnalogDemodulator: Send {
     /// mode but WFM, or a baseband too narrow to carry the subcarriers).
     fn take_side(&mut self) -> Vec<f32> {
         Vec::new()
+    }
+
+    /// Length of the next `take_side()` result without draining it.
+    fn pending_side_samples(&self) -> usize {
+        0
     }
 
     /// Whether the stereo pilot is currently detected (the badge's state).

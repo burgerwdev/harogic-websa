@@ -1,0 +1,15 @@
+Harogic WebSA project-owned code
+Copyright (c) 2026 Tommy Wang
+
+License identifier: LicenseRef-Harogic-WebSA
+
+This identifier denotes GNU Affero General Public License version 3 ONLY
+(AGPL-3.0-only), reproduced without alteration in LICENSE, together with the
+section 7 additional permission in LICENSE-EXCEPTION (Harogic WebSA linking
+exception, version 1.0). Read both files as the applicable license terms.
+
+LICENSING.md defines the project-owned scope. THIRD_PARTY_NOTICES.md lists
+third-party components and provenance exclusions, which retain their own
+licenses. This identifier is a project-local reference, not an SPDX-listed
+exception identifier. Previously released MIT versions retain their MIT grants;
+the original notice is preserved in LICENSES/MIT-legacy.txt.

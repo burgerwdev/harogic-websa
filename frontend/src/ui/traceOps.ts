@@ -13,6 +13,7 @@ import { t } from '../core/i18n';
 import { displayUnit, smoothBins } from './displayState';
 import { peakThr } from './measurePrefs';
 import { postRefNotice } from './refAutoScale';
+import { syncSelectValue } from './selectControl';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
 export function syncFreezeBtn() {
@@ -147,7 +148,7 @@ export function syncAvgUI(): void {
   if (row) row.style.display = t.mode === 'AVERAGE' ? '' : 'none';
   const sel = document.getElementById('select-trace-avg') as HTMLSelectElement | null;
   const depth = S.rtaMode ? (t.avgTargetRta ?? 16) : (t.avgTarget ?? 16);
-  if (sel && document.activeElement !== sel) sel.value = String(depth);
+  syncSelectValue(sel, String(depth));
   const st = document.getElementById('trace-avg-status');
   if (!st) return;
   if (t.mode !== 'AVERAGE') { st.textContent = ''; return; }
@@ -168,8 +169,7 @@ export function setTraceAverage(count: number): void {
 }
 
 /** Export the active trace as CSV (metadata header + freq/power pairs). */
-// Peaks exactly as the peak list shows them (`n` is the list order, strongest first is
-// a coincidence of the ordering — the CSV reports the delta to the strongest explicitly).
+// Peaks exactly as the peak list shows them (strongest first).
 export function exportPeakListCsv(): void {
   const peaks = S.peakMarks as any[] | null;
   if (!peaks || !peaks.length) return;

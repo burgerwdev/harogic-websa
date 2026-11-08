@@ -1,0 +1,2 @@
+.raw-copy { float:right; margin:2px 0 4px 8px; padding:2px 7px; font-size:11px; }
+.raw-copy + pre { clear:both; }

@@ -4,8 +4,8 @@
 //! the strongest bin, and a second-order RBJ notch is placed there. Doing the rejection in the time
 //! domain keeps the rest of the spectrum untouched — the point of a notch is that it removes *one*
 //! tone, not a band — while the spectral estimate is what makes it adaptive without a training
-//! signal. A 512-point frame at 48 kHz resolves about 94 Hz, so the notch is widened by the biquad's
-//! Q (default 12: roughly +/-400 Hz at 1 kHz) rather than pretending to bin precision.
+//! signal. A 512-point frame at 48 kHz resolves about 94 Hz; sub-bin interpolation refines the
+//! estimate before placing a constant-Q notch (default Q=12: about 83 Hz bandwidth at 1 kHz).
 //!
 //! Only single-tone interference: a second tone would need a second section, and the stage is
 //! registered as one plugin per concern.
@@ -32,7 +32,7 @@ pub struct AdaptiveNotch {
     /// Biquad coefficients, normalised by a0.
     b0: f64, b1: f64, b2: f64, a1: f64, a2: f64,
     x1: f64, x2: f64, y1: f64, y2: f64,
-    /// Rejection depth: 1 - (this much at the notch frequency).
+    /// Quality factor: notch frequency divided by its bandwidth.
     pub q: f64,
 }
 
@@ -50,7 +50,7 @@ impl AdaptiveNotch {
         for (k, value) in window.iter_mut().enumerate() {
             *value = 0.5 - 0.5 * (2.0 * core::f64::consts::PI * k as f64 / FRAME as f64).cos();
         }
-        let mut notch = Self {
+        Self {
             rate: if rate > 0.0 { rate } else { crate::audio::DEFAULT_AUDIO_RATE },
             fft: Fft::new(FRAME),
             window,
@@ -60,23 +60,20 @@ impl AdaptiveNotch {
             b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0,
             x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
             q: 12.0,
-        };
-        notch.set_frequency(1_000.0);
-        notch.hz = 0.0;
-        notch
+        }
     }
 
     pub fn frequency_hz(&self) -> f64 {
         self.hz
     }
 
-    /// The strongest tone in the block, or 0 when nothing stands out above the noise.
+    /// The strongest tone in the block, retaining the previous estimate when no new tone stands out.
     fn estimate_hz(&mut self, input: &[f32]) -> f64 {
         let n = FRAME.min(input.len());
         if n < FRAME {
             return self.hz;
         }
-        // Analyse the middle of the block so a block boundary cannot shift the estimate.
+        // Analyse one centred frame; estimates can differ when callers partition the input.
         let start = (input.len() - FRAME) / 2;
         for k in 0..FRAME {
             self.re[k] = input[start + k] as f64 * self.window[k];
@@ -141,11 +138,13 @@ impl AudioStage for AdaptiveNotch {
         "notch"
     }
 
-    fn process_into(&mut self, input: &[f32], _hold: bool, out: &mut Vec<f32>) {
-        let estimate = self.estimate_hz(input);
-        if estimate > 0.0 && (estimate - self.hz).abs() > RETUNE_HZ {
-            self.hz = estimate;
-            self.set_frequency(estimate);
+    fn process_into(&mut self, input: &[f32], hold: bool, out: &mut Vec<f32>) {
+        if !hold {
+            let estimate = self.estimate_hz(input);
+            if estimate > 0.0 && (estimate - self.hz).abs() > RETUNE_HZ {
+                self.hz = estimate;
+                self.set_frequency(estimate);
+            }
         }
         out.clear();
         out.reserve(input.len());
@@ -167,6 +166,11 @@ impl AudioStage for AdaptiveNotch {
         self.y1 = 0.0;
         self.y2 = 0.0;
         self.hz = 0.0;
+        self.b0 = 1.0;
+        self.b1 = 0.0;
+        self.b2 = 0.0;
+        self.a1 = 0.0;
+        self.a2 = 0.0;
     }
 }
 
@@ -287,7 +291,30 @@ mod tests {
         let mut out = Vec::new();
         notch.process_into(&input, false, &mut out);
         assert_eq!(notch.frequency_hz(), 0.0, "noise must not be treated as a tone");
-        assert_eq!(out.len(), input.len());
+        assert_eq!(out, input, "a disabled notch must leave every sample unchanged");
+    }
+
+    #[test]
+    fn reset_removes_the_previous_filter_until_a_new_tone_is_observed() {
+        let mut notch = AdaptiveNotch::new(RATE);
+        let mut output = Vec::new();
+        notch.process_into(&noise_plus_tone(4096, 2000.0), false, &mut output);
+        assert!(notch.frequency_hz() > 0.0);
+        notch.reset();
+        let short = [0.1, 0.2, 0.3, 0.4];
+        notch.process_into(&short, false, &mut output);
+        assert_eq!(notch.frequency_hz(), 0.0);
+        assert_eq!(output, short, "reset cannot retain the previous notch coefficients");
+    }
+
+    #[test]
+    fn held_audio_does_not_acquire_a_notch_from_a_discarded_transient() {
+        let mut notch = AdaptiveNotch::new(RATE);
+        let input = noise_plus_tone(4096, 2000.0);
+        let mut output = Vec::new();
+        notch.process_into(&input, true, &mut output);
+        assert_eq!(notch.frequency_hz(), 0.0, "hold freezes adaptation");
+        assert_eq!(output, input);
     }
 
     #[test]

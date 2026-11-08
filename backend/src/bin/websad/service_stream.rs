@@ -1,3 +1,4 @@
+use websa_channelizer::IqInput;
 use super::*;
 
 #[derive(Default)]
@@ -5,7 +6,7 @@ pub(super) struct DecodeSnapshots { channels:BTreeMap<u32,DecodeSnapshot> }
 struct DecodeSnapshot { envelope:Value, serial:String, width:u32, height:u32, lines:u32, rgb:Vec<u8>, meta:Value, fax:Option<FaxChannel> }
 const FAX_ROWS:u32=64;
 const FAX_MAX_LINES:u32=2400;
-const FAX_BYTE_LIMIT:usize=20*1024*1024;
+const FAX_BYTE_LIMIT:usize=FAX_SNAPSHOT_BYTES_PER_CHANNEL;
 struct FaxChannel { segments:Vec<FaxSegment>, state:Option<Value> }
 struct FaxSegment { gray:Vec<u8>, revision:u32, meta:Value, width:u32, transmission:String, index:u32 }
 #[derive(serde::Deserialize)]
@@ -35,8 +36,8 @@ impl DecodeSnapshots {
             metadata.extend_from_slice(&frame[8..event_offset]);metadata.extend_from_slice(b"null");
             metadata.extend_from_slice(&frame[event_offset+header.event.get().len()..]);
             let envelope:Value=serde_json::from_slice(&metadata).map_err(|e|e.to_string())?;
-            let channel=envelope["channel"].as_u64().ok_or("decode snapshot channel absent")? as u32;
-            if !(1..=3).contains(&channel) {return Err("decode snapshot channel invalid".into());}
+            let channel=envelope["channel"].as_u64().and_then(|value|u32::try_from(value).ok()).ok_or("decode snapshot channel absent or invalid")?;
+            if !(1..=MAX_CHANNELS as u32).contains(&channel) {return Err("decode snapshot channel invalid".into());}
             let entry=self.channels.entry(channel).or_insert_with(||DecodeSnapshot {
                 envelope:Value::Null,serial:String::new(),width:0,height:0,lines:0,rgb:Vec::new(),meta:Value::Null,fax:None });
             if event.kind=="start" {
@@ -274,25 +275,123 @@ pub(super) fn publish_receiver_failure(state:&mut DevState,app:&App)->Option<Val
     Some(json!({"cmd":"RECEIVER_ERROR","error":error,"failed":true,"scope":"all_receivers"}))
 }
 
+/// Only a confirmed logical stop on a healthy capture is a normal end. Empty
+/// closes and transport/receiver failures keep their existing failure semantics.
+pub(super) fn receiver_end_frame(state:&DevState,channel:Option<u32>,uid:Option<&str>)->Message {
+    let reason=channel.zip(uid).and_then(|(slot,uid)| {
+        if !state.link_up || state.swp.mode!="sdr" || state.ddc_error.is_some() || state.receiver_failure.is_some() {
+            return None;
+        }
+        if state.receiver_uid_for_slot(slot)!=Some(uid) {return Some("receiver retired");}
+        state.channel_config(slot).filter(|config|!config.enabled||!config.processing_enabled)
+            .map(|_|"receiver stopped")
+    });
+    Message::Close(reason.map(|reason|CloseFrame {code:1000,reason:reason.into()}))
+}
+
 pub(super) fn deliver_retiring(state:&mut DevState,app:&App) {
     let output=std::mem::take(&mut state.pending_receiver);
     deliver_receiver(state,app,output,true);
+    let configs=state.channel_configs();
+    multichannel::recording_processing_sources(state);
+    for client in app.clients.lock().iter().filter(|c|c.receiver_uid.is_some()&&(c.audio||c.decode)) {
+        if client.channel.is_some_and(|slot|!configs.iter().any(|c|c.channel==slot&&c.enabled&&c.processing_enabled)
+            && !state.receiver_workers.as_ref().is_some_and(|workers|workers.retiring_tail(slot))) {
+            enqueue(client,Outbound {epoch:app.epoch.load(Ordering::Acquire),message:receiver_end_frame(state,client.channel,client.receiver_uid.as_deref()).into(),
+                identity:None,status_revision:None,display_version:None});
+        }
+    }
 }
 
 // The caller holds state from receiver drain through enqueue. Commands finish
 // newer output under that same lock, so their retiring tail cannot overtake it.
-pub(super) fn deliver_receiver(state:&DevState,app:&App,output:receiver_workers::ReceiverFrames,retiring:bool) {
+/// Fine-source failures include IQ, unlike decoder-only failures. Identity checks
+/// keep a delayed failure from closing a newly tuned/reused receiver slot.
+pub(super) fn publish_fine_failures(state:&mut DevState,app:&App) {
+    if state.ddc_error.is_some() {
+        for client in app.clients.lock().iter().filter(|c|c.iq||c.aux||c.audio||c.decode) {
+            client.receiver_failed.store(true,Ordering::Release);client.wake.notify_one();
+        }
+    }
+    for failure in state.fine_faults().iter() {
+        let registry=state.stream_registry();
+        if !registry.iter().any(|row|row.channel==failure.channel && row.channel_id==failure.channel_id && row.epoch==failure.epoch) {continue;}
+        let uid=state.receiver_uid_for_slot(failure.channel).map(str::to_owned);
+        if let (Some(manager),Some(uid))=(state.recordings.as_ref(),uid.as_deref()) {manager.source_failed(uid,&failure.error);}
+        if let Some(workers)=state.receiver_workers.as_mut() {workers.fail_source(failure.channel,&failure.error);}
+        for client in app.clients.lock().iter() {
+            if (client.iq||client.aux||client.audio||client.decode) && client.channel.unwrap_or(1)==failure.channel && client.receiver_uid.as_deref().is_none_or(|known|Some(known)==uid.as_deref()) {
+                client.receiver_failed.store(true,Ordering::Release);client.wake.notify_one();
+            }
+        }
+    }
+}
+
+pub(super) fn deliver_receiver(state:&DevState,app:&App,mut output:receiver_workers::ReceiverFrames,retiring:bool) {
+    for fault in std::mem::take(&mut output.faults) {
+        let uid=fault.receiver_uid.as_deref().or_else(||state.receiver_uid_for_slot(fault.channel));
+        if let (Some(manager),Some(uid))=(state.recordings.as_ref(),uid) {manager.processing_failed(uid,&fault.error);}
+        for client in app.clients.lock().iter() {
+            if (client.audio||client.decode) && client.channel==Some(fault.channel)
+                && client.receiver_uid.as_deref().is_none_or(|client_uid|Some(client_uid)==uid) {
+                client.receiver_failed.store(true,Ordering::Release);client.wake.notify_one();
+            }
+        }
+    }
+    let retired=std::mem::take(&mut output.retired);
+    let tails:Vec<_>=retired.iter().map(|tail|(tail.identity,tail.channel)).collect();
+    let terminals:Vec<_>=retired.iter().filter(|tail|tail.terminal).map(|tail|(tail.identity,tail.channel)).collect();
+    if !retired.is_empty() {
+        // Offsets count normal results. Splice completed events and terminal batches in their original
+        // FIFO position before publishing, rather than moving every tail first.
+        let mut normal=std::mem::take(&mut output.decode).into_iter();let mut cursor=0;
+        for tail in retired {
+            output.decode.extend(normal.by_ref().take(tail.decode_offset.saturating_sub(cursor)));
+            cursor=tail.decode_offset;output.decode.extend(tail.frames.decode);
+        }
+        output.decode.extend(normal);
+    }
+    deliver_receiver_inner(state,app,output,retiring,&tails);
+    for &(identity,channel) in &terminals {
+        let uid=state.receiver_uid_for_processing(identity);
+        let still_active=state.channel_configs().iter().any(|config|config.channel==channel&&config.enabled&&config.processing_enabled)
+            && state.receiver_uid_for_slot(channel)==uid;
+        if !still_active {
+            for client in app.clients.lock().iter().filter(|client|(client.audio||client.decode)&&client.channel==Some(channel)
+                && client.receiver_uid.as_deref().is_none_or(|client_uid|Some(client_uid)==uid)) {
+                enqueue(client,Outbound {epoch:app.epoch.load(Ordering::Acquire),message:receiver_end_frame(state,client.channel,client.receiver_uid.as_deref()).into(),
+                    identity:None,status_revision:None,display_version:None});
+            }
+        }
+    }
+}
+
+fn deliver_receiver_inner(state:&DevState,app:&App,output:receiver_workers::ReceiverFrames,retiring:bool,tails:&[(u64,u32)]) {
     let epoch=app.epoch.load(Ordering::Acquire);
     let clients=app.clients.lock();
     // Audio keeps its existing frame FIFO. Decode can synchronously close every
-    // retained segment on all three channels; queue that receiver output once.
+    // retained segment on every channel; queue that receiver output once.
+    let mut audio_configs=output.audio_configs.into_iter();
     for frame in output.audio {
-        let message=Message::Binary(frame.into());
-        let identity=message_identity(&message);
+        let bytes:Bytes=frame.into();
+        if let Some(config)=audio_configs.next() {multichannel::record_audio(state,bytes.clone(),&config);}
+        let message=Message::Binary(bytes);
+        let processing=message_identity(&message);
+        let tail=tails.iter().copied().find(|(identity,_)|Some(*identity)==processing);
+        let identity=state.processing_source_identity(processing);
         for client in clients.iter().filter(|c|c.audio) {
-            if retiring && client.channel.is_some_and(|slot| !state.retiring_registry.iter().any(|r|
+            if let Some((processing,channel))=tail {
+                if client.channel!=Some(channel) || client.receiver_uid.as_deref().is_some_and(|uid|Some(uid)!=state.receiver_uid_for_processing(processing)) {continue;}
+            } else if retiring && client.channel.is_some_and(|slot| !state.retiring_registry.iter().any(|r|
                 r.channel==slot&&identity==Some(identity_key(r.channel_id,r.epoch)))) {continue;}
-            enqueue(client,Outbound {epoch,message:message.clone().into(),identity:if retiring {None} else {identity},
+            let payload=if client.receiver_uid.is_some() {
+                let bytes=match &message {Message::Binary(bytes)=>bytes.len() as u64,_=>0};
+                let Some(reservation)=DecodeReservation::iq(&client.decode_pending_bytes,bytes) else {
+                    client.overflow.store(true,Ordering::Release);client.wake.notify_one();continue;
+                };
+                OutboundPayload::Iq {message:message.clone(),queued_at:std::time::Instant::now(),_reservation:reservation}
+            } else {message.clone().into()};
+            enqueue(client,Outbound {epoch,message:payload,identity:if retiring||tail.is_some() {None} else {identity},
                 status_revision:None,display_version:None});
         }
     }
@@ -300,11 +399,12 @@ pub(super) fn deliver_receiver(state:&DevState,app:&App,output:receiver_workers:
     let bytes=output.decode.iter().map(|frame|frame.len() as u64).sum();
     let frames:Arc<[(Message,Option<u64>)]>=output.decode.into_iter().map(|frame| {
         let message=Message::Binary(frame.into());
-        let identity=message_identity(&message);
+        if let Message::Binary(bytes)=&message {multichannel::record_result(state,bytes.clone());}
+        let identity=state.processing_source_identity(message_identity(&message));
         (message,identity)
     }).collect();
     for client in clients.iter().filter(|c|c.decode) {
-        let admitted:Vec<_>=if retiring {
+        let mut admitted:Vec<_>=if retiring {
             state.retiring_registry.iter()
                 .filter(|r|client.channel.is_none_or(|slot|slot==r.channel))
                 .map(|r|identity_key(r.channel_id,r.epoch)).collect()
@@ -313,6 +413,12 @@ pub(super) fn deliver_receiver(state:&DevState,app:&App,output:receiver_workers:
                 .filter(|(slot,_)|client.channel.is_none_or(|channel|channel as usize==slot+1))
                 .map(|(_,identity)|identity.load(Ordering::Acquire)).filter(|&id|id!=0).collect()
         };
+        for &(processing,channel) in tails {
+            if client.channel.is_none_or(|slot|slot==channel)
+                && client.receiver_uid.as_deref().is_none_or(|uid|Some(uid)==state.receiver_uid_for_processing(processing)) {
+                if let Some(source)=state.processing_source_identity(Some(processing)) {if !admitted.contains(&source) {admitted.push(source);}}
+            }
+        }
         if !frames.iter().any(|(_,identity)|identity.is_some_and(|id|admitted.contains(&id))) {continue;}
         let Some(reservation)=DecodeReservation::acquire(&client.decode_pending_bytes,bytes) else {
             client.dropped.fetch_add(1,Ordering::Relaxed);
@@ -340,11 +446,11 @@ pub(super) fn message_identity(message:&Message)->Option<u64> {
             .map(|value|identity_key(value.channel_id,value.epoch))
     } else {None}
 }
-pub(super) fn identity_current(identity:Option<u64>,identities:&[AtomicU64;3],channel:Option<u32>)->bool {
+pub(super) fn identity_current(identity:Option<u64>,identities:&[AtomicU64],channel:Option<u32>)->bool {
     match identity {
         None=>true,
         Some(identity)=>match channel {
-            Some(slot)=>identities.get(slot as usize-1).is_some_and(|current|current.load(Ordering::Acquire)==identity),
+            Some(slot)=>slot.checked_sub(1).and_then(|index|identities.get(index as usize)).is_some_and(|current|current.load(Ordering::Acquire)==identity),
             None=>identities.iter().any(|current|current.load(Ordering::Acquire)==identity),
         }
     }
@@ -362,10 +468,20 @@ impl DevState {
         let pending=std::mem::take(&mut self.pending_iq);
         if !pending.is_empty() {
             let output=self.process_receiver_frames_with_registry(&pending,&registry,true)?;
-            self.pending_receiver.audio.extend(output.audio);
-            self.pending_receiver.decode.extend(output.decode);
+            self.pending_receiver.append(output);
         }
-        self.finish_radiofax_channels(&[1,2,3],registry)
+        self.finish_radiofax_channels(&registry.iter().map(|row|row.channel).collect::<Vec<_>>(),registry)
+    }
+
+    pub(super) fn retire_receiver_channels(&mut self,channels:&[u32],registry:Arc<[sdr_pipeline::ChannelRegistryEntry]>)->Result<(),String> {
+        if self.receiver_failure.is_some() {return Ok(());}
+        if let Some(workers)=self.receiver_workers.as_mut() {
+            let output=workers.retire_channels(channels)?;
+            self.decode_snapshots.observe(&output.decode)?;
+            self.pending_receiver.append(output);
+            self.retiring_registry=registry;
+        }
+        Ok(())
     }
 
     pub(super) fn finish_radiofax_channels(&mut self,channels:&[u32],registry:Arc<[sdr_pipeline::ChannelRegistryEntry]>)->Result<(),String> {
@@ -373,22 +489,25 @@ impl DevState {
         if let Some(workers)=self.receiver_workers.as_mut() {
             let output=workers.finish_radiofax(channels)?;
             self.decode_snapshots.observe(&output.decode)?;
-            self.pending_receiver.audio.extend(output.audio);
-            self.pending_receiver.decode.extend(output.decode);
+            self.pending_receiver.append(output);
             self.retiring_registry=registry;
         }
         Ok(())
     }
 
     pub(super) fn latch_receiver_failure(&mut self,error:String) {
-        if self.receiver_failure.is_some() {return;}
-        self.receiver_failure=Some(error);
-        self.receiver_failure_pending=true;
+        if self.receiver_failure.is_none() {
+            self.receiver_failure=Some(error);
+            self.receiver_failure_pending=true;
+            self.pending_receiver=receiver_workers::ReceiverFrames::default();
+            self.consumed_receiver_iq.clear();
+            self.decode_snapshots=DecodeSnapshots::default();
+            self.retiring_registry=Arc::from([]);
+        }
+        // Also retire workers created by a recovery attempt after the first
+        // failure: reap_failed_receivers cannot complete while a live instance
+        // was never told to stop.
         if let Some(workers)=self.receiver_workers.as_mut() {workers.stop_failed();}
-        self.pending_receiver=receiver_workers::ReceiverFrames::default();
-        self.consumed_receiver_iq.clear();
-        self.decode_snapshots=DecodeSnapshots::default();
-        self.retiring_registry=Arc::from([]);
     }
 
     pub(super) fn reap_failed_receivers(&mut self)->bool {
@@ -401,8 +520,15 @@ impl DevState {
 
     pub(super) fn restart_failed_receivers(&mut self)->Result<(),String> {
         if self.receiver_failure.is_none() {return Ok(());}
-        self.ddc_command(|ddc|ddc.restart_service_receivers())?;
-        if let Some(source)=self.fixture_sources.as_mut() {source.restart(None)?;}
+        if let Err(error)=self.ddc_command(|ddc|ddc.restart_service_receivers()) {
+            // Replacement workers created for this recovery attempt cannot run
+            // under the still-latched failure; retire them so the retry reaps.
+            if let Some(workers)=self.receiver_workers.as_mut() {workers.stop_failed();}
+            return Err(error);
+        }
+        let legacy:Vec<_>=self.channel_configs().iter().filter(|c|c.enabled&&c.processing_enabled&&c.baseband.is_none()).map(|c|c.channel).collect();
+        if let Some(source)=self.fixture_sources.as_mut() {for slot in legacy {source.restart(Some(slot))?;}}
+        self.processing_branches.invalidate();
         self.receiver_failure=None;
         self.receiver_failure_pending=false;
         self.consumed_receiver_iq.clear();
@@ -410,13 +536,17 @@ impl DevState {
         Ok(())
     }
 
+    pub(super) fn fine_faults(&self)->Arc<[fine_workers::FineFault]> {
+        if let Some(pipeline)=&self.pipeline {pipeline.snapshot.fine_faults.clone()}
+        else {self.ddc.as_ref().map_or_else(||Arc::from([]),|ddc|ddc.0.faults.values().cloned().collect::<Vec<_>>().into())}
+    }
     pub(super) fn stream_registry(&self)->Arc<[sdr_pipeline::ChannelRegistryEntry]> {
         if self.swp.mode!="sdr" {Arc::from([])}
         else if let Some(pipeline)=&self.pipeline {pipeline.snapshot.registry.clone()}
         else if let Some(source)=&self.fixture_sources {source.registry()}
         else {self.ddc.as_ref().map_or_else(||Arc::from([]),|d|d.0.channel_registry())}
     }
-    pub(super) fn publish_identities(&self,identities:&[AtomicU64;3]) {
+    pub(super) fn publish_identities(&self,identities:&[AtomicU64]) {
         let registry=self.stream_registry();
         for (index,target) in identities.iter().enumerate() {
             let key=registry.iter().find(|r|r.channel==index as u32+1)
@@ -424,13 +554,18 @@ impl DevState {
             target.store(key,Ordering::Release);
         }
     }
-    pub(super) fn process_receiver_frames(&mut self,frames:&[Vec<u8>])->Result<receiver_workers::ReceiverFrames,String> {
+    pub(super) fn process_receiver_frames<T:IqInput>(&mut self,frames:&[T])->Result<receiver_workers::ReceiverFrames,String> {
         let registry=self.stream_registry();
         self.process_receiver_frames_with_registry(frames,&registry,false)
     }
-    pub(super) fn submit_receiver_frames(&mut self,frames:&[Vec<u8>])->Result<(),String> {
+    pub(super) fn submit_receiver_frames<T:IqInput>(&mut self,frames:&[T])->Result<(),String> {
         let registry=self.stream_registry();
-        self.submit_receiver_frames_with_registry(frames,&registry,false).map(|_|())
+        self.submit_receiver_frames_with_registry(frames,&registry,false,false).map(|_|())
+    }
+    pub(super) fn process_control_receiver_frames<T:IqInput>(&mut self,frames:&[T],registry:&[sdr_pipeline::ChannelRegistryEntry])
+        ->Result<receiver_workers::ReceiverFrames,String> {
+        let mut output=self.submit_receiver_frames_with_registry(frames,registry,true,false)?;
+        output.append(self.drain_receiver_frames()?);Ok(output)
     }
     pub(super) fn drain_receiver_frames(&mut self)->Result<receiver_workers::ReceiverFrames,String> {
         if self.receiver_failure.is_some() {return Ok(receiver_workers::ReceiverFrames::default());}
@@ -441,24 +576,29 @@ impl DevState {
         self.decode_snapshots.observe(&output.decode)?;
         Ok(output)
     }
-    pub(super) fn process_receiver_frames_with_registry(&mut self,frames:&[Vec<u8>],
+    pub(super) fn process_receiver_frames_with_registry<T:IqInput>(&mut self,frames:&[T],
         registry:&[sdr_pipeline::ChannelRegistryEntry],finish:bool)->Result<receiver_workers::ReceiverFrames,String> {
-        let mut output=self.submit_receiver_frames_with_registry(frames,registry,finish)?;
+        let mut output=self.submit_receiver_frames_with_registry(frames,registry,finish,finish)?;
         let drained=self.drain_receiver_frames()?;
-        output.audio.extend(drained.audio);output.decode.extend(drained.decode);
+        output.append(drained);
         Ok(output)
     }
-    fn submit_receiver_frames_with_registry(&mut self,frames:&[Vec<u8>],
-        registry:&[sdr_pipeline::ChannelRegistryEntry],finish:bool)->Result<receiver_workers::ReceiverFrames,String> {
+    fn submit_receiver_frames_with_registry<T:IqInput>(&mut self,frames:&[T],
+        registry:&[sdr_pipeline::ChannelRegistryEntry],finish:bool,drain:bool)->Result<receiver_workers::ReceiverFrames,String> {
         if self.receiver_failure.is_some() {return Ok(receiver_workers::ReceiverFrames::default());}
         let configs=self.channel_configs();
         let power=self.fresh_channel_power();
+        if !configs.iter().any(|config| config.enabled && config.processing_enabled) {
+            return Ok(receiver_workers::ReceiverFrames::default());
+        }
         if self.receiver_workers.is_none() {self.receiver_workers=Some(receiver_workers::ReceiverWorkers::new()?);}
+        self.bind_receiver_identities();
         let workers=self.receiver_workers.as_mut().ok_or("receiver workers unavailable")?;
         workers.configure(&configs)?;
         workers.set_power(power);
         let mut output=receiver_workers::ReceiverFrames::default();
-        for frame in frames {
+        for input in frames {
+            let frame=input.iq_header();
             if frame.len()<56 || !(frame.starts_with(b"IQBF")||frame.starts_with(b"IQAX")) {continue;}
             let id=u32::from_le_bytes(frame[32..36].try_into().unwrap());
             let epoch=u32::from_le_bytes(frame[36..40].try_into().unwrap());
@@ -466,16 +606,26 @@ impl DevState {
             let consumed=(id,epoch,sequence);
             if finish && self.consumed_receiver_iq.contains(&consumed) {continue;}
             if !finish && self.consumed_receiver_iq.remove(&consumed) {continue;}
-            if !registry.iter().any(|r|r.channel_id==id && r.epoch==epoch) {continue;}
-            workers.submit(frame,registry)?;
-            if finish {
+            if !registry.iter().any(|r|r.channel_id==id && r.epoch==epoch
+                && configs.iter().any(|config|config.channel==r.channel && config.processing_enabled)) {continue;}
+            let row=registry.iter().find(|r|r.channel_id==id && r.epoch==epoch).unwrap();
+            let config=configs.iter().find(|c|c.channel==row.channel).unwrap();
+            if config.baseband.is_some() || self.processing_branches.uses_channel(config.channel) {
+                let (entry,sequence,start)=self.processing_branches.input(frame,row,config)?;
+                if start {
+                    let mut marker=frame[..56].to_vec();marker[8..16].fill(0);
+                    workers.submit_processing(&marker,registry,entry.channel_id,entry.epoch,0)?;
+                }
+                workers.submit_processing(input,registry,entry.channel_id,entry.epoch,sequence)?;
+            } else {workers.submit(input,registry)?;}
+            if drain {
                 let drained=workers.finish()?;
-                output.audio.extend(drained.audio);output.decode.extend(drained.decode);
+                output.append(drained);
             }
         }
-        if finish {
+        if drain {
             let drained=workers.finish()?;
-            output.audio.extend(drained.audio);output.decode.extend(drained.decode);
+            output.append(drained);
         }
         self.decode_snapshots.observe(&output.decode)?;
         Ok(output)
@@ -484,12 +634,23 @@ impl DevState {
 
 async fn stream_ws(ws:WebSocketUpgrade,app:Arc<App>,params:HashMap<String,String>,headers:HeaderMap,decode:bool)->Response {
     if !browser_access(&headers) {return StatusCode::FORBIDDEN.into_response();}
-    let channel=match params.get("channel") {
+    let receiver_uid=params.get("receiver_uid").cloned();
+    if receiver_uid.is_some() && params.contains_key("channel") {return StatusCode::BAD_REQUEST.into_response();}
+    let channel=if let Some(uid)=receiver_uid.as_deref() {
+        let mut state=app.state.lock().unwrap();
+        let Some(slot)=state.receiver_slot(uid) else {return StatusCode::NOT_FOUND.into_response();};
+        let Some(config)=state.channel_config(slot) else {return StatusCode::NOT_FOUND.into_response();};
+        if !config.enabled || !config.processing_enabled || state.swp.mode!="sdr" {return StatusCode::CONFLICT.into_response();}
+        if state.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(slot)).is_some() {return StatusCode::CONFLICT.into_response();}
+        if !decode && !websa_channelizer::catalog::mode(&config.mode).is_some_and(|d|
+            d.outputs.iter().any(|output|output=="audio") || d.audio_companion.is_some()) {return StatusCode::CONFLICT.into_response();}
+        Some(slot)
+    } else {match params.get("channel") {
         None=>None,
-        Some(value)=>match value.parse::<u32>() {Ok(slot @ 1..=3)=>Some(slot),_=>return StatusCode::BAD_REQUEST.into_response()},
-    };
+        Some(value)=>match value.parse::<u32>() {Ok(slot) if (1..=MAX_CHANNELS as u32).contains(&slot)=>Some(slot),_=>return StatusCode::BAD_REQUEST.into_response()},
+    }};
     let decode_ack=decode && params.get("ack").is_some_and(|value|value=="1");
-    ws.on_upgrade(move|socket|client_loop(app,socket,false,false,!decode,decode,channel,decode_ack))
+    ws.on_upgrade(move|socket|client_loop(app,socket,false,false,!decode,decode,channel,decode_ack,receiver_uid))
 }
 pub(super) async fn audio_ws_handler(ws:WebSocketUpgrade,State(app):State<Arc<App>>,Query(params):Query<HashMap<String,String>>,headers:HeaderMap)->Response {
     stream_ws(ws,app,params,headers,false).await
@@ -501,6 +662,53 @@ pub(super) async fn decode_ws_handler(ws:WebSocketUpgrade,State(app):State<Arc<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logical_end_reasons_do_not_mask_capture_or_receiver_faults() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.swp.mode="sdr".into();state.link_up=true;
+        state.remember_receiver_streams();
+        let uid=state.receiver_uid_for_slot(1).unwrap().to_owned();
+        let reason=|state:&DevState,uid:Option<&str>| match receiver_end_frame(state,Some(1),uid) {
+            Message::Close(Some(frame))=>{assert_eq!(frame.code,1000);Some(frame.reason.to_string())},
+            Message::Close(None)=>None,
+            _=>panic!("expected close frame"),
+        };
+        assert_eq!(reason(&state,Some(&uid)),None,"active receiver is not a normal stop");
+        assert_eq!(reason(&state,Some("retired-uid")),Some("receiver retired".into()));
+        state.sdr_channels[0].enabled=false;
+        assert_eq!(reason(&state,Some(&uid)),Some("receiver stopped".into()));
+        assert_eq!(reason(&state,None),None,"legacy subscriptions retain their close semantics");
+        state.link_up=false;
+        assert_eq!(reason(&state,Some(&uid)),None);
+        state.link_up=true;state.ddc_error=Some("capture failed".into());
+        assert_eq!(reason(&state,Some("retired-uid")),None);
+        state.ddc_error=None;state.receiver_failure=Some("receiver failed".into());
+        assert_eq!(reason(&state,Some(&uid)),None);
+        state.receiver_failure=None;state.swp.mode="std".into();
+        assert_eq!(reason(&state,Some("retired-uid")),None);
+    }
+
+    #[test]
+    fn relatched_failure_retires_recovery_replacement_workers() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        state.latch_receiver_failure("first failure".into());
+        assert_eq!(state.receiver_failure.as_deref(),Some("first failure"));
+        // A recovery attempt can create replacement workers after reap dropped the
+        // failed instance while the failure itself stayed latched. A new failure
+        // on that instance must retire it, or reap never completes again.
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        state.latch_receiver_failure("second failure".into());
+        assert_eq!(state.receiver_failure.as_deref(),Some("first failure"));
+        state.receiver_failure_pending=false;
+        let deadline=std::time::Instant::now()+Duration::from_secs(5);
+        while !state.reap_failed_receivers() {
+            assert!(std::time::Instant::now()<deadline,"replacement workers were never retired");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(state.receiver_workers.is_none());
+    }
 
     fn output(id:u32,seq:u32)->receiver_workers::ReceiverFrames {
         let samples=if seq==0 {Vec::new()} else {vec![id as f32+seq as f32/8.0]};
@@ -514,7 +722,7 @@ mod tests {
         let decode=websa_channelizer::encode_decode_event(&serde_json::to_vec(&json!({
             "channel":1,"channel_id":id,"epoch":7,"seq":seq,"mode":"drm","event":event,
         })).unwrap()).unwrap();
-        receiver_workers::ReceiverFrames {audio:vec![audio],decode:vec![decode]}
+        receiver_workers::ReceiverFrames {audio:vec![audio],decode:vec![decode],..Default::default()}
     }
 
     fn registry(id:u32)->Arc<[sdr_pipeline::ChannelRegistryEntry]> {
@@ -524,102 +732,54 @@ mod tests {
     }
 
     #[test]
-    fn worker_failure_is_latched_without_stopping_iq_and_same_demod_recovers() {
+    fn branch_failure_keeps_other_subscribers_and_iq_live_and_recovers_only_itself() {
         let mut state=DevState::new(json!({"preset_defaults":{}}),json!({"commands":{"SET_MODE":{}}}));
-        state.swp.mode="sdr".into();
-        state.sdr_listen=100e6;
-        state.sdr_demod="nfm".into();
-        state.sdr_if_bw=12_500.0;
-        state.link_up=true;
-        state.sdr_center=100e6;
-        let mut source=service_fixture::FixtureSources::new();
-        source.configure(&state.channel_configs()).unwrap();
-        let initial_registry=source.registry();
-        state.fixture_sources=Some(source);
-        let app=App {
-            state:StateMutex::new(DevState::new(json!({"preset_defaults":{}}),json!({}))),
-            clients:PLMutex::new(Vec::new()),next_client:AtomicU64::new(0),
-            epoch:Arc::new(AtomicU64::new(0)),display_version:Arc::new(AtomicU64::new(0)),
-            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
-        };
-        let mut receivers=Vec::new();
-        for audio in [true,false] {
+        state.swp.mode="sdr".into();state.link_up=true;state.sdr_center=100e6;
+        state.sdr_listen=100e6;state.sdr_demod="nfm".into();state.sdr_if_bw=12500.0;
+        state.sdr_channels[2]=receiver_workers::ChannelConfig {channel:3,enabled:true,freq:100e6+3000.0,
+            mode:"nfm".into(),if_bw:12500.0,..receiver_workers::ChannelConfig::default()};
+        let mut source=service_fixture::FixtureSources::new();source.configure(&state.channel_configs()).unwrap();
+        let registry=source.registry();state.fixture_sources=Some(source);state.remember_receiver_streams();
+        let app=App {state:StateMutex::new(DevState::new(json!({"preset_defaults":{}}),json!({}))),
+            clients:PLMutex::new(Vec::new()),next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
+            display_version:Arc::new(AtomicU64::new(0)),identities:channel_identities()};
+        state.publish_identities(&app.identities);
+        let mut received=Vec::new();
+        for channel in [1,3] {for audio in [true,false] {
             let (tx,rx)=mpsc::channel(64);
-            app.clients.lock().push(Client {
-                id:receivers.len() as u64,tx,dropped:Arc::new(AtomicU64::new(0)),
-                decode_pending_bytes:Arc::new(AtomicU64::new(0)),
-                overflow:Arc::new(AtomicBool::new(false)),receiver_failed:Arc::new(AtomicBool::new(false)),
-                wake:Arc::new(Notify::new()),epoch:app.epoch.clone(),status_revision:app.state.revision(),
-                display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),
-                identities:app.identities.clone(),latest:Arc::new(PLMutex::new((None,None))),
-            });
-            receivers.push(rx);
-        }
-        let frame=|id,seq| websa_channelizer::encode_baseband(websa_channelizer::BasebandMagic::Primary,
-            seq,48_000.0,100e6,id,7,0,0.0,&if seq==0 {Vec::new()} else {vec![0.25,0.0].repeat(4096)}).unwrap();
-        let old=registry(11);
-        state.process_receiver_frames_with_registry(&[frame(11,0)],&old,true).unwrap();
-        // A valid wire packet with a missing sequence is rejected by the real
-        // asynchronous worker, rather than faking the service's failure result.
-        let error=state.process_receiver_frames_with_registry(&[frame(11,2)],&old,true).err().unwrap();
-        assert!(error.contains("receiver IQ sequence or clock discontinuity"));
-        let message=fail_receiver_session(&mut state,&app,error.clone()).unwrap();
-        assert_eq!(message["cmd"],"RECEIVER_ERROR");
-        assert_eq!(message["error"],error);
-        assert!(state.link_up,"DSP failure must not report physical disconnection");
-        assert!(state.ddc_error.is_none());
-        assert!(state.ddc_failure_diagnostics.is_none());
-        let status=state.status_snapshot().build();
-        assert_eq!(status["sdr"]["receiver_error"],error);
-        assert!(status["last_error"].is_null());
-        for client in app.clients.lock().iter() {
-            assert!(client.receiver_failed.load(Ordering::Acquire));
-            assert!(!client.overflow.load(Ordering::Acquire),"receiver failure is not consumer overflow");
-        }
-        let mut last_sequence=None;
-        for _ in 0..12 {
-            let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
-            for frame in &frames {
-                let sequence=u32::from_le_bytes(frame[8..12].try_into().unwrap());
-                if let Some(last)=last_sequence {assert_eq!(sequence,last+1);}
-                last_sequence=Some(sequence);
+            app.clients.lock().push(Client {id:received.len() as u64,tx,dropped:Arc::new(AtomicU64::new(0)),
+                decode_pending_bytes:Arc::new(AtomicU64::new(0)),overflow:Arc::new(AtomicBool::new(false)),
+                receiver_failed:Arc::new(AtomicBool::new(false)),wake:Arc::new(Notify::new()),epoch:app.epoch.clone(),
+                status_revision:app.state.revision(),display_version:app.display_version.clone(),iq:false,aux:false,
+                audio,decode:!audio,channel:Some(channel),receiver_uid:None,identities:app.identities.clone(),
+                latest:Arc::new(PLMutex::new((None,None)))});received.push(rx);
+        }}
+        let frame=|channel,seq| {
+            let row=registry.iter().find(|row|row.channel==channel).unwrap();
+            websa_channelizer::encode_baseband(websa_channelizer::BasebandMagic::Primary,seq,row.output_rate,row.frequency_hz,
+                row.channel_id as u64,row.epoch as u64,seq.saturating_sub(1) as u64*4096,0.0,
+                &if seq==0 {Vec::new()} else {vec![0.25,0.0].repeat(4096)}).unwrap()
+        };
+        let start=state.process_receiver_frames_with_registry(&[frame(1,0),frame(3,0)],&registry,true).unwrap();
+        deliver_receiver(&state,&app,start,false);
+        let output=state.process_receiver_frames_with_registry(&[frame(3,2),frame(1,1)],&registry,true).unwrap();
+        assert_eq!(output.faults.len(),1);assert_eq!(output.faults[0].channel,3);
+        assert!(output.audio.iter().any(|frame|frame.len()>96));deliver_receiver(&state,&app,output,false);
+        assert!(state.receiver_failure.is_none());assert!(state.ddc_error.is_none());assert!(state.link_up);
+        for client in app.clients.lock().iter() {assert_eq!(client.receiver_failed.load(Ordering::Acquire),client.channel==Some(3));}
+        let raw=state.fixture_sources.as_mut().unwrap().step().unwrap();
+        assert!(raw.iter().any(|frame|frame.len()>56),"independent IQ still advances");
+        let before=state.stream_registry();
+        let deadline=std::time::Instant::now()+Duration::from_secs(1);
+        loop {
+            match state.apply_channel_config(&json!({"channel":3,"recover":true})) {
+                Ok(())=>break,Err(error)=>{assert!(error.contains("retiring"),"{error}");assert!(std::time::Instant::now()<deadline);std::thread::yield_now();}
             }
-            let output=state.process_receiver_frames(&frames).unwrap();
-            assert!(output.audio.is_empty() && output.decode.is_empty());
-            assert!(state.drain_receiver_frames().unwrap().decode.is_empty());
-            assert!(fail_receiver_session(&mut state,&app,"later failure".into()).is_none());
-            assert_eq!(state.stream_registry()[0].epoch,initial_registry[0].epoch);
         }
-        assert!(last_sequence.unwrap()>1,"raw IQ must continue advancing under the failure latch");
-        assert_eq!(state.receiver_failure.as_deref(),Some(error.as_str()));
-        assert_eq!(state.ddc_error_count,0);
-        assert!(!dispatch(&mut state,"SET_MODE",&json!({"mode":"sdr"})).unwrap());
-        assert!(state.receiver_failure.is_some(),"same-mode no-op cannot hide a lost block");
-        state.receiver_failure_pending=true;
-        assert_eq!(dispatch(&mut state,"SET_SDR_DEMOD",&json!({"mode":"nfm"})).unwrap_err().code,"receiver_retiring");
-        dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"freq":100e6+100.0})).unwrap();
-        dispatch(&mut state,"SET_SDR_DEMOD",&json!({"ifbw":10_000.0})).unwrap();
-        assert_eq!(state.sdr_listen,100e6+100.0);
-        assert_eq!(state.sdr_if_bw,10_000.0);
-        assert!(state.receiver_failure.is_some(),"tuning and filter edits cannot resume a lost receiver session");
-        assert!(publish_receiver_failure(&mut state,&app).is_some());
-        let deadline=std::time::Instant::now()+Duration::from_secs(2);
-        while !state.reap_failed_receivers() {
-            assert!(std::time::Instant::now()<deadline,"stopped workers must retire");
-            std::thread::yield_now();
-        }
-        dispatch(&mut state,"SET_SDR_DEMOD",&json!({"mode":"nfm","ifbw":12_500.0})).unwrap();
-        assert!(state.receiver_failure.is_none());
-        let fresh=state.stream_registry();
-        assert_ne!((fresh[0].channel_id,fresh[0].epoch),(initial_registry[0].channel_id,initial_registry[0].epoch));
-        let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
-        let output=state.process_receiver_frames_with_registry(&frames,&fresh,true).unwrap();
-        let envelope:Value=serde_json::from_slice(&output.decode[0][8..]).unwrap();
-        assert_eq!(envelope["epoch"],fresh[0].epoch);
-        assert_eq!(envelope["seq"],0);
-        assert_eq!(envelope["event"]["type"],"start");
-        assert!(output.audio.iter().any(|frame|u32::from_le_bytes(frame[12..16].try_into().unwrap())>0),
-            "fresh session must process real IQ into PCM after retiring the failed workers");
+        let recovered=state.process_receiver_frames_with_registry(&[frame(3,3),frame(1,2)],&registry,true).unwrap();
+        assert!(state.receiver_workers.as_ref().unwrap().channel_failure(3).is_none());
+        assert_eq!(&*before,&*state.stream_registry(),"recovery must preserve shared IQ identities");
+        assert!(recovered.audio.iter().filter(|frame|frame.len()>96).count()>=2);
     }
 
     #[test]
@@ -642,7 +802,7 @@ mod tests {
             state:StateMutex::new(DevState::new(json!({"preset_defaults":{}}),json!({}))),
             clients:PLMutex::new(Vec::new()),next_client:AtomicU64::new(0),
             epoch:Arc::new(AtomicU64::new(0)),display_version:Arc::new(AtomicU64::new(0)),
-            identities:Arc::new(std::array::from_fn(|index|AtomicU64::new(if index==0 {identity_key(11,7)} else {0}))),
+            identities:(0..MAX_CHANNELS).map(|index|AtomicU64::new(if index==0 {identity_key(11,7)} else {0})).collect(),
         });
         let mut receivers=Vec::new();
         for channel in [None,Some(1)] {
@@ -655,7 +815,7 @@ mod tests {
                     receiver_failed:Arc::new(AtomicBool::new(false)),
                     epoch:app.epoch.clone(),status_revision:app.state.revision(),
                     display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel,
-                    identities:app.identities.clone(),latest:Arc::new(PLMutex::new((None,None))),
+                    identities:app.identities.clone(),receiver_uid:None,latest:Arc::new(PLMutex::new((None,None))),
                 });
                 receivers.push((audio,rx,subscriber_stream::SubscriberStream::default()));
             }
@@ -686,6 +846,14 @@ mod tests {
         drop(state);
         command.join().unwrap();
 
+        // One poll can contain a normal predecessor, an asynchronously closed
+        // old identity, and a new start. The old tail keeps its FIFO position.
+        app.identities[0].store(identity_key(13,7),Ordering::Release);
+        let mut mixed=receiver_workers::ReceiverFrames::default();
+        mixed.decode.extend(output(12,2).decode);mixed.decode.extend(output(13,0).decode);
+        let mut tail=output(12,3);tail.audio.clear();tail.audio_configs.clear();
+        mixed.retired.push(receiver_workers::RetiredFrames {identity:identity_key(12,7),channel:1,decode_offset:1,terminal:true,frames:tail});
+        deliver_receiver(&app.state.lock().unwrap(),&app,mixed,false);
         for (audio,mut rx,mut subscriber) in receivers {
             let mut pcm=Vec::new();
             for (id,seq) in [(11,1),(11,2),(12,0),(12,1)] {
@@ -698,6 +866,16 @@ mod tests {
                 let Message::Binary(bytes)=&frames[0] else {panic!("expected binary receiver frame")};
                 assert_eq!(bytes.as_ref(),expected.as_slice());
                 if audio {pcm.extend(bytes[96..].chunks_exact(4).map(|v|f32::from_le_bytes(v.try_into().unwrap())));}
+            }
+            if !audio {
+                let packet=rx.try_recv().expect("mixed normal/tail/new batch");
+                let mut observed=Vec::new();
+                for message in packet.frames() {for frame in subscriber.frames(message).unwrap() {
+                    let Message::Binary(bytes)=frame else {panic!("decode frame required")};
+                    let value:Value=serde_json::from_slice(&bytes[8..]).unwrap();
+                    observed.push((value["channel_id"].as_u64().unwrap(),value["seq"].as_u64().unwrap()));
+                }}
+                assert_eq!(observed,vec![(12,2),(12,3),(13,0)]);
             }
             assert!(matches!(rx.try_recv(),Err(mpsc::error::TryRecvError::Empty)));
             if audio {assert_eq!(pcm,vec![11.125,11.25,12.125]);}

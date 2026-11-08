@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from playwright.sync_api import sync_playwright
 from rust_iq_browser import free_port, start_service, stop
@@ -42,11 +43,15 @@ def check(name: str, ok: bool, detail: str = '') -> None:
 
 
 def expect_panel(page, name: str, expected: dict) -> None:
-    page.wait_for_function(
-        f"expected => {{ const actual = ({SNAP})(); return Object.entries(expected)"
-        ".every(([key, value]) => actual[key] === value); }",
-        arg=expected,
-    )
+    try:
+        page.wait_for_function(
+            f"expected => {{ const actual = ({SNAP})(); return Object.entries(expected)"
+            ".every(([key, value]) => actual[key] === value); }",
+            arg=expected,
+        )
+    except Exception:
+        print(json.dumps({'check': name, 'expected': expected, 'actual': page.evaluate(SNAP)}), flush=True)
+        raise
     actual = page.evaluate(SNAP)
     check(name, all(actual[key] == value for key, value in expected.items()), f'got {actual}')
 
@@ -163,9 +168,9 @@ def main() -> int:
             expect_panel(page, 'SDR reset setup freezes T2', {'freeze': True})
             page.click('#btn-preset')
             wait_mode(page, 'sdr')
-            expect_panel(page, 'SDR Preset restores T1 CLEAR_WRITE16', DEFAULTS)
+            expect_panel(page, 'SDR Preset restores T1 AVERAGE16', SDR_DEFAULTS)
 
-            # Preset clears the saved mode; real mode actions establish a saved SDR session.
+            # Exercise a family round trip before checking the saved SDR session.
             toggle_sdr(page, 'std')
             toggle_sdr(page, 'sdr')
             page.wait_for_function("() => localStorage.getItem('web-sa-mode') === 'sdr'")

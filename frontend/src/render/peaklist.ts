@@ -29,7 +29,9 @@ export function findPeaks(powers: Float32Array, maxN: number): { idx: number; am
       peaks.push({ idx: i, amp: v, f: fa ? fa[i] : i });
     }
   }
-  peaks.sort((a, b) => a.idx - b.idx);
+  // Select strongest first: held weak peaks at lower frequencies must not crowd
+  // a newly appearing stronger signal out of a count-limited list.
+  peaks.sort((a, b) => b.amp - a.amp || a.idx - b.idx);
   const out: typeof peaks = [];
   for (const pk of peaks) {
     let replaced = false;
@@ -136,6 +138,8 @@ export function resetPeakThr() {
   fittedKey = '';
   samples = [];
   setPeakThr(-80);
+  const count = document.getElementById('input-peakcnt') as HTMLInputElement | null;
+  if (count) count.value = '20';
 }
 
 function peakCount(): number {
@@ -161,25 +165,30 @@ export function updatePeakTable(powers: Float32Array | null) {
   const tb = document.getElementById('peak-table');
   const tb2 = document.getElementById('peak-tbody');
   if (!tb || !tb2) return;
-  if (!peakListVisible.get() || !powers || !S.freqArray) { tb.style.display = 'none'; return; }
+  if (!peakListVisible.get()) { tb.style.display = 'none'; return; }
   const maxN = peakCount();
-  const peaks = findPeaks(powers, maxN);
+  const peaks = powers && S.freqArray ? findPeaks(powers, maxN) : [];
   S.setPeakMarks(peaks.map((pk, i) => Object.assign({}, pk, { n: i + 1 })));
   tb.style.display = '';
-  const maxCols = 5, maxRows = 4;
+  // Reserve the configured rows even with no signals; spectrum height must not
+  // depend on how many peaks happen to cross the threshold in this frame.
+  const maxCols = 5, maxRows = Math.ceil(maxN / maxCols);
   let html = '';
   for (let r = 0; r < maxRows; r++) {
     let cells = '';
     for (let c = 0; c < maxCols; c++) {
       const idx = r * maxCols + c;
       const pk = idx < peaks.length ? peaks[idx] : null;
-      if (!pk) continue;
+      if (!pk) {
+        cells += '<td class="pk-empty" aria-hidden="true">&nbsp;</td>';
+        continue;
+      }
       cells += '<td class="pk-cell" title="Peak P' + (idx + 1) + '">' +
         '<span class="pk-id">P' + (idx + 1) + ':</span> ' +
         '<span class="pk-f">' + fmtF(pk.f) + '</span> / ' +
         '<span class="pk-a">' + fmtReadoutLevel(pk.amp, 1) + '</span></td>';
     }
-    if (cells) html += '<tr>' + cells + '</tr>';
+    html += '<tr>' + cells + '</tr>';
   }
   tb2.innerHTML = html;
 }

@@ -86,14 +86,16 @@ from FDK-AAC (960-sample encoder patch) GA frames re-serialised by
 `tools/fixtures/drm_aac_reserialize.py`. Verify with `tools/fixtures/verify_drm_aac.c`:
 
 ```sh
-cc -O2 -I <fdk>/libAACdec/include -I <fdk>/libSYS/include \
-   -I <fdk>/libMpegTPDec/include -I <fdk>/libFDK/include \
-   -I <fdk>/libSBRdec/include -I <fdk>/libSACdec/include \
-   -I <fdk>/libPCMutils/include -I <fdk>/libArithCoding/include \
-   -I <fdk>/libDRCdec/include \
-   tools/fixtures/verify_drm_aac.c <fdk>/build/libfdk-aac.a -lm -o verify_drm_aac
-./verify_drm_aac tests/fixtures/drm/aac_sine_24k.drm \
-                  tests/fixtures/drm/aac_sine_24k.ga 36 320
+(
+  set -eu
+  verifier_dir=$(mktemp -d)
+  trap 'rm -rf -- "$verifier_dir"' EXIT
+  cc -O2 -I "$(pkg-config --variable=includedir fdk-aac)/fdk-aac" \
+     tools/fixtures/verify_drm_aac.c $(pkg-config --libs fdk-aac) -lm \
+     -o "$verifier_dir/verify_drm_aac"
+  "$verifier_dir/verify_drm_aac" tests/fixtures/drm/aac_sine_24k.drm \
+                                tests/fixtures/drm/aac_sine_24k.ga 36 320
+)
 # 9 frames: mismatch=0 energy=139955180 -> OK
 ```
 
@@ -137,14 +139,14 @@ FAC/SDC/MSC status 0, service label `SAN90 DRM BENCH`, and 20.96 kbit/s for this
 recording. The committed file contains 6 s of the 10 s capture and preserves the
 RF conditions for repeatable native receiver regression checks.
 
-- `drm_live_modeB_so3_48828.f32` — interleaved I/Q `float32` (little-endian), 6 s, 287999
+- `drm_live_modeB_so3_48828.f32` — interleaved I/Q `float32` (little-endian), 6 s, 292968
   complex samples at the published rate.
 - `live_manifest.json` — bench settings, measured rates and level, the oracle result, and
   the provenance of the transmitter configuration.
 
-Regression tests: `dsp/core/tests/drm_live_fixture.rs` (the live capture must decode) and
-`dsp/core/tests/drm_phy_robustness.rs` (the synthesised fixture must survive 15 dB SNR, a
-200 us echo and the bench level). See `docs/en/ARCHITECTURE.md` for the current receive path.
+Regression tests are in [drm_receiver.rs](../../../dsp/core/tests/drm_receiver.rs):
+live capture decoding and synthetic input with noise, echo and reduced level.
+See [Architecture](../../../docs/en/ARCHITECTURE.md) for the current receive path.
 
 ## Regenerating
 

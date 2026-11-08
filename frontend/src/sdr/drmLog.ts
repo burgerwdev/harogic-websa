@@ -1,3 +1,4 @@
+import { channelState } from '../core/channelState';
 // The DRM decode status: what the DRM receiver locked and decoded, as a small readout rather than
 // a growing log (unlike FT8/CW, a DRM broadcast is continuous, so the panel shows the *current*
 // service, not a history).
@@ -35,26 +36,26 @@ export interface DrmStatus {
 }
 
 const emptyStatus = (): DrmStatus => ({ lines: [], snrDb: null, constellation: [], receiver: null });
-const contexts: Record<1 | 2 | 3, DrmStatus> = { 1: emptyStatus(), 2: emptyStatus(), 3: emptyStatus() };
-let selectedChannel: 1 | 2 | 3 = 1;
+const contexts = channelState(emptyStatus);
+let selectedChannel: number = 1;
 const listeners = new Set<() => void>();
 
 function notify(): void {
 	for (const fn of listeners) fn();
 }
 
-export function setDrmChannel(channel: 1 | 2 | 3): void {
+export function setDrmChannel(channel: number): void {
 	selectedChannel = channel;
 	notify();
 }
 
-export function setDrmStatus(receiver: DrmReceiverStatus, channel: 1 | 2 | 3 = selectedChannel): void {
+export function setDrmStatus(receiver: DrmReceiverStatus, channel: number = selectedChannel): void {
 	contexts[channel] = { ...contexts[channel], receiver };
 	if (channel === selectedChannel) notify();
 }
 
 /** Record a fresh decode (the receiver locked and produced metadata). */
-export function setDrmDecode(lines: string[], snrDb: number | null, channel: 1 | 2 | 3 = selectedChannel, receiver?: DrmReceiverStatus): void {
+export function setDrmDecode(lines: string[], snrDb: number | null, channel: number = selectedChannel, receiver?: DrmReceiverStatus): void {
 	// Empty heartbeat lines mean no new diagnostic snapshot, not lost reception.
 	// A real acquisition/search snapshot replaces the old lines; mode changes clear them.
 	const previous = contexts[channel];
@@ -65,13 +66,13 @@ export function setDrmDecode(lines: string[], snrDb: number | null, channel: 1 |
 }
 
 /** Replace the constellation points (posted once, with the first decode). */
-export function setDrmConstellation(points: { re: number; im: number }[], channel: 1 | 2 | 3 = selectedChannel): void {
+export function setDrmConstellation(points: { re: number; im: number }[], channel: number = selectedChannel): void {
 	contexts[channel] = { ...contexts[channel], constellation: points };
 	if (channel === selectedChannel) notify();
 }
 
 /** Clear everything (the operator cleared the window or left the mode). */
-export function clearDrm(channel: 1 | 2 | 3 = selectedChannel): void {
+export function clearDrm(channel: number = selectedChannel): void {
 	contexts[channel] = emptyStatus();
 	if (channel === selectedChannel) notify();
 }

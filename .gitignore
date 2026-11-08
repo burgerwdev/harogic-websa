@@ -8,6 +8,8 @@ venv/
 # Node / 前端
 node_modules/
 /frontend/dist/
+/frontend/public/legal/
+/runtime/frontend/dist/legal/
 npm-debug.log*
 
 # Rust/WASM 构建产物（入库的是发布后的 frontend/public/dsp.wasm）
@@ -46,6 +48,7 @@ tools/sdr_probe/plots/
 
 # pi agent state (session goals/ledger; local only)
 .pi/
+.tickets/
 tools/bench/ft8_reference/decode_ref
 tools/bench/ft8_reference/ft8_lib/
 

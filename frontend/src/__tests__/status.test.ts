@@ -1,11 +1,9 @@
 /**
  * STATUS → parameter-slot wiring.
  *
- * `updateStatus()` is the only place where a backend report enters the frontend, and every
- * recurring "the panel disagrees with the device" bug in this project lived here (the
- * parameter-slot model in core/params.ts was introduced for exactly that). The pure slots
- * are unit tested in params.test.ts; this test covers the mapping from the wire payload
- * onto them, which had no test at all (report finding P0-2 step 2).
+ * `updateStatus()` maps backend reports onto parameter slots. The pure slots are tested
+ * in params.test.ts; this file exercises wire values, requested-versus-confirmed state,
+ * mode transitions and the corresponding UI.
  *
  * The payload below is a real STATUS captured from a SAN-90, trimmed to the fields the
  * slots consume (kept structurally complete so a shape change fails here).
@@ -27,6 +25,7 @@ import { setWaterfall } from '../ui/panels/waterfall';
 import { getDisplayRef, pendingDisplayRef, resetDisplayRefMode } from '../ui/displayRef';
 import { commitRefLevel } from '../ui/panels/refAmp';
 import { setWS } from '../core/wsSend';
+import { peakListVisible } from '../ui/measurePrefs';
 
 const SWP_STATUS = {
 	cmd: 'STATUS',
@@ -512,6 +511,35 @@ describe('waterfall table replacement during STATUS', () => {
 		setWaterfall(false);
 		updateStatus(structuredClone(report));
 		expect(table.style.display).toBe('');
+	});
+});
+
+describe('peak list table replacement during STATUS', () => {
+	afterEach(() => {
+		setWaterfall(false);
+		peakListVisible.set(false);
+		S.setMeasOn(false);
+		updateStatus(structuredClone(SWP_STATUS));
+		document.body.innerHTML = '';
+	});
+
+	it.each(['std', 'rta', 'sdr'])('keeps the marker table out of the %s layout until PK List is closed', mode => {
+		document.body.innerHTML = '<table id="marker-table"></table><table id="peak-table"></table>';
+		S.setMeasOn(false);
+		const report = { ...structuredClone(mode === 'sdr' ? SDR_STATUS : SWP_STATUS), mode };
+		updateStatus(report);
+		peakListVisible.set(true);
+		const markerTable = document.getElementById('marker-table')!;
+		const peakTable = document.getElementById('peak-table')!;
+		markerTable.style.display = 'none';
+		for (let n = 0; n < 3; n++) {
+			updateStatus(structuredClone(report));
+			expect(markerTable.style.display).toBe('none');
+			expect(peakTable.style.display).toBe('');
+		}
+		peakListVisible.set(false);
+		updateStatus(structuredClone(report));
+		expect(markerTable.style.display).toBe(mode === 'sdr' ? 'none' : '');
 	});
 });
 

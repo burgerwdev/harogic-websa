@@ -1,12 +1,11 @@
 //! Subtraction, isolated: two transmissions one pass cannot both have.
 //!
-//! Both scenarios put a weak signal *above* the single-signal sensitivity cliff (`ft8_snr_sweep`
-//! measures it at about -19 dB in-band; here the weak signal sits at -16 dB, where it decodes
-//! reliably *alone*) and underneath a strong transmission at 0 dB:
+//! Both scenarios put a weak signal at -16 dB nominal in-band SNR underneath a strong
+//! transmission at 0 dB:
 //!
 //! 1. co-channel: the weak burst shares the strong one's exact audio frequency, 0.8 s later in the
 //!    slot. Their waterfall bins superpose, so one pass decodes the strong and loses the weak.
-//! 2. same frame, 12.5 Hz apart (two sub-bins): different frequencies, same time — the sync peaks
+//! 2. same frame, 12.5 Hz apart (two tones): different frequencies, same time — the sync peaks
 //!    merge and the weaker extraction is corrupted by the neighbour's skirt.
 //!
 //! The contract is that both scenarios report both messages: the strong one first, the weak one
@@ -27,12 +26,8 @@ const SECOND_TEXT: &str = "K1ABC";
 /// neighbour's presence is what kills it.
 const WEAK_SNR_DB: f64 = -16.0;
 const TRIALS: usize = 3;
-/// Trial frequency offsets: the pair moves together, so the separation stays what it is. The
-/// offsets are chosen on the waterfall's sub-bin grid (3.125 Hz) on purpose: a signal halfway
-/// between sub-bins splits its sync peak and loses several dB of contrast — a real frequency-
-/// granularity limitation of the 2x-oversampled waterfall (raising FREQ_OSR backfires: the FFT
-/// frame grows to 4 symbols and the Hann window dilutes the tone), to be solved with time-domain
-/// refinement, not here. These scenarios isolate the subtraction, not that limitation.
+/// The pair moves together, preserving its separation. These original offsets are exact
+/// points on the 1.5625 Hz waterfall grid; the sensitivity sweep also covers off-grid signals.
 const OFFSETS_HZ: [f64; 3] = [0.0, -3.125, 6.25];
 
 fn decode_texts(iq: &[f32]) -> Vec<String> {

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Generate FT8 fixtures: a real FT8 message encoded into an 8-FSK waveform.
 
-The decoder lives in the browser (`dsp/core/src/digital/ft8`), so its input has to be committed: this
-script encodes a standard FT8 message the way the protocol specifies and writes both the waveform
-and what it must decode to.
+The shared decoder lives in `dsp/core/src/digital/ft8`. This script encodes a standard FT8
+message and writes a reproducible waveform plus its expected decoded text.
 
 Encoding steps, all from the FT8 specification (tables ported from ft8_lib, MIT — see
 `tools/fixtures/port_ft8_tables.py`):
@@ -61,13 +60,17 @@ LETTERS_SPACE = ' ' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 def pack_basecall(callsign: str) -> int:
     """Standard callsign -> the base-call number (the reference's `pack_basecall`)."""
+    if callsign.startswith('3DA0') and 4 < len(callsign) <= 7:
+        callsign = '3D0' + callsign[4:]
+    elif callsign.startswith('3X') and 2 < len(callsign) <= 7 and 'A' <= callsign[2] <= 'Z':
+        callsign = 'Q' + callsign[2:]
     c6 = [' '] * 6
     length = len(callsign)
-    if length > 6:
+    if not 3 <= length <= 6:
         raise SystemExit(f'not a standard callsign: {callsign!r}')
-    if length > 2 and callsign[2].isdigit():
+    if callsign[2] in NUMERIC:
         c6[:length] = callsign                       # AB0XYZ
-    elif length > 1 and callsign[1].isdigit():
+    elif length <= 5 and callsign[1] in NUMERIC:
         c6[1:1 + length] = callsign                   # A0XYZ -> " A0XYZ"
     else:
         raise SystemExit(f'not a standard callsign: {callsign!r}')
@@ -94,14 +97,14 @@ def pack28(callsign: str) -> tuple[int, int]:
         return 1, 0
     if callsign == 'CQ':
         return 2, 0
-    if callsign.startswith('CQ ') and len(callsign) < 8:
+    if callsign.startswith('CQ '):
         argument = callsign[3:]
-        if argument.isdigit() and len(argument) == 3:
+        if len(argument) == 3 and all(char in NUMERIC for char in argument):
             return 3 + int(argument), 0
-        if len(argument) == 4 and argument.isalnum():
+        if 1 <= len(argument) <= 4 and all('A' <= char <= 'Z' for char in argument):
             value = 0
             for char in argument:
-                value = value * 27 + (ALPHANUM_SPACE.index(char) if char in ALPHANUM_SPACE else 0)
+                value = value * 27 + LETTERS_SPACE.index(char)
             return 1003 + value, 0
         raise SystemExit(f'unsupported CQ modifier: {callsign!r}')
     ip = 0
@@ -143,12 +146,20 @@ def packgrid(extra: str) -> int:
 def standard_payload(message: str) -> tuple[int, list[int]]:
     """77-bit payload for a standard message: `call_to call_de extra`."""
     parts = message.split()
+    if len(parts) >= 3 and parts[0] == 'CQ':
+        modifier = parts[1]
+        if ((len(modifier) == 3 and all(char in NUMERIC for char in modifier))
+                or (1 <= len(modifier) <= 4 and all('A' <= char <= 'Z' for char in modifier))):
+            parts = ['CQ ' + modifier, *parts[2:]]
     if len(parts) == 3:
         call_to, call_de, extra = parts
     elif len(parts) == 2:
         call_to, call_de, extra = parts[0], parts[1], ''
     else:
         raise SystemExit(f'unsupported message: {message!r}')
+    suffixes = {call[-2:] for call in (call_to, call_de) if call.endswith(('/R', '/P'))}
+    if len(suffixes) > 1:
+        raise SystemExit('one standard message cannot mix /R and /P callsign suffixes')
     n28a, ipa = pack28(call_to)
     n28b, ipb = pack28(call_de)
     igrid4 = packgrid(extra)
@@ -264,10 +275,10 @@ SECOND_BASE_HZ = 1_000.0
 
 
 def build_multi() -> tuple[dict[str, bytes], dict]:
-    """Three co-slot transmissions at different frequencies and levels, summed, no noise.
+    """Four co-slot transmissions at different frequencies and levels, summed, no noise.
 
     The noise floor is the sweep test's business (`dsp/core/tests/ft8_snr_sweep.rs` adds deterministic
-    band-limited noise); the fixture itself is the deterministic sum of the three waveforms, so the
+    calibrated white noise); the fixture itself is the deterministic sum of the four waveforms, so the
     expected texts and levels are exact and the byte-compare in `--check` is stable.
     """
     slot = int(SAMPLE_RATE * 15.0)

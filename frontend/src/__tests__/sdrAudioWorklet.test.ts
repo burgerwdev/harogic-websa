@@ -23,7 +23,7 @@ type Processor = {
 		prime: number;
 		target: number;
 		maxFill: number;
-		port: { onmessage: (event: { data: unknown }) => void; messages: Array<{ type: string; playing?: boolean }> };
+		port: { onmessage: (event: { data: unknown }) => void; messages: Array<{ type: string; playing?: boolean; rms?: number; peak?: number; generation?: number }> };
 		playing: boolean;
 		push(samples: Float32Array): void;
 		process(inputs: unknown, outputs: Float32Array[][]): boolean;
@@ -38,8 +38,8 @@ beforeAll(async () => {
 	(globalThis as unknown as { sampleRate: number }).sampleRate = RATE;
 	class FakePort {
 		onmessage: ((event: { data: unknown }) => void) | null = null;
-		messages: Array<{ type: string; playing?: boolean }> = [];
-		postMessage(message: { type: string; playing?: boolean }): void { this.messages.push(message); }
+		messages: Array<{ type: string; playing?: boolean; rms?: number; peak?: number; generation?: number }> = [];
+		postMessage(message: { type: string; playing?: boolean; rms?: number; peak?: number; generation?: number }): void { this.messages.push(message); }
 		start(): void {}
 	}
 	(globalThis as unknown as { AudioWorkletProcessor: unknown }).AudioWorkletProcessor = class {
@@ -193,6 +193,7 @@ describe('the SDR playback buffer', () => {
 		let pushed = 0;
 		let t = 0;
 		const changesAt: number[] = [];
+		const changesInCents: number[] = [];
 		let last = proc.ratio;
 		while (t < 120 * RATE) {
 			while (Math.floor((RATE * 1.001 * t) / RATE) - pushed >= 960) {
@@ -203,6 +204,7 @@ describe('the SDR playback buffer', () => {
 			t += 128;
 			if (proc.ratio !== last) {
 				changesAt.push(t);
+				changesInCents.push(Math.abs(1200 * Math.log2(proc.ratio / last)));
 				last = proc.ratio;
 			}
 		}
@@ -211,7 +213,8 @@ describe('the SDR playback buffer', () => {
 		for (let i = 1; i < changesAt.length; i++) {
 			expect((changesAt[i] - changesAt[i - 1]) / RATE).toBeGreaterThanOrEqual(10);
 		}
-		// Each step is a step, not a jump: the ratio walked toward the offset, and no further.
+		for (const cents of changesInCents) expect(cents).toBeLessThan(1.5);
+		// The ratio walks toward the faster producer without running away.
 		expect(last).toBeGreaterThan(1);
 		expect(last).toBeLessThanOrEqual(1.01 + 0.0005);
 		expect(proc.underruns).toBe(0);
@@ -397,4 +400,25 @@ describe('the SDR playback buffer', () => {
 		expect(left[127]).toBeCloseTo(0.25);
 		expect(right[127]).toBeCloseTo(-0.5);
 	});
+});
+
+it('meters rendered stereo PCM, not incoming samples waiting in the playback buffer', () => {
+  const proc = new ProcessorClass!();
+  proc.port.onmessage({ data: { type: 'reset', generation: 7, stereo: true } });
+  proc.enabled = true;
+  const outputs = [[new Float32Array(128), new Float32Array(128)]];
+  const meter = () => proc.port.messages.filter(message => message.type === 'meter').at(-1)!;
+  proc.push(new Float32Array(100).fill(.9));
+  for (let i = 0; i < 20; i++) proc.process(null, outputs);
+  expect(meter()).toMatchObject({ rms: 0, peak: 0, playing: false, generation: 7 });
+  proc.reset();
+  const stereo = new Float32Array(proc.prime + 10000);
+  for (let i = 0; i < stereo.length; i += 2) { stereo[i] = .25; stereo[i + 1] = .75; }
+  proc.push(stereo);
+  for (let i = 0; i < 40; i++) proc.process(null, outputs);
+  expect(meter().rms).toBeCloseTo(Math.sqrt((.25 ** 2 + .75 ** 2) / 2), 5);
+  expect(meter().peak).toBe(.75);
+  proc.port.onmessage({ data: { type: 'enabled', value: false } });
+  for (let i = 0; i < 60; i++) proc.process(null, outputs);
+  expect(meter()).toMatchObject({ rms: 0, peak: 0, playing: false });
 });

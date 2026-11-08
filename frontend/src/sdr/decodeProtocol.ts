@@ -2,10 +2,14 @@
 import type { DrmReceiverStatus } from './drmLog';
 import type { RadiofaxClockSource, RadiofaxClockStatus, RadiofaxStage } from './radiofaxLog';
 import { parseRadiofaxTransmissionId } from './radiofaxLog';
-export const MAX_DECODE_BYTES = 2 * 1024 * 1024;
+import { readDecoderImageStrip, type DecoderResultKind } from './decoderLog';
+import { MAX_DECODE_BYTES } from './streamLimits';
+export { MAX_DECODE_BYTES } from './streamLimits';
 const U64_MAX = (1n << 64n) - 1n;
 export interface ReceiverEvent {
 	type: string;
+	processing_generation?: string; drained?: boolean; tail_complete?: boolean; processing_complete?: boolean;
+	provider?: string; mode?: string; kind?: DecoderResultKind; data?: unknown;
 	snapshotAck?: boolean;
 	text?: string; endsLine?: boolean; share?: number; rms?: number; keyed?: boolean;
 	centerHz?: number; pitchHz?: number; afcHz?: number; wpm?: number;
@@ -29,9 +33,13 @@ export interface ReceiverEvent {
 	elapsedSeconds?: number; clockStatus?: RadiofaxClockStatus; clockSource?: RadiofaxClockSource;
 	phasePixels?: number; clockPpm?: number; clockConfidence?: number; complete?: boolean; partial?: boolean;
 	reason?: string | null; state?: string; index?: number; message?: string;
+	requested?: string; effective?: string; model?: string | null; latencySamples?: number; audioRate?: number;
 	status?: DrmReceiverStatus;
 }
 export interface DecodeEnvelope {
+	receiver_uid?: string;
+	service_id?: string;
+	baseband_stream?: { source_id: string; channel_id: string; epoch: string };
 	version: 1;
 	channel: number;
 	channel_id: number;
@@ -67,20 +75,75 @@ function uint64(value: unknown): bigint {
 function record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
+/** Bound both retained text and DOM work while preserving unfamiliar sensor fields. */
+function validateDecoderData(data: unknown, image: boolean): void {
+	let remaining = 16_384;
+	const visit = (value: unknown, depth: number, key = ''): void => {
+		if (--remaining < 0 || depth > 12) throw new Error('Decoder result exceeds structure limit');
+		if (value === null || typeof value === 'boolean') return;
+		if (typeof value === 'number' && Number.isFinite(value)) return;
+		if (typeof value === 'string') {
+			if (value.length > (image && key === 'png' ? MAX_DECODE_BYTES : 65_536)) throw new Error('Decoder result exceeds text limit');
+			return;
+		}
+		if (Array.isArray(value)) {
+			if (value.length > 1024) throw new Error('Decoder result exceeds row limit');
+			for (const item of value) visit(item, depth + 1);
+			return;
+		}
+		if (record(value)) {
+			const entries = Object.entries(value);
+			if (entries.length > 128) throw new Error('Decoder result exceeds field limit');
+			for (const [field, item] of entries) {
+				if (field.length > 256) throw new Error('Decoder result field is too long');
+				visit(item, depth + 1, field);
+			}
+			return;
+		}
+		throw new Error('Invalid decoder result value');
+	};
+	visit(data, 0);
+}
 function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 	if (!record(value) || value.version !== 1 || !record(value.event)) throw new Error('Invalid SDE2 envelope');
 	for (const key of ['channel', 'channel_id', 'epoch', 'seq']) {
 		if (typeof value[key] !== 'number' || !Number.isInteger(value[key]) || value[key] < 0 || value[key] > 0xffffffff) throw new Error('Invalid SDE2 identity');
 	}
-	if (typeof value.channel !== 'number' || value.channel < 1 || value.channel > 3
+	if (typeof value.channel !== 'number' || value.channel < 1 || value.channel > 0xffffffff
 		|| typeof value.input_rate !== 'number' || !Number.isFinite(value.input_rate) || value.input_rate <= 0
 		|| typeof value.delay_seconds !== 'number' || !Number.isFinite(value.delay_seconds) || value.delay_seconds < 0
 		|| typeof value.delay_known !== 'boolean' || typeof value.causal_presentation !== 'boolean'
 		|| typeof value.mode !== 'string' || typeof value.event.type !== 'string') throw new Error('Invalid SDE2 envelope');
+	if (value.receiver_uid !== undefined || value.service_id !== undefined || value.baseband_stream !== undefined) {
+		if (typeof value.receiver_uid !== 'string' || !value.receiver_uid || value.receiver_uid.length > 128
+			|| typeof value.service_id !== 'string' || !value.service_id || value.service_id.length > 128
+			|| !record(value.baseband_stream) || typeof value.baseband_stream.source_id !== 'string') throw new Error('Invalid SDE2 logical source');
+		uint64(value.baseband_stream.channel_id); uint64(value.baseband_stream.epoch);
+	}
 	if (value.event.type === 'start' && value.event.snapshotAck !== undefined && typeof value.event.snapshotAck !== 'boolean') {
 		throw new Error('Invalid receiver snapshotAck');
 	}
 	const d = value.event;
+	if (d.type === 'processing-end') {
+		uint64(d.processing_generation);
+		if (typeof d.reason !== 'string' || ['drained', 'tail_complete', 'processing_complete'].some(key => typeof d[key] !== 'boolean')) {
+			throw new Error('Invalid processing end boundary');
+		}
+	}
+	if (d.type === 'decoder-result') {
+		if (typeof d.provider !== 'string' || !d.provider || d.provider.length > 64
+			|| typeof d.mode !== 'string' || d.mode !== value.mode
+			|| typeof d.kind !== 'string' || !['text', 'table', 'image', 'status'].includes(d.kind)
+			|| d.data === undefined || d.data === null) throw new Error('Invalid decoder result');
+		validateDecoderData(d.data, d.kind === 'image');
+		if ((d.kind === 'table' || d.kind === 'status') && !record(d.data) && !Array.isArray(d.data) && typeof d.data !== 'string') {
+			throw new Error('Invalid decoder result data');
+		}
+		if (d.kind === 'image') {
+			if (!record(d.data)) throw new Error('Invalid decoder image');
+			readDecoderImageStrip(d.data);
+		}
+	}
 	for (const key of ['share', 'rms', 'centerHz', 'pitchHz', 'afcHz', 'wpm', 'frequencyHz', 'timeOffsetS', 'snrDb', 'count',
 		'peakDevHz', 'pilotPct', 'rdsPi', 'rdsGroups', 'carrierHz', 'pilotDevHz', 'pilotSnrDb', 'width', 'height', 'row', 'rows',
 		'pushes', 'attempts', 'bufferedSamples', 'bufferedSeconds', 'level', 'srcLevel', 'index', 'signalLevel',
@@ -131,7 +194,7 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 			['clockSource', ['nominal', 'phasing', 'image_content', 'manual']],
 		];
 		for (const [key, allowed] of radiofaxEnums) {
-			if (!allowed.includes(String(d[key]))) throw new Error(`Invalid radiofax ${key}`);
+			if (typeof d[key] !== 'string' || !allowed.includes(d[key])) throw new Error(`Invalid radiofax ${key}`);
 		}
 		if (d.ioc !== undefined && d.ioc !== null && d.ioc !== 288 && d.ioc !== 576) throw new Error('Invalid radiofax ioc');
 		if (typeof d.clockConfidence !== 'number' || !Number.isFinite(d.clockConfidence)) throw new Error('Invalid receiver clockConfidence');

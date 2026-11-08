@@ -1,5 +1,6 @@
 //! Small DSP helpers shared by the channel-estimation and tracking stages, ported from
-//! Dream/DecDRM's `dsp` helpers (MIT-clean: these are textbook formulas).
+//! Dream/DecDRM's `dsp` helpers. This port description has unresolved provenance;
+//! excluded from the new project license grant pending review (see LICENSING.md).
 
 use crate::digital::drm::dsp::Cplx;
 

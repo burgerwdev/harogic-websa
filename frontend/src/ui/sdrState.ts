@@ -1,3 +1,5 @@
+import { setDomProperty } from './domState';
+import { syncSelectValue } from './selectControl';
 /**
  * SDR tuning state - the single owner of every SDR parameter.
  *
@@ -10,7 +12,7 @@
 import { createParam, resetAll } from '../core/params';
 import { toUnit } from '../core/units';
 import { t } from '../core/i18n';
-import { isDigitalMode } from '../sdr/registry';
+import { modeDescriptor } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { sstvBandHz } from '../sdr/sstvLog';
 import { radiofaxBandHz } from '../sdr/radiofaxLog';
@@ -39,24 +41,24 @@ export const sdrSpanHz = createParam<number>('sdr.span', { fallback: 0, scope: '
 export const sdrListenHz = createParam<number>('sdr.listen', {
 	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-listen', ...hz,
 });
+/** Confirmed selected receiver state; never persisted as a listening preference. */
+export const sdrPrimaryEnabled = createParam<boolean>('sdr.primaryEnabled', { fallback: true, scope: 'sdr' });
 /** Demodulation mode id from the backend plugin registry. */
 export const sdrDemod = createParam<string>('sdr.demod', {
-	fallback: 'am', scope: 'sdr', persistKey: 'web-sa-sdr-demod',
+	fallback: 'am', scope: 'sdr', persistKey: 'web-sa-sdr-demod', ttlMs: Infinity, // Receiver watchdog owns expiry.
 });
 
 // The legacy pane stored Auto and the viewed mode separately. Only Auto off made that
 // viewed mode a decoder pin; an Auto-on history filter must never become receiver config.
-if (typeof localStorage !== 'undefined') {
-	try {
-		const auto = localStorage.getItem('web-sa-sstv-auto');
-		if (auto !== null && localStorage.getItem('web-sa-sdr-sstv-mode') === null) {
-			const raw = localStorage.getItem('web-sa-sstv-mode');
-			const pin = raw !== null && raw.trim() !== '' ? Number(raw) : NaN;
-			localStorage.setItem('web-sa-sdr-sstv-mode', String(auto === '0' && Number.isInteger(pin) && pin >= 0 ? pin : -1));
-		}
-		localStorage.removeItem('web-sa-sstv-auto');
-	} catch { /* storage disabled */ }
-}
+try {
+	const auto = localStorage.getItem('web-sa-sstv-auto');
+	if (auto !== null && localStorage.getItem('web-sa-sdr-sstv-mode') === null) {
+		const raw = localStorage.getItem('web-sa-sstv-mode');
+		const pin = raw !== null && raw.trim() !== '' ? Number(raw) : NaN;
+		localStorage.setItem('web-sa-sdr-sstv-mode', String(auto === '0' && Number.isInteger(pin) && pin >= 0 ? pin : -1));
+	}
+	localStorage.removeItem('web-sa-sstv-auto');
+} catch { /* storage disabled */ }
 
 /** Primary SSTV decoder mode: -1 lets the VIS header choose, >=0 pins a mode index. */
 export const sdrSstvMode = createParam<number>('sdr.sstvMode', {
@@ -111,7 +113,7 @@ export const sdrRadiofaxClockPpm = createParam<number>('sdr.radiofaxClockPpm', {
 });
 /** IF passband in Hz (also what the listen-band overlay draws). */
 export const sdrIfbw = createParam<number>('sdr.ifbw', {
-	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz,
+	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz, ttlMs: Infinity,
 });
 /** Native CW pitch from STATUS; the panel has no pitch setting. */
 export const sdrPitchHz = createParam<number>('sdr.pitch', { fallback: 700, scope: 'sdr', ...hz });
@@ -166,7 +168,7 @@ export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get(
 	}
 	if (demod === 'sstv') return sstvBandHz();
 	if (demod === 'radiofax') return radiofaxBandHz();
-	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
+	if (demod === 'ft8') return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
 	const guard = Math.max(100, Math.min(300, ifBw * 0.1));
 	if (demod === 'usb') return [guard, ifBw];
 	if (demod === 'lsb') return [-ifBw, -guard];
@@ -175,13 +177,16 @@ export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get(
 		const center = Math.max(100, pitch);
 		return [center - half, center + half];
 	}
+	const descriptor = modeDescriptor(demod);
+	if (descriptor?.sideband === 'upper') return [0, ifBw];
+	if (descriptor?.sideband === 'lower') return [-ifBw, 0];
 	return [-ifBw / 2, ifBw / 2];
 }
 /** FM de-emphasis time constant in microseconds (-1 = per-mode default). */
 export const sdrDeemph = createParam<number>('sdr.deemph', {
 	fallback: -1, scope: 'sdr', persistKey: 'web-sa-sdr-deemph', ...hz,
 });
-/** Audio volume (0..2). */
+/** Backend shared PCM gain (0..2), independent of workbench local speaker volume. */
 export const sdrVolume = createParam<number>('sdr.volume', {
 	fallback: 0.8, scope: 'sdr', persistKey: 'web-sa-sdr-volume',
 	// Volume uses a 0.01 equality tolerance; zero is a valid value.
@@ -189,9 +194,9 @@ export const sdrVolume = createParam<number>('sdr.volume', {
 	serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
 });
-/** Squelch threshold in the SDK's tuned-bin dBm, before either audio AGC. */
+/** Squelch threshold in the SDK's tuned-bin dBm; -160 disables it by default and on Preset. */
 export const sdrSquelch = createParam<number>('sdr.squelch', {
-	fallback: -110, scope: 'sdr', persistKey: 'web-sa-sdr-squelch',
+	fallback: -160, scope: 'sdr', persistKey: 'web-sa-sdr-squelch',
 	parse: Number, serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.05,
 });
@@ -231,10 +236,14 @@ export const sdrNrStrength = createParam<number>('sdr.nrStrength', {
 });
 
 /** Native receiver noise reduction algorithm. */
-export type NrAlgo = 'wiener' | 'dfn';
+export type NrAlgo = 'wiener' | 'dfn' | 'gtcrn' | 'ul-unas' | 'fastenhancer';
+export function parseNrAlgo(raw: string): NrAlgo {
+    if (raw === 'dfn2') return 'dfn';
+    return ['dfn','gtcrn','ul-unas','fastenhancer'].includes(raw) ? raw as NrAlgo : 'wiener';
+}
 export const sdrNrAlgo = createParam<NrAlgo>('sdr.nrAlgo', {
     fallback: 'wiener', scope: 'sdr', persistKey: 'web-sa-sdr-nr-algo',
-	parse: (raw: string) => (raw === 'dfn' || raw === 'dfn2' ? 'dfn' : 'wiener'), // 'dfn2' = old persisted key
+	parse: parseNrAlgo,
 	serialize: String,
 	equals: (a: NrAlgo, b: NrAlgo) => a === b,
 });
@@ -385,7 +394,6 @@ export const SDR_PREF_KEYS = [
  * has their own setup, that setup wins (a mode switch is not a reset).
  */
 export function hasStoredSdrPrefs(): boolean {
-	if (typeof localStorage === 'undefined') return false;
 	try {
 		return SDR_PREF_KEYS.some((key) => localStorage.getItem(key) !== null);
 	} catch {
@@ -414,7 +422,6 @@ export function resetSdrState(): void {
 	sdrLocateMode.set('free');
 	sdrChannelStepHz.set(25_000);
 	sdrChannelAnchorHz.set(0);
-	if (typeof localStorage === 'undefined') return;
 	try {
 		SDR_PREF_KEYS.forEach((key) => localStorage.removeItem(key));
 		localStorage.removeItem('web-sa-sdr-step-bw');
@@ -480,7 +487,7 @@ export function renderSdrState(): void {
 		listen.value = (sdrListenHz.get() / 1e6).toFixed(6);
 	}
 	const dec = select('select-sdr-decimate');
-	if (dec) dec.value = String(sdrDecimate.get());
+	syncSelectValue(dec, String(sdrDecimate.get()));
 	const squelch = input('input-sdr-squelch');
 	if (squelch && document.activeElement !== squelch) squelch.value = String(sdrSquelch.get());
 	const squelchLabel = document.getElementById('cur-sdr-squelch');
@@ -508,12 +515,16 @@ export function renderSdrState(): void {
 		nrButton.textContent = sdrNr.get() ? 'On' : 'Off';
 	}
 	const nrAlgo = select('select-sdr-nr-algo');
-	if (nrAlgo) nrAlgo.value = sdrNrAlgo.get();
-    const dfnSelected = sdrNrAlgo.get() === 'dfn';
-	// The DeepFilterNet3 attenuation slider is only meaningful for dfn (Wiener has its own strength).
+	if (nrAlgo) {
+		syncSelectValue(nrAlgo, sdrNrAlgo.get());
+		setDomProperty(nrAlgo.dataset, 'i18nTitle', `nr_algo_${sdrNrAlgo.get().replace('-', '_')}_tip`);
+		setDomProperty(nrAlgo, 'title', t(nrAlgo.dataset.i18nTitle!));
+	}
+    const neuralSelected = sdrNrAlgo.get() !== 'wiener';
+	// All neural reducers use attenuation; Wiener has its own strength.
 	const attenRow = document.getElementById('nr-atten-row');
 	const attenInput = input('input-sdr-nr-atten');
-	if (attenRow) attenRow.style.display = dfnSelected ? '' : 'none';
+	if (attenRow) attenRow.style.display = neuralSelected ? '' : 'none';
 	if (attenInput) {
 		attenInput.value = String(sdrNrAtten.get());
 		const attenLabel = document.getElementById('cur-nr-atten');
@@ -521,10 +532,8 @@ export function renderSdrState(): void {
 	}
 	const nrStrength = select('select-sdr-nr-strength');
 	if (nrStrength) {
-        // DeepFilterNet3 uses the attenuation control in place of strength.
-		const dfn = sdrNrAlgo.get() === 'dfn';
-		nrStrength.hidden = dfn;
-		nrStrength.disabled = dfn || sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus';
+		setDomProperty(nrStrength, 'hidden', neuralSelected);
+		setDomProperty(nrStrength, 'disabled', neuralSelected || sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus');
 		// The nearest preset: the slot holds a number (a custom answer is possible via storage).
 		const value = sdrNrStrength.get();
 		let nearest = '0.6';
@@ -533,6 +542,6 @@ export function renderSdrState(): void {
 				nearest = option.value;
 			}
 		}
-		nrStrength.value = nearest;
+		syncSelectValue(nrStrength, nearest);
 	}
 }

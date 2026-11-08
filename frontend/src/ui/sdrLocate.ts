@@ -1,3 +1,4 @@
+import { sdrPassbandVisible } from './sdrPassbandState';
 /** Preview and click state only; the canvas owner routes gestures and submits tuning. */
 import { ctx } from '../core/store';
 import * as S from '../core/store';
@@ -19,6 +20,7 @@ import {
 	sdrListenHz, sdrLocateMode, sdrPitchHz,
 } from './sdrState';
 import { getCapture, getView, isZoomed } from './spectrumViewport';
+import { previewFreqWindow } from './axisDrag';
 import { postRefNotice } from './refAutoScale';
 
 const AM_SNAP_CAP_HZ = 10_000;
@@ -31,7 +33,7 @@ function signalMaxBinHz(mode: string): number {
 }
 
 function locateView(): { lo: number; hi: number } | null {
-	const view = isZoomed() ? getView() : getCapture();
+	const view = previewFreqWindow() ?? (isZoomed() ? getView() : getCapture());
 	return view && view.hi > view.lo ? view : null;
 }
 
@@ -262,6 +264,7 @@ export function invalidateSdrLocateEvidence(): void {
 
 /** Dashed preview is separate from the receiver's tuned/passband indicator. */
 export function renderSdrLocate(loHz: number, hiHz: number): boolean {
+  if (!sdrPassbandVisible.get()) return false;
 	let shown: LocateTarget | null = null;
 	if (frozen) {
 		if (!environmentChanged(frozen.environment)) {

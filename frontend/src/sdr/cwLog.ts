@@ -1,3 +1,4 @@
+import { channelState } from '../core/channelState';
 // The CW decode log: what the Morse decoder heard, as readable lines.
 //
 // The decoder reports characters as they are keyed, so the operator sees the text appear live. A
@@ -50,6 +51,8 @@ export interface CwLevel {
 
 /** How many lines are kept (a band's worth of traffic; the window scrolls). */
 export const MAX_CW_LINES = 200;
+/** Bound both decoded text and the per-character confidence marks, even without a line break. */
+export const MAX_CW_CHARACTERS = 65_536;
 
 /** Below this share a character is drawn as doubtful. It matches the engine's tone gate
  * (`TONE_MIN_SHARE`), which is the line between "a sidetone was there" and "noise got through". */
@@ -60,14 +63,12 @@ interface CwContext {
 	current: string;
 	currentAt: number;
 	currentMarks: CwMark[];
+	retainedCharacters: number;
+	evictedCharacters: number;
 	level: CwLevel;
 }
-const contexts: Record<1 | 2 | 3, CwContext> = {
-	1: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
-	2: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
-	3: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
-};
-let selectedChannel: 1 | 2 | 3 = 1;
+const contexts = channelState<CwContext>(() => ({ lines: [], current: '', currentAt: 0, currentMarks: [], retainedCharacters: 0, evictedCharacters: 0, level: { rms: 0, keyed: false } }));
+let selectedChannel: number = 1;
 const listeners = new Set<() => void>();
 const levelListeners = new Set<() => void>();
 
@@ -75,24 +76,46 @@ function notify(): void {
 	for (const fn of listeners) fn();
 }
 
-export function setCwChannel(channel: 1 | 2 | 3): void {
+export function setCwChannel(channel: number): void {
 	selectedChannel = channel;
 	notify();
 	for (const fn of levelListeners) fn();
 }
 
 /** Append decoded characters. `endsLine` closes the line (the sender paused). */
-export function addCwText(text: string, endsLine: boolean, share = 1, channel: 1 | 2 | 3 = selectedChannel): void {
+export function addCwText(text: string, endsLine: boolean, share = 1, channel: number = selectedChannel): void {
 	if (!text && !endsLine) return;
 	const context = contexts[channel];
 	if (text && !context.current) context.currentAt = Date.now();
-	for (let i = 0; i < text.length; i++) {
+	// Retain the newest traffic. Discard whole old lines first, then any old current prefix;
+	// skip oversized incoming prefixes before allocating their character marks.
+	while (context.lines.length && context.retainedCharacters + text.length > MAX_CW_CHARACTERS) {
+		const removed = context.lines.shift()!.text.length;
+		context.retainedCharacters -= removed;
+		context.evictedCharacters += removed;
+	}
+	const trimCurrent = Math.min(context.current.length, Math.max(0, context.retainedCharacters + text.length - MAX_CW_CHARACTERS));
+	if (trimCurrent) {
+		context.current = context.current.slice(trimCurrent);
+		context.currentMarks = context.currentMarks.slice(trimCurrent);
+		context.retainedCharacters -= trimCurrent;
+		context.evictedCharacters += trimCurrent;
+	}
+	const skip = Math.max(0, context.retainedCharacters + text.length - MAX_CW_CHARACTERS);
+	context.evictedCharacters += skip;
+	for (let i = skip; i < text.length; i++) {
 		const gap = i === 0 ? context.current.endsWith(' ') : text[i - 1] === ' ';
 		context.currentMarks.push({ share, gap });
 	}
-	context.current += text;
+	context.current += text.slice(skip);
+	context.retainedCharacters += text.length - skip;
 	if (endsLine && context.current) {
-		context.lines = [...context.lines, { at: context.currentAt, text: context.current, marks: context.currentMarks }].slice(-MAX_CW_LINES);
+		context.lines.push({ at: context.currentAt, text: context.current, marks: context.currentMarks });
+		if (context.lines.length > MAX_CW_LINES) {
+			const removed = context.lines.shift()!.text.length;
+			context.retainedCharacters -= removed;
+			context.evictedCharacters += removed;
+		}
 		context.current = '';
 		context.currentMarks = [];
 	}
@@ -100,13 +123,13 @@ export function addCwText(text: string, endsLine: boolean, share = 1, channel: 1
 }
 
 /** The finished lines and the line being keyed right now (empty when nothing is pending). */
-export function cwLog(): { lines: CwLine[]; current: string; marks: CwMark[] } {
-	const { lines, current, currentMarks: marks } = contexts[selectedChannel];
-	return { lines, current, marks };
+export function cwLog(): { lines: CwLine[]; current: string; marks: CwMark[]; evictedCharacters: number } {
+	const { lines, current, currentMarks: marks, evictedCharacters } = contexts[selectedChannel];
+	return { lines, current, marks, evictedCharacters };
 }
 
 /** One audio block's level and keyed state: the meter and the lamp, nothing else. */
-export function setCwLevel(rms: number, keyed: boolean, details: Partial<CwLevel> = {}, channel: 1 | 2 | 3 = selectedChannel): void {
+export function setCwLevel(rms: number, keyed: boolean, details: Partial<CwLevel> = {}, channel: number = selectedChannel): void {
 	contexts[channel].level = { ...details, rms, keyed };
 	if (channel === selectedChannel) for (const fn of levelListeners) fn();
 }
@@ -120,11 +143,13 @@ export function subscribeCwLevel(fn: () => void): () => void {
 	return () => levelListeners.delete(fn);
 }
 
-export function clearCwLog(channel: 1 | 2 | 3 = selectedChannel): void {
+export function clearCwLog(channel: number = selectedChannel): void {
 	const context = contexts[channel];
 	context.lines = [];
 	context.current = '';
 	context.currentMarks = [];
+	context.retainedCharacters = 0;
+	context.evictedCharacters = 0;
 	if (channel === selectedChannel) notify();
 }
 

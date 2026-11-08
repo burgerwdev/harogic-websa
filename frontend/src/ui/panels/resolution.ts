@@ -1,3 +1,5 @@
+import { setDomProperty } from '../domState';
+import { syncSelectValue } from '../selectControl';
 // Resolution panel: RBW / VBW / points / window / spur actions.
 import { parseFreqUnit, toUnit, units } from '../../core/units';
 import { send } from '../../core/wsSend';
@@ -39,7 +41,7 @@ function renderResolution(field: ResolutionField): void {
   const input = inputFor(field);
   if (input && input.dataset.edited !== '1') input.value = toUnit(fields[field].value.get(), field).toFixed(2);
   const select = selectFor(field);
-  if (select) select.value = fields[field].mode.get();
+  syncSelectValue(select, fields[field].mode.get());
 }
 
 function settleResolution(field: ResolutionField): void {
@@ -174,16 +176,16 @@ export function syncResolutionAvailability(mode: string = currentGraphMode()): v
   for (const field of ['rbw', 'vbw'] as const) {
     const select = selectFor(field);
     if (select) {
-      select.disabled = disabled;
-      select.setCustomValidity('');
+      setDomProperty(select, 'disabled', disabled);
+      if (select.validity.customError) select.setCustomValidity('');
       if (field === 'rbw') for (const option of Array.from(select.options)) {
-        option.disabled = mode === 'rta' && option.value !== 'auto' && option.value !== 'manual';
+        setDomProperty(option, 'disabled', mode === 'rta' && option.value !== 'auto' && option.value !== 'manual');
       }
     }
     const input = inputFor(field);
-    if (input) input.disabled = disabled;
+    if (input) setDomProperty(input, 'disabled', disabled);
     document.querySelectorAll<HTMLButtonElement>(`button[data-action="apply-${field}"]`)
-      .forEach(button => { button.disabled = disabled; });
+      .forEach(button => { setDomProperty(button, 'disabled', disabled); });
   }
 }
 

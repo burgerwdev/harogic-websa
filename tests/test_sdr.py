@@ -15,6 +15,24 @@ def _rms(values: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.asarray(values, dtype=np.float64) ** 2)))
 
 
+@pytest.mark.parametrize('alpha', [.2, .9, .9995])
+def test_one_pole_reference_matches_the_recurrence_across_chunks(alpha):
+    from tools.reference.filters import one_pole_iir
+    samples = .1 * np.sin(np.arange(53))
+    previous = 1.25
+    expected = []
+    for value in samples:
+        previous = alpha * previous + value
+        expected.append(previous)
+    for block_size in [1, 7, 53]:
+        previous, blocks = 1.25, []
+        for start in range(0, len(samples), block_size):
+            block, previous = one_pole_iir(samples[start:start + block_size], alpha, previous)
+            blocks.append(block)
+        np.testing.assert_allclose(np.concatenate(blocks), expected, rtol=1e-12, atol=1e-14)
+        assert previous == pytest.approx(expected[-1], rel=1e-12, abs=1e-14)
+
+
 def test_audio_frame_keeps_compatible_header():
     pcm = np.array([-1, 2, -3], dtype=np.int16)
     frame = encode_audio(7, 48000, pcm)

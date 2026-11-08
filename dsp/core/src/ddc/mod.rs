@@ -70,6 +70,8 @@ pub struct Ddc {
     mixed: Vec<f64>,
     filtered: Vec<f64>,
     decimated: Vec<f64>,
+    /// Input samples until the next retained sample, carried across block boundaries.
+    decimation_offset: usize,
     resampled: Vec<f32>,
     levelled: Vec<f32>,
 }
@@ -94,15 +96,14 @@ impl Ddc {
             mixed: Vec::new(),
             filtered: Vec::new(),
             decimated: Vec::new(),
+            decimation_offset: 0,
             resampled: Vec::new(),
             levelled: Vec::new(),
         }
     }
 
     fn taps_for(config: &DdcConfig) -> Vec<f64> {
-        if config.ntaps == 0 {
-            vec![1.0]
-        } else if config.ntaps == 1 {
+        if config.ntaps <= 1 {
             vec![1.0]
         } else {
             design_lowpass(config.fs_in, config.cutoff_hz, config.ntaps)
@@ -117,6 +118,7 @@ impl Ddc {
     /// geometry's history describes another channel.
     pub fn configure(&mut self, config: DdcConfig) {
         self.config = config;
+        self.decimation_offset = 0;
         self.nco.set_frequency(config.offset_hz, config.fs_in);
         self.filter = IqFilter::new(Self::taps_for(&config));
         self.resampler = if config.resampling() {
@@ -128,6 +130,7 @@ impl Ddc {
 
     /// Full reset: state *and* the AGC gain (used when the stream restarts).
     pub fn reset(&mut self) {
+        self.decimation_offset = 0;
         self.nco.reset();
         self.filter.reset();
         if let Some(resampler) = self.resampler.as_mut() {
@@ -141,6 +144,7 @@ impl Ddc {
     /// Resetting the gain here is what produced a loud burst after every tune; the reference
     /// does the same (`AnalogDemod.retune`).
     pub fn retune(&mut self, offset_hz: f64) {
+        self.decimation_offset = 0;
         self.config.offset_hz = offset_hz;
         self.nco.set_frequency(offset_hz, self.config.fs_in);
         self.nco.reset();
@@ -173,11 +177,20 @@ impl Ddc {
         let step = self.config.decimate.max(1);
         let n = iq.len() / 2;
         out.clear();
-        out.reserve((n / step + 1) * 2);
-        let mut k = 0;
+        let mut k = self.decimation_offset;
+        if k >= n {
+            self.decimation_offset -= n;
+            return;
+        }
+        out.reserve(((n - 1 - k) / step + 1) * 2);
         while k < n {
             out.push(iq[2 * k]);
             out.push(iq[2 * k + 1]);
+            // Compare with the remaining block before adding; step can be usize::MAX.
+            if step >= n - k {
+                self.decimation_offset = step - (n - k);
+                break;
+            }
             k += step;
         }
     }
@@ -339,3 +352,29 @@ mod tests {
         assert_eq!(out.len() / 2, 100);
     }
 }
+    #[test]
+    fn decimation_keeps_the_same_stream_indices_across_blocks_and_reset() {
+        let config = DdcConfig { fs_in: 48_000.0, offset_hz: 0.0, cutoff_hz: 0.0,
+            decimate: 3, out_rate: 0.0, ntaps: 0 };
+        let input: Vec<f64> = (0..34).map(|sample| sample as f64).collect();
+        let reference: Vec<f64> = input.chunks_exact(2).step_by(3).flatten().copied().collect();
+        for chunk in [1, 2, 3, 5, 7, 17] {
+            let mut ddc = Ddc::new(config);
+            let mut actual = Vec::new();
+            let mut block = Vec::new();
+            for values in input.chunks(chunk * 2) {
+                ddc.decimate_into(values, &mut block);
+                actual.extend_from_slice(&block);
+            }
+            assert_eq!(actual, reference, "chunk size {chunk} changes the sample clock");
+            ddc.reset();
+            ddc.decimate_into(&input, &mut block);
+            assert_eq!(block, reference, "reset starts a new decimation phase");
+            ddc.configure(config);
+            ddc.decimate_into(&input, &mut block);
+            assert_eq!(block, reference, "configure starts a new decimation phase");
+            ddc.retune(0.0);
+            ddc.decimate_into(&input, &mut block);
+            assert_eq!(block, reference, "retune starts a new channel history");
+        }
+    }

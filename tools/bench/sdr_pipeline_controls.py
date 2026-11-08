@@ -504,10 +504,14 @@ class Probe:
     def mixed_channels(state, expected):
         channels = state.get("sdr", {}).get("channels", [])
         rows = registry(state)
-        if len(channels) != 3 or {row.get("channel") for row in channels} != {1, 2, 3}:
+        if not set(expected).issubset({row.get("channel") for row in channels}):
             return False
         for channel in channels:
             slot = channel["channel"]
+            if slot not in expected:
+                if channel.get("enabled"):
+                    return False
+                continue
             mode, bandwidth = expected[slot]
             meta = rows.get(slot, {})
             if (not channel.get("enabled") or channel.get("mode") != mode
@@ -529,8 +533,10 @@ class Probe:
                     "volume": 0.8, "audio_rate": 48000}
 
         self.command({"cmd": "SET_MODE", "mode": "sdr"})
-        for slot in (2, 3):
-            self.command(channel(slot, c, enabled=False))
+        advertised = self.state().get("sdr", {}).get("channels", [])
+        for row in advertised:
+            if row["channel"] != 1:
+                self.command(channel(row["channel"], c, enabled=False))
         self.command({"cmd": "SET_SDR", "center": c, "decimate": 32, "pfb_taps_per_phase": 8})
         self.command(channel(1, c))
         self.open()
@@ -542,7 +548,7 @@ class Probe:
             configured = all(initial_actual.get(key) == value for key, value in
                              (("center", c), ("decimate", 32), ("pfb_taps_per_phase", 8)))
             channels = initial["state"].get("sdr", {}).get("channels", [])
-            configured = configured and len(channels) == 3 and all(
+            configured = configured and len(channels) == len(advertised) and all(
                 row.get("enabled") == (row.get("channel") == 1) for row in channels)
             configured = configured and any(
                 row.get("channel") == 1 and row.get("freq") == c and row.get("mode") == "am"

@@ -9,11 +9,13 @@ covers offset carrier acquisition and RF fade. Example:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import urllib.error
 import urllib.request
 
 from playwright.sync_api import sync_playwright
+from viewport_baseline import wait_async_condition
 
 
 def post(origin: str, payload: dict) -> dict:
@@ -26,6 +28,16 @@ def post(origin: str, payload: dict) -> dict:
 def state(origin: str) -> dict:
     with urllib.request.urlopen(origin + '/api/state', timeout=5) as response:
         return json.load(response)
+
+
+def configuration_and_stream(channel: dict) -> dict:
+    # Live observations and control envelopes have their own checks below.
+    # Keep the complete confirmed configuration, compatibility settings and
+    # stream identity so unrelated changes still fail the sync-only operation.
+    observations = {'level_dbfs', 'channel_dbm', 'squelch_open',
+                    'processing_runtime', 'control_receipts', 'control'}
+    return {key: copy.deepcopy(value) for key, value in channel.items()
+            if key not in observations}
 
 
 PROBE = """() => {
@@ -84,23 +96,58 @@ def main() -> None:
         toggle.wait_for(state='visible')
         page.evaluate(PROBE)
         page.wait_for_function("window.__amSyncProbe.audio > 5 && window.__amSyncProbe.events.some(e => !e.syncEnabled)")
-        before = state(origin)['sdr']['channels'][0]
+        # Await the resolved condition and inspect that same snapshot; a Promise
+        # itself must not satisfy a synchronous browser polling condition.
+        before = wait_async_condition(page, '''async () => {
+          const snapshot = await fetch('/api/state').then(response => response.json());
+          const channel = snapshot.sdr.channels[0];
+          return channel.processing_runtime?.observed_receiver?.mode === 'am' ? channel : null;
+        }''')
         page.locator('#am-title-badge').click()
         assert state(origin)['sdr']['channels'][0]['am_sync_generation'] == before['am_sync_generation']
-        def stable(channel: dict) -> dict:
-            return {key: value for key, value in channel.items() if key != 'level_dbfs'}
-
         generation = before['am_sync_generation']
+        revision = int(before['control']['revision'])
+        receiver_uid = before['control']['receiver_uid']
+        service_id = before['control']['service_id']
+        processing_generation = before['processing_runtime']['processing_generation']
+        applied_controls = []
         for enabled in (True, False, True):
             page.evaluate('window.__amSyncProbe.events = []')
             toggle.click()
             page.wait_for_function('(enabled) => document.querySelector("#am-sync-toggle").getAttribute("aria-pressed") === String(enabled)', arg=enabled)
             page.wait_for_function('(enabled) => window.__amSyncProbe.events.some(e => e.syncEnabled === enabled)', arg=enabled)
-            current = state(origin)['sdr']['channels'][0]
             generation += 1
+            revision += 1
             page.wait_for_function('(generation) => window.__amSyncProbe.events.some(e => e.amSyncGeneration === generation)', arg=generation)
-            assert stable(current) == {**stable(before), 'am_sync': enabled,
-                                       'am_sync_generation': generation}, (before, current)
+            current = wait_async_condition(page, '''async ({revision, uid}) => {
+              const snapshot = await fetch('/api/state').then(response => response.json());
+              const channel = snapshot.sdr.channels[0];
+              return channel.processing_runtime?.observed_receiver?.mode === 'am'
+                && channel.control_receipts.some(receipt =>
+                  receipt.receiver_uid === uid && receipt.revision === revision && receipt.status === 'applied')
+                ? channel : null;
+            }''', arg={'revision': str(revision), 'uid': receiver_uid})
+            expected = configuration_and_stream(before)
+            expected.update(am_sync=enabled, am_sync_generation=generation)
+            assert len(expected['confirmed']['processors']) == 1, expected['confirmed']
+            expected['confirmed']['processors'][0]['am_sync'] = enabled
+            assert configuration_and_stream(current) == expected, (expected, current)
+            control = current['control']
+            assert (control['receiver_uid'], control['service_id'], control['revision']) == (
+                receiver_uid, service_id, str(revision)), control
+            runtime = current['processing_runtime']
+            assert runtime['processing_generation'] == processing_generation, runtime
+            assert runtime['fault'] is None and runtime['state'] in ('active', 'backlogged'), runtime
+            # Squelch gain/open are measurements; the observed mode, NR state
+            # and model-session ownership must remain the same receiver setup.
+            assert {key: value for key, value in runtime['observed_receiver'].items() if key != 'squelch'} == {
+                key: value for key, value in before['processing_runtime']['observed_receiver'].items()
+                if key != 'squelch'}, runtime
+            receipt = next(receipt for receipt in current['control_receipts']
+                           if receipt['revision'] == str(revision) and receipt['status'] == 'applied')
+            assert receipt['receiver_uid'] == receiver_uid, receipt
+            assert receipt['processing_generation'] == processing_generation, receipt
+            applied_controls.append(receipt)
             assert state(origin)['sdr']['am_sync'] is enabled
         before_invalid = state(origin)['sdr']['channels'][0]
         try:
@@ -108,7 +155,10 @@ def main() -> None:
             assert response.get('cmd') == 'ERROR', response
         except urllib.error.HTTPError as error:
             assert error.code == 400, error.code
-        assert stable(state(origin)['sdr']['channels'][0]) == stable(before_invalid)
+        after_invalid = state(origin)['sdr']['channels'][0]
+        assert configuration_and_stream(after_invalid) == configuration_and_stream(before_invalid)
+        assert after_invalid['control']['revision'] == before_invalid['control']['revision']
+        assert after_invalid['control']['receiver_uid'] == receiver_uid
         page.wait_for_function('(generation) => window.__amSyncProbe.events.some(e => e.syncEnabled && e.syncLocked && e.amSyncGeneration === generation)', arg=generation, timeout=15000)
         page.wait_for_function("document.querySelector('#am-title-badge').classList.contains('on')")
         report = page.evaluate('''() => ({audio: __amSyncProbe.audio, markers: __amSyncProbe.markers,
@@ -117,6 +167,7 @@ def main() -> None:
             badge: document.querySelector('#am-title-badge').textContent,
             lock: document.querySelector('#am-title-badge').classList.contains('on'),
             carrier: document.querySelector('#am-carrier').textContent})''')
+        report['applied_controls'] = applied_controls
         assert report['audio'] > 5 and report['markers'] == 1, report
         assert report['lock'] and report['locked'], report
         assert not report['gaps'] and not report['errors'], report

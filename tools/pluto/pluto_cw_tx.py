@@ -100,9 +100,8 @@ def build_cycle(key: np.ndarray, rate: float, cycle_s: float, base_hz: float,
                 scale: float) -> np.ndarray:
     """One cycle: the keyed carrier at `base_hz` followed by silence, ramped and scaled.
 
-    The carrier is the baseband itself (I = keying, Q = 0) rotated to `base_hz`. The default
-    offset is negative (-2 x pitch), which the CW demod's Pitch then maps onto the decoded
-    beat note while the RF carrier stays clear of DC.
+    The carrier is the baseband itself (I = keying, Q = 0) rotated to `base_hz`.
+    The default positive pitch offset keeps it clear of the receiver's DC rejection.
     """
     n = key.size
     if base_hz:
@@ -112,28 +111,24 @@ def build_cycle(key: np.ndarray, rate: float, cycle_s: float, base_hz: float,
         baseband = key.astype(np.complex64)
     ramp = int(round(rate * EDGE_MS / 1000.0))
     if ramp > 1:
-        edge = 0.5 * (1.0 - np.cos(np.pi * np.arange(ramp) / ramp))
-        # Only the key-down edges: ramp each mark's first and last samples, not the whole cycle.
-        rises = np.flatnonzero((key[1:] > 0) & (key[:-1] <= 0)) + 1
-        falls = np.flatnonzero((key[1:] <= 0) & (key[:-1] > 0)) + 1
-        def apply_edges(indexes, rising):
-            for at in indexes[:max(0, (baseband.size - ramp) // max(1, ramp))]:
-                end = min(at + ramp, baseband.size)
-                w = edge[:end - at] if rising else edge[:end - at][::-1]
-                baseband[at:end] *= w
-        apply_edges(rises, True)
-        apply_edges(falls, False)
+        transitions = np.diff(np.r_[False, key > 0, False].astype(np.int8))
+        rises = np.flatnonzero(transitions == 1)
+        falls = np.flatnonzero(transitions == -1)
+        for start, end in zip(rises, falls, strict=True):
+            # Both ramps lie inside the keyed mark, including marks at array edges.
+            # Short marks share their duration evenly without overlapping ramps.
+            length = min(ramp, (end - start) // 2)
+            if length > 1:
+                edge = 0.5 * (1.0 - np.cos(np.pi * np.arange(length) / length))
+                baseband[start:start + length] *= edge
+                baseband[end - length:end] *= edge[::-1]
     cycle = np.zeros(int(round(rate * cycle_s)), dtype=np.complex64)
     if key.size > cycle.size:
         raise SystemExit(f'the keyed message ({key.size / rate:.2f}s) does not fit in a '
-                         f'{cycle_s:.1f}s cycle at {wpm_rate_hint(rate, key)} - raise --cycle')
+                         f'{cycle_s:.1f}s cycle at {rate:.0f} Hz - raise --cycle')
     cycle[:key.size] = baseband
     # Scale last, and keep complex64: `tx()` casts to int16 without scaling.
     return (cycle * scale).astype(np.complex64)
-
-
-def wpm_rate_hint(rate: float, key: np.ndarray) -> str:
-    return f'{rate:.0f} Hz'
 
 
 def describe(args: argparse.Namespace, key: np.ndarray, cycle: np.ndarray) -> None:

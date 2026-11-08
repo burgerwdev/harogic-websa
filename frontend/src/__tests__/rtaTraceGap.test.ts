@@ -134,9 +134,13 @@ describe('renderRta', () => {
 
   it('moves the existing density with the trace for paused offset/ref/scale and axis preview', () => {
     let image: ImageData;
+    let imageTop = 0, imageHeight = 0;
     const offscreen = {
       createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
-      putImageData: (value: ImageData) => { image = value; },
+      putImageData: (value: ImageData, _x: number, y: number, _sx: number, _sy: number, _width: number, height: number) => {
+        image = value; imageTop = y; imageHeight = height;
+      },
+      clearRect: vi.fn(),
     };
     const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(offscreen as unknown as CanvasRenderingContext2D);
     const savedOffset = displayOffset.get();
@@ -159,21 +163,24 @@ describe('renderRta', () => {
         resetCtxCalls(); renderAll();
         const draw = ctxImages[0];
         expect(draw).toBeDefined();
-        const [left, top, width, height] = draw.args;
+        const [, sourceTop, sourceWidth, sourceHeight, left, top, width, height] = draw.args;
+        expect(sourceWidth).toBe(image.width);
+        expect(sourceHeight).toBeLessThan(Math.ceil(p.h * S.pixelRatio));
         const x = Math.floor(1023 / (PTS - 1) * image.width);
         const expectedY = getY(-60);
         let mass = 0, weighted = 0;
-        for (let y = 0; y < image.height; y++) {
-          const screenY = top + (y + 0.5) / image.height * height;
+        for (let y = 0; y < imageHeight; y++) {
+          const screenY = top + (imageTop + y + 0.5 - sourceTop) / sourceHeight * height;
           if (Math.abs(screenY - expectedY) > 12) continue;
           const alpha = image.data[(y * image.width + x) * 4 + 3];
           mass += alpha; weighted += alpha * screenY;
         }
         expect(mass).toBeGreaterThan(0);
-        expect(Math.abs(weighted / mass - expectedY)).toBeLessThanOrEqual(height / image.height / 2 + 0.01);
+        expect(Math.abs(weighted / mass - expectedY)).toBeLessThanOrEqual(height / sourceHeight / 2 + 0.01);
         expect(left).toBe(p.x); expect(width).toBe(p.w);
       };
       assertAligned();
+      expect(imageHeight).toBeLessThan(Math.ceil(p.h * S.pixelRatio));
       for (const theme of ['light', 'dark']) for (const width of [1, 9]) {
         document.documentElement.dataset.theme = theme;
         rtaDensWidth.set(width); rtaDensContrast.set(0.6);
@@ -185,6 +192,13 @@ describe('renderRta', () => {
       axisDragMove(p.x + p.w + 20, p.y + 80);
       assertAligned();
       expect(density.values).toEqual(values); expect(density.samples).toEqual(samples);
+      // Removing all occupancy must erase the old offscreen band as well as skip upload.
+      const previousTop = imageTop, previousEnd = imageTop + imageHeight;
+      offscreen.clearRect.mockClear();
+      density.heads.fill(-1); density.values.fill(0); density.revision++;
+      renderAll();
+      expect(offscreen.clearRect.mock.calls.some((call: number[]) =>
+        call[1] <= previousTop && call[1] + call[3] >= previousEnd)).toBe(true);
     } finally {
       canvas.mockRestore();
       resetAxisPreview();
@@ -200,6 +214,7 @@ describe('renderRta', () => {
     const offscreen = {
       createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
       putImageData: () => {},
+      clearRect: vi.fn(),
     };
     const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(offscreen as unknown as CanvasRenderingContext2D);
     try {

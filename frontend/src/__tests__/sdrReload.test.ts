@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
+import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
-	setSdrReceiverAudioError: vi.fn(),
+	setSdrReceiverAudioError: vi.fn(), sdrAudioNeedsGesture: () => false,
 }));
 
 class DisplaySocket {
@@ -44,6 +47,8 @@ async function load() {
 	const ws = await import('../core/ws');
 	const controls = await import('../ui/controls');
 	const fit = await import('../ui/refAutoScale');
+	const { setPluginManifest } = await import('../sdr/registry');
+	setPluginManifest(['am', 'cw', 'ft8', 'sstv', 'radiofax', 'drm'].map((id) => receiverPlugin(id)));
 	ws.connectWS();
 	socket.onopen!();
 	return { ws, controls, fit };
@@ -63,13 +68,296 @@ function receive(payload: Record<string, unknown>) {
 	socket.onmessage!({ data: JSON.stringify(payload) } as MessageEvent);
 }
 
+it.each(['std', 'rta', 'sdr', 'harmonic', 'pnm'].flatMap(mode => [-1, 5].map(atten => ({ mode, atten }))))(
+  'does not mutate any real-page select or option during unchanged $mode status (atten=$atten)', async ({ mode, atten }) => {
+  const html = readFileSync('index.html', 'utf8');
+  document.body.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.innerHTML;
+  await load();
+  const report = status(mode, { ref_clock: 'external', has_premium_ref_clock: true,
+    actual: { refclk_src: 0 }, amp: { atten, preamp: 0, ifgain: 2, gain_strategy: 0 } });
+  report.sdr.actual = { ...report.sdr.actual, display_fft: { available: true, size: 32768 } } as typeof report.sdr.actual;
+  receive(report); receive(report);
+  const selects = [...document.querySelectorAll('select')];
+  expect(selects.length).toBeGreaterThan(40);
+  const observer = new MutationObserver(() => {});
+  const setters = selects.map(select => vi.spyOn(select, 'value', 'set'));
+  for (const select of selects) observer.observe(select, { attributes: true, subtree: true, childList: true, characterData: true });
+  for (let i = 0; i < 3; i++) receive(report);
+  for (const select of selects) { select.focus(); receive(report); select.blur(); }
+  const changes = observer.takeRecords().map(record => ({
+    select: (record.target as Element).closest?.('select')?.id,
+    attribute: record.attributeName, type: record.type,
+  }));
+  observer.disconnect();
+  for (const [index, setter] of setters.entries()) {
+    expect(setter, selects[index].id).not.toHaveBeenCalled(); setter.mockRestore();
+  }
+  expect(changes).toEqual([]);
+}, 20000);
+
+it('keeps all main-panel native menus unchanged across identical STATUS messages', async () => {
+	document.body.insertAdjacentHTML('beforeend', `
+    <select id="select-refclk"><option value="internal">Internal</option><option value="external">External</option></select>
+    <select id="select-sdr-decimate"><option>16</option><option>32</option></select>
+    <select id="select-sdr-nr-algo"><option>wiener</option><option>dfn</option></select>
+    <select id="select-sdr-nr-strength"><option>0.3</option><option>0.6</option><option>0.9</option></select>
+    <select id="select-wf-range"><option value="auto">Auto</option><option value="fixed">Fixed</option></select>
+    <select id="select-wf-floor-source"><option value="capture">Capture</option><option value="view">View</option></select>
+    <select id="select-wf-palette"><option value="classic">Classic</option><option value="blue">Blue</option></select>`);
+	await load();
+	const report = status('sdr', { ref_clock: 'internal', has_premium_ref_clock: true });
+	receive(report);
+	const selects = [...document.querySelectorAll('select')];
+	const setters = selects.map(select => vi.spyOn(select, 'value', 'set'));
+	const observer = new MutationObserver(() => {});
+	for (const select of selects) observer.observe(select, { childList: true, subtree: true, characterData: true });
+	for (let i = 0; i < 5; i++) receive(report);
+	for (const select of selects) { select.focus(); receive(report); select.blur(); }
+	for (const [index, setter] of setters.entries()) { expect(setter, selects[index].id).not.toHaveBeenCalled(); setter.mockRestore(); }
+	expect(observer.takeRecords()).toEqual([]); observer.disconnect();
+});
+
+function spectrumFrame(center: number, version: number): void {
+	const points = 64, span = 3.125e6;
+	const data = new ArrayBuffer(24 + points * 12 + 2 + 8);
+	const header = new DataView(data);
+	new Uint8Array(data, 0, 4).set([82, 84, 65, 70]);
+	header.setUint32(4, version, true);
+	header.setUint32(8, points, true);
+	header.setUint16(12, 1, true);
+	header.setFloat64(16, center - span / 2, true);
+	const freq = new Float64Array(data, 24, points);
+	for (let i = 0; i < points; i++) freq[i] = center - span / 2 + i * span / (points - 1);
+	new Float32Array(data, 24 + points * 8, points).fill(-90);
+	header.setFloat64(data.byteLength - 8, center + span / 2, true);
+	socket.onmessage!({ data } as MessageEvent);
+}
+
 function receiverStatus(freq: number, mode: string, version: number, response: Record<string, unknown> = {}) {
 	const snapshot = status('sdr');
 	return { ...snapshot, config_version: version, ...response,
 		sdr: { ...snapshot.sdr, listen: freq, demod: mode,
 			...(response.sdr as Record<string, unknown> | undefined) } };
 }
+function nativeEntryStatus(mode: string, version: number, revision: string, extra: Record<string, unknown> = {}) {
+  const center = 9_810_000, listen = 9_660_032;
+  const base = status(mode);
+  return { ...base, config_version: version, ...extra, sdr: { ...base.sdr,
+    receiver_api: 'multichannel-draft-v1', center, listen, decimate: 64,
+    channels: [{ channel: 1, enabled: true, freq: listen, mode: 'am', if_bw: 6000,
+      nr: false, nr_strength: 0.6, nr_algorithm: 'wiener', nr_atten_db: 6,
+      control: { service_id: 'radio', receiver_uid: 'c1', revision, action_token: '100' } }],
+  } };
+}
+
 describe('SDR entry and reload', () => {
+  it.each(['std', 'rta', 'server'].flatMap(mode => [false, true].map(disconnected => ({ mode, disconnected }))))(
+    'restores custom SDR tuning after $mode using the capture acknowledgement revision (disconnected=$disconnected)', async ({ mode, disconnected }) => {
+    const { controls } = await load();
+    const center = 9_810_000, listen = 9_660_032;
+    const report = nativeEntryStatus;
+    receive(report('sdr', 10, '10'));
+    controls.setGraphMode(mode);
+    receive(report(mode, 11, '10'));
+    socket.sent.length = 0;
+    controls.setGraphMode('sdr');
+    if (disconnected) {
+      receive(report('sdr', 12, '12', { connected: false }));
+      expect(socket.sent.filter(command => ['SET_SDR', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+    }
+    receive(report('sdr', 12, '12'));
+    const capture = socket.sent.find(command => command.cmd === 'SET_SDR')!;
+    expect(capture).toMatchObject({ center, decimate: 64 });
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toEqual([]);
+    // Polling and an unrelated capture acknowledgement cannot release the receiver edit.
+    receive(report('sdr', 13, '13', { response_to: 'STATUS' }));
+    receive(report('sdr', 13, '13', { response_to: 'SET_SDR', request_id: 'another-browser' }));
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toEqual([]);
+    receive(report('sdr', 14, '14', { response_to: 'SET_SDR', request_id: capture.request_id }));
+    const edits = socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL');
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toMatchObject({ service_id: 'radio', receiver_uid: 'c1', expected_revision: '14',
+      freq: listen, mode: 'am', ifbw: 6000, nr: false, nr_strength: 0.6 });
+    receive(report('sdr', 15, '15', { response_to: 'SET_SDR_CHANNEL', request_id: edits[0].request_id }));
+    receive(report('sdr', 15, '15'));
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toHaveLength(1);
+    const state = await import('../ui/sdrState');
+    expect(state.sdrCenterHz.get()).toBe(center);
+    expect(state.sdrListenHz.get()).toBe(listen);
+  });
+
+  it.each(['leave', 'disconnect', 'preset', 'tune', 'replacement', 'restart', 'stale', 'rejection', 'timeout'])(
+    'cancels an unsent SDR entry restore after %s', async reason => {
+    const { controls } = await load();
+    const report = nativeEntryStatus;
+    receive(report('sdr', 10, '10'));
+    controls.setGraphMode('rta');
+    receive(report('rta', 11, '10'));
+    controls.setGraphMode('sdr');
+    receive(report('sdr', 12, '12'));
+    const capture = socket.sent.find(command => command.cmd === 'SET_SDR')!;
+    expect(capture).toBeDefined();
+    const ack = report('sdr', 13, '13', { response_to: 'SET_SDR', request_id: capture.request_id });
+    if (reason === 'leave') controls.setGraphMode('rta');
+    if (reason === 'disconnect') socket.onclose!();
+    if (reason === 'preset') controls.presetAll();
+    if (reason === 'tune') controls.listenAtFreq(9_700_000);
+    if (reason === 'replacement') ack.sdr.channels[0].control.receiver_uid = 'replacement';
+    if (reason === 'restart') ack.sdr.channels[0].control.service_id = 'restarted';
+    if (reason === 'stale') receive(report('sdr', 14, '14'));
+    if (reason === 'rejection') receive({ cmd: 'ERROR', code: 'bad_parameter', msg: 'capture rejected',
+      response_to: 'SET_SDR', request_id: capture.request_id });
+    if (reason === 'timeout') vi.advanceTimersByTime(30_000);
+    socket.sent.length = 0;
+    receive(ack);
+    expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL')).toEqual([]);
+  });
+
+  it('finishes confirmed mode rendering when saved graph mode cannot be written', async () => {
+    await load();
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError'); });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      receive(status('rta'));
+      expect(document.body.classList.contains('rta-mode')).toBe(true);
+      expect(error).not.toHaveBeenCalled();
+    } finally { write.mockRestore(); error.mockRestore(); }
+  });
+
+  it('adopts the first native receiver status when saved graph preferences are unreadable', async () => {
+    const postMessage = vi.fn();
+    // This test uses real STATUS handling; jsdom supplies no browser Worker.
+    vi.stubGlobal('Worker', class {
+      postMessage = postMessage;
+      terminate = vi.fn();
+      onmessage = null;
+      onerror = null;
+    });
+    const { controls } = await load();
+    const S = await import('../core/store');
+    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('Storage blocked', 'SecurityError');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const live = status('sdr');
+      receive({ ...live, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1', ref: -45, ref_set: true } });
+      expect(S.deviceConnected).toBe(true);
+      expect(controls.currentGraphMode()).toBe('sdr');
+      expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'start' }));
+      expect(socket.sent.filter(command => ['SET_MODE', 'SET_SDR', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      controls.disconnectSdrSession();
+      read.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('fits the display after adopting native SDR with a retained applied result but no target', async () => {
+    const { fit } = await load();
+    const { getDisplayRef } = await import('../ui/displayRef');
+    const { getY, plotRect } = await import('../render/plot');
+    const live = status('sdr');
+    const native = { ...live, config_version: 1, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1' },
+      auto_ref: { ...live.auto_ref, result: 'applied', target: null, seq: 11 } };
+    receive(native);
+    spectrumFrame(1e9, 1);
+    const request = socket.sent.find(command => command.cmd === 'AUTO_SCALE')!;
+    expect(request).toMatchObject({ display_only: true, range_db: 100 });
+    expect(socket.sent.filter(command => ['SET_MODE', 'SET_SDR', 'SET_REF', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+    receive(native); // Retained status is not an answer to this browser's new request.
+    expect(getDisplayRef()).toBe(0);
+    receive({ ...native, response_to: 'AUTO_SCALE', request_id: request.request_id,
+      auto_ref: { ...native.auto_ref, adjusting: true, result: 'adjusting', seq: 12 } });
+    receive({ ...native, auto_ref: { ...native.auto_ref, result: 'applied', target: -35, seq: 13,
+      last_peak: -77, last_noise_floor: -118 } });
+    expect(getDisplayRef()).toBe(-35);
+    for (const level of [-77, -118]) {
+      expect(getY(level)).toBeGreaterThan(plotRect().y);
+      expect(getY(level)).toBeLessThan(plotRect().y + plotRect().h);
+    }
+    const count = socket.sent.length;
+    receive(native); fit.maybeRequestSdrFit();
+    expect(getDisplayRef()).toBe(-35); expect(socket.sent).toHaveLength(count);
+  });
+  it('preserves a native SDR hardware reference on adoption without reconfiguring the receiver', async () => {
+    await load();
+    const { getDisplayRef } = await import('../ui/displayRef');
+    const live = status('sdr');
+    receive({ ...live, config_version: 1, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1', ref: -45, ref_set: true } });
+    spectrumFrame(1e9, 1);
+    expect(getDisplayRef()).toBe(-45);
+    expect(socket.sent.filter(command => command.cmd !== 'STATUS')).toEqual([]);
+  });
+  it.each(['std', 'rta', 'sdr'])('adopts a native running receiver set without replaying stored %s mode or detector', async saved => {
+    localStorage.setItem('web-sa-mode', saved);
+    localStorage.setItem('web-sa-sdr-am-sync', '1');
+    const { controls } = await load();
+    const live = status('sdr');
+    receive({ ...live, sdr: { ...live.sdr, receiver_api: 'multichannel-draft-v1', channels: [
+      { channel: 1, enabled: false }, { channel: 2, enabled: true }, { channel: 3, enabled: true },
+    ] } });
+    vi.advanceTimersByTime(1000);
+    expect(controls.currentGraphMode()).toBe('sdr');
+    expect(socket.sent.filter(command => ['SET_MODE', 'SET_SDR', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+  });
+	it.each(['before', 'after'] as const)('finishes the first To Center slide with stale actual metadata and an ACK %s the spectrum frame', async order => {
+		const { controls } = await load();
+		const viewport = await import('../ui/spectrumViewport');
+		const state = await import('../ui/sdrState');
+		const plot = await import('../render/plot');
+		const center = 1e9, listen = center + 400_000;
+		receive(receiverStatus(listen, 'am', 1));
+		spectrumFrame(center, 1);
+		viewport.zoomEnabled.set(true);
+		const selection = { lo: center - 1_200_000, hi: center - 800_000 };
+		viewport.setView(selection, 1);
+		vi.mocked(window.matchMedia).mockReturnValue({ matches: false } as MediaQueryList);
+		const visible = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+		vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+			window.setTimeout(() => callback(performance.now()), 16));
+		vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
+		try {
+			socket.sent.length = 0;
+			controls.sdrToCenter();
+			const captureRequest = socket.sent.find(command => command.cmd === 'SET_SDR')!;
+			expect(socket.sent.some(command => command.cmd === 'SET_SDR_CHANNEL')).toBe(false);
+			const report = (responseTo: string, requestId?: unknown) => {
+				const old = status('sdr');
+				return { ...old, config_version: responseTo === 'SET_SDR' ? 2 : 3,
+					response_to: responseTo, request_id: requestId,
+					sdr: { ...old.sdr, center: listen, listen,
+						actual: { ...old.sdr.actual, center, decimate: 16 } } };
+			};
+			if (order === 'after') spectrumFrame(listen, 2);
+			receive(report('SET_SDR', captureRequest.request_id));
+			if (order === 'before') {
+				vi.advanceTimersByTime(64);
+				expect(viewport.getView()).toEqual(selection);
+				spectrumFrame(listen, 2);
+			}
+			vi.advanceTimersByTime(64);
+			const intermediate = { ...viewport.getView()! };
+			expect(intermediate.lo).toBeGreaterThan(selection.lo + 400_000);
+			expect(intermediate.lo).toBeLessThan(listen - 200_000);
+			receive(report('SET_SDR_CHANNEL', 'unrelated-channel-ack'));
+			for (let i = 0; i < 12; i++) {
+				vi.advanceTimersByTime(20);
+				spectrumFrame(listen, 2);
+				receive(report('STATUS'));
+			}
+			expect(viewport.getView()).toEqual({ lo: listen - 200_000, hi: listen + 200_000 });
+			expect(plot.getX(31.5, 64)).toBeCloseTo(plot.plotRect().x + plot.plotRect().w / 2, 6);
+			expect(state.sdrListenHz.get()).toBe(listen);
+			expect(state.sdrCenterHz.get()).toBe(listen);
+			expect(socket.sent.filter(command => command.cmd === 'SET_SDR')).toHaveLength(1);
+		} finally {
+			viewport.resetViewport();
+			visible.mockRestore();
+		}
+	});
+
 	it('hands an RTA listen frequency to both SDR capture and receiver', async () => {
 		const { controls } = await load();
 		// Static imports would retain the module graph discarded by load()'s resetModules fixture.
@@ -302,6 +590,33 @@ describe('SDR entry and reload', () => {
 		expect(getDisplayRef()).toBe(-45);
 		expect(socket.sent.filter(command => command.cmd === 'AUTO_SCALE')).toHaveLength(1);
 	});
+
+	it.each([true, false].flatMap(audioOn => [true, false].map(connected => ({ audioOn, connected }))))(
+		'attaches audio to an existing SDR session without an entry request (audio=$audioOn, connected=$connected)',
+		async ({ audioOn, connected }) => {
+			localStorage.setItem('web-sa-sdr-audio', audioOn ? '1' : '0');
+			const { controls } = await load();
+			// Observe load()'s fresh module graph, including its restored mute preference.
+			const audio = await import('../audio/sdrAudio');
+			receive(status('sdr', { connected }));
+			// A rejected/abandoned mode request leaves this browser following the live receiver.
+			controls.releaseGraphModePending();
+			vi.mocked(audio.setSdrAudioEnabled).mockClear();
+			if (!connected) {
+				vi.advanceTimersByTime(1000);
+				expect(audio.setSdrAudioEnabled).not.toHaveBeenCalledWith(true);
+			}
+			receive(status('sdr'));
+			vi.advanceTimersByTime(800);
+			expect(audio.setSdrAudioEnabled).toHaveBeenLastCalledWith(audioOn);
+			expect(localStorage.getItem('web-sa-sdr-audio')).toBe(audioOn ? '1' : '0');
+			vi.mocked(audio.setSdrAudioEnabled).mockClear();
+			const commands = socket.sent.length;
+			receive(status('sdr'));
+			vi.advanceTimersByTime(1000);
+			expect(audio.setSdrAudioEnabled).not.toHaveBeenCalled();
+			expect(socket.sent).toHaveLength(commands);
+		});
 
 	it.each(['sdr', 'std'].flatMap(mode => [true, false].flatMap(connected =>
 		[true, false].flatMap(audioOn => [true, false].map(ownRef => ({ mode, connected, audioOn, ownRef }))))))(
@@ -707,6 +1022,42 @@ describe('SDR entry and reload', () => {
 		worker.onmessage!({ data: { type: 'connected' } });
 		expect(sdrIqStats().pipelineReady).toBe(false);
 	});
+	it.each(['receiver', 'subscription'])('recovers a %s failure on a healthy processing generation without changing IQ identity', async kind => {
+		class Receiver {
+			static instances: Receiver[] = [];
+			onmessage: ((event: { data: Record<string, unknown> }) => void) | null = null;
+			onerror = null;
+			postMessage = vi.fn(); terminate = vi.fn();
+			constructor() { Receiver.instances.push(this); }
+		}
+		vi.stubGlobal('Worker', Receiver);
+		await load();
+		const { sdrIqStats } = await import('../sdr/iqStream');
+		const snapshot = (generation: string, state = 'active') => ({ ...status('sdr'),
+			actual: { channel_registry: [{ channel: 1, channel_id: 17, epoch: 9, state: 'active' }] },
+			sdr: { ...status('sdr').sdr, receiver_error: null, channels: [{ channel: 1, enabled: true, processing_enabled: true,
+				freq: 1e9, mode: 'am', control: { service_id: 'service', receiver_uid: 'uid-c1' },
+				processing_runtime: { processing_generation: generation, state, fault: null } }] } });
+		receive(snapshot('4'));
+		const old = Receiver.instances.at(-1)!;
+		const count = Receiver.instances.length;
+		// A UID audio socket must never latch every receiver as failed.
+		document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', {
+			detail: { stream: 'audio', channel: 'uid-c2', message: 'Backend audio receiver failed' } }));
+		expect(sdrIqStats().receiverFailed).toBe(false);
+		expect(old.terminate).not.toHaveBeenCalled();
+		if (kind === 'receiver') receive({ cmd: 'RECEIVER_ERROR', error: 'queue full', failed: true, scope: 'all_receivers' });
+		else old.onmessage!({ data: { type: 'error', message: 'Decoded-output source stream invalid' } });
+		expect(old.terminate).toHaveBeenCalledOnce();
+		receive(snapshot('4')); receive(snapshot('5', 'failed'));
+		expect(Receiver.instances).toHaveLength(count);
+		receive(snapshot('5'));
+		expect(Receiver.instances).toHaveLength(count + 1);
+		expect(sdrIqStats().receiverFailed).toBe(false);
+		old.onmessage!({ data: { type: 'error', message: 'stale callback' } });
+		expect(sdrIqStats().lastError).toBe('');
+	});
+
 	it('keeps a crashed decode worker stopped until fresh healthy receiver identity arrives', async () => {
 		class Receiver {
 			static instances: Receiver[] = [];

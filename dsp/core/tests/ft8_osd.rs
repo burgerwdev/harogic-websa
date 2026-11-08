@@ -1,7 +1,7 @@
 //! The OSD fallback, measured below the plain-LDPC cliff.
 //!
 //! The committed `ft8_snr_sweep` baseline records what the pure max-log LDPC path did at low SNR:
-//! 0/8 trials at -20 and -22 dB in-band. The scenarios here run the same harness -- same fixture,
+//! 0/4 unique trials at -20 and -22 dB in-band. The scenarios here run the same harness -- same fixture,
 //! same deterministic noise, same offsets -- below that cliff, with the ordered-statistics
 //! fallback enabled behind the LDPC. The contract:
 //!
@@ -21,14 +21,15 @@ const IQ_BYTES: &[u8] = include_bytes!("../../../tests/fixtures/ft8/ft8_cq_iq.bi
 const EXPECTED_CALL: &str = "JO1WKO";
 /// Below the pure-LDPC cliff (~-19 dB in-band), where the fallback is the only path to a decode.
 const LEVELS_DB: [f64; 2] = [-20.0, -22.0];
-const TRIALS_PER_LEVEL: usize = 8;
+const TRIALS_PER_LEVEL: usize = 4;
 const INSERT_S: f64 = 0.64;
 const OFFSETS_HZ: [f64; 4] = [0.0, -3.125, 4.5, -11.25];
 
 /// The assertion floors, one trial of slack under what the bench measured (2026-09-29) for
-/// cross-platform float drift: 2 and 0 decoded trials per level with the OSD fallback in place.
-/// (The pre-fallback pure-LDPC numbers were 0/8 at both levels, and -22 dB stays out of reach for
-/// OSD-2's weight-2 sweep.)
+/// cross-platform float drift. The original eight trials duplicated four identical scenarios:
+/// measured counts [2,0], floors [1,0]. Removing duplicates gives measured [1,0] and
+/// ceil(old_floor/2)=[1,0], exactly the same acceptance condition. The pure-LDPC counts
+/// were zero at both levels; these historical numbers do not isolate the current OSD path.
 const FLOOR_OSD: [usize; 2] = [1, 0];
 
 fn decode_texts(iq: &[f32]) -> Vec<String> {
@@ -76,19 +77,10 @@ fn the_osd_fallback_decodes_below_the_ldpc_cliff() {
             "OSD sensitivity regression at {level} dB: {decoded} decoded, floor is {floor}"
         );
     }
-    println!(" measured (with OSD): {rates:?}/{}, floors {FLOOR_OSD:?}; pre-fallback pure LDPC: 0/8 at both levels", TRIALS_PER_LEVEL);
+    println!(" measured (with OSD): {rates:?}/{}, floors {FLOOR_OSD:?}; pre-fallback pure LDPC: 0/4 at both levels", TRIALS_PER_LEVEL);
     assert_eq!(
         false_positives, 0,
         "the OSD fallback must not add false decodes below the cliff"
     );
-    // The fallback must beat plain max-log LDPC somewhere below the cliff; if it does not, it is
-    // dead weight in the hot path and the pre-change baseline has caught up with it.
-    let improved = rates
-        .iter()
-        .zip([0usize, 0usize])
-        .any(|(now, pure_ldpc)| *now > pure_ldpc);
-    assert!(
-        improved,
-        "OSD decodes nothing below the cliff that plain LDPC also missed ({rates:?})"
-    );
+    // The nonzero -20 dB floor above already requires an improvement over the historical zero.
 }

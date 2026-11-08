@@ -29,6 +29,8 @@ pub struct FineChannel {
     input_hop: u64,
     decimate: u64,
     handle: *mut Channel,
+    detached_clock: (u64, u64),
+    max_groups: usize,
     scratch: Vec<f32>,
     output: Vec<f32>,
     center_offset_hz: Option<f64>,
@@ -122,6 +124,8 @@ impl FineChannel {
             input_hop: input_hop as u64,
             decimate: spec.decimate as u64,
             handle,
+            detached_clock: (0, 0),
+            max_groups,
             scratch: vec![0.0; 2 * max_groups],
             output: vec![0.0; 2 * (max_groups / spec.decimate as usize + 2)],
             center_offset_hz: None,
@@ -147,6 +151,25 @@ impl FineChannel {
         {
             target.copy_from_slice(&group[2 * self.column..2 * self.column + 2]);
         }
+        let scratch = std::mem::take(&mut self.scratch);
+        let result = self.process_column(packet, &scratch[..2 * groups]);
+        self.scratch = scratch;
+        // process_column borrows only output; rebuild its view after restoring scratch.
+        result.map(|output| FineOutput { iq: &self.output[..output.0], channel_id:self.id,
+            epoch:self.epoch,bin:self.bin,seq:packet.seq,stamp:packet.stamp,input_index:output.1,
+            output_index:output.2,output_rate:self.output_rate,center_offset_hz:self.center_offset_hz,
+            delay_samples:self.delay_samples })
+    }
+
+    /// A contiguous coarse bin shared by all receivers tuned to that bin.
+    /// Returns length and exact clocks; the output workspace stays owned by this channel.
+    pub fn process_column(&mut self, packet: &PfbOutput, iq: &[f32]) -> Result<(usize,u64,u64), &'static str> {
+        if self.handle.is_null() { return Err("fine execution is owned by another thread"); }
+        if packet.epoch != self.epoch || packet.seq != self.expected_seq {
+            return Err("fine channel epoch/sequence mismatch");
+        }
+        let groups=packet.groups as usize;
+        if iq.len()!=2*groups || groups>self.max_groups { return Err("fine column shape mismatch"); }
         let (mut consumed, mut output_index) = (0, 0);
         if unsafe { channel_clock(self.handle, &mut consumed, &mut output_index) } != 0 {
             return Err("fine channel clock failed");
@@ -164,7 +187,7 @@ impl FineChannel {
         let count = unsafe {
             channel_process_float(
                 self.handle,
-                self.scratch.as_ptr(),
+                iq.as_ptr(),
                 groups as i32,
                 self.output.as_mut_ptr(),
                 (self.output.len() / 2) as i32,
@@ -174,25 +197,34 @@ impl FineChannel {
             return Err("fine channel process failed");
         }
         self.expected_seq += 1;
-        Ok(FineOutput {
-            channel_id: self.id,
-            epoch: self.epoch,
-            bin: self.bin,
-            seq: packet.seq,
-            stamp: packet.stamp,
-            input_index,
-            output_index,
-            output_rate: self.output_rate,
-            center_offset_hz: self.center_offset_hz,
-            delay_samples: self.delay_samples,
-            iq: &self.output[..2 * count as usize],
-        })
+        self.detached_clock=(consumed+groups as u64,output_index+count as u64);
+        Ok((2*count as usize,input_index,output_index))
     }
+    pub fn output_view<'a>(&'a self, packet:&PfbOutput, output:(usize,u64,u64))->FineOutput<'a> {
+        FineOutput {channel_id:self.id,epoch:self.epoch,bin:self.bin,seq:packet.seq,stamp:packet.stamp,
+            input_index:output.1,output_index:output.2,output_rate:self.output_rate,
+            center_offset_hz:self.center_offset_hz,delay_samples:self.delay_samples,iq:&self.output[..output.0]}
+    }
+    pub fn id(&self)->u64 {self.id}
+    pub fn bin(&self)->u32 {self.bin}
+    pub fn input_rate(&self)->f64 {self.output_rate*self.decimate as f64}
+    pub fn clock(&self)->(u64,u64) {self.detached_clock}
+    /// Metadata remains at the control owner, while the sole native handle and
+    /// mutable workspaces move to the execution owner. A detached entry cannot execute.
+    fn detach(&mut self)->Self {
+        Self {id:self.id,epoch:self.epoch,bin:self.bin,column:self.column,columns:self.columns,
+            expected_seq:self.expected_seq,input_hop:self.input_hop,decimate:self.decimate,
+            handle:std::mem::replace(&mut self.handle,std::ptr::null_mut()),detached_clock:self.detached_clock,
+            max_groups:self.max_groups, scratch:std::mem::take(&mut self.scratch),output:std::mem::take(&mut self.output),
+            center_offset_hz:self.center_offset_hz,planned:self.planned,output_rate:self.output_rate,
+            delay_samples:self.delay_samples}
+    }
+
 }
 
 impl Drop for FineChannel {
     fn drop(&mut self) {
-        unsafe { channel_close(self.handle) };
+        if !self.handle.is_null() { unsafe { channel_close(self.handle) }; }
     }
 }
 
@@ -256,6 +288,7 @@ impl FineCostBudget {
 /// Ordered, synchronous subscribers over a provisioned coarse-bin plan.
 /// Budget is supplied by the caller from measurements for this exact plan/load.
 pub struct FineBank {
+    detached_clocks:std::collections::BTreeMap<u64,(u64,u64)>,
     channels: Vec<FineChannel>,
     bins: Vec<u32>,
     epoch: u64,
@@ -334,6 +367,7 @@ impl FineBank {
         }
         Some(Self {
             channels: Vec::new(),
+            detached_clocks:Default::default(),
             bins: stream.bins().to_vec(),
             epoch: stream.epoch(),
             next_seq: 0,
@@ -424,6 +458,7 @@ impl FineBank {
         let channel = self.prepare(id, bin, offset_hz, decimate)?;
         let total = self.output_rate_used - self.channels[at].output_rate + channel.output_rate;
         self.check_rate(total)?;
+        self.detached_clocks.remove(&old_id);
         self.channels[at] = channel;
         self.output_rate_used = total;
         self.last_id = Some(id);
@@ -449,6 +484,7 @@ impl FineBank {
             .ok_or("fine channel not active")?;
         let channel = self.prepare_planned(id, bin, offset_hz, &plan)?;
         self.output_rate_used += channel.output_rate - self.channels[at].output_rate;
+        self.detached_clocks.remove(&old_id);
         self.channels[at] = channel;
         self.last_id = Some(id);
         Ok(())
@@ -581,6 +617,7 @@ impl FineBank {
     pub fn unsubscribe(&mut self, id: u64) -> bool {
         if let Some(at) = self.channels.iter().position(|channel| channel.id == id) {
             let removed = self.channels.remove(at);
+            self.detached_clocks.remove(&id);
             self.output_rate_used = (self.output_rate_used - removed.output_rate).max(0.0);
             true
         } else {
@@ -598,6 +635,7 @@ impl FineBank {
     /// Values are (channel ID, consumed coarse samples, produced fine samples).
     pub fn clocks(&self) -> Result<Vec<(u64, u64, u64)>, &'static str> {
         self.channels.iter().map(|channel| {
+            if channel.handle.is_null() {let clock=self.detached_clocks.get(&channel.id).copied().ok_or("fine detached clock absent")?;return Ok((channel.id,clock.0,clock.1));}
             let (mut input, mut output) = (0, 0);
             if unsafe { channel_clock(channel.handle, &mut input, &mut output) } != 0 {
                 return Err("fine channel clock failed");
@@ -605,6 +643,31 @@ impl FineBank {
             Ok((channel.id, input, output))
         }).collect()
     }
+
+    pub fn execution_ids(&self)->Vec<u64> {
+        self.channels.iter().filter(|channel|!channel.handle.is_null()).map(|channel|channel.id).collect()
+    }
+    pub fn detach_execution(&mut self,id:u64)->Option<FineChannel> {
+        let channel=self.channels.iter_mut().find(|channel|channel.id==id && !channel.handle.is_null())?.detach();
+        self.detached_clocks.insert(id,channel.clock());Some(channel)
+    }
+    pub fn restore_execution(&mut self,channel:FineChannel)->Result<(), &'static str> {
+        let entry=self.channels.iter_mut().find(|entry|entry.id==channel.id && entry.epoch==channel.epoch && entry.handle.is_null())
+            .ok_or("fine execution identity changed")?;
+        // Column layout may have changed while this execution owner was active.
+        let (column,columns)=(entry.column,entry.columns);
+        self.detached_clocks.remove(&channel.id);
+        *entry=channel;entry.column=column;entry.columns=columns;
+        Ok(())
+    }
+    pub fn update_clock(&mut self,id:u64,clock:(u64,u64)) {
+        if let Some(value)=self.detached_clocks.get_mut(&id) {*value=clock;}
+    }
+    pub fn accept_shared(&mut self,packet:&PfbOutput)->Result<(), &'static str> {
+        if packet.epoch!=self.epoch || packet.seq!=self.next_seq {return Err("fine bank epoch/sequence mismatch");}
+        self.next_seq+=1;Ok(())
+    }
+    pub fn bin_layout(&self)->&[u32] {&self.bins}
 
     /// Updates only column selection after a drained shared-PFB bin replacement.
     /// All active bins must remain selected; phases, histories and clocks are untouched.

@@ -22,5 +22,7 @@ Local integration changes:
   existing resampler and raster deadlines through receiver-declared RF fades without
   demodulation, APT/phasing or image-timing learning. Intersecting rows are explicitly
   marked `Erased`; the adapter paints their final corrected output neutral Gray8=128.
+- Page completion checks detector and page identity before releasing the active
+  capture; a stale or parallel detector event cannot discard another page.
 
 No third-party dependencies are required.

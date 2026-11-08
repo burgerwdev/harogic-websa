@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
 }));
 import { allParams, resetAll } from '../core/params';
@@ -19,13 +20,21 @@ import { send } from '../core/wsSend';
 import { updateStatus } from '../core/ws';
 import { presetAll, syncPresetStatus } from '../ui/controls';
 import { resetGraphMode } from '../ui/graphMode';
-import { resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { hasStoredSdrPrefs, resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz, sdrSquelch } from '../ui/sdrState';
 import { resetTraceFamilyModes, SDR_DEFAULT_AVG, setTraceAverage, setTraceMode } from '../ui/traceOps';
 import { getView, isZoomed, setCapture, setView } from '../ui/spectrumViewport';
 import { commitRefLevel } from '../ui/panels/refAmp';
 import { getDisplayRef } from '../ui/displayRef';
 import { getY } from '../render/plot';
 import { appendRadiofaxRows, radiofaxStatus, setRadiofaxChannel } from '../sdr/radiofaxLog';
+import { setPluginManifest } from '../sdr/registry';
+import { receiverPlugin } from './pluginFixtures';
+import { waterfallOn, wfRangeMode, wfFloorSource, wfPalette, wfContrast, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
+import { savedAudioFormat } from '../ui/recordingFormats';
+import { loadWorkbenchPreferences, saveWorkbenchPreferences } from '../ui/workbenchPreferences';
+import { harmValMode, valleySeqPos } from '../ui/measurePrefs';
+import { setWaterfall } from '../ui/panels/waterfall';
+import { equalizerDefaults, getEqualizer, setEqualizer } from '../audio/equalizer';
 
 const sdrPersisted = (): string[] =>
 	Object.keys(localStorage).filter((k) => k.startsWith('web-sa-sdr-'));
@@ -34,15 +43,60 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	localStorage.clear();
 	resetAll('sdr');
+	setPluginManifest(['am', 'cw'].map((id) => receiverPlugin(id)));
 });
 
 afterEach(() => {
+	setPluginManifest(null);
 	vi.clearAllTimers();
 	vi.useRealTimers();
 	document.body.replaceChildren();
 });
 
 describe('Preset clears the persisted SDR preferences', () => {
+  it('reports no saved setup when the browser storage property itself is blocked', () => {
+    const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    try { expect(hasStoredSdrPrefs()).toBe(false); }
+    finally { storage.mockRestore(); }
+  });
+
+  it('resets the live setup when the browser storage property itself is blocked', () => {
+    sdrAmSync.set(true);
+    sdrFilterByMode.set({ am: 4500 });
+    const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    try {
+      expect(() => resetSdrState()).not.toThrow();
+      expect(sdrAmSync.get()).toBe(false);
+      expect(sdrFilterByMode.get()).toEqual({});
+    } finally { storage.mockRestore(); }
+  });
+
+  it('resets recording defaults, waterfall mapping and peak count only after a matching success', () => {
+    setEqualizer({ enabled: false, gains: [3, 2, 0, -1, -3], trim: -4 });
+    localStorage.setItem('websa-audio-recording-format', 'flac');
+    saveWorkbenchPreferences({ masterGain: 0.25, monitorMode: 'follow' });
+    harmValMode.set('Avg'); valleySeqPos.set(3);
+    localStorage.setItem('websa-wf-range', JSON.stringify({ mode: 'fixed', lo: -90, hi: -10 }));
+    wfRangeMode.set('fixed'); wfFloorSource.set('view'); wfPalette.set('amber');
+    wfContrast.set(1.5); wfLoDbm.set(-90); wfHiDbm.set(-10);
+    document.body.innerHTML = '<input id="input-peakcnt" value="5">';
+    presetAll(); const command = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+    syncPresetStatus('SET_PRESET', 'unrelated');
+    expect(savedAudioFormat()).toBe('flac'); expect(wfRangeMode.get()).toBe('fixed');
+    expect(getEqualizer().trim).toBe(-4);
+    syncPresetStatus('SET_PRESET', command.request_id);
+    expect(savedAudioFormat()).toBe('opus'); expect(localStorage.getItem('websa-wf-range')).toBeNull();
+    expect(loadWorkbenchPreferences()).toEqual({ masterGain: 0.7, monitorMode: 'manual' });
+    expect(getEqualizer()).toEqual(equalizerDefaults());
+    expect(harmValMode.get()).toBe('RT'); expect(valleySeqPos.get()).toBe(0);
+    expect([wfRangeMode.get(), wfFloorSource.get(), wfPalette.get(), wfContrast.get(), wfLoDbm.get(), wfHiDbm.get()])
+      .toEqual(['auto', 'capture', 'classic', 1, -110, -30]);
+    expect((document.getElementById('input-peakcnt') as HTMLInputElement).value).toBe('20');
+  });
 	it('clears retained fax paper only after its matching successful Preset acknowledgement', () => {
 		setRadiofaxChannel(1);
 		appendRadiofaxRows({ width: 1, row: 0, rows: 1, gray: Uint8Array.of(64), revision: 0 }, {
@@ -135,16 +189,20 @@ describe('Preset clears the persisted SDR preferences', () => {
 			'<span id="trace-avg-status"></span>';
 		// Native STATUS has sibling sdr and req.sdr objects; channel records use mode,
 		// while both SDR objects report demod. Effective capture geometry is in sdr.actual.
-		const status = (center: number, decimate: number, demod: string, if_bw: number) => {
-			const request = { center, listen: center, decimate, demod, if_bw, ref: 0, ref_set: false };
+		const status = (center: number, decimate: number, demod: string, if_bw: number, squelch = -160) => {
+			const request = { center, listen: center, decimate, demod, if_bw, squelch, ref: 0, ref_set: false };
 			const span = 50e6 / decimate;
 			return { cmd: 'STATUS', mode: 'sdr', connected: true, center, span, ref: 0,
 				req: { swp: {}, rta: {}, sdr: request }, actual: {},
 				sdr: { ...request, actual: { start: center - span / 2, stop: center + span / 2 },
 					channels: [{ channel: 1, enabled: true, freq: center, mode: demod, if_bw,
-						am_sync: false, am_sync_generation: 0 }] } };
+						squelch, am_sync: false, am_sync_generation: 0 }] } };
 		};
-		updateStatus(status(14.2e6, 64, 'cw', 900));
+		updateStatus(status(14.2e6, 64, 'cw', 900, -92.3));
+		expect(sdrSquelch.get()).toBe(-92.3);
+    expect(waterfallOn.get()).toBe(true);
+    document.body.insertAdjacentHTML('beforeend', '<div class="spectrum-area"><div id="wf-split"></div><div id="waterfall-container"></div></div>');
+    setWaterfall(false);
 		sdrFilterByMode.set({ cw: 900, am: 4500 });
 		setTraceMode('AVERAGE');
 		setTraceAverage(0);
@@ -157,6 +215,10 @@ describe('Preset clears the persisted SDR preferences', () => {
 		presetAll();
 		const preset = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
 		updateStatus({ ...status(1e9, 16, 'am', 6000), response_to: 'SET_PRESET', request_id: preset.request_id });
+		expect(sdrSquelch.get()).toBe(-160);
+		expect(localStorage.getItem('web-sa-sdr-squelch')).toBe('-160');
+    expect(waterfallOn.get()).toBe(true);
+    expect(document.querySelector('.spectrum-area')!.classList.contains('wf-equal-split')).toBe(true);
 		expect([sdrCenterHz.get(), sdrListenHz.get(), sdrDecimate.get(), sdrDemod.get(), sdrIfbw.get()])
 			.toEqual([1e9, 1e9, 16, 'am', 6000]);
 		expect(sdrFilterByMode.get()).toEqual({ am: 6000 });

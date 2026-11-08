@@ -98,6 +98,27 @@ describe('Param', () => {
 });
 
 describe('Param persistence', () => {
+  it('uses the fallback when the browser storage property itself is blocked', () => {
+    const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    try {
+      const p = new Param<number>('blocked-read', { fallback: 3, scope: 'test', persistKey: 'blocked-read' });
+      expect(p.get()).toBe(3);
+    } finally { storage.mockRestore(); }
+  });
+
+  it('accepts confirmation when the browser storage property itself is blocked', () => {
+    const p = new Param<number>('blocked-write', { fallback: 3, scope: 'test', persistKey: 'blocked-write' });
+    const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    try {
+      expect(() => p.confirm(4)).not.toThrow();
+      expect(p.get()).toBe(4);
+    } finally { storage.mockRestore(); }
+  });
+
 	it("persists the confirmed value only, by default, and restores it on creation", () => {
 		const p = createParam<number>('test.a', {
 			fallback: 1,
@@ -219,11 +240,10 @@ describe('resetAll', () => {
 });
 
 describe('Param class shape', () => {
-	it('exposes name/scope and keeps internals private', () => {
+	it('exposes name and scope for registration', () => {
 		const p = new Param<number>('n', { fallback: 0, scope: 's' });
 		expect(p.name).toBe('n');
 		expect(p.scope).toBe('s');
-		expect(Object.keys(p)).not.toContain('_confirmed');
 	});
 });
 

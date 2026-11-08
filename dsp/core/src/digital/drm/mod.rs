@@ -23,10 +23,11 @@
 //!   -> audio            the audio super frame (AAC and xHE layouts) into the codecs
 //! ```
 //!
-//! The port is MIT-clean: Dream (`src/`, GPL-2.0) and DecDRM (`crates/decdrm-core`, GPL-2.0)
-//! are read as algorithmic references and their behaviour is used as the oracle; no code from
-//! either is copied. The stage list and the constants each stage uses are cross-checked against
-//! them, and the geometry tables carry the Dream source they were checked against.
+//! Dream (`src/`, GPL-2.0) and DecDRM (`crates/decdrm-core`, GPL-2.0) are described in the
+//! original provenance record as algorithmic references and behavioral oracles, without copied
+//! code. The helper port description still needs review; see docs/en/LICENSING.md. The stage
+//! list/constants were cross-checked against these references, and geometry tables retain their
+//! Dream source attribution. This description does not establish copyright clearance.
 //!
 //! The application keeps its current interface: the wasm ABI, the readout lines, the audio
 //! PCM path and the backend's baseband AGC all stay as they are. The receiver decodes the
@@ -2196,9 +2197,7 @@ mod tests {
     #[ignore = "live capture /tmp/live30.f32 required; run with --ignored --nocapture"]
     fn receiver_locks_the_long_live_capture() {
         let path = "/tmp/live30.f32";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        assert!(std::path::Path::new(path).exists(), "original live capture required: {path}");
         let raw = std::fs::read(path).expect("capture file");
         let iq: Vec<f32> = raw
             .chunks_exact(4)

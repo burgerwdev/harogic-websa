@@ -165,6 +165,10 @@ def main():
             sig2 = canvas_sig(page)
             active = page.eval_on_selector('#btn-mode-sdr', 'el => el.classList.contains("active")')
             level = page.eval_on_selector('#cur-sdr-level', 'el => el.textContent')
+            if sig1 == sig2:
+                errors.append('spectrum canvas did not update')
+            if not active:
+                errors.append('SDR mode button is not active')
             print(f'frames rtaf={counts["rtaf"]} aud2={counts["aud2"]} '
                   f'sde2={counts["sde2"]} other={counts["other"]}')
             print(f'canvas sig1={sig1} sig2={sig2} changed={sig1 != sig2}')
@@ -172,6 +176,8 @@ def main():
             page.screenshot(path='/tmp/sdr_ui.png')
             print('errors:', errors[:8])
             browser.close()
+            if errors:
+                raise RuntimeError('SDR UI validation failed: ' + '; '.join(errors[:8]))
     finally:
         try:
             sa.off()

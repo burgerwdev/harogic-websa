@@ -7,13 +7,13 @@
 //! (`tools/bench/hil_audio_check.py --mode wfm ...`) through the committed kernels and reports
 //! what the side chain made of it.
 //!
-//! Skipped unless `WEBSA_RDS_IQ` names a capture sidecar (the JSON written by the tool; the raw
+//! Explicitly ignored unless requested with a `WEBSA_RDS_IQ` capture sidecar (the JSON written by the tool; the raw
 //! IQ sits next to it in `<name>.iq`):
 //!
 //! ```text
 //! python3 tools/bench/hil_audio_check.py --mode wfm --frequency 99.0027e6 --seconds 3 \
 //!     --tinysa-port '' --decimate 16 --ifbw 180000 --out /tmp/hil_wfm_rds.json
-//! WEBSA_RDS_IQ=/tmp/hil_wfm_rds.json cargo test --release --test live_rds_capture -- --nocapture
+//! WEBSA_RDS_IQ=/tmp/hil_wfm_rds.json cargo test --release -j 1 --test live_rds_capture -- --ignored --nocapture
 //! ```
 use websa_dsp::analog::build;
 use websa_dsp::plugin::{AnalogDemodulator, DemodConfig};
@@ -34,11 +34,10 @@ fn parse_meta(text: &str) -> (f64, f64, f64) {
 }
 
 #[test]
+#[ignore = "requires an actual WFM/RDS capture named by WEBSA_RDS_IQ"]
 fn real_capture_yields_stereo_and_rds() {
-    let Some(path) = std::env::var("WEBSA_RDS_IQ").ok() else {
-        eprintln!("skipped: set WEBSA_RDS_IQ to a capture sidecar");
-        return;
-    };
+    let path = std::env::var("WEBSA_RDS_IQ")
+        .expect("real-capture validation requires WEBSA_RDS_IQ=/path/to/capture.json");
     let meta = std::fs::read_to_string(&path).expect("read the capture sidecar");
     let (fs, if_bw, out_rate) = parse_meta(&meta);
     assert!(fs > 0.0 && if_bw > 0.0, "the sidecar must carry fs_in and if_bw");

@@ -1,3 +1,4 @@
+import { syncSelectValue } from '../ui/selectControl';
 // WebSocket protocol layer + STATUS handling
 import { requestRender } from '../render/redraw';
 import { updateFreqUIInputs } from '../ui/freqInputs';
@@ -8,6 +9,7 @@ import { updateInfoBar } from '../render/infobar';
 import {
   fillGnssDetail,
   syncGraphModeStatus,
+  supersedeSdrEntryReplay,
   setGraphMode,
   releaseGraphModePending,
   syncPresetStatus, rejectPresetRequest,
@@ -15,6 +17,7 @@ import {
   rejectSdrAmSyncRequest,
   rejectSdrAgcRequest,
   rejectSdrFilterRequest,
+  rejectSdrCenterTune,
   disconnectSdrSession,
   syncScaleButtons,
   syncSwpSpanStep,
@@ -28,7 +31,7 @@ import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
 import { pushSpectrumRow } from '../render/waterfall';
 import { sampleSwpWaterfall } from '../ui/panels/waterfall';
-import { onCommandSent, send, setWS } from './wsSend';
+import { onCommandSent, publishCommandReply, send, setWS } from './wsSend';
 import { premiumRefClockLabel, refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
@@ -44,7 +47,7 @@ import { alignToDisplayWindow, sameFrequencyGrid } from '../dsp/grid';
 import { displayRefDiverges, getDisplayRef, rawToDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { confirmRefLevel, refLevel } from '../ui/refState';
-import { maybeRequestSdrFit, noteSdrRefState, noteTraceObservation, syncAutoScaleStatus }
+import { maybeRequestSdrFit, noteSdrRefState, noteTraceObservation, requestSdrEntryFit, syncAutoScaleStatus }
   from '../ui/refAutoScale';
 import { centerHz, spanHz, swpCenterHz } from '../ui/freqState';
 import {
@@ -188,6 +191,7 @@ function scheduleSpectrumWork(work: () => void, immediate = false) {
 
 onTriggerReset(cancelSpectrumWork);
 onCommandSent(command => {
+  supersedeSdrEntryReplay(command);
   if (command.cmd === 'SET_MODE') initialModeSync = false;
   if (command.cmd !== 'STATUS') {
     pendingCommands.set(command.request_id, { sequence: ++commandSequence, command });
@@ -204,6 +208,7 @@ onCommandSent(command => {
 // Restore the graph preference once, after learning whether Server owns the device.
 let initialModeSync = false;
 let firstConnect = true;
+let nativeSdrDisplayReady = false;
 
 function scheduleReconnect() {
   if (reconnectTimer !== null) return;
@@ -255,6 +260,7 @@ export function connectWS() {
   };
   ws.onerror = () => ws?.close();
   ws.onclose = () => {
+    nativeSdrDisplayReady = false;
     setServerConnection(false);
     pendingCommands.clear();
     cancelSpectrumWork();
@@ -277,6 +283,7 @@ export function connectWS() {
     if (typeof event.data === 'string') {
       try {
         const msg = JSON.parse(event.data as string);
+        publishCommandReply(msg);
         if (msg.cmd === 'STATUS') { confirmMeasurementSession(msg); updateStatus(msg); }
         else if (msg.cmd === 'HARM') onHarmResult(msg.list, msg.session_id);
         else if (msg.cmd === 'PNM') onPnmResult(msg);
@@ -291,6 +298,7 @@ export function connectWS() {
             rejectSdrRadiofaxRequest(msg.response_to, msg.request_id);
             rejectSdrFilterRequest(msg.response_to, msg.request_id, true);
             rejectSdrTuneRequest(msg.response_to, msg.request_id);
+            rejectSdrCenterTune(msg.response_to, msg.request_id);
             rejectSdrAxisWindow(msg.response_to, msg.request_id);
             if (msg.response_to === 'SET_MODE') releaseGraphModePending();
           } else rejectSdrFilterRequest(undefined, undefined, true);
@@ -314,6 +322,7 @@ export function connectWS() {
           rejectSdrRadiofaxRequest(msg.response_to, msg.request_id);
           rejectSdrFilterRequest(msg.response_to, msg.request_id);
           rejectSdrTuneRequest(msg.response_to, msg.request_id);
+          rejectSdrCenterTune(msg.response_to, msg.request_id);
         }
       } catch (error) {
         console.error('Invalid WebSocket JSON message', error);
@@ -395,9 +404,9 @@ export function connectWS() {
         if (currentGraphMode() === 'sdr') {
           maybeRequestSdrFit();
         }
-        // The RTA frequency window (center/span) changed -> every accumulation (probability
-        // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
-        // must be reset, otherwise stale dots/traces linger at wrong frequencies.
+        // Live traces and probability density belong to this capture only. SDR
+        // waterfall rows retain their original RF coordinates: reproject those
+        // observations into the new view instead of erasing history on every retune.
         const axisChanged = geometryChanged;
         if (currentGraphMode() === 'sdr') {
           if (axisChanged || !plausible) resetCarrierEvidence();
@@ -407,7 +416,7 @@ export function connectWS() {
           S.setRtaDensity2d(null);
           for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
           for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
-          S.resetWaterfall();
+          if (currentGraphMode() !== 'sdr' || !previous || captureFrame === 'first') S.resetWaterfall();
         }
         // The frame's display window is the capture the zoom feature navigates in (design
         // §4.2). A same-width pan shifts the view; a changed span drops it (setCapture).
@@ -454,9 +463,10 @@ export function connectWS() {
         const range = S.totalDivs * S.dbPerDiv;
         const densSource = rtaDensSource.get();
         const densSpec = densSource === 'live' ? spec : S.rtaDisplays[S.activeTraceIdx];
-        // Budget SDR values + next to 16 MiB, retaining at least one amplitude bin.
+        // Keep every amplitude choice through 65536 native points (192 bins = 96 MiB).
+        // Bound values + links for larger transport grids without reducing supported FFT tiers.
         const bins = S.sdrMode
-          ? Math.max(1, Math.min(rtaAmpBins.get(), Math.floor(16 * 1024 * 1024 / (spec.length * 8))))
+          ? Math.max(1, Math.min(rtaAmpBins.get(), Math.floor(96 * 1024 * 1024 / (spec.length * 8))))
           : rtaAmpBins.get();
         S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, densSpec,
           bins, rtaHalflife.get(), getDisplayRef() - displayOffset.get(), range / bins,
@@ -536,9 +546,14 @@ export function updateStatus(s: any) {
     return;
   }
   if (Number.isFinite(version)) statusVersion = Math.max(statusVersion, version);
-  const restoreMode = initialModeSync && s.mode !== 'server'
-    ? localStorage.getItem('web-sa-mode') : null;
-  const shouldRestoreMode = initialModeSync && s.mode !== 'server';
+  let restoreMode: string | null = null;
+  if (initialModeSync && s.mode !== 'server') {
+    try { restoreMode = localStorage.getItem('web-sa-mode'); } catch { /* Optional browser preference. */ }
+  }
+  // A native receiver service owns its live capture/set. Opening another browser
+  // must not stop it or replay this browser's remembered operating mode.
+  const shouldRestoreMode = initialModeSync && s.mode !== 'server'
+    && s.sdr?.receiver_api !== 'multichannel-draft-v1';
   initialModeSync = false;
   if (s.connected === false || s.mode !== deviceMode.get()) cancelSpectrumWork();
   document.body.dataset.deviceMode = String(s.mode);
@@ -546,11 +561,17 @@ export function updateStatus(s: any) {
   S.setDeviceConnected(s.connected === true);
   const previousReceiverError = sdrIqStats().lastError;
   confirmSdrChannelRegistry(Array.isArray(s.actual.channel_registry) ? s.actual.channel_registry : null);
-  const recoveredReceiver = confirmSdrReceiverError(s.connected === true ? s.sdr?.receiver_error : undefined);
+  const recoveredReceiver = confirmSdrReceiverError(s.connected === true ? s.sdr?.receiver_error : undefined,
+    s.connected === true && Array.isArray(s.sdr?.channels) ? s.sdr.channels : undefined);
   if (typeof s.sdr?.receiver_error === 'string') rejectSdrFilterRequest(undefined, undefined, true);
   if (recoveredReceiver && previousReceiverError
       && S.statusError === localizedError({ msg: previousReceiverError })) S.setStatusError(null);
-  syncGraphModeStatus(s.mode);
+  const nativeSdr = s.mode === 'sdr' && s.sdr?.receiver_api === 'multichannel-draft-v1';
+  syncGraphModeStatus(s.mode, nativeSdr);
+  // Adopting an existing native receiver set skips the legacy SET_MODE/SET_SDR
+  // replay. Its display still needs the one-time, display-only entry fit.
+  if (!nativeSdr || s.connected !== true) nativeSdrDisplayReady = false;
+  else if (!nativeSdrDisplayReady) { nativeSdrDisplayReady = true; requestSdrEntryFit(); }
   syncServerStatus(s);
   if (s.caps) {
     S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
@@ -660,7 +681,7 @@ export function updateStatus(s: any) {
   setSelect('select-tracealign', traceAlign.get());
   setSelect('select-points-strategy', pointsStrategy.get());
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
-  if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
+  if (s.window != null) syncSelectValue(wsel, String(s.window));
   syncSweepStatus(s);
   if (isRtaStatus) {
     const spanSelect = document.getElementById('select-rta-span') as HTMLSelectElement | null;
@@ -669,7 +690,7 @@ export function updateStatus(s: any) {
       const nearest = options.reduce((best, option) =>
         Math.abs(Number(option.value) - spanHz.get()) < Math.abs(Number(best.value) - spanHz.get())
           ? option : best, options[0]);
-      if (nearest) spanSelect.value = nearest.value;
+      if (nearest) syncSelectValue(spanSelect, nearest.value);
     }
   }
 
@@ -717,7 +738,7 @@ export function updateStatus(s: any) {
     if (pop && pop.style.display !== 'none') fillGnssDetail();
   }
   const rc = document.getElementById('select-refclk') as HTMLSelectElement;
-  if (rc) {
+  if (rc && !rc.contains(rc.ownerDocument.activeElement)) {
     let premium = rc.querySelector<HTMLOptionElement>('option[value="premium"]');
     const available = s.has_premium_ref_clock === true;
     if (available && !premium) {
@@ -728,7 +749,10 @@ export function updateStatus(s: any) {
       premium.remove();
       premium = null;
     }
-    if (premium) premium.textContent = premiumRefClockLabel(s);
+    if (premium) {
+      const label = premiumRefClockLabel(s);
+      if (premium.textContent !== label) premium.textContent = label;
+    }
   }
   refreshRefClockHint(s, s.response_to);
   syncRefClockStatus(s);
@@ -762,7 +786,7 @@ function setInput(id: string, v: string, force = false) {
 }
 function setSelect(id: string, v: string) {
   const el = document.getElementById(id) as HTMLSelectElement;
-  if (el && el.value !== v && document.activeElement !== el) el.value = v;
+  syncSelectValue(el, v);
 }
 
 // Sync frequency input fields

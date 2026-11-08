@@ -230,6 +230,7 @@ def transmit(args: argparse.Namespace) -> int:
                         tx.push_chunk(chunk)
                         pushed += 1
                     print(f'  pause {args.pause:.1f}s ({pushed} chunks total)', flush=True)
+            tx.drain_stream(np.zeros(chunk_samples, dtype=np.complex64))
         except KeyboardInterrupt:
             print('\ninterrupted')
     return 0

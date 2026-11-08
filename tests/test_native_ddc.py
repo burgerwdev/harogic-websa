@@ -107,6 +107,48 @@ def test_rational_output_rate_preserves_clock_and_input_offset(library):
         channel.close()
 
 
+def test_rational_upsampling_survives_integer_phase_carry_across_packets(library):
+    fs, n, packets = 31_250_000.0, 16240, 6
+    time = np.arange(n * packets) / fs
+    signal = 12000 * np.exp(2j * np.pi * 201_000 * time)
+    iq = np.empty((n * packets, 2), np.int16)
+    iq[:, 0], iq[:, 1] = np.rint(signal.real), np.rint(signal.imag)
+    packetized = NativeDdcChannel(None, library)
+    reference = NativeDdcChannel(None, library)
+    try:
+        for channel, block_size in ((packetized, n), (reference, 3 * n)):
+            channel.configure(fs, -200_000, 96, block_size,
+                              ratio_up=8, ratio_down=1, passband_hz=90000.0)
+            assert channel.fs_out == pytest.approx(fs / 12)
+
+        def receive(channel, block_size):
+            output = []
+            for block in iq.reshape(-1, block_size * 2):
+                consumed, produced = channel.clock()
+                skip = channel._drop_pending
+                try:
+                    i, q = channel.process(block)
+                except RuntimeError:
+                    assert channel.clock() == (consumed, produced), 'rejected capacity consumed input'
+                    raise
+                if i.size:
+                    source = (2 * (produced + skip) + 95 * 8 + 2 * 8 - 1) // (2 * 8)
+                    assert consumed + channel.output_input_offset == (source + 1) * 96 - 1
+                output.append(np.column_stack((i, q)))
+            return np.concatenate(output)
+
+        expected = receive(reference, 3 * n)
+        actual = receive(packetized, n)
+        # Six 16240-sample packets yield 1015 integer-DDC frames. With the
+        # 47.5-frame rational FIR delay, final indices 0..7732 are available.
+        assert packetized.clock() == reference.clock() == (97440, 7733)
+        assert len(actual) == 7733 - round(packetized.delay)
+        np.testing.assert_array_equal(actual, expected)
+    finally:
+        packetized.close()
+        reference.close()
+
+
 def test_supported_rate_preserves_wfm_band_and_rejects_near_alias(library):
     fs, n = 31_250_000.0, 16240
     channel = NativeDdcChannel(None, library)

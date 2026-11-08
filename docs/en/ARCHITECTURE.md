@@ -1,205 +1,184 @@
 # Architecture
 
-## System and ownership
+[Documentation](INDEX.md) · [State ownership](reference/STATE.md)
 
-The native Rust service owns device configuration, acquisition, channelization and receiver DSP. A C++ shim serializes the official HAROGIC SDK. The browser owns controls, spectrum rendering, decoder presentation and audio playback. Python modules under `tools/reference/` are offline numerical references and fixture helpers.
+## System boundaries
+
+The Rust service owns the device, acquisition, channelization, receiver processing and durable
+recording. The C++ shim serializes the proprietary SDK. The TypeScript browser owns controls,
+visualization, decoder presentation and local audio playback. Python supplies offline numerical
+references, fixtures and bench tools. Retained WASM artifacts are optional diagnostics.
 
 ```text
-Browser controls → HTTP/WS commands → native mode owner → retained SDK session
-SDK IQ + FFT → bounded capture queue → ordered PFB workers → fine DDC/framer
-                                                   ├→ IQBF/IQAX consumers
-                                                   └→ receiver workers → AUD2/SDE2 → browser
-SDK SWP/RTA traces → display publisher → browser spectrum/density/waterfall
+Browser commands → admission / mode owner → retained SDK session
+SDK IQ → bounded capture queue → PFB → per-channel fine DDC → immutable IQ frames
+                               └──── direct wideband DDC ───┘
+IQ frames → independent receiver workers → published PCM / decoded results
+          → recording workers             → bounded HTTP / WebSocket consumers
+SDK traces → spectrum / density / waterfall renderer
+Published PCM → browser buffer / resampler → local gain / routing → audio output
 ```
 
-SWP, RTA, SDR, harmonic and phase-noise modes keep their own configuration while sharing one physical device session. Effective device values and capabilities are returned in STATUS. Command validation and candidate-plan admission complete before replacing active state; a rejected request preserves the prior plan and stream.
+SWP, RTA, SDR, harmonic and phase-noise modes share one physical device. Server mode releases
+that owner to SoapySDRServer. Entering server mode and starting its process are separate actions.
+Requests are validated before active state is replaced. Actual hardware values are distinct from
+requested settings; [state ownership](reference/STATE.md) defines their transitions.
 
-## Device session and acquisition
-
-One persistent SDK owner thread serves SWP/RTA/IQS/PNM. All SDK calls are serialized. Healthy changes among acquisition modes stop acquisition and release mode state while retaining the physical handle. `Device_Open` receives the permanent session's stable `void**` handle slot: vendor PNM workers retain that address until physical close. A stale/disconnected handle must not be passed to `Device_Close`.
-
-IQS configuration and arming are separate. The service prepares PFB, fine DDC, receiver workers and metadata before explicit arm, including recovery. It keeps the first packet and checks packet order and hardware timestamps. Host sample indices do not substitute for hardware continuity checks.
-
-A valid IQS packet returned with `-12` is retained with its timestamp; saturation is reported separately as `status_warning=-12`. Outside an explicitly active Auto operation, saturation preserves manual Ref and does not turn a valid packet into a bus failure. Explicit Auto recovery is bounded and uses fresh observations from the same mode/configuration; see [MODE_STATE_FLOW](MODE_STATE_FLOW.md). IQ, FFT, warning and timing return through one `san90_next_v3` call; routine metadata polling does not consume IQ. Malformed packets and real timestamp gaps fail explicitly.
-
-A sustained SDK stall ends capture with the original cause. Recovery requires a new capture epoch; it cannot continue the old hardware timestamp sequence in place. Queue backlog waits under bounded backpressure without reopening the device, until an explicit backlog failure. A stuck vendor owner remains parked; SDK finish and reopen are refused while the owner remains in a vendor call.
-
-Routine GNSS status uses a cached SDK snapshot. Device and optional clock capabilities come from successful open/hardware-state results; absent data stays unknown. External reference configuration uses 10 MHz. Recovery invalidates the physical session explicitly; shutdown joins mode owners before closing the session and SDK thread.
-
-Server is an exclusive handoff rather than another Web IQ consumer. Entering stops and joins Web acquisition/receiver work, then `san90_session_release_v1` closes the idle physical handle while leaving the SDK owner thread reusable. A missing release ABI or parked vendor owner refuses handoff; already retired streams stay retired and recovery creates a new epoch. `backend/src/bin/websad/server_mode.rs` owns the SoapySDRServer child, dependency probe, bounded raw logs and lifecycle status. Its dedicated spawning thread remains alive until the exact child is reaped and arms parent-death cleanup. Exit must stop and reap that child before Web acquisition can reopen. Browser lifetime does not own the process. Server publishes `connected=false`, `gnss=null` and empty active actuals, and does not poll the SDK or share Web IQ. SoapyRemote clients open the device through the patched official SoapyHarogic module; listening readiness alone does not prove a device open or RF reception.
-
-SoapyRemote starts its reader during setup. The official-driver compatibility patch therefore exposes a stable, nonzero 16384-sample MTU before activation and makes reads before activation or after deactivation honor the caller's timeout. Without these contracts, remote clients receive zero samples or stop on a premature `STREAM_ERROR`. This transfer bound is independent of the SDK packet size.
-
-The patched driver retains SDK samples in their raw CS8/CS16/CS32 width and writes the requested CF32/CS16/CS8 output, bulk-copying matching integer formats. SDK width is selected at stream setup and stays fixed until close; CF32 conversion normalizes by the source width. Before setup, the native-format query defaults to CS16 through 60 MSps (`fullScale` 32768) and CS8 above it (`fullScale` 128). After setup it reports the selected output format and its `fullScale` (CF32: 1, CS16: 32768, CS8: 128). `native_format=AUTO` matches integer output width; for CF32 it selects CS16 through 60 MSps and CS8 above it using the setup rate. Explicit integer output requires a matching SDK width. USB enumeration uses `Device_List` without opening devices. The constructor opens one streaming-capable handle for identity, capabilities and subsequent streams; deactivation and stream close retain it, and device destruction releases it. The host ring holds about 50 ms, with a two-SDK-packet/16384-sample floor, and reuses allocated storage. Active reads return available samples up to the requested count. Unchanged settings skip SDK reconfiguration. OnAir can destroy and recreate its Soapy device on mode/rate changes, which still requires a physical SDK open. See the [tools guide](../../tools/README.md#soapy-server-driver-setup).
-
-## SDR channelizer and receivers
+## Acquisition and signal processing
 
 ### Stage map
 
-These are current implementation paths. `tools/checks/check_doc_paths.py` checks the concrete paths in this table.
+The path guard checks these concrete implementation paths.
 
-| Stage | Module |
+| Stage | Modules |
 |---|---|
-| Device session and acquisition | `backend/sdk/san90_sdk.cpp`, `backend/src/bin/websad/service_capture.rs` |
-| Service, commands and publication | `backend/src/bin/websad.rs`, `backend/src/bin/websad/service_ddc.rs` |
-| Coarse PFB and ordered workers | `backend/src/pfb.rs`, `backend/src/pfb_pool.rs` |
-| Fine DDC and sample clocks | `backend/src/fine.rs`, `backend/src/narrow.rs`, `backend/src/rate_plan.rs` |
-| Pipeline orchestration and admission | `backend/src/bin/websad/sdr_pipeline.rs`, `backend/src/bin/websad/service_preflight.rs` |
-| Native receiver orchestration | `backend/src/bin/websad/receiver_workers.rs`, `backend/src/receiver.rs` |
-| Analog and digital DSP | `dsp/core/src/analog/`, `dsp/core/src/digital/`, `dsp/core/src/pipeline.rs` |
-| Native noise reduction | `backend/src/nr.rs`, `dsp/deepfilter/src/` |
-| Binary wire and subscriber boundaries | `backend/src/wire.rs`, `backend/src/bin/websad/service_stream.rs`, `backend/src/bin/websad/subscriber_stream.rs` |
-| Browser stream and decoder presentation | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/decodeWorker.ts`, `frontend/src/ui/decodeWindow.ts` |
+| SDK session and capture | `backend/sdk/san90_sdk.cpp`, `backend/src/bin/websad/service_capture.rs` |
+| Routes, command commit and lifecycle | `backend/src/bin/websad/service_routes.rs`, `backend/src/bin/websad/service_commands.rs`, `backend/src/bin/websad/service_lifecycle.rs` |
+| Device state, RTA commits and admission | `backend/src/bin/websad.rs`, `backend/src/bin/websad/rta_control.rs`, `backend/src/bin/websad/service_preflight.rs` |
+| Pipeline orchestration | `backend/src/bin/websad/sdr_pipeline.rs`, `backend/src/bin/websad/service_ddc.rs` |
+| Coarse PFB | `backend/src/pfb.rs`, `backend/src/pfb_pool.rs` |
+| Fine DDC and rates | `backend/src/fine.rs`, `backend/src/narrow.rs`, `backend/src/rate_plan.rs` |
+| Receiver workers | `backend/src/bin/websad/receiver_workers.rs`, `backend/src/receiver.rs` |
+| Analog/digital kernels | `dsp/core/src/analog/`, `dsp/core/src/digital/`, `dsp/core/src/pipeline.rs` |
+| Noise reduction | `backend/src/nr.rs`, `backend/src/nr_neural.rs`, `dsp/deepfilter/src/` |
+| Wire/subscribers | `backend/src/wire.rs`, `backend/src/bin/websad/service_stream.rs`, `backend/src/bin/websad/subscriber_stream.rs` |
+| Recording | `backend/src/bin/websad/recording.rs`, `backend/src/bin/websad/recording_audio_files.rs` |
+| Browser receiver state | `frontend/src/core/multichannel.ts`, `frontend/src/ui/workbenchSession.ts` |
 | Playback | `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts`, `frontend/src/audio/sdrAudioWorklet.js` |
-| Offline reference and fixtures | `tools/reference/`, `tools/fixtures/gen_dsp_fixtures.py`, `tests/fixtures/dsp/` |
-
-### Coarse PFB and fine DDC
-
-At full capture bandwidth the input is 62.5 MSps with 50 MHz usable bandwidth. The shared oversampled-by-two PFB has 128 bins and hop 64: bin spacing is 488.28125 kHz, while each coarse stream runs at 976.5625 kSps. Narrow device captures adjust geometry. Bin count, coarse spacing and coarse sample rate are different quantities; none is the number of product receivers.
-
-The prototype supports 4, 8 or 16 taps per phase, with 16 as the service default. Passband and alias rejection depend on this selection and frequency offset. Fine plans must fit the selected coarse bin's usable passband. A wide signal cannot be cut at a bin edge and treated as equivalent reception. Wideband modes beyond the supported channel envelope are rejected.
-
-Each receiver has its own frequency, mode, occupied bandwidth, `RatePlan`, oscillator phase, filter history and output rate. Fine DDC mixes and performs multistage anti-alias decimation; an exact protocol rate is adapted at the receiver input when needed. Audio playback rate is not a universal lower bound on IQ rate. USB/LSB envelopes include the sideband edge, CW includes pitch, FT8 retains at least the positive 3.2 kHz band, and SSTV the positive 3 kHz band. The UI selects a 12 kHz DRM receive window, while a direct API request can use another admitted value; the shown window follows `±confirmed_ifbw/2`, not FAC occupancy, so it does not imply automatic reception across 4.5–20 kHz. The DRM+ UI uses a fixed 100 kHz channel; this is not a claim that its outermost OFDM carriers lie exactly at ±50 kHz.
-
-The final fine-channel FIR uses the requested RF transition width, independently of the selected output sample rate. A decoder rate floor or integer decimation step does not widen this filter. WFM retains the processing cadence needed by stereo/RDS, but a narrow RF filter can remove those components. RF bandwidth is distinct from the fixed 15 kHz WFM programme-audio low-pass.
-
-A main-channel retune outside the capture range validates every enabled channel before moving the shared capture center. Aux channels cannot move that center independently. A rejected configuration retains all active channels. A change inside the current plan updates only the affected fine receiver where possible.
-
-### Workers, admission and backpressure
-
-The raw acquisition queue holds 64 packets. PFB uses four fixed workers with at most six tasks in flight and collects results in input order. The fine/framer handoff is bounded at two. Two fixed receiver workers own mutable channel DSP state; a separate FT8 worker runs searches without blocking real-time monitoring. DFN templates are prepared before capture, then mutable processing state is owned by each receiver.
-
-The baseband producer and worker accept at most 65536 complex samples per block. IQ values must be finite, `input_index` must not be `u64::MAX`, and the source rate must be in 1..1e9 Sps. Receiver workers release each queued item's pending-work count exactly once on stop or failure. Disabling the primary channel preserves active auxiliary tails during recapture and stop. Framer finish processes only active channels.
-
-The backend supports three independently configured slots. The current product UI exposes the main slot and disables auxiliary slots on entering SDR. Coarse bins and internal benchmark channel counts do not advertise additional product channels. Mixing, recording and dynamic channel counts are not delivered features.
-
-Admission checks channel count, aggregate output rate and fine/framer cost before changing capture, identity or registry. Fine/framer calibration runs before capture and is reused in the process. Its cost policy reserves a factor of two: `2 × sum(cost_per_coarse_sample × coarse_rate) <= 1e9 ns/s`. This is a conservative internal budget, not proof of SDK, PFB, receiver, network or recording capacity.
-
-Display delivery can replace stale frames for slow viewers. Raw IQ and spectrum processing use bounded queue backpressure until explicit failure. Ordered IQ, PCM and decoder outputs fail on queue overflow without dropping samples. Audio capacity feedback counts queued and unacknowledged PCM. Decoder batches have bounded size and are acknowledged after FIFO application. ACK-enabled decode sockets allow up to 16 outstanding events and 4 MiB of wire bytes, with cumulative acknowledgement keyed by `(channel, channel_id, epoch)` and a 5 s deadline for the oldest outstanding event, including during batch and snapshot sends. Already admitted receiver audio and decoder events, including initial snapshots, survive retunes and capture-epoch transitions and reach subscribers FIFO before retiring tails and new receiver identities. Decoder queue retirement preserves unaffected channels. Capture-epoch fences still apply to raw IQ, display data and admission of new packets. See [API](API.md) for wire and feedback contracts.
-
-Shared receiver worker failures stop audio and decoder processing for all receivers. The service retains the diagnostic and worker counters, stops receiver workers and closes PCM/event subscriptions. Capture, coarse PFB, fine DDC, raw IQ, spectra and waterfall continue. `sdr.receiver_error` reports the failure; a dedicated `RECEIVER_ERROR` event carries `{error, failed:true, scope:'all_receivers'}`. Receiver failure does not set global `last_error` or `ddc_error`, or show a spectrum error overlay. Capture and device failures still use the global failure path.
-
-Tuning and zoom remain available. Explicit `mode` or `demod` selection requests recovery, including selection of the current mode. Recovery requires stopped workers to exit and failed subscriptions to close. Earlier requests return `receiver_retiring` and require a later retry; no automatic restart is queued. Replacement thread count remains bounded. Recovery assigns fresh stream identities and start boundaries without joining IQ across gaps. Healthy reconfiguration publishes old tails in order; failed receivers cannot guarantee complete tails. Audio and decode controls show the error inline. Hardware link state remains independent.
-
-Before SDC supplies a multiplex configuration, DRM retains at most 13 complete equalized frames for DRM30 or 16 for DRM+. These limits cover long-interleaver warm-up and superframe alignment. Retained frames keep their FAC markers and source provenance. Selected-mode timing trims unsynchronised IQ history on the absolute sample grid. These history limits do not drop input frames or change stream identity. Configured decoding is unchanged; loss recovery clears decoder state.
-
-DRM rejects malformed short SDC entities even when their CRC is valid. Loss recovery reopens the robustness-mode search and clears old station and decoder state. An MSC gap clears interleaver and audio carry. xHE CRC failures are counted and are not delivered. FAC short interleaving is honored. Full signalling reconfiguration and next-multiplex timing remain unsupported.
-
-### Stream identity and clocks
-
-IQBF/IQAX v2 identify a stream by `(epoch, channel_id)`. Retune changes channel identity; a new DSP/capture plan changes epoch. Old output finishes before the new empty `seq=0` boundary. Rejection does not create a new identity. Registry and channel clocks are published from one immutable pipeline snapshot; leaving SDR clears them.
-
-IQ `input_index` is the causal position of the first output in capture complex samples, not the packet start. Group delay is separate, in output complex samples. Alignment is `input_index / input_rate - group_delay_samples / output_rate`. Framing keeps the first nonempty segment's clock. Consumers preserve u64 indices exactly.
-
-AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM `audio_index`, capture input position and fractional time. SDE2 carries decoder events with the same identity and clock semantics. Unknown total delay and causal presentation are explicit flags: neither permits claiming exact source alignment. The decode pane exposes these clock details in the mode-title tooltip rather than a routine header label. For DRM/DRM+, this timing is independent of station lock and audio playback; decoder errors remain visible in the header. FT8 results retain the original search-window time. New subscribers get their own start boundary; late SSTV/radiofax subscribers get a bounded current-image snapshot without resetting the receiver. Full layouts and ordering are in [API](API.md).
-
-### DSP and playback boundaries
-
-The current mode registry covers AM, DSB, USB, LSB, CW, NFM, WFM, PM, FT8, SSTV, radiofax, DRM and DRM+. Native receivers reuse the shared Rust DSP directly. Analog listening can use AGC, squelch, gain and noise reduction; digital decoding consumes its original protocol input. Listener enhancements must not alter FT8/SSTV/radiofax/DRM input.
-
-`Receiver` validates audio rate (8000..192000 Hz), IF and mode-band geometry, and CW decoder pitch (100..1600 Hz) before DSP construction. It also checks finite IQ, source clocks and finite output PCM. Production receiver and offline entry points validate input; direct raw `Pipeline` and `AnalogDemod` trait callers must still supply finite input.
-
-A runtime DFN error propagates through `Receiver` to the scoped receiver failure path; it does not silently switch algorithms mid-stream. Initialization failure or unsupported DFN operation uses an explicit Wiener selection. DRM/DRM+ retain NR preferences with effective NR Off. An NR toggle keeps decoder history and continuous `audio_index`; source provenance advances over any discarded reducer tail.
-
-SSTV emits picture boundaries in order. Pinning a mode again starts a fresh canvas, and the long-silence timer is bounded.
-
-Radiofax uses a 12 kHz IQ path, a 300–2700 Hz complex band-pass and linear f32 PCM without pre-decoder normalization or AGC. Signal level is measured from that raw band-passed PCM; scale-independent carrier evidence gates reception separately. `FaxPaperDecoder` owns APT, phasing and IOC/LPM detection. The product adapter stores Gray8 pages, applies paper correction once and emits `radiofax-image` and `radiofax-state`. A frequency, mode, disconnect or IQ discontinuity closes the active page as partial and starts a new stream identity. Signal loss and acquisition rejection remain decoder state; they do not latch the shared receiver or alter spectrum publication. The vendored decoder is rasterwave.rs 0.5.0 (`65a334c8`), MIT, under `dsp/core/src/digital/radiofax/vendor/`.
-
-FM keeps its current line clock during a fade for at most 4.5 s. Recovery needs 0.3 s of consecutive signal evidence at the existing gate. The raster advances on input samples without learning from erased samples. Affected rows remain at their original positions and use Gray8 128 after paper correction; `meta.missingRows` identifies them. The state is degraded during this hold. A longer loss closes the logical page as partial. AM black can suppress the carrier: AM retains its separate 2.5 s carrier hold and decodes those black intervals.
-
-The browser groups segments by stream identity and transmission ID. It retains images when the receiver resets, changes frequency or mode, or disconnects. A logical page enters history only after it has rows. The channel budget is 20 MiB of allocated Gray8 storage. The current page and the page being viewed are protected; other pages are evicted oldest first. Eviction and blocked retention are visible. Deleting the active page suppresses later rows from that transmission. Explicit clear and Preset can remove images. History lasts only for this browser session. A late subscriber can restore only the backend's bounded current-page snapshot. PNG names use UTC; menu dates use the persisted local/UTC choice and describe the browser's first image receipt, not the station's transmit time.
-
-The Radiofax window gives the image most of the space. A compact toolbar holds received-page selection, New page, Save, zoom and Follow. The RX line describes the live receiver; the footer describes the selected page, so a complete historical page remains distinct from a current signal loss. Settings hold acquisition and correction controls. Details hold clocks, signal measurements, browser receipt time and memory use. Multi-segment pages expose segment navigation and whole-page/current-segment save choices. Retention failures and missing-prefix warnings stay visible when Details is closed; deletion and clear remain confirmed actions under More.
-
-Follow is a display toggle. Turning it off pins the current page and segment without stopping decoding or moving the scroll position. Turning it on selects the newest page and segment and scrolls to its latest rows. Scrolling up also suspends following; an explicit off remains off when already at the bottom.
-
-The DSP retains at most 20 MiB of raw Gray8 rows and the corrected rows for the same segments (at most 20 MiB more). The service snapshot has its own 20 MiB Gray8 budget. It removes whole old segments, preserves their original indices, and reports `snapshot_prefix_missing` when a late subscriber cannot restore the page prefix. It never crops rows and renumbers a segment. Old retained segments remain eligible for clock and manual correction.
-
-WFM retains stereo and RDS processing. FM analysis is in Hz; fixed NFM ±5 kHz and WFM ±75 kHz normalization precedes adaptive AGC. Disabling AGC does not remove that unit conversion. Stereo indication reports pilot presence, not differing L/R programme content.
-
-AM keeps envelope and carrier-recovery paths in the shared DSP; `am_sync` selects their output with a soft crossfade. Live detector switching preserves capture, filter/resampler state and stream clocks. Pre-AGC carrier/depth analysis and final-PCM level/scope events use a 20 Hz source-sample grid; the browser displays these results rather than deriving metrics from playback callbacks. Enabling sync and achieving carrier lock are separate states.
-
-The browser receives AUD2 and SDE2 rather than running a duplicate production IQ demodulator. Each playback chain has one producer. Mode changes flush old PCM and wait for the new start boundary. Actual codec rate/channel changes also start a new audio boundary. The worklet's ready handshake determines playback rate; resampling accommodates the device and sound-card clocks. Overflow fails the playback chain explicitly. The shared crate also supports committed browser WASM artifacts for offline diagnostics; they do not replace the native service build.
-
-AudioContext setup and resume errors affect audio playback only. The browser ignores stale worker callbacks. Local decoder or setup failures remain latched until explicit retry or a healthy fresh identity. A receiver failure clears only with an explicit healthy STATUS and fresh active identities.
-
-## Frontend state and rendering
-
-User-set, backend-confirmed parameters use `core/params.ts` slots: user actions set desired values and STATUS confirms them. Client-only preferences are authoritative locally. Measurement results use `core/results.ts` with explicit setters, without desired/confirmed semantics. Shared types and registries remain leaf modules; upper layers may depend on leaves. Registration modules must be reachable from `main.ts`.
-
-Decode refreshes the selected WFM receiver on pane, channel and stream changes. Control or device disconnect cancels active spectrum gestures and releases pointer capture before resetting receiver state; a later pointer release cannot submit a tune.
-
-### SDR filter and tuning controls
-
-The panel, numeric field and spectrum overlay share `sdrDemod` and `sdrIfbw`; those parameter slots remain the only desired/confirmed values. A custom value remains visible without forcing a preset highlight. A STATUS confirmation also records the last confirmed value for that mode. Selecting a mode restores its stored confirmed value, or the mode default when none is valid; ordinary tuning retains the active filter, and Preset clears these mode preferences with the existing SDR preferences.
-
-| Modes | Default (Hz) | Presets (Hz) | Editable |
-|---|---:|---|---|
-| AM/DSB | 6000 | 3000, 4500, 6000, 9000, 12000 | yes |
-| USB/LSB | 2400 | 1800, 2400, 2700, 3000, 6000 | yes |
-| CW | 500 | 100, 200, 500, 1000, 2000 | yes |
-| NFM | 12000 | 9000, 12000, 12500, 15000, 25000 | yes |
-| WFM | 180000 | 100000, 150000, 180000, 200000, 250000 | yes |
-| PM | 12000 | 6000, 9000, 12000, 15000, 25000 | yes |
-| FT8/SSTV/radiofax | 3000 | UI fixed | no |
-| DRM | 12000 | UI selected/locked | no |
-| DRM+ | 100000 | UI fixed | no |
-
-Preset buttons use compact k/M suffixes and expose the full Hz value on hover. The numeric input offers the full Hz/kHz/MHz choice through the shared units control; unit selection changes only the representation, not the underlying Hz value. Typed input and the virtual keypad use the same validation and commit path. Custom values are not capped by common presets: AM 100 kHz, SSB 50 kHz, CW 10 kHz and other candidates remain allowed when admitted. The numeric editor and backend enforce a finite minimum of 50 Hz, or 101 Hz for USB/LSB to prevent guard collapse. STATUS publishes `sdr.filter_limits:{mode,min_hz,max_hz}` for the current mode: `min_hz` is the real DSP floor (protocol-locked or unknown modes report 0 with a null max) and `max_hz` is the integer-sampling ceiling from the current capture center/bandwidth, input rate, PFB taps, listen frequency and CW pitch, null outside SDR, with channel 1 disabled, or with no feasible range. The UI checks these dynamic bounds, which are neither fixed hardware limits nor recommended preset ranges; remaining sample-rate, channel and cost admission checks can still reject a value inside them.
-
-The Filter row provides numeric entry, presets and View. The spectrum passband exposes edge grips for bandwidth and a top frequency handle for tuning; it changes the listening frequency, including the heard pitch in SSB/CW. It does not edit the CW sidetone setting.
-
-Preset clicks, Enter and field blur commit once; Escape cancels the draft. Edge drags preview locally and submit once on release; pointer cancellation, window blur and mode changes discard drafts. The UI serializes receiver edits with one request in flight and one newest queued candidate. Matching request-ID acknowledgements advance the queue; ERROR or three seconds without acknowledgement restores confirmed values. Frontend limits never replace backend admission.
-Tuning steps are tiered per demodulation mode: the step box and plain arrows use the `normal` tier, Shift+arrows the `coarse` tier and Ctrl+arrows the `fine` tier, with an inline settings panel for the two held-key tiers whose typed value commits on Enter, change or blur while Escape or a mode switch cancels the draft. Defaults follow each mode's channel plan — AM/DSB 1/5/0.1 kHz, USB/LSB 100/1000/10 Hz, CW and FT8 10/100/1 Hz, NFM/PM 12.5/100/1 kHz, WFM 100/1000/10 kHz, SSTV/DRM 1/10/0.1 kHz and DRM+ 10/100/1 kHz — and an unlisted mode reads a generic conservative set. Remembered values (at least 1 Hz) are stored per mode with no coupling to the capture width: changing the bandwidth leaves the ladder alone, and Preset clears the three tier maps with the other SDR preferences, removing the retired per-bandwidth step key as well.
-
-Listen-frequency edits keep one `SET_SDR_CHANNEL` tune request outstanding and the newest target queued. An exact request-ID acknowledgement settles that request independently of snapshot freshness; an older snapshot cannot overwrite confirmed state. Cancelled or timed-out identities never revive queued work, but may carry strictly newer authoritative state. ERROR or three seconds without a reply discards pending intent and restores the confirmed frequency. The timeout notice clears on valid new input, cancellation, its late acknowledgement or newer authoritative recovery, without clearing unrelated diagnostics. Window blur or a hidden tab drops only the queued repeat. Demodulator changes, external capture changes, capture gestures, band presets, Preset and disconnect cancel outstanding tuning; a matching tune acknowledgement that moves the capture retains its live queue. Tune keys preserve native behaviour in inputs, selects, textareas, contenteditable regions, dialogs, the keypad and zoom overview. Focused buttons retain keys other than tune arrows; Shift and Ctrl modify arrows only. Alt, Meta and Ctrl+Shift stay with the browser; IME composition is skipped, and repeat stops on blur or a hidden tab.
-
-Each pointer press has one owner until release or cancellation. Pointer motion over the plot is coalesced to one animation frame with a single geometry read; hover feedback, filter handles, locate preview and the cursor readout repaint together only when something visible changed. The top frequency handle tunes, including with Zoom on. Ctrl gestures and existing marker diamonds retain marker priority. Bandwidth arrows sit outside the transparent passband and appear near its centre line or editable edges; dragging keeps them visible. With Zoom on, the top arrows resize bandwidth and the remaining plot selects a zoom rectangle. With Zoom off, the editable edges also resize bandwidth. Narrow bands keep separated arrow targets without widening the measured band; dragging applies the pointer delta to the original cutoff. Cancellation on mode, capture, view, Zoom, pointer loss, Escape, hidden tab or blur never commits.
-
-An ordinary SDR plot click uses Locate: Free selects the clicked frequency; Channel selects `anchor + round((f − anchor)/spacing) × spacing`; Signal selects a credible carrier. Selecting Channel also reveals its spacing (Hz, at least 1 Hz, fractional values allowed) and anchor (MHz, any finite value) inline in aligned rows with equal-width inputs. There is no separate Grid button. The gear button beside the Step field opens the separate tuning-step settings.
-
-Signal is available in AM and CW. Other modes disable it with a tooltip and retain its stored preference. Carrier evidence comes from raw native spectrum frames, before Average or Max Hold. On fine axes, acquisition needs at least three consecutive credible frames within the last 350 ms, spanning at least 120 ms. A stream gap over 350 ms or a reversed timestamp resets history. The peak must be at least 8 dB above the higher mean of the two side regions, each 3–8 bins away. Both shoulders must descend outwards and reach at least 4 dB below the peak at a distance of 2–4 bins. An axis is coarse when native bin spacing exceeds 1 kHz in AM or min(250 Hz, IF bandwidth/2) in CW. Coarse acquisition selects the nearest credible local peak in the latest frame; it rejects ambiguous choices when the runner-up's distance differs by less than one bin.
-
-The acquisition radius is 40 screen pixels; the retention radius is 52 pixels. On fine axes, both are capped at 10 kHz in AM or 3 kHz in CW; coarse axes use a 200 kHz cap while retaining the pixel limits. The selected target stays at its exact native bin centre, without interpolation. Fine-axis supporting peaks can move by one bin; coarse preview refresh and click submission require latest-frame evidence at the exact selected bin. A dropout can retain the preview for at most 300 ms after the last local evidence. A click requires current-frame support for that carrier, evidence less than 300 ms old, and an unchanged source, configuration and view. A cached target within an age limit is not sufficient. CW tuning subtracts max(100 Hz, confirmed sidetone pitch) from the carrier. Capture-axis, demodulator or pitch changes clear carrier evidence.
-
-Only a valid Channel or Signal target has a preview line and one frequency label at the bottom of the plot. Free has no moving preview line. There is no permanent Signal hint row. The click target is frozen at pointerdown and validated before submission. Changed view, mode, pitch, IF bandwidth, channel settings or listen frequency invalidates that target. An invalid Signal target falls back to the clicked frequency with a short notice.
-
-The listening-frequency badge above the plot shares measured geometry for drawing and hit testing. Dragging preserves the pointer offset, previews within the view and RF limits, and submits on release. Badge, plot-tuning and filter-edge drags show the matching waterfall passband and dial line; release or cancellation restores clean history pixels, including frozen history.
-
-Passband fill is green at 24% opacity in both themes. Thin solid edges appear only during dragging, at the actual filter cutoffs.
-
-The SDR level badge reserves 10ch and centers its text; unavailable IQ level remains `--- dBFS`. The squelch badge reserves 9ch, keeps its dBm unit when enabled and shows localized Off at −160 dBm or below. AGC sits to the left of Mute on the volume row. Mute On means playback is disabled; Mute Off means playback is enabled. The Chinese labels are 静音 开 and 静音 关. These controls change listening only, not protocol decoding.
-
-Filter gestures change only the filter. View Passband saves the display window and Zoom state, and highlights the toggle. A second press restores both. A manual view change, capture change, mode change or reset discards the saved state. The view uses the original spectrum bins; zoom adds no spectrum resolution.
-
-The backend sends native frequency grids. The frontend preserves Hz for markers and export, uses peak-preserving resampling for display, and treats unsupported edge bins as gaps. The presented SDR window is clipped to the device RF range while the capture keeps its requested centre and bandwidth; a clipped midpoint never rebases a pan or the requested tuning. Bin spacing is not RBW. Local zoom changes the visible window without retuning or changing receiver clocks. A same-width frequency-axis pan keeps the zoom rectangle fixed in the overview while the spectrum and listen indicator slide beneath it. The main view moves at its zoomed Hz-per-pixel scale; confirmation translates the view with the capture, clamped at its edges. If the backend relocates the listen frequency to fit the new passband, the confirmed view recentres on that frequency after the matching capture arrives, clamped to the captured data. A wheel that changes the capture span, a mode change, Preset, or the user leaving zoom turns it off; a quantized capture that cannot contain the view also returns to full capture. While zoom is on, the jump rail becomes zoom sliders of the same width as the group buttons, with a switch on that strip that toggles between the group buttons and the sliders. Leaving zoom hides the switch and returns the group buttons. Density and waterfall histories are bounded. Read parameter slots once outside hot loops.
-
-Pressing the SWP, RTA or SDR frequency axis preserves the displayed zoom window. The gesture snapshots that window and its Hz-per-pixel scale at press time; the spectrum, frequency labels, markers and waterfall preview the translated zoom window while capture requests retain the full acquisition bandwidth. New frames during a held drag cannot change the pointer's scale. Releasing or chaining another drag preserves the preview until the capture catches up. The overview uses the target acquisition window and display window during the drag: its spectrum and SDR listen indicator move immediately beneath the frame-fixed zoom rectangle, and its frequency ranges update before release. Cancelling the gesture restores the committed ranges. Pending previews display existing samples at their native RF positions; newly requested frequencies remain empty until measured.
-
-SWP native sweep endpoints can realign by a bin when the tuner moves. While an unchanged-bandwidth axis pan is pending, matching FREQ endpoints within two native edge-bin steps retain and translate the zoom window; preview settlement uses that same bin precision only after a new grid arrives. Unrelated capture-span edits still clear the local zoom.
-
-A capture-span wheel change while the frequency axis is held clears both local zoom and the drag's saved zoom window, so subsequent pointer motion cannot restore it. If native capture quantization shrinks a pending same-span pan below the preserved view width, the view returns to the full capture. When an SDR pan relocates the listen frequency, recentering waits for both the matching acknowledgement and acquisition window; an acknowledgement arriving before the frame defers the focus so it is not shifted twice. A superseding view/capture change or reset cancels that deferred focus.
-
-The SDR overview marks the current listen frequency with a small green top pointer and a dashed vertical line, using the main dial color. It remains visible outside the zoom rectangle, follows the dial's drag preview, and disappears when listen is outside the captured window. SWP and RTA overviews do not show a receiver marker.
-
-The spectrum CSS box owns canvas geometry; the backing store follows it through ResizeObserver. With the waterfall enabled, both rendering and STATUS-driven measurement UI refreshes keep the marker table hidden. A STATUS report must not temporarily restore that table: doing so shrinks the spectrum and clears its resized bitmap before the next render hides the table again.
-
-SWP, normal RTA and SDR spectrum updates target 30 fps using one trailing timer anchored to the last frame draw. SWP processes every accepted sweep for traces, waterfall and trigger detection; RTA and SDR process the latest pending normal packet, including the final packet of a burst. First frames, changed axes and armed RTA captures remain immediate. Mode changes, capture changes, trigger resets and disconnects cancel pending work; deferred SDR packets also check capture settings and configuration version. UI redraw requests remain synchronous. Encoded display payloads use shared immutable bytes across subscribers; wire data and native frequency resolution are unchanged.
-
-Axis gestures preview locally and commit when settled. Manual Ref owns a local viewport (-200..+100 dBm plus Offset) separately from its clamped hardware request (-160..+40 dBm); raw acknowledgements preserve the chosen display. Gain readbacks come from the active mode's successful SDK configuration and remain null when unavailable; preamp `0` means Auto and `1` means Off, not physical On. RTA capture uses device trigger metadata carried with each RTA2 frame; SDR retains RTAF, whose legacy decoding is compatibility only. A frame arrival or elapsed delay cannot prove capture completion. SWP level crossing is evaluated between consecutive sweeps in the frontend. Parameter, Auto, trace, measurement and trigger contracts are in [MODE_STATE_FLOW](MODE_STATE_FLOW.md).
-
-SDR frequency-axis pans keep one `SET_SDR` request in flight and only the latest unsent window. Only the matching request ID confirms that pan; periodic STATUS and older acknowledgements cannot rebase a newer target or a held pointer's origin. Rejection discards the unsent window, and reset cancels the pending gesture state. RF-range errors include the channel number, rejected frequency and allowed range.
-
-## Quality limits and verification
-
-Three backend slots do not imply three exposed UI receivers or unlimited listening/recording. FT8 supports standard types 1/2 within its supported search window; SSTV does not decode the post-image FSK callsign. RDS text quality and short/looped DRM codec playback remain constrained. [KNOWN_ISSUES](KNOWN_ISSUES.md) records current limitations and SDK boundaries.
-
-The browser's 30 fps SWP/RTA scheduling target depends on incoming frames and rendering cost; it does not establish measured hardware throughput or change backend acquisition timing. These descriptions summarize implementation; documentation maintenance does not revalidate hardware.
-
-Reproducible entry points are `make wasm-test` for shared DSP, `make ci` for local non-hardware gates, and `make e2e-fake` for the native fixture UI. `tools/bench/sdr_pipeline_check.py` and `sdr_pipeline_controls.py` exercise live IQv2 continuity and controls; native `websad --sdr-pipeline-bench` exercises the pipeline. Command options and prerequisites are in [tools](../../tools/README.md). Hardware acceptance must check content, hardware timestamps, queue/failure deltas and drained sample conservation; fake-source throughput or a short window cannot prove sustained RF operation. Keep browser checks separate from quiet hardware performance windows; see [DEVELOPMENT](DEVELOPMENT.md).
-
-## References and licences
-
-Project code is MIT. Vendor SDK binaries are proprietary and obtained separately. DSP techniques are informed by liquid-dsp, tpt-dsp, sdr-web, Radioband and pffft.wasm; those references are not claims that their implementations were copied. Offline numeric parity uses this repository's reference kernels and committed fixtures.
-
-FT8 protocol tables originate from [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT), with provenance in `tools/fixtures/port_ft8_tables.py`. SSTV includes the MIT-licensed vendored decoder under `dsp/core/src/digital/sstv/vendor/`. CW uses [ggmorse](https://github.com/ggerganov/ggmorse) under `tools/vendor/ggmorse/` and its licence. DeepFilterNet integration retains the licences under `dsp/deepfilter/`. Codec build/provenance and licence boundaries remain in `dsp/core/fdk/README.md`, `dsp/core/xaac/README.md`, [DRM_BENCH](DRM_BENCH.md) and [DRM_AAC_RESERIALIZATION](DRM_AAC_RESERIALIZATION.md). Preserve source attribution when changing fixtures or vendored code.
+| Reference kernels | `tools/reference/`, `tools/fixtures/`, `tests/fixtures/` |
+
+The production SAN shim validates finite configured rates and fixed 16,240-sample CS16 packets,
+including format, byte count and pointer before copying. Its fake-SDK contract compiles the
+actual shim with vendor headers; no physical acquisition is performed. Soapy is a separate
+adapter: its transport MTU stays 16,384, SDK packets are at most 1,048,576 samples, and
+the host ring plus conversion scratch are bounded by 64 MiB before allocation.
+Soapy also rejects device counts beyond the SDK's 64-entry Ethernet array before iteration;
+reference gain must be finite and fit `int` before stopping a stream or converting the value.
+The Python reference reader independently caps CS16 packets at 4 MiB and checks size/format
+before `ctypes.string_at`; its SDK-free tests do not qualify Rust capture.
+
+The production RTA shim validates frame dimensions and finite frequency ranges before allocation.
+Its trace, bitmap and finite-capture accumulation arrays share a 64 MiB limit, including retained
+capacity and replacement peaks; open, reconfiguration and rollback share the checks. Rust SWP/RTA/PNM
+also validate shim-reported sizes. SWP/RTA frames are limited to 65,536 points and reject non-finite
+numeric readback. These are specific buffer limits, not bounds on all SDK memory or service RSS.
+
+### PFB, fine DDC and clocks
+
+At 62.5 MSps, the 50 MHz usable capture uses a two-times oversampled PFB with 128 bins and
+hop 64: bin spacing is 488.28125 kHz and each coarse stream is 976.5625 kSps. This is not a
+128-receiver capacity claim. Product capacity comes from `contracts/service-capacity.json`.
+Narrow captures use their actual geometry. Wideband provider input can take the direct IQ route.
+
+Ordered PFB workers share immutable plans, while each channel owns its oscillator and mutable
+filter history. Fine DDC performs the remaining translation/filtering/rate conversion. Admission
+uses the full passband and transition geometry, not only a center frequency. Actual fractional
+sample rates must survive API and file round trips.
+
+PFB uses four workers and retains at most six items across executing jobs, results waiting for
+their sequence and ready output. A finished worker can accept another job; each job carries its
+full history and absolute input position, and output remains ordered. At the retained limit,
+available output makes submission return backpressure so the caller drains before retrying.
+Receiving a result alone cannot release capacity that the caller has not yet drained.
+
+IQ allocations are immutable and shared with consumers; encoding occurs only when needed by
+wire/file subscribers. Source identities and exact sample positions distinguish capture epochs,
+baseband streams and processing generations. Receiver revisions, stream identities and exact-clock u64 values use decimal strings;
+diagnostic counters and RTA trigger metadata also contain JSON integers and cannot all be parsed as strings. Gaps create
+explicit boundaries; no missing samples or absolute UTC are invented. See [receiver contracts](reference/RECEIVERS.md)
+and [binary formats](reference/API.md) for exact layouts and diagnostics.
+
+## Concurrency and failure ownership
+
+Capture, PFB, fine DDC, receiver, recorder and subscriber boundaries have bounded queues.
+Shared capture failure affects all dependent receivers. A receiver processing or consumer failure
+is isolated where its owner permits; it must not silently discard IQ and continue the old clock.
+Display frames can be replaced. Explicit retry creates the required new identity.
+
+Fatal PFB control errors and Rust panics explicitly end the output queue. Control replies deliver collected tails before publishing the terminal cause; polling, terminal diagnostics and stop preserve that cause. After panic, diagnostics use the published snapshot and the original owner is dropped after closing the queue, without processing the affected DDC again. This boundary does not catch native aborts or segmentation faults.
+
+External providers share prepared-resource admission before IQ and automatic recovery, with bounded retirement under the owning receiver.
+Fine workers preserve ordering within each lane. CPU-intensive inference and external decoder
+processes do not execute on acquisition locks. Thread wall-time sums across owners are not
+single-thread CPU utilization. Admission limits are structural; available algorithms do not imply
+arbitrary combinations fit the host. Unit/synthetic passes do not qualify sustained RF performance.
+
+HTTP and WebSocket command paths share one commit owner for state publication, identities
+and stream retirement. A stale preflight ticket cannot advance the transport epoch.
+Lifecycle code reserves the listener before starting owners and cooperatively joins the
+publisher before teardown. A fatal publisher failure, panic in its acquisition/preparation/GNSS task, or unexpected successful return
+closes the HTTP listener and preserves the original error instead of serving stale healthy status.
+The loop's unwind boundary retains pending model preparation handles: it signals shutdown before
+waiting for that work, then releases SDK and recording owners. Ordinary receiver errors remain isolated to their branches.
+SWP/RTA/PNM control requests share one deadline for enqueue and reply;
+a transport timeout prevents further requests. All four SDK modes wait at most 250 ms on retirement,
+then keep an unfinished owner behind the exclusive session gate until its original thread finishes teardown.
+No other thread may close or reopen that session. Vendor calls and process static destructors may still hang,
+so the launcher stop deadline remains necessary.
+
+RTA profile and trigger changes share one commit path: applied values change after SDK acceptance.
+Link loss immediately retires the owner, clears capture completion and retries after a cooldown.
+Phase noise validates the complete offset window before changing the next cycle's request;
+rejection preserves both the running and subsequent cycles.
+
+Model preparation refreshes host/cgroup observations when the head of the queue attempts to
+start, and takes its RSS baseline at that point. Observed process growth only controls
+preparation concurrency; it is not exclusive model memory or a receiver admission guarantee.
+
+The optional impulse blanker repairs at most `window` consecutive high samples, carrying
+its budget across blocks. Longer signals pass through and update the per-sample RMS estimate.
+Repair uses a known clean endpoint or holds the previous output, without adding samples or delay.
+First-block initialization and available lookahead remain block-dependent.
+
+The native CW owner accepts 8–192 kHz mono PCM and sends at most 100 ms per bridge call.
+ggmorse grows its input buffers to the actual resampling request before the capture callback;
+buffer sizing does not change the analysis window or sample timing. The local patch and pinned
+upstream provenance are recorded in `tools/vendor/ggmorse/UPSTREAM`.
+
+The optional diagnostic demodulation ABI checks finite rates before construction, accepts output
+rates of 8–192 kHz and retains valid fractional rates. Before processing, it uses the existing
+resampler state to bound output to 1,048,576 PCM or adapted complex samples per call. Insufficient
+capacity does not consume input; the stereo difference block is likewise retained for a larger
+buffer to retry. These diagnostic ABI constraints do not replace native receiver admission.
+
+Recording workers perform encoding, compression, checksums and sync outside acquisition locks.
+IQ, results and audio share sixteen task slots. Stop seals admission before draining. Startup
+recovers completed data or verified prefixes with the original task identity; it never resumes a
+retired receiver. New audio tasks write media files directly; legacy Float32 journals remain
+readable. Archive operations share a bounded reader lease. See [Recordings](reference/RECORDINGS.md).
+
+## Browser state and audio
+
+One native receiver adapter and session owns the workbench's server state. Windows own geometry,
+selection and editor drafts. They do not acquire independent physical receivers. Request identities,
+expected revisions and service generations prevent late replies from replacing newer state.
+
+`workbenchApp.ts` owns window coordination and forms; `workbenchChannelStrip.ts` owns
+compact-view drafts, readouts, ticker and listeners. During a deferred view switch, actions
+and playback levels stay bound to the displayed service/UID. Disposal removes listeners
+and timers and invalidates pending completions.
+The session samples existing UIDs when its serial queue dispatches a create command, so consecutive
+creates return their own identities. Ambiguous multiple additions fail explicitly. Preset, service
+replacement and disposal invalidate old listening previews. Cancelling edits also resets focused
+form DOM so cancelled drafts cannot re-enter the cache.
+
+Backend audio processing affects published PCM and recordings. Browser gain, pan, mute and Solo
+are local monitoring. RF IQ power, demodulated PCM level and local output level are different
+measurements; level displays must state their source. Browser buffering/resampling means receipt
+time is not playback time. Decoder history and images have explicit retention budgets.
+
+Rendering stays downstream of state and frame contracts. Device/display parameter ownership is
+centralized; new controls should reuse intent/acknowledgement paths rather than write confirmed
+state optimistically. The dependency and registration guards help detect structural regressions.
+
+## Maintenance priorities
+
+The largest risks are broad service/frontend coordination modules, duplicated UI projections,
+legacy archive compatibility and experimental tools beside production paths. Split by ownership
+and stable interfaces when a behavioral change provides a testable seam; avoid cosmetic file
+splits that preserve hidden coupling. Keep numerical reference tests, clock/identity tests and
+bounded-resource regressions when consolidating test files.
+
+[Development](DEVELOPMENT.md) defines validation and maintenance priorities;
+[Operations](OPERATIONS.md) describes current capability boundaries. Third-party sources and
+licenses stay with their components; see [dependencies and notices](DEVELOPMENT.md#dependencies-and-notices).

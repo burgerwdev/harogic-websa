@@ -50,7 +50,7 @@ import { centerHz, spanHz } from './freqState';
 import { clampDisplayRef, clearDisplayBounds, getDisplayRange, getDisplayTop, hardwareRefForDisplay, hasDisplayBounds, pendingDisplayRef, setDisplayRefShiftHandler } from './displayRef';
 import { displayOffset, displayUnit } from './displayState';
 import { estimatedCaptureSpanHz } from './sdrState';
-import { getView, isZoomed } from './spectrumViewport';
+import { cancelReceiverFocus, getCapture, getView, isZoomed } from './spectrumViewport';
 import { cancelSdrTuneRequest } from './sdrTuneRequest';
 import { beginFrequencyCommit } from './panels/frequency';
 import { beginRtaAxisTransition } from './panels/rta';
@@ -233,6 +233,12 @@ export function previewCaptureWindow(): FreqWindow | null {
 	return session?.axis === 'x' ? session.targetFreq : null;
 }
 
+/** Read before consuming an ACK: an axis pan owns its view even when its frame arrived first. */
+export function sdrAxisOwnsViewport(requestId: unknown): boolean {
+	return currentGraphMode() === 'sdr' && (session?.axis === 'x' || sdrInFlight !== null
+		|| (typeof requestId === 'string' && requestId.startsWith('sdr-axis-')));
+}
+
 /** The frequency window to draw and label right now (null when nothing is being previewed). */
 export function previewFreqWindow(): FreqWindow | null {
 	refresh();
@@ -243,6 +249,23 @@ export function previewFreqWindow(): FreqWindow | null {
 	return {
 		lo: s.targetFreq.lo + (s.displayBase.lo - s.base.freq.lo) * scale,
 		hi: s.targetFreq.lo + (s.displayBase.hi - s.base.freq.lo) * scale,
+	};
+}
+
+/** A local zoom slider can change the view while a retune preview is waiting
+ * for acquisition. Rebase its display window onto the gesture's original band
+ * so trace, labels and waterfall all reflect that new zoom immediately. This
+ * changes no acquisition request and never resamples the measured data.
+ */
+export function syncFrequencyPreviewView(): void {
+	refresh();
+	const s = session;
+	const capture = getCapture(), view = getView();
+	if (!s || s.axis !== 'x' || !s.targetFreq || !s.base.freq || !capture || !view) return;
+	const scale = (s.base.freq.hi - s.base.freq.lo) / (capture.hi - capture.lo);
+	s.displayBase = {
+		lo: s.base.freq.lo + (view.lo - capture.lo) * scale,
+		hi: s.base.freq.lo + (view.hi - capture.lo) * scale,
 	};
 }
 
@@ -431,6 +454,7 @@ function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: bool
 	}
 	const freq = committedFreqWindow();
 	if (axis === 'x' && !freq) return false;
+	if (axis === 'x') cancelReceiverFocus();
 	const level = committedLevelWindow();
 	const chained = chainBase(axis);
 	const base: GestureBase = chained

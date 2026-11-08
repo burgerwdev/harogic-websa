@@ -1,3 +1,5 @@
+import { setDomProperty, setDomAttribute } from '../domState';
+import { syncSelectValue } from '../selectControl';
 // Reference/amplitude panel: Ref Level, scale, attenuation/preamp/IF gain, offset,
 // reference clock and gap fill.
 import * as S from '../../core/store';
@@ -124,9 +126,9 @@ interface RefClockReport {
 function renderRefClockIntent(): void {
   const source = document.getElementById('select-refclk') as HTMLSelectElement | null;
   if (source) {
-    source.value = refClockSource.get();
-    source.dataset.pending = String(refClockSource.pending());
-    source.setAttribute('aria-busy', String(refClockSource.pending()));
+    syncSelectValue(source, refClockSource.get());
+    setDomProperty(source.dataset, 'pending', String(refClockSource.pending()));
+    setDomAttribute(source, 'aria-busy', String(refClockSource.pending()));
   }
   const on = refClockOutput.get();
   const btn = document.getElementById('btn-refclk-out');
@@ -241,9 +243,14 @@ export function syncLevelAvailability(mode: string): void {
   const exclusive = mode === 'harmonic' || mode === 'pnm';
   const panel = document.getElementById('level-panel');
   if (panel) {
-    panel.setAttribute('aria-disabled', String(exclusive));
+    setDomAttribute(panel, 'aria-disabled', String(exclusive));
     panel.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')
-      .forEach(control => { control.disabled = exclusive; });
+      .forEach(control => {
+        // Amp availability has one owner: manual attenuation also disables preamp.
+        // Enabling it here before disabling it below rebuilds an open native menu.
+        if (!Object.values(AMP_FIELDS).some(field => field.id === control.id))
+          setDomProperty(control, 'disabled', exclusive);
+      });
   }
   syncAmpAvailability(exclusive);
   syncWfRangeUi();
@@ -267,7 +274,7 @@ export function syncRefUI(force = false) {
   }
   const inp = document.getElementById('input-ref') as HTMLInputElement | null;
   if (inp) {
-    inp.disabled = measurementOwnsDevice();
+    setDomProperty(inp, 'disabled', measurementOwnsDevice());
     // Discipline 4: the user can see that the device has not confirmed the new level yet.
     inp.classList.toggle('ref-pending', displayRefDiverges());
     const ref = displayUnit.get() === 'dB' ? rawToDisplayRef(refLevel.get()) : getDisplayRef();
@@ -276,7 +283,7 @@ export function syncRefUI(force = false) {
   const cv = document.getElementById('spectrum');
   if (cv && currentGraphMode() === 'sdr') cv.dataset.sdrRef = String(Math.round(getDisplayRef()));
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
-  if (setBtn) setBtn.disabled = measurementOwnsDevice();
+  if (setBtn) setDomProperty(setBtn, 'disabled', measurementOwnsDevice());
   // The step arrows stay usable at the ends of the SDR range as well (same rule as the swept
   // panel): the level is clamped to the range silently by adjustRefLevel.
   const down = document.getElementById('btn-ref-down') as HTMLButtonElement | null;

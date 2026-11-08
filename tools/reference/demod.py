@@ -1,9 +1,9 @@
 """
-demod/demod.py -- analog demodulators for the SDR mode (numpy).
+Independent analog demodulation reference (numpy).
 
 Input is complex baseband (from DSP_DDC, carrier at DC) and output is real audio at
 `audio_rate`. Modes: AM, FM/NFM/WFM, USB, LSB, CW. Sideband selection uses a
-complex FIR; CW is filtered at zero IF and then shifted to the configured sidetone.
+complex FIR; CW selects the band around the configured sidetone above zero IF.
 """
 from __future__ import annotations
 

@@ -35,7 +35,11 @@ BASEBAND_HEADER = struct.Struct('<4sIIIddIIQd')  # IQ wire v2, including magic
 
 async def command(session: aiohttp.ClientSession, url: str, payload: dict) -> dict:
     async with session.post(f'{url}/api/config', json=payload, timeout=20) as response:
-        return await response.json()
+        response.raise_for_status()
+        result = await response.json()
+        if not isinstance(result, dict) or result.get('cmd') == 'ERROR':
+            raise RuntimeError(f'backend rejected configuration: {result!r}')
+        return result
 
 
 def configure_tinysa(
@@ -155,35 +159,54 @@ async def capture(url: str, seconds: float) -> tuple[np.ndarray, float, float, d
 async def run(args) -> int:
     url = args.url
     async with aiohttp.ClientSession() as session:
-        # The generator first: a known tone at a level safe for the analyzer's input.
-        if args.tinysa_port:
-            source = TinySaSource(args.tinysa_port)
-            level = safe_tinysa_level(args.frequency)
-            configure_tinysa(source, args.frequency, level, modulation=args.modulation,
-                             mod_freq_hz=args.mod_freq, deviation_hz=args.deviation)
-            print(f'tinySA: {args.modulation.upper()} at {args.frequency/1e6:.4f} MHz, {level} dBm')
+        source = None
+        requested_sdr = False
+        try:
+            # Register ownership before any generator command can fail.
+            if args.tinysa_port:
+                source = TinySaSource(args.tinysa_port)
+                level = safe_tinysa_level(args.frequency)
+                configure_tinysa(source, args.frequency, level, modulation=args.modulation,
+                                 mod_freq_hz=args.mod_freq, deviation_hz=args.deviation)
+                print(f'tinySA: {args.modulation.upper()} at {args.frequency/1e6:.4f} MHz, {level} dBm')
 
-        # The demodulator has to match what the generator emits, or the measurement compares a tone
-        # against the wrong detector.
-        demod_mode = args.mode
-        if args.modulation == 'am' and args.mode == 'auto':
-            demod_mode = 'am'
-        elif args.modulation == 'fm' and args.mode == 'auto':
-            demod_mode = 'nfm'
-        if demod_mode == 'auto':
-            demod_mode = 'cw'
+            demod_mode = args.mode
+            if args.modulation == 'am' and args.mode == 'auto':
+                demod_mode = 'am'
+            elif args.modulation == 'fm' and args.mode == 'auto':
+                demod_mode = 'nfm'
+            if demod_mode == 'auto':
+                demod_mode = 'cw'
 
-        state = await command(session, url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-        print(f"mode: {state.get('mode')}")
-        listen = args.frequency - args.pitch if demod_mode == 'cw' else args.frequency
-        await command(session, url, {
-            'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
-            'freq': listen, 'mode': demod_mode, 'ifbw': args.ifbw,
-            'volume': 1.0, 'audio_rate': 48_000, 'pitch': args.pitch,
-        })
-        await asyncio.sleep(2.0)                     # let the stream and the settle window pass
-        baseband, rate, center, stats = await capture(url, args.seconds)
-        await command(session, url, {'cmd': 'SET_MODE', 'mode': 'std'})
+            requested_sdr = True
+            state = await command(session, url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+            print(f"mode: {state.get('mode')}")
+            listen = args.frequency - args.pitch if demod_mode == 'cw' else args.frequency
+            await command(session, url, {
+                'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
+                'freq': listen, 'mode': demod_mode, 'ifbw': args.ifbw,
+                'volume': 1.0, 'audio_rate': 48_000, 'pitch': args.pitch,
+            })
+            await asyncio.sleep(2.0)
+            baseband, rate, center, stats = await capture(url, args.seconds)
+        finally:
+            primary_failure = sys.exc_info()[0] is not None
+            cleanup_errors = []
+            if requested_sdr:
+                try:
+                    await command(session, url, {'cmd': 'SET_MODE', 'mode': 'std'})
+                except Exception as error:
+                    cleanup_errors.append(error)
+            if source is not None:
+                try:
+                    source.close(disable_output=True)
+                except Exception as error:
+                    cleanup_errors.append(error)
+            if cleanup_errors:
+                if not primary_failure:
+                    raise cleanup_errors[0]
+                for error in cleanup_errors:
+                    print(f'HIL cleanup failed: {error}', file=sys.stderr)
 
     iq_path = Path(args.out).with_suffix('.iq')
     iq_path.write_bytes(baseband.tobytes())

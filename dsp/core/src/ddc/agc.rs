@@ -136,12 +136,19 @@ impl RmsAgc {
                 1.0
             };
             let before = self.limit;
-            if wanted < self.limit {
-                self.limit = wanted;
+            let after = if hold {
+                // A discarded transient still needs the ceiling, but must not leave
+                // a long limiter release behind on the next useful block.
+                before.min(wanted)
+            } else if wanted < self.limit {
+                wanted
             } else {
-                self.limit += (wanted - self.limit) * self.release;
+                self.limit + (wanted - self.limit) * self.release
+            };
+            if !hold {
+                self.limit = after;
             }
-            if self.limit < 1.0 || before < 1.0 {
+            if after < 1.0 || before < 1.0 {
                 // Ramped like the AGC gain, and for the same reason: a *constant* gain per block turns
                 // into amplitude modulation at the block rate - 960 output samples is 20.00 ms, exactly
                 // 50 Hz, with a harmonic at 100 Hz. On a noise floor the limiter engages constantly
@@ -149,7 +156,7 @@ impl RmsAgc {
                 // is the periodic, buzzy, level-independent sound a listener hears on a quiet
                 // frequency. Confirmed by measurement (a +27 dB envelope component at 50.0 Hz), and it
                 // survived the AGC being ramped because this stage was not.
-                let step = (self.limit - before) / out.len() as f64;
+                let step = (after - before) / out.len() as f64;
                 for (k, value) in out.iter_mut().enumerate() {
                     *value = ((*value as f64) * (before + step * k as f64)) as f32;
                 }
@@ -305,5 +312,19 @@ mod tests {
         agc.process_into(&sine(960, 0.001), false, &mut out);
         let rms = (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
         assert!((rms - agc.target()).abs() < 0.02, "first block rms {rms}");
+    }
+    #[test]
+    fn a_held_burst_is_bounded_without_changing_the_limiter_memory() {
+        let mut agc = RmsAgc::reference();
+        let mut output = Vec::new();
+        agc.process_into(&sine(960, 0.05), false, &mut output);
+        let gain = agc.gain();
+        let limit = agc.limit;
+        let mut burst = sine(960, 0.05);
+        burst[480] = 12.0;
+        agc.process_into(&burst, true, &mut output);
+        assert!(output.iter().all(|sample| sample.is_finite() && sample.abs() <= 0.95 + 1e-6));
+        assert_eq!(agc.gain(), gain);
+        assert_eq!(agc.limit, limit, "hold freezes the limiter's adaptation too");
     }
 }

@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Harogic SAN Series Web Spectrum Analyzer</title>
-  <script type="module" crossorigin src="/static/dist/assets/index-D5f1hZEp.js"></script>
-  <link rel="modulepreload" crossorigin href="/static/dist/assets/i18n-BB-QIrzU.js">
-  <link rel="stylesheet" crossorigin href="/static/dist/assets/index-BUeCXhlk.css">
+  <script type="module" crossorigin src="/static/dist/assets/index-C6fvhzIQ.js"></script>
+  <link rel="modulepreload" crossorigin href="/static/dist/assets/i18n-CH0BuiRd.js">
+  <link rel="stylesheet" crossorigin href="/static/dist/assets/index-Bg50t_-O.css">
 </head>
 <body>
 <div class="analyzer-card">
@@ -116,7 +116,7 @@
       <div class="wf-split" id="wf-split" style="display:none;"
            data-i18n-title="wf_split_tip" data-i18n-attr="title" title="Drag to resize the waterfall"></div>
       <div id="waterfall-container" class="waterfall-container" style="display:none;">
-        <canvas id="waterfall" width="800" height="135"></canvas>
+        <canvas id="waterfall" width="800" height="135" tabindex="0"></canvas>
         <div id="wf-controls" class="wf-controls">
           <button class="btn wf-btn" id="btn-wf-pause" data-action="wf-pause" data-i18n="tip_waterfall_pause" data-i18n-attr="title" title="Pause/Resume waterfall">⏸</button>
           <button class="btn wf-btn" id="btn-wf-reset" data-action="wf-reset" data-i18n="tip_waterfall_reset" data-i18n-attr="title" title="Restart waterfall from scratch">↻</button>
@@ -164,6 +164,36 @@
             <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button>
             <button class="btn" id="btn-mode-server" data-action="toggle-server" data-i18n="mode_server" data-i18n-title="tip_btn-mode-server">SRV</button>
           </div>
+          <div id="waterfall-settings" hidden>
+            <div class="param-row"><label data-i18n="wf_range">WF Range</label>
+              <select id="select-wf-range" data-i18n="tip_wf_range" data-i18n-attr="title">
+                <option value="auto" data-i18n="wf_auto">Auto</option>
+                <option value="fixed" data-i18n="wf_fixed">Fixed</option>
+              </select>
+              <input type="number" id="input-wf-lo" value="-110" step="5" data-i18n="tip_wf_lo" data-i18n-attr="title">
+              <input type="number" id="input-wf-hi" value="-30" step="5" data-i18n="tip_wf_hi" data-i18n-attr="title"><span class="cur-val">dBm</span></div>
+            <div class="param-row" id="wf-floor-source-row"><label for="select-wf-floor-source" data-i18n="wf_floor_source">Auto Floor</label>
+              <select id="select-wf-floor-source">
+                <option value="capture" data-i18n="wf_floor_capture">Full Capture</option>
+                <option value="view" data-i18n="wf_floor_view">Current View</option>
+              </select></div>
+            <div class="param-row"><label for="select-wf-palette" data-i18n="wf_palette">WF Colours</label>
+              <select id="select-wf-palette">
+                <option value="classic" data-i18n="wf_palette_classic">Classic Colour</option>
+                <option value="blue" data-i18n="wf_palette_blue">SDR Blue</option>
+                <option value="viridis">Viridis</option>
+                <option value="amber" data-i18n="wf_palette_amber">Amber</option>
+              </select></div>
+            <div class="param-row"><label for="input-wf-contrast" data-i18n="wf_contrast">WF Contrast</label>
+              <input type="range" id="input-wf-contrast" min="0.5" max="2" step="0.05" value="1" data-i18n="tip_wf_contrast" data-i18n-attr="title">
+              <output id="wf-contrast-value" for="input-wf-contrast" class="cur-val">1.00</output></div>
+          </div>
+          <div class="param-row" id="sdr-fft-settings" hidden><label for="select-sdr-fft" data-i18n="sdr_fft">Display FFT</label>
+            <select id="select-sdr-fft" data-i18n-title="sdr_fft_tip">
+              <option value="0" data-i18n="sdr_fft_default">Default (16240)</option>
+              <option value="32768">32768</option>
+              <option value="65536">65536</option>
+            </select><output id="sdr-fft-actual" class="cur-val"></output></div>
         </div>
       </div>
       <div class="control-group">
@@ -239,7 +269,7 @@
                 <option value="1024">48.8 kHz</option>
                 <option value="2048">24.4 kHz</option>
               </select></div>
-            <div class="param-row"><label data-i18n="listen">Listen</label>
+            <div class="param-row"><label><span data-i18n="listen">Listen</span> <span id="sdr-current-channel">C1</span></label>
               <input type="number" id="input-sdr-listen" value="1000" step="any" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
               <span class="sdr-tail"><span class="cur-val">MHz</span><button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></span></div>
             <div class="param-row"><label data-i18n="step">Step</label>
@@ -265,6 +295,12 @@
               <button class="btn span-step-button" data-action="sdr-tune-down" data-i18n="glyph_left" data-i18n-attr="title" data-i18n-title="sdr_tune_down_tip" title="Tune down one step">◀</button>
               <button class="btn span-step-button" data-action="sdr-tune-up" data-i18n="glyph_right" data-i18n-attr="title" data-i18n-title="sdr_tune_up_tip" title="Tune up one step">▶</button>
               <button class="btn span-full-button" data-action="sdr-to-center" data-i18n="to_center" data-i18n-title="sdr_to_center_tip" title="Set the wideband centre to the listen frequency">To Center</button></div>
+            <div class="param-row sdr-channel-actions"><div class="sdr-channel-buttons">
+              <button class="btn" data-action="sdr-workbench" data-i18n="sdr_workbench" data-i18n-title="sdr_workbench_tip">Channels</button>
+              <button class="btn" data-action="sdr-channel-add" data-i18n="sdr_channel_add_tip" data-i18n-attr="title" title="Add the current frequency and demodulation settings to an independent channel" aria-label="Add current frequency to a channel">＋</button>
+              <button class="btn sdr-channel-nav" data-action="sdr-channel-prev" data-i18n="sdr_channel_prev" data-i18n-attr="title" title="Previous receiving channel" aria-label="Previous channel" hidden>‹</button>
+              <button class="btn sdr-channel-nav" data-action="sdr-channel-next" data-i18n="sdr_channel_next" data-i18n-attr="title" title="Next receiving channel" aria-label="Next channel" hidden>›</button>
+            </div></div>
             <!-- Click positioning: the buttons pick what a plot click does; the inline grid
                  settings serve Channel mode. -->
             <div class="param-row"><label data-i18n="sdr_locate">Locate</label>
@@ -276,9 +312,8 @@
                 <input type="number" id="input-sdr-locate-anchor" step="any" data-i18n-title="sdr_locate_anchor_tip"><span class="cur-val">MHz</span></span>
             </div>
             <div class="param-row"><label data-i18n="demod">Demod</label>
-              <!-- Buttons are generated from the DSP plugin registry (ui/sdrDemodGroup.ts): the
-                   mode list lives in dsp/core/src/plugin.rs, not here. -->
-              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-demod-group"></div></div>
+              <!-- Common modes, search and the full catalog share the receiver selection action. -->
+              <div id="sdr-demod-group"></div></div>
             <div class="param-row"><label data-i18n="decode">Decode</label>
               <!-- The decode window (ui/decodeWindow.ts) shows what the demodulator decoded: the
                    FT8 table or the CW text, depending on the mode. One toggle for both, enabled
@@ -300,7 +335,7 @@
                 <button class="btn" data-sdr-deemph="75">75µs</button>
                 <button class="btn" data-sdr-deemph="300">300µs</button>
               </div></div>
-            <div class="param-row sdr-volume-row"><label data-i18n="volume">Volume</label>
+            <div class="param-row sdr-volume-row"><label data-i18n="sdr_pcm_gain" data-i18n-title="sdr_pcm_gain_tip" data-i18n-attr="title">Audio Gain</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05">
               <button class="btn active" id="btn-sdr-agc" type="button" data-action="toggle-sdr-agc" aria-pressed="true" data-i18n="agc_on" data-i18n-title="agc_tip" data-i18n-attr="title" title="Automatically adjusts listening level; Off uses fixed gain. Does not change RF gain or squelch.">AGC On</button>
               <button class="btn active" id="btn-sdr-audio" data-action="toggle-sdr-audio" aria-pressed="true" data-i18n="sdr_mute_on" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Toggle mute (Space)">Mute On</button></div>
@@ -309,16 +344,18 @@
               <span class="cur-val" id="cur-sdr-squelch">-110.0 dBm</span></div>
             <div class="param-row sdr-nr-row"><label data-i18n="nr">NR</label>
               <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
-              <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
-                <option value="wiener" data-i18n="nr_algo_wiener">Wiener</option>
-                <option value="dfn" data-i18n="nr_algo_dfn">DeepFilterNet3</option>
+              <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" data-i18n="nr_algo_tip" data-i18n-title="nr_algo_wiener_tip" data-i18n-attr="title">
+                <option value="wiener" data-i18n="nr_algo_wiener" data-i18n-title="nr_algo_wiener_tip">Wiener</option>
+                <option value="dfn" data-i18n="nr_algo_dfn" data-i18n-title="nr_algo_dfn_tip">DeepFilterNet3</option>
+                <option value="gtcrn" data-i18n="nr_algo_gtcrn" data-i18n-title="nr_algo_gtcrn_tip">GTCRN</option>
+                <option value="ul-unas" data-i18n="nr_algo_ul_unas" data-i18n-title="nr_algo_ul_unas_tip">UL_UNAS</option>
+                <option value="fastenhancer" data-i18n="nr_algo_fastenhancer" data-i18n-title="nr_algo_fastenhancer_tip">FastEnhancer</option>
               </select>
               <select id="select-sdr-nr-strength" data-action="set-sdr-nr-strength" data-i18n-title="nr_strength_tip" data-i18n-attr="title">
                 <option value="0.25" data-i18n="nr_light">Light</option>
                 <option value="0.6" selected data-i18n="nr_medium">Medium</option>
                 <option value="1" data-i18n="nr_strong">Strong</option>
-              </select>
-              <span class="cur-val" id="nr-dfn-status" style="display:none;"></span></div>
+              </select></div>
             <div class="param-row" id="nr-atten-row" style="display:none;"><label data-i18n="nr_atten">Attn</label>
               <input type="range" id="input-sdr-nr-atten" data-action="set-sdr-nr-atten" min="0" max="20" step="1" value="6" style="flex:1;" data-i18n-title="nr_atten_tip" data-i18n-attr="title" title="DeepFilterNet3 attenuation limit (dB)">
               <span class="cur-val" id="cur-nr-atten">6 dB</span></div>
@@ -470,7 +507,7 @@
             <button class="btn" data-action="export-peaks-csv" data-i18n="export_csv" data-i18n-title="tip_export_peaks_csv">CSV</button></div>
           <div class="param-row"><label data-i18n="count">Count</label>
             <input type="number" id="input-peakcnt" value="20" min="1" max="20" step="1" data-i18n="tip_peakcnt" data-i18n-attr="title"
-                   title="Number of peaks to display (1~20, single row)"><span class="cur-val">pts</span></div>
+                   title="Number of strongest peaks to display (1~20)"><span class="cur-val">pts</span></div>
         </div>
       </div>
 
@@ -495,13 +532,6 @@
               <option value="dBm">dBm</option><option value="dBmV">dBmV</option>
               <option value="dBuV">dBuV</option><option value="dBV">dBV</option>
             </select></div>
-          <div class="param-row"><label data-i18n="wf_range">WF Range</label>
-            <select id="select-wf-range" data-i18n="tip_wf_range" data-i18n-attr="title">
-              <option value="auto" data-i18n="wf_auto">Auto</option>
-              <option value="fixed" data-i18n="wf_fixed">Fixed</option>
-            </select>
-            <input type="number" id="input-wf-lo" value="-110" step="5" data-i18n="tip_wf_lo" data-i18n-attr="title">
-            <input type="number" id="input-wf-hi" value="-30" step="5" data-i18n="tip_wf_hi" data-i18n-attr="title"><span class="cur-val">dBm</span></div>
           <div class="param-row"><label data-i18n="offset">Offset</label>
             <input type="number" id="input-offset" value="0" step="0.5" data-i18n="tip_gain" data-i18n-attr="title" title="Display amplitude offset for external amp/attenuator (display only)">
             <span class="cur-val" data-i18n="db">dB</span></div>
@@ -872,17 +902,14 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.10.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.12.5 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>
 
-<!-- FT8 decode table: floating, draggable by its head, resizable by its corner. The rows
-     are built by ui/ft8Window.ts from sdr/ft8Log.ts (newest first). It lives in <body>, outside
-     the zoomed frame, and carries the UI scale itself (core/uiScale.ts) like the keypad: a
-     fixed-position element inside the zoomed card has its left/top rendered in zoomed
-     coordinates while pointer clientX/Y stay viewport coordinates, which threw the window
-     off the cursor on scaled UIs (the drag bug this placement fixes). -->
+<!-- One live Decode surface for native and external results. It stays outside the zoomed
+     analyzer frame so floating geometry uses viewport pixels; the popup adopts this same
+     subtree while the opener retains receiver state, subscriptions and history. -->
 <div class="decode-window" id="decode-window" style="display:none;">
   <div class="decode-window-head" id="decode-window-head">
     <span id="decode-window-title">FT8</span>
@@ -910,8 +937,11 @@
            value="100" data-i18n-title="ft8_opacity_tip" data-i18n-attr="title" title="Opacity" />
     <button class="btn" id="btn-decode-utc" data-i18n="ft8_utc_toggle" data-i18n-title="ft8_utc_tip" data-i18n-attr="title" title="Show UTC time">UTC</button>
     <button class="btn" id="btn-decode-clear" data-i18n="clear">Clear</button>
+    <button class="btn" id="btn-decode-popout" data-i18n="decode_popout">Pop out</button>
+    <button class="btn" id="btn-decode-dock" data-i18n="decode_dock" hidden>Dock</button>
     <button class="btn" id="btn-decode-close" data-i18n="gnss_close">Close</button>
   </div>
+  <div id="decode-popout-error" class="decode-popout-error" role="alert" hidden></div>
   <div class="decode-sstv-confirm" id="sstv-clear-confirm" role="group" aria-labelledby="sstv-clear-prompt" style="display:none;">
     <span id="sstv-clear-prompt" data-i18n="sstv_confirm_clear_all">Delete every stored SSTV picture (all modes)?</span>
     <button type="button" class="btn" id="btn-sstv-delete-all" data-i18n="sstv_delete_all">Delete all</button>
@@ -925,6 +955,7 @@
            title="Regular expression over the message text" />
   </div>
   <div class="decode-window-body" id="decode-window-body">
+    <section id="decode-window-results" class="decoder-results" style="display:none;"></section>
     <table id="decode-window-table">
       <thead><tr>
         <th id="decode-window-time-th" data-sortable data-col="0" data-i18n="ft8_time">Time</th>

@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: LicenseRef-Harogic-WebSA
+// Project adapter: AGPL-3.0-only with ../../LICENSE-EXCEPTION; vendor SDK excluded.
 // SDK 0.55.100 ABI boundary for the native SAN-90 capture service.
 // Build with the official htra_api.h and libhtraapi.so.0.55.100: make sdk-shim.
 #include "htra_api.h"
 #include "htra_api_pnm.h"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -11,6 +14,25 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <cstdio>
+#include "iqs_usb_pipeline.hpp"
+
+// The vendor's IQS reader uses synchronous 64 KiB bulk reads. Keep bounded reads
+// in flight at full rate on a bounded USB pump; SDK calls retain their owner.
+// Other endpoints and capture rates retain the original libusb operation.
+extern "C" int LIBUSB_CALL libusb_init(libusb_context** out) {
+    auto& pipeline = websa_iqs_usb::current();
+    const auto init = pipeline.api().init;
+    if (!init) return LIBUSB_ERROR_NOT_SUPPORTED;
+    const int result = init(out);
+    if (!result) pipeline.context(out ? *out : nullptr);
+    return result;
+}
+extern "C" int LIBUSB_CALL libusb_bulk_transfer(libusb_device_handle* device,
+    unsigned char endpoint, unsigned char* data, int length, int* transferred,
+    unsigned int timeout) {
+    return websa_iqs_usb::current().read(device, endpoint, data, length, transferred, timeout);
+}
 
 struct San90Device;
 struct San90RtaDevice;
@@ -38,12 +60,16 @@ class San90Session {
     std::thread::id owner_;
     std::thread worker_;
     void run() {
+#if defined(__linux__)
+        pthread_setname_np(pthread_self(),"san90-session");
+#endif
         std::unique_lock<std::mutex> lock(work_);
         owner_ = std::this_thread::get_id();
         wake_.notify_all();
         for (;;) {
             wake_.wait(lock, [&] { return operation_ || stopping_; });
             if (stopping_) return;
+            websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::operation);
             auto operation = operation_;
             auto argument = argument_;
             lock.unlock();
@@ -63,6 +89,7 @@ class San90Session {
                 handle = nullptr;
                 healthy = false;
             }
+            websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::idle);
             lock.lock();
             result_ = result;
             operation_ = nullptr;
@@ -346,6 +373,7 @@ extern "C" int san90_clock_capabilities_v1(void* state, int* ocxo_type, int* int
 static int san90_iqs_configure(San90Device* state, double center_hz, const San90FrontEnd& fe,
                                double* usable_bandwidth, double* configured_center,
                                int device_decimate) {
+    websa_iqs_usb::current().stop();
     if (state->triggered) {
         int status = IQS_BusTriggerStop(&state->handle);
         if (status == -8 || status == -9) return status;
@@ -378,7 +406,9 @@ static int san90_iqs_configure(San90Device* state, double center_hz, const San90
     if (status) return status;
     // PacketSamples is fixed at 16240 samples per packet at every decimate
     // (measured); the sample RATE scales with the device decimate factor.
-    if (stream.PacketSamples != 16240 || stream.IQSampleRate <= 0.0 ||
+    if (stream.PacketSamples != 16240 || stream.PacketDataSize != 16240 * 4 ||
+        configured.DataFormat != Complex16bit || !std::isfinite(stream.IQSampleRate) ||
+        stream.IQSampleRate <= 0.0 ||
         std::fabs(stream.IQSampleRate * device_decimate - 62500000.0) > 1.0)
         return -102;
     if (!std::isfinite(stream.Bandwidth) || stream.Bandwidth < 300000.0 ||
@@ -465,10 +495,12 @@ extern "C" int san90_iqs_arm_v1(San90Device* state) {
     int status = IQS_BusTriggerStart(&state->handle);
     if (status) return status;
     state->triggered = true;
+    if (websa_iqs_usb::current().start(state->sample_rate_hz == 62500000.0))
+        std::fprintf(stderr, "SDK IQS: %u ordered USB transfers, %u packet handoff at 62.5 MSps\n",
+            websa_iqs_usb::Pipeline::transfer_count(), websa_iqs_usb::Pipeline::handoff_capacity());
     return 0;
 }
 
-// Retune or re-level the live IQS stream without Device_Close/Device_Open.
 // Retune, re-level or re-rate the live IQS stream without Device_Close/Device_Open.
 extern "C" int san90_iqs_reconfig_v2(San90Device* state, double center_hz,
                                        const San90FrontEnd* fe, int device_decimate,
@@ -485,17 +517,31 @@ extern "C" int san90_iqs_reconfig_v2(San90Device* state, double center_hz,
     return status ? status : san90_iqs_arm_v1(state);
 }
 
+// All production IQ entry points share the same fixed CS16 packet contract.
+// Check the SDK's byte count and width before copying from its borrowed pointer.
+static bool san90_valid_iqs_packet(const IQStream_TypeDef& stream, uint32_t capacity) {
+    return stream.IQS_StreamInfo.PacketSamples == 16240 && capacity >= 16240 &&
+        stream.IQS_StreamInfo.PacketDataSize == 16240 * 4 &&
+        stream.IQS_Profile.DataFormat == Complex16bit && stream.AlternIQStream &&
+        std::isfinite(stream.IQS_ScaleToV);
+}
+
 extern "C" int san90_next(San90Device* state, int16_t* dest, uint32_t capacity,
                             San90PacketInfo* info) {
     SAN90_DISPATCH(state, san90_next(state, dest, capacity, info));
     if (!san90_session.usable()) return -8;
     if (!state || !state->triggered || !dest || !info || capacity < 16240) return -100;
     IQStream_TypeDef stream{};
+    websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fetch);
+    // Stop before the vendor sees a synthetic USB overflow: the physical
+    // device remains valid. A full ring cannot empty during one vendor read.
+    if (websa_iqs_usb::current().handoff_overflow()) {
+        websa_iqs_usb::current().stop();return -130;
+    }
     int status = IQS_GetIQStream_PM1(&state->handle, &stream);
     if (status && status != APIRETVAL_WARNING_IFOverflow) return status;
     auto n = stream.IQS_StreamInfo.PacketSamples;
-    if (n != 16240 || n > capacity || !stream.AlternIQStream ||
-        !std::isfinite(stream.IQS_ScaleToV)) return -103;
+    if (!san90_valid_iqs_packet(stream, capacity)) return -103;
     std::memcpy(dest, stream.AlternIQStream, n * 2 * sizeof(int16_t));
     info->stamp = stream.IQS_TriggerInfo.SysTimerCountOfFirstDataPoint;
     info->samples = n;
@@ -533,17 +579,23 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
     *spectrum_points = 0;
     IQStream_TypeDef stream{};
     const auto fetch_started = San90Clock::now();
+    websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fetch);
+    // Stop before the vendor sees a synthetic USB overflow: the physical
+    // device remains valid. A full ring cannot empty during one vendor read.
+    if (websa_iqs_usb::current().handoff_overflow()) {
+        websa_iqs_usb::current().stop();return -130;
+    }
     int status = IQS_GetIQStream_PM1(&state->handle, &stream);
     state->timing.fetch_ns = san90_elapsed_ns(fetch_started);
     state->timing.fetch_status = status;
     state->timing.measured |= 2;
     if (status && status != APIRETVAL_WARNING_IFOverflow) return status;
     auto n = stream.IQS_StreamInfo.PacketSamples;
-    if (n != 16240 || n > capacity || !stream.AlternIQStream ||
-        !std::isfinite(stream.IQS_ScaleToV)) return -103;
+    if (!san90_valid_iqs_packet(stream, capacity)) return -103;
     int warning = (status == APIRETVAL_WARNING_IFOverflow || stream.DeviceState.IFOverflow)
         ? APIRETVAL_WARNING_IFOverflow : 0;
     const auto copy_started = San90Clock::now();
+    websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::copy);
     std::memcpy(dest, stream.AlternIQStream, n * 2 * sizeof(int16_t));
     state->timing.memcpy_ns = san90_elapsed_ns(copy_started);
     state->timing.measured |= 4;
@@ -561,6 +613,7 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
         fft.IQS_StreamInfo.IQSampleRate = state->sample_rate_hz;
         fft.IQS_StreamInfo.Bandwidth = state->bandwidth_hz;
         const auto fft_started = San90Clock::now();
+        websa_iqs_usb::current().owner_phase(websa_iqs_usb::OwnerPhase::fft);
         status = DSP_FFT_IQSToSpectrum(&state->dsp, &fft, freq, power);
         state->timing.fft_ns = san90_elapsed_ns(fft_started);
         state->timing.fft_status = status;
@@ -574,6 +627,54 @@ extern "C" int san90_next_v2(San90Device* state, int16_t* dest, uint32_t capacit
     }
     state->warning = warning;
     return 0;
+}
+
+// Independent display-only DSP contexts. These never access a device/session and
+// are owned by the display worker, so a long transform cannot delay IQ fetching.
+struct San90DisplayFft { void* dsp = nullptr; uint32_t size = 0, points = 0; };
+extern "C" int san90_display_fft_open_v1(void** out, uint32_t size, uint32_t* points, double* rbw) {
+    if (!out || !points || !rbw || (size != 32768 && size != 65536 && size != 16240)) return -120;
+    *out = nullptr;
+    // This independent worker bypasses San90Session's exception barrier.
+    // Report allocation failure through the C ABI instead of throwing into Rust.
+    auto* s = new (std::nothrow) San90DisplayFft;
+    if (!s) return -101;
+    int status = DSP_Open(&s->dsp);
+    DSP_FFT_TypeDef in{}, actual{};
+    if (!status) status = DSP_FFT_DeInit(&in);
+    if (!status) {
+        in.FFTSize = size; in.SamplePts = size; in.WindowType = FlatTop;
+        in.Calibration = false; in.Intercept = 0.8f;
+        in.DetectionRatio = 1; in.TraceDetector = TraceDetector_PosPeak;
+        status = DSP_FFT_Configuration(&s->dsp, &in, &actual, points, rbw);
+        if (!status && (actual.FFTSize != size || actual.SamplePts != size
+            || actual.WindowType != FlatTop || actual.DetectionRatio != 1
+            || actual.Calibration || actual.TraceDetector != TraceDetector_PosPeak
+            || std::fabs(actual.Intercept - 0.8f) > 1e-6 || *points < 2 || *points > size
+            || !std::isfinite(*rbw) || *rbw <= 0)) status = -121;
+    }
+    if (status) { if (s->dsp) DSP_Close(&s->dsp); delete s; return status; }
+    s->size = size; s->points = *points; *out = s; return 0;
+}
+extern "C" int san90_display_fft_execute_v1(void* handle, const int16_t* iq, uint32_t samples,
+    float scale, double center, double rate, double bandwidth, double* freq, float* power, uint32_t capacity) {
+    auto* s = static_cast<San90DisplayFft*>(handle);
+    if (!s || !iq || samples != s->size || capacity < s->points || !freq || !power
+        || !std::isfinite(scale) || scale <= 0 || !std::isfinite(center)
+        || !std::isfinite(rate) || rate <= 0 || !std::isfinite(bandwidth) || bandwidth <= 0) return -122;
+    IQStream_TypeDef stream{};
+    stream.AlternIQStream = const_cast<int16_t*>(iq); stream.IQS_ScaleToV = scale;
+    stream.IQS_Profile.DataFormat = Complex16bit; stream.IQS_Profile.CenterFreq_Hz = center;
+    stream.IQS_Profile.TriggerLength = samples;
+    stream.IQS_StreamInfo.PacketSamples = samples; stream.IQS_StreamInfo.StreamSamples = samples;
+    stream.IQS_StreamInfo.PacketDataSize = samples * 4; stream.IQS_StreamInfo.IQSampleRate = rate;
+    stream.IQS_StreamInfo.Bandwidth = bandwidth;
+    return DSP_FFT_IQSToSpectrum(&s->dsp, &stream, freq, power);
+}
+extern "C" int san90_display_fft_close_v1(void* handle) {
+    auto* s = static_cast<San90DisplayFft*>(handle);
+    if (!s) return 0;
+    int status = DSP_Close(&s->dsp); delete s; return status;
 }
 
 // IQ, spectrum and metadata share one SDK-thread dispatch and one packet boundary.
@@ -592,6 +693,37 @@ extern "C" int san90_next_v3(San90Device* state, int16_t* dest, uint32_t capacit
     *timing = state->timing;
     if (!status) *warning = state->warning;
     return status;
+}
+
+// At most four physical packets per owner dispatch. This removes repeated
+// caller/SDK-owner rendezvous without enlarging the USB handoff or changing
+// packet validation. Every buffer belongs to the caller until return.
+struct San90IqsBatchSlot {
+    int16_t* iq;
+    uint32_t capacity;
+    San90PacketInfo info;
+    San90IqsTiming timing;
+    int warning;
+    int status;
+};
+extern "C" int san90_next_batch_v1(San90Device* state, San90IqsBatchSlot* slots,
+                                   uint32_t count, uint32_t* attempted) {
+    SAN90_DISPATCH(state, san90_next_batch_v1(state, slots, count, attempted));
+    if (!state || !slots || !attempted || count == 0 || count > 4) return -100;
+    *attempted = 0;
+    // Validate the whole caller geometry before consuming any source sample.
+    for (uint32_t i = 0; i < count; ++i)
+        if (!slots[i].iq || slots[i].capacity < 16240) return -100;
+    for (uint32_t i = 0; i < count; ++i) {
+        auto& slot = slots[i];
+        slot.info = {}; slot.timing = {}; slot.warning = 0;
+        uint32_t points = 0;
+        slot.status = san90_next_v3(state, slot.iq, slot.capacity, &slot.info,
+            nullptr, nullptr, 0, &points, &slot.timing, &slot.warning);
+        ++*attempted;
+        if (slot.status) return slot.status; // Prefix remains valid; no retry here.
+    }
+    return 0;
 }
 
 // Versioned, fixed-width trigger readback ABI; never append to San90RtaActual.
@@ -632,6 +764,48 @@ struct San90RtaDevice {
     std::vector<float> capture_power;
 };
 
+// This is a host-buffer budget, not a device capability. Include all three
+// arrays and retained capacities; a profile change may exchange a large trace
+// for a large density bitmap. Widen SDK counts before adding vendor headroom.
+static int san90_rta_prepare_buffers(San90RtaDevice* state, bool accumulate) {
+    const auto& info = state->info;
+    const uint64_t width = info.FrameWidth;
+    const uint64_t height = info.FrameHeight;
+    const double span = info.StopFrequency_Hz - info.StartFrequency_Hz;
+    if (width < 2 || width > 65536 || height == 0 || height > 65536 ||
+        info.PacketValidPoints < width || !std::isfinite(info.StartFrequency_Hz) ||
+        !std::isfinite(info.StopFrequency_Hz) || !std::isfinite(span) || span <= 0.0)
+        return -102;
+    const uint64_t trace = static_cast<uint64_t>(std::max(info.PacketValidPoints, info.PacketSamplePoints)) + 4096;
+    const uint64_t bitmap = width * height + 65536;
+    const uint64_t capture = accumulate ? width : 0;
+    constexpr uint64_t budget = 64u * 1024u * 1024u;
+    if (trace + bitmap * sizeof(uint16_t) + capture * sizeof(float) > budget)
+        return -102;
+    const uint64_t retained = std::max<uint64_t>(trace, state->trace.capacity())
+        + std::max<uint64_t>(bitmap, state->bitmap.capacity()) * sizeof(uint16_t)
+        + std::max<uint64_t>(capture, state->capture_power.capacity()) * sizeof(float);
+    if (retained > budget) {
+        std::vector<uint8_t>().swap(state->trace);
+        std::vector<uint16_t>().swap(state->bitmap);
+        std::vector<float>().swap(state->capture_power);
+    }
+    // vector::assign may allocate before freeing its old storage. Release each
+    // growing buffer first so replacement also obeys the peak live-byte budget.
+    if (state->trace.capacity() < trace) std::vector<uint8_t>().swap(state->trace);
+    if (state->bitmap.capacity() < bitmap) std::vector<uint16_t>().swap(state->bitmap);
+    if (state->capture_power.capacity() < capture) std::vector<float>().swap(state->capture_power);
+    try {
+        state->trace.assign(static_cast<size_t>(trace), 0);
+        state->bitmap.assign(static_cast<size_t>(bitmap), 0);
+        state->capture_power.assign(static_cast<size_t>(capture), -1.0e30f);
+    } catch (const std::bad_alloc&) {
+        // Return through reconfig_v2 so it can attempt its normal rollback.
+        return -101;
+    }
+    return 0;
+}
+
 extern "C" int san90_rta_open_v1(San90RtaDevice** out, double center_hz, double span_hz,
                                    double* start_hz, double* stop_hz, uint32_t* points) {
     SAN90_DISPATCH(nullptr, san90_rta_open_v1(out, center_hz, span_hz, start_hz, stop_hz, points));
@@ -668,18 +842,11 @@ extern "C" int san90_rta_open_v1(San90RtaDevice** out, double center_hz, double 
         in.BusTimeout_ms = 250;
         status = RTA_Configuration(&state->handle, &in, &configured, &state->info);
         if (status) goto fail;
-        const uint32_t width = state->info.FrameWidth;
-        const uint32_t height = state->info.FrameHeight;
-        const uint32_t valid = state->info.PacketValidPoints;
-        if (width < 2 || valid < width || width > 65536 || height == 0 || height > 65536) {
-            status = -102;
-            goto fail;
-        }
-        state->trace.resize(std::max(valid, state->info.PacketSamplePoints) + 4096);
-        state->bitmap.resize(static_cast<size_t>(width) * height + 65536);
+        status = san90_rta_prepare_buffers(state, false);
+        if (status) goto fail;
         *start_hz = state->info.StartFrequency_Hz;
         *stop_hz = state->info.StopFrequency_Hz;
-        *points = width;
+        *points = state->info.FrameWidth;
     }
     status = RTA_BusTriggerStart(&state->handle);
     if (status) goto fail;
@@ -807,20 +974,12 @@ static int san90_rta_configure(San90RtaDevice* state, const San90RtaRequest& r,
     status = san90_retry_bus(
         [&] { return RTA_Configuration(&state->handle, &in, &configured, &state->info); });
     if (status) return status;
-    const uint32_t width = state->info.FrameWidth;
-    const uint32_t height = state->info.FrameHeight;
-    const uint32_t valid = state->info.PacketValidPoints;
-    if (width < 2 || valid < width || width > 65536 || height == 0 || height > 65536)
-        return -102;
-    // Fresh buffers for the new frame geometry (Python rta.py: stale buffers caused GPF).
-    state->trace.assign(std::max(valid, state->info.PacketSamplePoints) + 4096, 0);
-    state->bitmap.assign(static_cast<size_t>(width) * height + 65536, 0);
-    if (configured.TriggerMode == FixedPoints && configured.TriggerSource == Level && !configured.EnableReTrigger)
-        state->capture_power.assign(width, -1.0e30f);
-    else state->capture_power.clear();
+    status = san90_rta_prepare_buffers(state,
+        configured.TriggerMode == FixedPoints && configured.TriggerSource == Level && !configured.EnableReTrigger);
+    if (status) return status;
     actual->start_hz = state->info.StartFrequency_Hz;
     actual->stop_hz = state->info.StopFrequency_Hz;
-    actual->points = width;
+    actual->points = state->info.FrameWidth;
     actual->ref_dbm = configured.RefLevel_dBm;
     actual->rbw_hz = configured.RBW_Hz;
     actual->vbw_hz = configured.VBW_Hz;
@@ -970,14 +1129,9 @@ extern "C" int san90_rta_reconfig_v2(San90RtaDevice* state, const San90RtaReques
     int restored = RTA_BusTriggerStop(&state->handle);
     RTA_Profile_TypeDef configured{};
     if (!restored) restored = RTA_Configuration(&state->handle, &previous, &configured, &state->info);
-    if (!restored) {
-        state->trace.assign(std::max(state->info.PacketValidPoints, state->info.PacketSamplePoints) + 4096, 0);
-        state->bitmap.assign(static_cast<size_t>(state->info.FrameWidth) * state->info.FrameHeight + 65536, 0);
-        if (previous.TriggerMode == FixedPoints && previous.TriggerSource == Level && !previous.EnableReTrigger)
-            state->capture_power.assign(state->info.FrameWidth, -1.0e30f);
-        else state->capture_power.clear();
-        restored = RTA_BusTriggerStart(&state->handle);
-    }
+    if (!restored) restored = san90_rta_prepare_buffers(state,
+        previous.TriggerMode == FixedPoints && previous.TriggerSource == Level && !previous.EnableReTrigger);
+    if (!restored) restored = RTA_BusTriggerStart(&state->handle);
     state->configured = previous;
     state->actual = previous_actual;
     if (!restored) ++state->actual.generation;
@@ -1562,6 +1716,15 @@ extern "C" int san90_gnss_cached_v1(void* state, int* lock, int* sats, int* docx
 extern "C" int san90_close(San90Device* state) {
     SAN90_DISPATCH(state, san90_close(state));
     if (!state) return -100;
+    auto& usb = websa_iqs_usb::current();
+    usb.stop();
+    const auto stats = usb.stats();
+    if (stats.submitted)
+        std::fprintf(stderr, "SDK IQS USB: delivered=%llu submitted=%llu failed=%llu cancelled=%llu depth=%u handoff_peak=%llu handoff_age_ms=%.3f discarded_at_stop=%llu\n",
+            static_cast<unsigned long long>(stats.delivered), static_cast<unsigned long long>(stats.submitted),
+            static_cast<unsigned long long>(stats.failed), static_cast<unsigned long long>(stats.cancelled),
+            websa_iqs_usb::Pipeline::transfer_count(), static_cast<unsigned long long>(stats.peak_queued_packets),
+            stats.max_queue_age_ns / 1e6, static_cast<unsigned long long>(stats.discarded));
     int status = san90_session.usable() && state->triggered ? IQS_BusTriggerStop(&state->handle) : 0;
     if (status) san90_open_failed(status);
     if (state->dsp) {

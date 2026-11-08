@@ -15,7 +15,10 @@ commands:
     python3 tools/pluto_tx.py drm --iq drm_iq.wav --dry-run
     python3 tools/pluto_tx.py drm --iq-f32 tests/fixtures/drm/drm_modeB_so3_48k_aac.f32 --iq-rate 48000 --dry-run
     python3 tools/pluto_tx.py drmplus --dry-run
+    python3 tools/pluto_tx.py gps --dry-run  # install: bash tools/setup-gps-simulator.sh
     python3 tools/pluto_tx.py cw 'CQ CQ DE N0CALL' --pitch 700
+    python3 tools/pluto_tx.py rtty --message 'CQ TEST 12345' --dry-run
+    python3 tools/pluto_tx.py aprs --prepare  # prepare dependencies without TX
 
 Run `python3 tools/pluto_tx.py <mode> --help` for the mode's own options.
 """
@@ -41,6 +44,14 @@ TOOLS: dict[str, tuple[str | None, str]] = {
     'pm': ('pluto_analog_tx.py', 'PM: phase modulation'),
     'cw': ('pluto_cw_tx.py', 'CW: keyed Morse carrier at the Pitch'),
     'ft8': ('pluto_ft8_tx.py', 'FT8: 8-FSK burst in a 15 s slot'),
+    'ft4': ('pluto_digital_tx.py', 'FT4: known message in UTC-aligned 7.5 s slots'),
+    'rtty': ('pluto_digital_tx.py', 'RTTY: native ITA2 FSK, 45.45 baud / 170 Hz by default'),
+    'rtty-reverse': ('pluto_digital_tx.py', 'RTTY reverse: exchanged mark and space tones'),
+    'wspr': ('pluto_digital_tx.py', 'WSPR: known callsign/grid/power in UTC-aligned 120 s slots'),
+    'aprs': ('pluto_digital_tx.py', 'APRS: AX.25 UI packet over 1200-baud AFSK/FM'),
+    'ais': ('pluto_digital_tx.py', 'AIS: type 1 position report on a 435 MHz bench channel'),
+    'dtmf': ('pluto_digital_tx.py', 'DTMF: known digit sequence over narrowband FM'),
+    'gps': ('pluto_gps_tx.py', 'GPS: synthetic 2022 navigation/PVT scenario on exact 435 MHz bench carrier'),
     'drm': ('pluto_drm_tx.py', 'DRM30: int16 WAV or committed f32 IQ'),
     'drmplus': ('pluto_drm_tx.py', 'DRM+ mode E: committed 96 kHz f32 IQ in bursts'),
     'sstv': ('pluto_sstv_tx.py', 'SSTV: slow-scan television picture as SSB tones'),
@@ -79,7 +90,8 @@ def run(mode: str, argv: list[str]) -> int:
               file=sys.stderr)
         return 2
     module = load_tool(tool)
-    call = [mode, *argv] if tool == ANALOG_TOOL else [*MODE_ARGS.get(mode, ()), *argv]
+    positional = tool in (ANALOG_TOOL, 'pluto_digital_tx.py')
+    call = [mode, *argv] if positional else [*MODE_ARGS.get(mode, ()), *argv]
     return module.main(call)
 
 

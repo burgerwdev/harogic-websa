@@ -160,6 +160,20 @@ describe('decoder channel selection', () => {
 		vi.restoreAllMocks();
 	});
 
+	it('clears the main reception badge during recovered batches while Decode is closed', () => {
+		document.body.insertAdjacentHTML('beforeend', '<span id="sdr-receiver-error" hidden></span>');
+		if (decodeWindowOpen()) toggleDecodeWindow();
+		const badge = document.getElementById('sdr-receiver-error')!;
+		setDecodeError(1, 'temporary interruption', 'reconnecting');
+		expect(badge.hidden).toBe(false);
+		expect(badge.textContent).toBe(t('receiver_reconnecting'));
+		ingestDecodeEvents(() => setDecodeError(1, null));
+		expect(badge.hidden).toBe(true);
+		expect(badge.textContent).toBe('');
+		expect(badge.title).toBe('');
+		expect(decodeWindowOpen()).toBe(false);
+	});
+
 	it('selects the confirmed mode and retained output for each receiver', () => {
 		setDecodeChannelMode(1, 'ft8');
 		setDecodeChannelMode(2, 'cw');
@@ -385,6 +399,7 @@ describe('the FT8 decode window', () => {
 		toggleDecodeWindow();
 		addFt8Spot(report({ text: 'K1ABC W9XYZ EN37', snrDb: -5, frequencyHz: 1800 }), 1_000);
 		addFt8Spot(report({ text: 'CQ JO1WKO PM95', snrDb: 2, frequencyHz: 1000 }), 2_000);
+		addFt8Spot(report({ text: 'W9XYZ ZL1ABC -03', snrDb: 6, frequencyHz: 1500 }), 3_000);
 		const firstText = () => (rows()[0].querySelectorAll('td')[4] as HTMLElement).textContent;
 		const th = (col: number) =>
 			document.querySelector(`#decode-window-table th[data-col="${col}"]`) as HTMLElement;
@@ -397,7 +412,8 @@ describe('the FT8 decode window', () => {
 		expect(firstText()).toBe('CQ JO1WKO PM95');
 		th(4).click();                                    // again: back to arrival order
 		expect(th(4).classList.contains('sorted')).toBe(false);
-		expect(firstText()).toBe('CQ JO1WKO PM95');       // newest first = the 2_000 decode
+		expect(firstText()).toBe('W9XYZ ZL1ABC -03');     // newest first differs from message sorting
+		expect(ft8Spots().map(spot => spot.at)).toEqual([3_000, 2_000, 1_000]);
 	});
 
 	it('marks the hovered decode and its QSO pair; a CQ marks every decode of that caller', () => {
@@ -590,6 +606,18 @@ describe('the FT8 decode window', () => {
 		expect(Number.parseFloat(win.style.width)).toBe(260);
 		expect(Number.parseFloat(win.style.left) + 260).toBe(right0);
 		expect(east).toBeTruthy();
+	});
+
+	it('discloses evicted CW history and clears the notice with the text', () => {
+		clearCwLog();
+		setDecodeWindowAvailable('cw');
+		toggleDecodeWindow();
+		for (let i = 0; i < 201; i++) addCwText('E', true);
+		const pane = document.getElementById('decode-window-cw')!;
+		expect(pane.querySelector('[role="status"]')?.textContent).toContain('1');
+		document.getElementById('btn-decode-clear')!.click();
+		expect(pane.querySelector('[role="status"]')).toBeNull();
+		expect(pane.textContent).toContain(t('cw_waiting'));
 	});
 
 	it('shows the CW text when CW is the demodulator, and clears it from the same button', () => {
@@ -1444,7 +1472,6 @@ describe('the AM pane', () => {
 		expect(toggle().getAttribute('aria-pressed')).toBe('true');
 		expect(toggle().getAttribute('aria-busy')).toBe('false');
 		expect(toggle().disabled).toBe(false);
-		expect(toggle().getAttribute('aria-pressed')).toBe('true');
 		expect(badge().classList.contains('on')).toBe(false);
 		setAmInfo(info());
 		expect(badge().classList.contains('on')).toBe(true);
@@ -1475,7 +1502,6 @@ describe('the AM pane', () => {
 		expect(toggle().getAttribute('aria-busy')).toBe('false');
 		expect(toggle().classList.contains('pending')).toBe(false);
 		expect(badge().classList.contains('on')).toBe(false);
-		expect(toggle().getAttribute('aria-pressed')).toBe('true');
 		expect(toggle().disabled).toBe(false);
 	});
 
@@ -1490,7 +1516,6 @@ describe('the AM pane', () => {
 		sdrAmSync.confirm(true);
 		confirmAmSyncGeneration(3);
 		setAmInfo(info({ syncGeneration: 1 }));
-		expect(toggle().getAttribute('aria-pressed')).toBe('true');
 		expect(toggle().getAttribute('aria-pressed')).toBe('true');
 		expect(badge().classList.contains('on')).toBe(false);
 		expect(document.getElementById('am-carrier')!.textContent).toBe('—');
@@ -1690,6 +1715,19 @@ describe('radiofax logical page browser', () => {
 		else Reflect.deleteProperty(HTMLCanvasElement.prototype, 'toBlob');
 		vi.unstubAllGlobals();
 		document.body.innerHTML = '';
+	});
+
+	it('does not rewrite any radiofax select attributes or options during decoder refreshes', () => {
+		image('live');
+		const selects = [...document.querySelectorAll<HTMLSelectElement>('#decode-window-radiofax select')];
+		expect(selects.length).toBeGreaterThan(5);
+		const observer = new MutationObserver(() => {});
+		const setters = selects.map(select => vi.spyOn(select, 'value', 'set'));
+		for (const select of selects) observer.observe(select, { attributes: true, subtree: true, childList: true, characterData: true });
+		for (let i = 0; i < 5; i++) ui.refreshDecodeWindow();
+		for (const select of selects) { select.focus(); ui.refreshDecodeWindow(); select.blur(); }
+		expect(observer.takeRecords()).toEqual([]); observer.disconnect();
+		for (const setter of setters) expect(setter).not.toHaveBeenCalled();
 	});
 
 	it('can render another mode before the Radiofax panels become native popovers', () => {

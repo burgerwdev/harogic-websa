@@ -1,3 +1,5 @@
+import { setDomProperty, setDomAttribute } from './domState';
+import { syncSelectValue } from './selectControl';
 /**
  * Amplitude chain state - attenuation / preamp / IF gain / gain strategy.
  *
@@ -52,8 +54,8 @@ function renderAmpField(field: AmpField, force = false): void {
 	const { id, slot } = AMP_FIELDS[field];
 	const el = document.getElementById(id) as HTMLSelectElement | null;
 	if (!el) return;
-	if (force || document.activeElement !== el) el.value = String(slot.get());
-	el.setAttribute('aria-busy', String(slot.pending()));
+	syncSelectValue(el, String(slot.get()), force);
+	setDomAttribute(el, 'aria-busy', String(slot.pending()));
 }
 
 function finishAmpRequest(field: AmpField): void {
@@ -180,10 +182,10 @@ export function syncAmpAvailability(exclusive: boolean): void {
 		const el = document.getElementById(AMP_FIELDS[field].id) as HTMLSelectElement | null;
 		if (!el) continue;
 		if (field === 'preamp') {
-			el.disabled = manualAtten || exclusive;
-			el.title = manualAtten ? t('preamp_manual_atten') : t('tip_select-preamp');
+			setDomProperty(el, 'disabled', manualAtten || exclusive);
+			setDomProperty(el, 'title', manualAtten ? t('preamp_manual_atten') : t('tip_select-preamp'));
 		} else {
-			el.disabled = exclusive;
+			setDomProperty(el, 'disabled', exclusive);
 		}
 	}
 }

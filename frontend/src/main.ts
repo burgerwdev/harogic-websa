@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Harogic-WebSA
+// Project-owned code: AGPL-3.0-only with ../../LICENSE-EXCEPTION; see ../../LICENSING.md.
 // Entry point: initialize all modules
 import './style.css';
 import * as S from './core/store';
@@ -23,6 +25,7 @@ import { initUiScale } from './core/uiScale';
 import './render/spectrum';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
 import { initSpectrumZoomUi } from './ui/spectrumZoomUi';
+import { initSdrEqualizer } from './ui/sdrEqualizer';
 import { applyI18n, setLang, t } from './core/i18n';
 import { initTheme, onThemeChange, toggleTheme } from './core/theme';
 import { updateInfoBar } from './render/infobar';
@@ -34,9 +37,12 @@ function init() {
   initUiScale();
   initStore();   // bind the canvas before the first render
   // Theme/language (restored from localStorage)
-  const savedTheme = localStorage.getItem('web-sa-theme');
+  let savedTheme: string | null = null, savedLang: string | null = null;
+  try {
+    savedTheme = localStorage.getItem('web-sa-theme');
+    savedLang = localStorage.getItem('web-sa-lang');
+  } catch { /* Optional preferences must not prevent controls from starting. */ }
   initTheme(savedTheme === 'light' ? 'light' : 'dark');
-  const savedLang = localStorage.getItem('web-sa-lang');
   setLang(savedLang === 'zh' ? 'zh' : 'en');
   applyI18n();
 
@@ -52,7 +58,11 @@ function init() {
   bindActions();
   bindCanvas();
   initSpectrumZoomUi();
+  initSdrEqualizer();
   initPopoverDrag();
+  // Autoplay can hold playback silent after a reload; repaint when that state
+  // changes so the status hint appears and clears without another trigger.
+  document.addEventListener('websa:sdr-audio-gesture', () => requestRender());
 
 
   // Theme/language toggle buttons (dev-bar, next to preset, no label)
@@ -61,7 +71,7 @@ function init() {
     btnTheme.textContent = S_getTheme() === 'dark' ? t('dark') : t('light');
     btnTheme.addEventListener('click', () => {
       const th = toggleTheme();
-      localStorage.setItem('web-sa-theme', th);
+      try { localStorage.setItem('web-sa-theme', th); } catch { /* session only */ }
       btnTheme.textContent = th === 'dark' ? t('dark') : t('light');
       requestRender();
     });
@@ -72,7 +82,7 @@ function init() {
     btnLang.addEventListener('click', () => {
       const l = getLang() === 'en' ? 'zh' : 'en';
       setLang(l);
-      localStorage.setItem('web-sa-lang', l);
+      try { localStorage.setItem('web-sa-lang', l); } catch { /* session only */ }
       applyI18n();
       updateInfoBar();
       syncToggleTexts();

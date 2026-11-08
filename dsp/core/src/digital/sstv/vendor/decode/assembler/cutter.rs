@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use super::clock::SampleClock;
 use super::estimates::Estimates;
 use super::tone_in_progress::CompletedTone;
+use super::correct_frequency;
 use crate::digital::sstv::vendor::modes::step::Step;
 use crate::digital::sstv::vendor::modes::{Mode, SYNC_FREQUENCY};
 use crate::digital::sstv::vendor::units::{Duration, Frequency, Tone};
@@ -95,6 +96,7 @@ fn step_slots(
 /// Where the image being cut stands.
 pub(super) struct SequenceCutter {
     mode: Mode,
+    frequency_offset_hz: i32,
     layout: SequenceLayout,
     clock: SampleClock,
     /// The (fractional) sample at which the current sequence begins.
@@ -109,6 +111,7 @@ impl SequenceCutter {
     pub fn new(mode: Mode, clock: SampleClock, sequence_start: f64) -> Self {
         Self {
             mode,
+            frequency_offset_hz: 0,
             layout: SequenceLayout::new(mode, clock),
             clock,
             sequence_start,
@@ -121,13 +124,15 @@ impl SequenceCutter {
     /// bit merged into the following sync pulse: the first sequence's own
     /// sync pulse or, for modes with a starting sync pulse, the one that
     /// precedes the first sequence.
-    pub fn after_header(mode: Mode, clock: SampleClock, header_end: u64) -> Self {
+    pub fn after_header(mode: Mode, clock: SampleClock, header_end: u64, frequency_offset_hz: i32) -> Self {
         let sequence_start = if mode.has_starting_sync_pulse() {
             header_end as f64
         } else {
             header_end as f64 - clock.samples(mode.sync_pulse().1)
         };
-        Self::new(mode, clock, sequence_start)
+        let mut cutter = Self::new(mode, clock, sequence_start);
+        cutter.frequency_offset_hz = frequency_offset_hz;
+        cutter
     }
 
     pub const fn mode(&self) -> Mode {
@@ -146,8 +151,10 @@ impl SequenceCutter {
     /// sync pulse, if it is one and ends about where expected.
     pub fn sync_found(&mut self, completed: CompletedTone) {
         let layout = &self.layout;
+        let tone = Tone::new(correct_frequency(completed.tone.frequency, self.frequency_offset_hz),
+            completed.tone.duration);
         if self.next_sequence_start.is_some()
-            || !completed.tone.is_near(layout.sync, layout.sync_tolerance)
+            || !tone.is_near(layout.sync, layout.sync_tolerance)
         {
             return;
         }
@@ -189,7 +196,8 @@ impl SequenceCutter {
         tones.extend(self.layout.slots.iter().map(|slot| {
             let start = self.sequence_start + slot.start * stretch;
             let length = slot.length * stretch;
-            Tone::new(estimates.mean(start, length), self.clock.duration(length))
+            Tone::new(correct_frequency(estimates.mean(start, length), self.frequency_offset_hz),
+                self.clock.duration(length))
         }));
 
         self.sequence_start = next_start;

@@ -9,6 +9,7 @@ import { resetAll } from '../core/params';
 import { setWS } from '../core/wsSend';
 import { sdrDemod, sdrIfbw, sdrListenHz, sdrPitchHz } from '../ui/sdrState';
 import { setPluginManifest } from '../sdr/registry';
+import { receiverPlugin } from './pluginFixtures';
 import { filterPreviewHz } from '../ui/sdrFilter';
 import { plotRect } from '../render/plot';
 import {
@@ -63,13 +64,7 @@ function xOf(hz: number): number {
 
 beforeEach(() => {
 	resetAll();
-	setPluginManifest([
-		{ kind: 'analog', id: 'am', implemented: true, audioEnhancement: false },
-		{ kind: 'analog', id: 'usb', implemented: true, audioEnhancement: false },
-		{ kind: 'analog', id: 'lsb', implemented: true, audioEnhancement: false },
-		{ kind: 'analog', id: 'cw', implemented: true, audioEnhancement: false },
-		{ kind: 'digital', id: 'ft8', implemented: true, audioEnhancement: false },
-	]);
+	setPluginManifest(['am', 'usb', 'lsb', 'cw', 'ft8'].map((id) => receiverPlugin(id)));
 	S.setSdrMode(true);
 	sdrListenHz.set(LISTEN);
 	sdrPitchHz.set(700);

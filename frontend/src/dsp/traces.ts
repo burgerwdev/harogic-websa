@@ -7,25 +7,6 @@ import { updateNormalizeStatusUI } from './normalizeStatus';
 import { updateTrackingMarkers } from './markerTracking';
 import { displayUnit } from '../ui/displayState';
 
-// Peak-preserving resampling
-export function resampleTrace(src: Float32Array, newLen: number, isMaxHold: boolean): Float32Array {
-  const out = new Float32Array(newLen);
-  const oldLen = src.length;
-  if (oldLen < 2 || newLen < 2) return new Float32Array(src.slice(0, newLen));
-  for (let i = 0; i < newLen; i++) {
-    const start = i * (oldLen - 1) / (newLen - 1);
-    const end = (i + 1) * (oldLen - 1) / (newLen - 1);
-    const j0 = Math.floor(start);
-    const j1 = Math.min(oldLen - 1, Math.max(j0, Math.ceil(end)));
-    let v = src[j0];
-    for (let j = j0 + 1; j <= j1; j++) {
-      v = isMaxHold ? Math.max(v, src[j]) : Math.min(v, src[j]);
-    }
-    out[i] = v;
-  }
-  return out;
-}
-
 export function gapFill(raw: Float32Array): Float32Array {
   if (!S.currentGapFill) return raw;
   let hasGap = false;

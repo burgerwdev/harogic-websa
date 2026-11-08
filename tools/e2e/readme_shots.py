@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Capture the README screenshots on the bench (SAN-90 + signal sources).
 
-The committed images under `screenshots/` are produced by this script, so they can be
-re-made when the UI changes instead of being one-off captures.
+The committed images under `screenshots/` can be reproduced with this script.
+New captures default to /tmp; review them before explicitly choosing --out screenshots.
 
   * Analyzer-side shots (spectrum, markers, measurements, RTA/waterfall) need the analyzer
     and a CW source on the tinySA (`--tinysa-port`; the level comes from the smoke test's
@@ -121,9 +121,12 @@ def capture(page, out: Path, name: str) -> None:
 
 
 def button_on(page, button_id: str) -> bool:
-    """True when a text-toggle button (Off/On) reports its on state."""
-    return page.evaluate(
-        f"() => document.getElementById('{button_id}').textContent.trim().toLowerCase() === 'on'")
+    """Read the visible toggle in either supported screenshot language."""
+    label = page.locator(f'#{button_id}').inner_text().strip().casefold()
+    states = {'on': True, '开': True, 'off': False, '关': False}
+    if label not in states:
+        raise RuntimeError(f'{button_id} has an unknown toggle label: {label!r}')
+    return states[label]
 
 
 def ensure_button(page, button_id: str, on: bool) -> None:
@@ -245,19 +248,17 @@ def wait_decodes(page, mode: str, timeout_s: float, want: int) -> int:
         if count >= want or time.monotonic() > deadline:
             break
         page.wait_for_timeout(2000)
-    if count == 0:
+    if count < want:
         raise RuntimeError(
-            f'the {mode} decode window stayed empty after {timeout_s:.0f}s; '
+            f'the {mode} decode window has {count}/{want} requested decodes after {timeout_s:.0f}s; '
             'is the signal source transmitting (tools/pluto/pluto_*_tx.py)?')
     return count
 
 
 def sdr_shots(page, url: str, out: Path, names: list[str]) -> None:
-    page.click('#btn-mode-sdr')
+    ensure_active(page, '#btn-mode-sdr')
     page.wait_for_timeout(2500)
-    # The UI re-applies the persisted SDR preferences when the mode is entered, so the tuning
-    # has to go through the panel fields: a REST `SET_SDR` is overwritten by that sync (that is
-    # why an earlier run decoded nothing - the analyzer was still parked at 1 GHz).
+    # Tune through the operator controls and wait for the confirmed service state.
     page.fill('#input-sdr-center', f'{SDR_HZ / 1e6:g}')
     page.click('[data-action="apply-sdr"]')
     page.wait_for_timeout(2000)
@@ -280,7 +281,7 @@ def sdr_shots(page, url: str, out: Path, names: list[str]) -> None:
         page.wait_for_timeout(1500)
         page.click(f'[data-sdr-ifbw="{ifbw}"]')      # the panel's Filter preset
         page.wait_for_timeout(1500)
-        if page.evaluate("() => document.getElementById('btn-decode-window').textContent.trim().toLowerCase() === 'off'"):
+        if not page.locator('#decode-window').is_visible():
             page.click('#btn-decode-window')
         settle(page, 3000)
         count = wait_decodes(page, mode, wait_s, want)
@@ -298,24 +299,27 @@ def sdr_shots(page, url: str, out: Path, names: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', default='http://127.0.0.1:8080')
-    parser.add_argument('--out', default=str(ROOT / 'screenshots'))
+    parser.add_argument('--out', default='/tmp/websa-readme-shots')
     parser.add_argument('--tinysa-port', default='')
     parser.add_argument('--only', default='', help='comma-separated shot names (default: all)')
     args = parser.parse_args()
 
     names = [n.strip() for n in args.only.split(',') if n.strip()] or ANALYZER_SHOTS + SDR_SHOTS
+    unknown = set(names) - set(ANALYZER_SHOTS + SDR_SHOTS)
+    if unknown:
+        parser.error(f'unknown screenshot names: {sorted(unknown)}')
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     source = None
-    if args.tinysa_port and set(names) & set(ANALYZER_SHOTS):
-        from tools.bench.hardware_smoke import TinySaSource
-
-        source = TinySaSource(args.tinysa_port)
-        print('tinySA:', source.identify().splitlines()[1] if source.identify() else '?')
-        set_source(source, CARRIER_HZ, -25.0)
-
     try:
+        if args.tinysa_port and set(names) & set(ANALYZER_SHOTS):
+            from tools.bench.hardware_smoke import TinySaSource
+
+            source = TinySaSource(args.tinysa_port)
+            identification = source.identify().splitlines()
+            print('tinySA:', identification[1] if len(identification) > 1 else '?')
+            set_source(source, CARRIER_HZ, -25.0)
         with sync_playwright() as p:
             browser = p.chromium.launch(args=['--autoplay-policy=no-user-gesture-required'])
             page = browser.new_page(viewport=VIEWPORT)

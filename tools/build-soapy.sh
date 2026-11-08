@@ -59,6 +59,10 @@ count. Inactive reads obey their timeout; fatal worker errors return a stream
 error and a full host ring reports SOAPY_SDR_OVERFLOW.
 The host ring holds 50 ms of IQ, with a two-packet/16384-sample floor;
 activation allocates storage and subsequent stream changes reuse it.
+SDK rates must be finite and inside the advertised range; SDK packets are capped
+at 1048576 samples with matching format/byte counts. Ring plus conversion scratch
+is limited to 64 MiB before allocation. Malformed packets return STREAM_ERROR
+without copying. These bounds do not advertise additional device capabilities.
 USB discovery uses Device_List without opening devices. One device handle
 serves capability queries and streams until device destruction, including
 close/setup cycles. Live controls stop and join acquisition before configuration;

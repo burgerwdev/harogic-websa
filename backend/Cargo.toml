@@ -3,8 +3,12 @@ name = "websa-channelizer"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
-license = "MIT"
+license-file = "../LICENSE-PACKAGE"
 publish = false
+
+[package.metadata.licensing]
+identifier = "LicenseRef-Harogic-WebSA"
+terms = "AGPL-3.0-only with the HAROGIC SDK and FDK AAC section 7 exception; see ../LICENSE-EXCEPTION and ../LICENSING.md"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
@@ -12,27 +16,45 @@ parking_lot = "0.12"
 rustfft = "6.4.1"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+# Preserve actual rates and derived budgets through protocol round trips.
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+prost = "0.11.9"
 subtle = "2.6.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "fs", "signal"] }
 websa-dsp = { path = "../dsp/core" }
 df = { package = "deep_filter", path = "../dsp/deepfilter", default-features = false, features = ["tract"] }
 ndarray = "0.15"
+tract-onnx = "=0.21.4"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-23"] }
+zstd = "0.13.3"
+crc32fast = "1"
+tar = "0.4.46"
+sha2 = "0.10.8"
+flacenc = { version = "0.5.1", default-features = false }
+md-5 = "0.10.6"
+libc = "0.2"
+tokio-tungstenite = "0.29"
 
 [features]
 bench-instrument = []
+iq-experiments = []
 
-[dev-dependencies]
-tokio-tungstenite = "0.29"
+[[bin]]
+name = "multichannel_experiment"
+path = "src/bin/multichannel_experiment.rs"
+required-features = ["iq-experiments"]
+
 
 [build-dependencies]
 cc = "1"
+serde_json = "1"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
+lto = false
+codegen-units = 16
+incremental = true
+panic = "unwind"

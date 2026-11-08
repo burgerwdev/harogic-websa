@@ -12,8 +12,9 @@ export function enablePopoverDrag(popoverId: string): void {
   const head = pop?.querySelector('.gnss-popover-head') as HTMLElement | null;
   if (!pop || !head) return;
   head.style.cursor = 'move';
+  let stopDrag: (() => void) | null = null;
   head.addEventListener('pointerdown', (ev: PointerEvent) => {
-    if ((ev.target as HTMLElement).closest('button')) return;
+    if (ev.button !== 0 || stopDrag || (ev.target as HTMLElement).closest('button')) return;
     ev.preventDefault();
     // offsetLeft/offsetTop are relative to the positioned .info-item ancestor, which is
     // also what the stylesheet's top/left anchor against — so dragging just adds deltas.
@@ -22,17 +23,25 @@ export function enablePopoverDrag(popoverId: string): void {
     const sx = ev.clientX;
     const sy = ev.clientY;
     const move = (e: PointerEvent) => {
+      if (e.pointerId !== ev.pointerId) return;
       pop.style.bottom = 'auto';           // inline top would fight the stylesheet's bottom
       pop.style.right = 'auto';
       pop.style.left = `${startLeft + e.clientX - sx}px`;
       pop.style.top = `${startTop + e.clientY - sy}px`;
     };
-    const up = () => {
+    const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      window.removeEventListener('blur', stop);
+      stopDrag = null;
     };
+    const up = (e: PointerEvent) => { if (e.pointerId === ev.pointerId) stop(); };
+    stopDrag = stop;
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    window.addEventListener('blur', stop);
   });
 }
 

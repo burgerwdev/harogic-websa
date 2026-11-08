@@ -7,7 +7,8 @@ import {
   syncRefClockStatus, toggleRefClkOut,
 } from '../ui/panels/refAmp';
 
-vi.mock('../audio/sdrAudio', () => ({ prepareSdrAudioTransition: vi.fn() }));
+vi.mock('../audio/sdrAudio', () => ({
+  nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false), prepareSdrAudioTransition: vi.fn() }));
 
 const sent: Array<Record<string, unknown>> = [];
 const source = () => document.getElementById('select-refclk') as HTMLSelectElement;
@@ -32,6 +33,16 @@ beforeEach(() => {
     readyState: WebSocket.OPEN,
     send: (message: string) => sent.push(JSON.parse(message)),
   } as unknown as WebSocket);
+});
+
+it('does not reset the reference-clock menu on repeated status or while choosing another source', () => {
+  const select = source(), setter = vi.spyOn(select, 'value', 'set');
+  for (let i = 0; i < 5; i++) syncRefClockStatus({ ref_clock: 'internal' });
+  expect(setter).not.toHaveBeenCalled();
+  select.focus(); syncRefClockStatus({ ref_clock: 'external' });
+  expect(select.value).toBe('internal'); expect(setter).not.toHaveBeenCalled();
+  select.blur(); syncRefClockStatus({ ref_clock: 'external' });
+  expect(select.value).toBe('external');
 });
 
 afterEach(() => {

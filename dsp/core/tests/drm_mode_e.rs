@@ -1,6 +1,6 @@
 //! Mode E / DRM+ frequency-offset regression against a locally synthesised 96 kHz
-//! baseband. The fixture carries FAC, SDC and an AAC stream; the browser PCM gate
-//! is in frontend/src/__tests__/drmPlusAudio.test.ts.
+//! baseband. The fixture carries FAC, SDC and an AAC stream; this checks RF acquisition
+//! and audio framing. PCM decoding has a separate validation boundary.
 use websa_dsp::digital::drm::DrmReceiver;
 
 const IQ: &[u8] = include_bytes!("../../../tests/fixtures/drm/drm_modeE_so0_96k_aac.f32");

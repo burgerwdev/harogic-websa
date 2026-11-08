@@ -12,7 +12,9 @@ import {
 	updateMarqueePreview,
 } from '../ui/spectrumZoomGestures';
 import {
+	getView,
 	isZoomed,
+	minSpanHz,
 	setCapture,
 	__testSeedCapture,
 } from '../ui/spectrumViewport';
@@ -59,10 +61,8 @@ describe('marquee', () => {
 		const xL = 10, xMid = 410;                    // plot rect left/centre
 		expect(commitMarquee(xL, xMid, 2e6)).toBe(true);
 		expect(isZoomed()).toBe(true);
-		const view = { lo: 900e6, hi: 950e6 };
 		// The committed view spans the left half of the capture.
-		expect(isZoomed()).toBe(true);
-		void view;
+		expect(getView()).toEqual({ lo: 900e6, hi: 950e6 });
 		expect(sent).toEqual([]);                     // the whole point of the feature
 	});
 
@@ -97,6 +97,17 @@ describe('device-gesture reset', () => {
 });
 
 describe('store coupling', () => {
+	it.each(['wheel', 'marquee'] as const)('%s keeps a two-point grid inside its capture', gesture => {
+		const frequency = new Float64Array([CAP.lo, CAP.hi]);
+		S.setFreqArray(frequency);
+		const minimum = minSpanHz(frequency);
+		if (gesture === 'wheel') spectrumWheelZoom(-100, 410, minimum);
+		else commitMarquee(400, 420, minimum);
+		expect(getView()).toEqual(CAP);
+		expect(isZoomed()).toBe(false);
+		expect(sent).toEqual([]);
+	});
+
 	it('uses the live freqArray length for the min span (no hidden state)', () => {
 		S.setFreqArray(new Float64Array(101).map((_, i) => 900e6 + i * 1e6));
 		// minSpan = 2 MHz: a sub-2 MHz marquee widens instead of refusing.

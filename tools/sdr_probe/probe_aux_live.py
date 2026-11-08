@@ -27,7 +27,10 @@ async def send(ws, payload):
 async def wait_connected(ws, timeout=30.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        raw = await ws.receive()
+        try:
+            raw = await asyncio.wait_for(ws.receive(), timeout=max(0.0, end - time.monotonic()))
+        except asyncio.TimeoutError:
+            break
         if raw.type == aiohttp.WSMsgType.BINARY:
             continue
         if raw.type != aiohttp.WSMsgType.TEXT:

@@ -7,7 +7,7 @@
 //! never a product admission limit. JSON contains separate warmup, measurement,
 //! and shutdown boundaries; payloads are inspected and immediately released.
 use super::sdr_pipeline::{ChannelRegistryEntry, Pipeline, PipelineConfig, PipelineOutput, Snapshot};
-use super::receiver_workers::{ChannelConfig, ReceiverFrames, ReceiverWorkers};
+use super::receiver_workers::{ChannelConfig, PreparedDecoders, ReceiverFrames, ReceiverWorkers};
 use super::{capture_decimate, hardware_pan, FrontEnd, BIN_SPACING, COARSE_RATE, IQ_FS};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -22,6 +22,9 @@ struct Options {
     display: i32,
     fine: i32,
     product_channels: bool,
+    workload:String,
+    source_kind:String,
+    output:String,
     shim: String,
     center: f64,
 }
@@ -34,7 +37,7 @@ impl Options {
             let key = args[index].as_str();
             if !matches!(key, "--channels" | "--seconds" | "--warmup" | "--taps" |
                 "--display-decimate" | "--fine-decimate" | "--shim" | "--center" | "--output" |
-                "--product-channels") {
+                "--product-channels" | "--workload" | "--source-kind") {
                 return Err(format!("unknown benchmark option {key}"));
             }
             let value = args.get(index + 1).ok_or_else(|| format!("missing value for {key}"))?;
@@ -53,9 +56,15 @@ impl Options {
         };
         let channels = if product_channels && !fields.contains_key("--channels") { 3 }
             else { integer("--channels")? };
-        if product_channels && channels != 3 {
-            return Err("--product-channels true requires exactly three channels".into());
+        if product_channels && !(1..=super::MAX_CHANNELS as u64).contains(&channels) {
+            return Err("product channels exceed service capacity".into());
         }
+        let workload=fields.get("--workload").copied().unwrap_or("legacy");
+        if !matches!(workload,"legacy"|"narrow") || (product_channels && workload=="legacy" && channels!=3) {
+            return Err(format!("legacy product workload requires three channels; use --workload narrow for one through {}", super::MAX_CHANNELS));
+        }
+        let source_kind=fields.get("--source-kind").copied().unwrap_or("hardware");
+        if !matches!(source_kind,"hardware"|"raw-fixture") {return Err("invalid source-kind".into());}
         if channels == 0 || channels > u32::MAX as u64 || channels > usize::MAX as u64 {
             return Err("channels must fit nonzero u32 protocol channel IDs".into());
         }
@@ -87,12 +96,14 @@ impl Options {
         let shim = required("--shim")?.to_owned();
         if shim.is_empty() { return Err("shim path must not be empty".into()); }
         Ok(Self { channels: channels as usize, seconds, warmup, taps: taps as usize,
-            display: display as i32, fine: fine as i32, product_channels, shim, center })
+            display: display as i32, fine: fine as i32, product_channels, workload:workload.into(), source_kind:source_kind.into(), output:required("--output")?.into(), shim, center })
     }
 
     fn frequencies(&self) -> Result<Vec<f64>, String> {
         if self.product_channels {
-            return Ok(vec![self.center, self.center + 5_000.0, self.center - 5_000.0]);
+            return Ok(if self.workload=="legacy" {vec![self.center, self.center + 5_000.0, self.center - 5_000.0]}
+                else {[-20e6,-12e6,-4e6,0.0,20_000.0,40_000.0,8e6,20e6,
+                    -18e6,-14e6,-10e6,-6e6,2e6,6e6,12e6,18e6].into_iter().take(self.channels).map(|offset|self.center+offset).collect()});
         }
         let flat = coarse_passband_hz(COARSE_RATE, self.taps).ok_or("unsupported taps")?;
         let rate = COARSE_RATE / self.fine as f64;
@@ -207,6 +218,7 @@ struct AudioClock {
     previous_position: Option<(u64, u64, u64, u64)>,
     next_decode_sequence: u64,
     decode_frames: u64,
+    recent_audio:std::collections::VecDeque<f32>,
 }
 
 struct ProductReceiver {
@@ -216,13 +228,14 @@ struct ProductReceiver {
     clocks: Vec<AudioClock>,
     input_rate_numerator: u64,
     input_rate_denominator: u64,
+    known_tones:bool,
 }
 
 impl ProductReceiver {
     fn new(configs: &[ChannelConfig], snapshot: &Snapshot, workers: ReceiverWorkers) -> Self {
         Self { workers, configs:configs.to_vec(), registry:snapshot.registry.clone(),
             clocks:vec![AudioClock::default(); configs.len()], input_rate_numerator:IQ_FS as u64,
-            input_rate_denominator:snapshot.device_decimate }
+            input_rate_denominator:snapshot.device_decimate,known_tones:false }
     }
 
     fn submit(&mut self, frame: &[u8]) -> Result<(), String> {
@@ -286,6 +299,12 @@ impl ProductReceiver {
             clock.next_sequence += 1;
             clock.frames += 1;
             clock.samples += count as u64;
+            if self.known_tones {
+                for bytes in frame[96..].chunks_exact(4*channels as usize) {
+                    clock.recent_audio.push_back(f32::from_le_bytes(bytes[..4].try_into().unwrap()));
+                }
+                if clock.recent_audio.len()>8192 {clock.recent_audio.drain(..clock.recent_audio.len()-8192);}
+            }
             clock.rate = rate;
             clock.channels = channels;
         }
@@ -341,10 +360,12 @@ impl ProductReceiver {
         if !counters_match { errors.push("receiver worker queue or input/output conservation failed".into()); }
         let channels: Vec<_> = self.clocks.iter().enumerate().map(|(i, clock)| {
             if clock.samples == 0 { errors.push(format!("channel {} produced no native audio", i + 1)); }
-            // The analog interpolator retains the final source interval. FIRs
+            // FM first retains one IQ sample for its phase difference; every
+            // interpolator also retains its final detector interval. FIRs
             // and NR-off preserve length; floating phase recurrence may move
             // an output exactly at an interval boundary by one audio frame.
-            let expected_audio = iq[i].samples.checked_sub(1).map(|intervals|
+            let history=if matches!(self.configs[i].mode.as_str(),"nfm"|"wfm") {2} else {1};
+            let expected_audio = iq[i].samples.checked_sub(history).map(|intervals|
                 (intervals as u128 * iq[i].hop as u128 * self.input_rate_denominator as u128
                     * self.configs[i].audio_rate as u128 / self.input_rate_numerator as u128 + 1) as u64);
             let audio_matches = expected_audio.is_some_and(|expected| clock.samples.abs_diff(expected) <= 1)
@@ -352,7 +373,21 @@ impl ProductReceiver {
             if !audio_matches {
                 errors.push(format!("channel {} IQ/audio sample conservation failed: {} audio frames, expected {expected_audio:?} with one-frame phase tolerance", i + 1, clock.samples));
             }
-            json!({"channel":i + 1,"channel_id":self.registry[i].channel_id,"epoch":self.registry[i].epoch,
+            let content=if self.known_tones {
+                let hz=400.0+(i%8) as f64*200.0;
+                let power=clock.recent_audio.iter().map(|sample|f64::from(*sample).powi(2)).sum::<f64>()/clock.recent_audio.len().max(1) as f64;
+                let mut re=0.0;let mut im=0.0;
+                for (index,sample) in clock.recent_audio.iter().enumerate() {
+                    let phase=std::f64::consts::TAU*hz*index as f64/clock.rate;
+                    re+=f64::from(*sample)*phase.cos();im+=f64::from(*sample)*phase.sin();
+                }
+                let amplitude=2.0*re.hypot(im)/clock.recent_audio.len().max(1) as f64;
+                let share=amplitude.powi(2)/(2.0*power.max(1e-20));
+                let valid=amplitude>0.01 && share>0.8;
+                if !valid {errors.push(format!("channel {} known audio tone {hz} Hz missing: amplitude {amplitude}, power share {share}",i+1));}
+                json!({"hz":hz,"amplitude":amplitude,"power_share":share,"passed":valid})
+            } else {Value::Null};
+            json!({"channel":i + 1,"known_content":content,"channel_id":self.registry[i].channel_id,"epoch":self.registry[i].epoch,
                 "mode":self.configs[i].mode,"if_bandwidth_hz":self.configs[i].if_bw,
                 "selected_iq_rate_hz":self.registry[i].output_rate,"iq_samples":iq[i].samples,
                 "audio_rate_hz":clock.rate,"audio_channels":clock.channels,"audio_samples":clock.samples,
@@ -364,7 +399,7 @@ impl ProductReceiver {
         let channels_match = channels.iter().all(|channel| channel["audio_samples_match"].as_bool() == Some(true));
         json!({"workers":stats,"conservation_passed":counters_match && channels_match,"channels":channels,
             "source_clock_proof":"Every AUD2 source position advances by the prior frame count times the exact capture-rate/audio-rate ratio; audio_index and sequence are contiguous from zero.",
-            "audio_count_scope":"NR-off analog interpolation retains the final input interval; expected PCM count is floor((IQ samples-1)*audio rate/selected IQ rate)+1 with at most one audio frame of floating phase rounding.",
+            "audio_count_scope":"FM retains the first IQ sample for its discriminator; all analog interpolators retain the final detector interval. Expected PCM count is floor((IQ samples-history)*audio rate/selected IQ rate)+1, history=2 for FM and 1 otherwise, with at most one frame of phase rounding.",
             "timing_scope":"native receiver work as exposed by worker stats; no legacy fine profile certifies receiver DSP"})
     }
 }
@@ -466,7 +501,7 @@ impl Consumer {
             channel.samples += count as u64;
             if let Some(receiver) = &mut self.receiver { receiver.submit(&frame)?; }
         }
-        for (frequencies, powers, _warning, _generation, _seq) in output.pan {
+        for (frequencies, powers, _warning, _generation, _seq, _display) in output.pan {
             if !frequencies.iter().all(|f| f.is_finite()) || !powers.iter().all(|p| p.is_finite()) {
                 return Err("nonfinite SDK spectrum".into());
             }
@@ -513,12 +548,20 @@ fn counter_deltas(before: &Value, after: &Value) -> Value {
 }
 
 fn check_counters(before: &Value, after: &Value, errors: &mut Vec<String>) {
-    for path in ["/iqs_stamp_gaps", "/iqs_capture/queue_full", "/iqs_capture/fail_calls", "/iqs_capture/recoveries"] {
+    for path in ["/iqs_stamp_gaps", "/iqs_capture/fail_calls", "/iqs_capture/recoveries"] {
         match (before.pointer(path).and_then(Value::as_u64), after.pointer(path).and_then(Value::as_u64)) {
             (Some(start), Some(end)) if end == start => (),
             (Some(start), Some(end)) => errors.push(format!("{path} changed {start} -> {end}")),
             _ => errors.push(format!("required capture counter missing: {path}")),
         }
+    }
+    // A full bounded handoff retries the same packet; it does not discard it.
+    // Gate the observed backlog age as well as exact drain conservation, while
+    // retaining every queue-full/wait counter in the report.
+    match after.pointer("/iqs_capture/queue_residence/max_ns").and_then(Value::as_u64) {
+        Some(age) if age<=super::CONSUMER_BUDGET.as_nanos() as u64=>(),
+        Some(age)=>errors.push(format!("capture queue residence {age} ns exceeded the consumer budget")),
+        None=>errors.push("capture queue residence unavailable".into()),
     }
 }
 
@@ -545,7 +588,7 @@ fn execute(options: &Options) -> Value {
         "taps":options.taps,"display_decimate":options.display,
         "fine_decimate":if options.product_channels { None } else { Some(options.fine) },
         "center_hz":options.center,"shim":options.shim,"channel_budget":options.channels,
-        "product_channels":options.product_channels,
+        "product_channels":options.product_channels,"workload":options.workload,"source_kind":options.source_kind,
         "output_rate_budget_hz":if options.product_channels { None } else { Some(rate * options.channels as f64) }});
     let admission = if options.product_channels {
         json!({"scope":"service planned fine kernel and framing only; excludes receiver DSP, PFB and transport",
@@ -558,7 +601,7 @@ fn execute(options: &Options) -> Value {
         };
         let decision = super::sdr_pipeline::check_plan_admission(&profile, options.fine, options.channels,
             options.channels, rate * options.channels as f64);
-        let admission = json!({"accepted":decision.is_ok(),"scope":"internal fine processing and framing only; excludes receiver DSP",
+        let admission = json!({"accepted":decision.is_ok(),"policy":"observed_runtime","scope":"diagnostic prediction; geometry and capacity checks only",
             "calibration_ns_per_coarse_sample":profile.ns_per_coarse_sample,
             "calibration_decimation_first":2,"calibration_decimation_last":24,
             "required_ns_per_second":profile.required_ns_per_second(COARSE_RATE,
@@ -571,7 +614,10 @@ fn execute(options: &Options) -> Value {
         admission
     };
     let product_configs: Vec<_> = if options.product_channels {
-        [("wfm", 180_000.0), ("am", 6_000.0), ("cw", 500.0)].into_iter().enumerate().map(|(i, (mode, bandwidth))| {
+        let modes=if options.workload=="legacy" {vec![("wfm",180_000.0),("am",6_000.0),("cw",500.0)]}
+            else {vec![("am",6000.0),("am",6000.0),("nfm",12000.0),("nfm",12000.0),
+                ("usb",2400.0),("usb",2400.0),("lsb",2400.0),("lsb",2400.0)]};
+        modes.into_iter().cycle().take(options.channels).enumerate().map(|(i, (mode, bandwidth))| {
             let mut config = ChannelConfig::for_slot((i + 1) as u32);
             config.enabled = true;
             config.freq = frequencies[i];
@@ -588,10 +634,18 @@ fn execute(options: &Options) -> Value {
         channel_budget:options.channels, output_rate_budget:rate * options.channels as f64 };
     // Prepare receiver models before capture starts producing IQ.
     let prepared_workers = if options.product_channels {
+        if let Err(error)=super::processing_admission::prepare(&product_configs,IQ_FS) {
+            return json!({"passed":false,"requested":requested,"errors":[error]});
+        }
         let mut workers = match ReceiverWorkers::new() {
             Ok(workers) => workers,
             Err(error) => return json!({"passed":false,"requested":requested,"admission":admission,"errors":[error]}),
         };
+        let prepared = match PreparedDecoders::new(&product_configs) {
+            Ok(prepared) => prepared,
+            Err(error) => return json!({"passed":false,"requested":requested,"admission":admission,"errors":[error]}),
+        };
+        workers.install_prepared(prepared);
         if let Err(error) = workers.configure(&product_configs) {
             return json!({"passed":false,"requested":requested,"admission":admission,"errors":[error]});
         }
@@ -611,10 +665,16 @@ fn execute(options: &Options) -> Value {
         Err(error) => return json!({"passed":false,"requested":requested,"admission":admission,"errors":[error]}),
     };
     if let Some(workers) = prepared_workers {
-        consumer.receiver = Some(ProductReceiver::new(&product_configs, &initial, workers));
+        let mut receiver=ProductReceiver::new(&product_configs, &initial, workers);
+        receiver.known_tones=options.source_kind=="raw-fixture" && options.workload=="narrow";
+        consumer.receiver = Some(receiver);
     }
     let mut errors = Vec::new();
-    let mut rows = Vec::new();
+    let mut rows = std::collections::VecDeque::with_capacity(6);
+    let observations_path=format!("{}.observations.jsonl",options.output);
+    let mut observations=match std::fs::File::create(&observations_path) {
+        Ok(file)=>std::io::BufWriter::with_capacity(256*1024,file),Err(error)=>return json!({"passed":false,"errors":[format!("observation file: {error}")]}),
+    };
     let mut baseline = consumer.channels.clone();
     let mut baseline_audio = consumer.receiver.as_ref().map(|receiver| receiver.clocks.clone());
     let mut baseline_worker_stats = consumer.receiver.as_ref().map(|receiver| receiver.workers.stats());
@@ -644,12 +704,18 @@ fn execute(options: &Options) -> Value {
             if elapsed >= options.seconds { break; }
             if elapsed >= next_row {
                 pipeline.encode_snapshot();
-                rows.push(json!({"window_elapsed_seconds":elapsed,"snapshot":snapshot_json(&pipeline.snapshot),
+                let row=json!({"window_elapsed_seconds":elapsed,"snapshot":snapshot_json(&pipeline.snapshot),
                     "delta_from_window_start":counter_deltas(&window_snapshot.actual, &pipeline.snapshot.actual),
                     "channels":channel_rows(&frequencies, &consumer.channels, &baseline, &consumer.registry),
                     "receiver_workers":consumer.receiver.as_ref().map(|receiver| receiver.workers.stats()),
                     "spectra":consumer.spectra - baseline_spectra,
-                    "spectrum_encode":consumer.encode.snapshot()}));
+                    "spectrum_encode":consumer.encode.snapshot()});
+                use std::io::Write;
+                if let Err(error)=serde_json::to_writer(&mut observations,&row)
+                    .map_err(|e|e.to_string()).and_then(|_|writeln!(observations).and_then(|_|observations.flush()).map_err(|e|e.to_string())) {
+                    errors.push(format!("write observations: {error}"));break;
+                }
+                if rows.len()==6 {rows.pop_front();}rows.push_back(row);
                 next_row = elapsed + 5.0;
             }
         }
@@ -725,12 +791,12 @@ fn execute(options: &Options) -> Value {
     if options.product_channels && final_snapshot.device_decimate != 1 {
         errors.push(format!("product capture decimation is {}, expected full-band 1", final_snapshot.device_decimate));
     }
-    if options.product_channels && consumer.registry.iter().enumerate().any(|(i, entry)|
+    if options.product_channels && options.workload=="legacy" && consumer.registry.iter().enumerate().any(|(i, entry)|
         consumer.registry[..i].iter().any(|prior| prior.output_rate == entry.output_rate)) {
         errors.push("product fixture must select three distinct actual IQ rates".into());
     }
     json!({"schema":"websa-sdr-pipeline-bench-v1","passed":errors.is_empty(),"errors":errors,"requested":requested,
-        "admission":admission,"product_channels":options.product_channels,"receiver":receiver_proof,
+        "admission":admission,"product_channels":options.product_channels,"workload":options.workload,"source_kind":options.source_kind,"receiver":receiver_proof,
         "elapsed_seconds":began.elapsed().as_secs_f64(),"stop_seconds":stop_seconds,
         "warmup":{"elapsed_seconds":window_start.map_or(window_end.duration_since(began).as_secs_f64(), |s| s.duration_since(began).as_secs_f64()),
             "channels":channel_rows(&frequencies,&baseline,&vec![Channel::default();options.channels],&consumer.registry),
@@ -755,7 +821,7 @@ fn execute(options: &Options) -> Value {
         "snapshots":{"initial":snapshot_json(&initial),"window_start":snapshot_json(&window_snapshot),
             "window_end":snapshot_json(&measured_snapshot),"stopped":snapshot_json(&final_snapshot)},
         "timing_scope":"Each full timing snapshot is cumulative for this fresh capture; p99/max are not subtracted. Counter deltas contain only additive fields.",
-        "samples":rows})
+        "samples":rows,"observations_path":observations_path,"retained_observations":6})
 }
 
 fn validate_clocks(channels: &[Channel], registry: &[Registered], snapshot: &Snapshot, errors: &mut Vec<String>) -> Value {

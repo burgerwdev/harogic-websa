@@ -11,11 +11,29 @@ Verified behaviour (see tools/sdr_probe/FINDINGS.md):
 """
 from __future__ import annotations
 
+import math
+import operator
 from ctypes import cast as _cast
 
 import numpy as np
 
 from . import sdk_bindings as sb
+
+# Per foreign packet, independent of the Rust production channelizer's limits.
+MAX_DDC_BYTES = 4 * 1024 * 1024
+MAX_DDC_POINTS = MAX_DDC_BYTES // 8
+
+
+def validate_input_geometry(fs_in, offset_hz, decimate, sample_points):
+    try:
+        decimate, sample_points = operator.index(decimate), operator.index(sample_points)
+    except TypeError as exc:
+        raise ValueError('DDC dimensions must be integers') from exc
+    if (not math.isfinite(fs_in) or fs_in <= 0 or not math.isfinite(offset_hz)
+            or not 1 <= decimate <= 2**31 - 1
+            or not 1 <= sample_points <= MAX_DDC_BYTES // 4):
+        raise ValueError('DDC input geometry exceeds the reference packet budget')
+    return decimate, sample_points
 
 
 class DdcChannel:
@@ -39,8 +57,8 @@ class DdcChannel:
 
     def configure(self, fs_in: float, offset_hz: float, decimate: int, sample_points: int) -> None:
         T = sb
-        decimate = max(1, int(decimate))
-        sample_points = max(1, int(sample_points))
+        self._ready = False
+        decimate, sample_points = validate_input_geometry(fs_in, offset_hz, decimate, sample_points)
         din = T.DSP_DDC_TypeDef()
         dout = T.DSP_DDC_TypeDef()
         T.dll.DSP_DDC_DeInit(T.pointer(din))
@@ -52,19 +70,25 @@ class DdcChannel:
         if st != 0:
             raise RuntimeError(f'DSP_DDC_Configuration status={st}')
         delay = sb.c_uint32(0)
-        T.dll.DSP_DDC_GetDelay(T.pointer(self.dsp), T.pointer(delay))
-        T.dll.DSP_DDC_Reset(T.pointer(self.dsp))   # fresh stream
+        status = T.dll.DSP_DDC_GetDelay(T.pointer(self.dsp), T.pointer(delay))
+        rate, points = float(dout.SampleRate), int(dout.SamplePoints)
+        offset, factor = float(dout.DDCOffsetFrequency), float(dout.DecimateFactor)
+        if (status != 0 or not math.isfinite(rate) or rate <= 0
+                or not math.isfinite(offset) or not math.isfinite(factor) or factor < 1
+                or not 1 <= points <= MAX_DDC_POINTS
+                or points + max(delay.value, 8) > MAX_DDC_POINTS):
+            raise RuntimeError(
+                f'DSP_DDC_Configuration returned invalid output rate={rate} points={points}')
+        status = T.dll.DSP_DDC_Reset(T.pointer(self.dsp))   # fresh stream
+        if status != 0:
+            raise RuntimeError(f'DSP_DDC_Reset status={status}')
         self.fs_in = float(fs_in)
-        self.offset_hz = float(dout.DDCOffsetFrequency)
-        self.decimate = max(1, int(round(float(dout.DecimateFactor))))
+        self.offset_hz = offset
+        self.decimate = round(factor)
         self.requested_decimate = int(decimate)
         self.sample_points = sample_points
-        self.fs_out = float(dout.SampleRate)
-        self.out_points = int(dout.SamplePoints)
-        if self.fs_out <= 0 or self.out_points <= 0:
-            raise RuntimeError(
-                f'DSP_DDC_Configuration returned invalid output '
-                f'rate={self.fs_out} points={self.out_points}')
+        self.fs_out = rate
+        self.out_points = points
         self.delay = int(delay.value)
         self._drop_pending = self.delay   # skip the filter transient ONCE, not per packet
         self.output_input_offset = None

@@ -65,10 +65,9 @@ describe('auto peak threshold', () => {
 	it('is not moved by a single-bin spike', () => {
 		const spiky = new Float32Array(1000).fill(-95);
 		spiky[123] = 20;                              // one bin, one frame
-		for (let i = 0; i < 6; i++) autoPeakThr(trace(-30));
-		expect(peakThr.get()).toBe(-80);
-		autoPeakThr(spiky);
-		expect(peakThr.get()).toBe(-80);
+		for (let i = 0; i < 5; i++) autoPeakThr(spiky);
+		// Fit while the spike is present: the 99.5th percentile remains the -95 dBm floor.
+		expect(peakThr.get()).toBe(-145);
 	});
 
 	it('does nothing while a marker is off, or after a manual edit', () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Performance baseline for the running service (report gap G-1).
+"""Performance baseline for the running service.
 
 Measures what the review previously only asserted: delivered frame rates per mode, the
 mode-switch latency, the SDR audio frame rate and the worker process CPU. Results are
@@ -31,6 +31,7 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -43,19 +44,26 @@ from tools.bench.hardware_smoke import (  # noqa: E402
     rta_span_limit,
     wait_status,
 )
+from tools.native_service import _owns_listener  # noqa: E402
 
 FPS_FLOOR = 0.70          # delivered fps must stay above this fraction of the baseline
 SWITCH_CEIL = 2.0         # mode switch may not take longer than this multiple
 CPU_CEIL = 1.5            # worker CPU may not exceed this multiple
 
 
-def worker_pid() -> int | None:
+def worker_pid(http_url: str = 'http://127.0.0.1:8080') -> int | None:
+    """Attribute CPU only to the local process owning the measured endpoint."""
     try:
+        endpoint = urlsplit(http_url)
+        if endpoint.hostname not in ('127.0.0.1', 'localhost'):
+            return None
+        port = endpoint.port or (443 if endpoint.scheme == 'https' else 80)
         out = subprocess.run(['pgrep', '-x', 'websad'],
                              capture_output=True, text=True).stdout.split()
+        matches = [int(pid) for pid in out if _owns_listener(int(pid), port)]
     except Exception:
         return None
-    return int(out[0]) if out else None
+    return matches[0] if len(matches) == 1 else None
 
 
 def cpu_seconds(pid: int | None) -> float | None:
@@ -72,8 +80,8 @@ def cpu_seconds(pid: int | None) -> float | None:
 class CpuMeter:
     """CPU seconds consumed by the worker between two marks."""
 
-    def __init__(self) -> None:
-        self.pid = worker_pid()
+    def __init__(self, http_url: str) -> None:
+        self.pid = worker_pid(http_url)
         self.start = cpu_seconds(self.pid)
 
     def since(self) -> float | None:
@@ -152,9 +160,22 @@ async def measure_switch(ws, mode_payload: dict, timeout: float = 10.0) -> float
     started = time.monotonic()
     await ws.send_json(mode_payload)
     deadline = started + timeout
+    confirmed = False
+    expected_magic = (b'RTAF', b'RTA2') if mode_payload['mode'] in ('rta', 'sdr') else (b'POWR',)
     while time.monotonic() < deadline:
-        message = await asyncio.wait_for(ws.receive(), timeout=3)
-        if message.type == aiohttp.WSMsgType.BINARY and len(message.data) >= 4:
+        try:
+            message = await asyncio.wait_for(ws.receive(), timeout=min(3, deadline - time.monotonic()))
+        except asyncio.TimeoutError:
+            continue
+        if message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            break
+        if message.type == aiohttp.WSMsgType.TEXT:
+            payload = json.loads(message.data)
+            if payload.get('cmd') == 'ERROR':
+                raise RuntimeError(payload.get('msg', 'mode switch rejected'))
+            if payload.get('cmd') == 'STATUS':
+                confirmed = payload.get('mode') == mode_payload['mode']
+        if confirmed and message.type == aiohttp.WSMsgType.BINARY and message.data[:4] in expected_magic:
             return round((time.monotonic() - started) * 1000, 1)
     return None
 
@@ -235,7 +256,7 @@ async def run(args) -> dict:
                 await ws.send_json({'cmd': 'SET_FREQ', 'center': args.frequency, 'span': args.span})
                 caps = (await wait_status(ws, lambda s: abs(s['span'] - args.span) < 1)).get('caps')
 
-                meter = CpuMeter()
+                meter = CpuMeter(args.http_url)
                 swp = await collect_swp(ws, args.duration)
                 swp['cpu_s'] = meter.since()
                 result['swp'] = swp
@@ -246,7 +267,7 @@ async def run(args) -> dict:
                 await ws.send_json({'cmd': 'SET_RTA', 'center': args.frequency,
                                     'span': min(args.span, rta_span_limit(caps))})
                 await wait_status(ws, lambda s: s.get('mode') == 'rta')
-                meter = CpuMeter()
+                meter = CpuMeter(args.http_url)
                 result['rta'] = await collect_rta(ws, args.duration, time.monotonic())
                 result['rta']['cpu_s'] = meter.since()
 
@@ -267,7 +288,7 @@ async def run(args) -> dict:
                         audio_state = await response.json()
                     channel = next(ch for ch in audio_state['sdr']['channels'] if ch['channel'] == 1)
                     source = (channel['channel_id'], channel['epoch'])
-                    meter = CpuMeter()
+                    meter = CpuMeter(args.http_url)
                     spec, audio = await asyncio.gather(
                         collect_rta(ws, args.duration, time.monotonic()),
                         measure_audio(audio_ws, args.duration, args.frequency, source))
@@ -291,11 +312,27 @@ async def run(args) -> dict:
 
 def compare(current: dict, baseline: dict) -> list[str]:
     problems: list[str] = []
+    metrics = [(mode, name) for mode in ('swp', 'rta', 'sdr') for name in ('fps', 'cpu_s')]
+    pairs = [(f'{mode}.{name}', (baseline.get(mode) or {}).get(name),
+              (current.get(mode) or {}).get(name)) for mode, name in metrics]
+    pairs += [(key, baseline.get(key), current.get(key))
+              for key in ('switch_to_rta_ms', 'switch_to_sdr_ms')]
+    pairs.append(('sdr.audio.fps', (baseline.get('sdr') or {}).get('audio', {}).get('fps'),
+                  (current.get('sdr') or {}).get('audio', {}).get('fps')))
+    for name, base, now in pairs:
+        if base is None:
+            continue
+        for origin, value in [('baseline', base), ('current', now)]:
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < 0):
+                problems.append(f'{name}: {origin} measurement is missing or invalid ({value})')
+    if problems:
+        return problems
 
     def fps(mode: str) -> float:
         return float((current.get(mode) or {}).get('fps') or 0.0)
 
-    for mode in ('swp', 'rta'):
+    for mode in ('swp', 'rta', 'sdr'):
         base = float((baseline.get(mode) or {}).get('fps') or 0.0)
         if base and fps(mode) < base * FPS_FLOOR:
             problems.append(f'{mode} fps {fps(mode)} < {base * FPS_FLOOR:.1f} '
@@ -312,7 +349,7 @@ def compare(current: dict, baseline: dict) -> list[str]:
     # CPU is only comparable with a single WS client: a browser tab that is open on the app makes
     # the worker fan every frame out twice and competes for the CPU on a laptop (measured: RTA CPU
     # 2.5x while SWP moved 1.1x, with `stream.clients` = 2 in the same run). The collectors already
-    # record the count (report finding C4); here it decides whether the verdict may be given.
+    # record the count; here it decides whether the verdict may be given.
     base_clients = int((baseline.get('swp') or {}).get('clients') or 1)
     now_clients = int((current.get('swp') or {}).get('clients') or 1)
     extra_clients = now_clients > max(1, base_clients)

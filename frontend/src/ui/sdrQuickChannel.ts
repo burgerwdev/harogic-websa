@@ -1,0 +1,150 @@
+import { defaultTransitionHz, occupiedBandwidth } from '../core/receiverBandwidth';
+import { copyModeControls, modeControlKeys } from '../core/receiverControls';
+import { getLang, onLangChange } from '../core/i18n';
+import { clone, receiverHasAudio, type ReceiverConfig, type ReceiverState } from '../core/multichannel';
+import { formatFreqHz } from '../core/fmt';
+import { currentSdrChannel } from './sdrChannels';
+import { sdrAgc, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSquelch, sdrVolume } from './sdrState';
+import { sdrAmSync, sdrDeemph, sdrSstvMode, sdrRadiofaxAcquisition, sdrRadiofaxIoc, sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPolarity, sdrRadiofaxClockRecovery, sdrRadiofaxPhasePixels, sdrRadiofaxClockPpm } from './sdrState';
+import type { WorkbenchSession } from './workbenchSession';
+
+const l = (en: string, zh: string) => getLang() === 'zh' ? zh : en;
+export function currentChannelConfig(session: WorkbenchSession): ReceiverConfig {
+  const mode = sdrDemod.get(), bandwidth = sdrIfbw.get(), hz = sdrListenHz.get();
+  const descriptor = session.snapshot.capabilities.mode_descriptors?.find(m => m.id === mode);
+  if (!descriptor?.available) throw new Error(l('This mode is unavailable.', '当前解调模式不可用。'));
+  const passband = occupiedBandwidth(descriptor, bandwidth, sdrPitchHz.get()), transition = defaultTransitionHz(passband);
+  return { name: `${formatFreqHz(hz)} · ${descriptor.label}`, color: '#e6b95c', tags: [], enabled: true,
+    purpose: descriptor.kind === 'analog' ? 'listen' : 'digital',
+    baseband: { frequency_hz: hz, passband_hz: passband, transition_hz: transition,
+      minimum_rate_hz: Math.max(descriptor.minimumRateHz, passband + 2 * transition) },
+    processors: [{ ...copyModeControls(session.snapshot.receivers.find(r => r.display_number === currentSdrChannel())?.confirmed.processors[0]),
+      am_sync: sdrAmSync.get(), pitch: sdrPitchHz.get(), deemph_us: sdrDeemph.get(), sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(),
+      radiofax_acquisition: sdrRadiofaxAcquisition.get(), radiofax_ioc: sdrRadiofaxIoc.get(), radiofax_lpm: sdrRadiofaxLpm.get(),
+      radiofax_modulation: sdrRadiofaxModulation.get(), radiofax_polarity: sdrRadiofaxPolarity.get(), radiofax_clock_recovery: sdrRadiofaxClockRecovery.get(),
+      radiofax_phase_pixels: sdrRadiofaxPhasePixels.get(), radiofax_clock_ppm: sdrRadiofaxClockPpm.get(), id: `quick-${session.requestId()}`, kind: descriptor.kind === 'analog' ? 'demodulator' : 'decoder',
+      mode, minimum_rate_hz: descriptor.minimumRateHz, bandwidth_hz: bandwidth,
+      pcm_gain: sdrVolume.get(), agc: sdrAgc.get(), squelch_dbm: sdrSquelch.get(),
+      nr: sdrNr.get(), nr_algorithm: sdrNrAlgo.get(), nr_strength: sdrNrStrength.get(), nr_atten_db: sdrNrAtten.get() }] };
+}
+
+/** Save an independent copy of the tuning source; reuse an already saved copy. */
+export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElement, onReuse?: (uid: string) => void) {
+  const doc = host.ownerDocument, dialog = doc.createElement('dialog');
+  dialog.className = 'mc-create-dialog sdr-replace-dialog'; dialog.dataset.replaceChannel = '';
+  dialog.innerHTML = '<form><header><strong data-title></strong><button type="button" data-dismiss>×</button></header><p data-frequency></p><div data-targets></div><p data-error class="mc-error" role="alert"></p><footer><button type="button" data-dismiss></button><button type="submit" class="mc-primary"></button></footer></form>';
+  host.append(dialog);
+  let candidate: { config: ReceiverConfig; service?: string; lifecycle: number } | null = null, busy = false, disposed = false;
+  const revisions = new Map<string, string>();
+  const selected = () => dialog.querySelector<HTMLInputElement>('[name=replace]:checked:not(:disabled)')?.value;
+  const error = dialog.querySelector<HTMLElement>('[data-error]')!;
+  const submit = dialog.querySelector<HTMLButtonElement>('[type=submit]')!;
+  const currentCandidate = (): boolean => !!candidate && candidate.service === session.snapshot.service_id
+    && candidate.lifecycle === session.lifecycleVersion;
+  const update = () => {
+    if (disposed) return;
+    if (candidate && !currentCandidate()) { candidate = null; revisions.clear(); dialog.close(); }
+    if (!dialog.open || busy || !candidate) return;
+    dialog.querySelector('[data-title]')!.textContent = l('Choose a channel to replace', '选择要覆盖的信道');
+    dialog.querySelector('[data-frequency]')!.textContent = `${l('Channels full · add', '信道已满 · 加入')} ${formatFreqHz(candidate.config.baseband.frequency_hz)} · ${candidate.config.processors[0].mode.toUpperCase()}`;
+    const targets = dialog.querySelector('[data-targets]')!, known = new Set<string>();
+    for (const receiver of session.snapshot.receivers) {
+      if (receiver.display_number === currentSdrChannel()) continue;
+      const uid = receiver.receiver_uid; known.add(uid);
+      let option = [...targets.querySelectorAll<HTMLLabelElement>('label')].find(label => label.dataset.uid === uid);
+      if (!option) {
+        option = doc.createElement('label'); option.dataset.uid = uid; option.className = 'sdr-replace-option';
+        const input = doc.createElement('input'); input.type = 'radio'; input.name = 'replace'; input.value = uid;
+        const summary = doc.createElement('span'); summary.append(doc.createElement('strong'), doc.createElement('small'));
+        option.append(input, summary); targets.append(option);
+      }
+      const config = receiver.confirmed;
+      const recording = session.snapshot.recordings.some(task => task.receiver_uid === uid && ['preparing', 'waiting', 'recording', 'finalizing'].includes(task.state));
+      option.querySelector('strong')!.textContent = `C${receiver.display_number} · ${formatFreqHz(config.baseband.frequency_hz)} · ${config.processors[0]?.mode.toUpperCase() ?? 'IQ'}${recording ? l(' · Recording', ' · 录制中') : ''}`;
+      const name = config.name.trim();
+      const customName = !/^C\d+$/.test(name) && !/^\d+(?:\.\d+)?\s*[kMG]?Hz(?:\s*·\s*[\w-]+)?$/i.test(name);
+      const detail = option.querySelector('small')!;
+      detail.textContent = customName ? name : ''; detail.hidden = !customName;
+      option.title = customName ? name : '';
+      option.querySelector('input')!.disabled = !!session.edits.get(uid)?.pending || session.retiring(uid);
+      revisions.set(uid, receiver.revision);
+    }
+    targets.querySelectorAll<HTMLLabelElement>('label').forEach(label => { if (!known.has(label.dataset.uid!)) label.remove(); });
+    dialog.querySelectorAll<HTMLButtonElement>('[data-dismiss]').forEach(button => {
+      button.title = l('Cancel', '取消'); button.setAttribute('aria-label', button.title);
+      if (button.closest('footer')) button.textContent = button.title;
+    });
+    submit.textContent = l('Replace channel', '覆盖信道'); submit.disabled = !selected();
+  };
+  const apply = async (config: ReceiverConfig, target?: ReceiverState): Promise<boolean> => {
+    if (disposed) return false;
+    const service = session.snapshot.service_id, lifecycle = session.lifecycleVersion;
+    const capture = session.snapshot.capture, bb = config.baseband;
+    if (capture.state !== 'running' || capture.usable_bandwidth_hz === null || capture.parameters_state === 'unknown')
+      throw new Error(l('Start or recover capture first.', '请先启动或恢复采集。'));
+    if (Math.abs(bb.frequency_hz - capture.center_hz) + bb.passband_hz / 2 + bb.transition_hz > capture.usable_bandwidth_hz / 2)
+      throw new Error(l('The full passband exceeds capture. Adjust the shared capture first.', '完整通带超出采集范围，请先调整采集中心或 IQ 带宽。'));
+    const reply = target ? await session.send({ type: 'configure', request_id: session.requestId(), receiver_uid: target.receiver_uid,
+      expected_revision: target.revision, config }) : await session.create(config);
+    if (disposed || service !== session.snapshot.service_id || lifecycle !== session.lifecycleVersion) return false;
+    if (reply.fault) throw new Error(reply.fault.message);
+    const uid = target?.receiver_uid ?? ('receiver_uid' in reply ? reply.receiver_uid : null);
+    const receiver = session.snapshot.receivers.find(r => r.receiver_uid === uid);
+    if (!receiver) throw new Error(l('Channel state changed. Try again.', '信道状态已变化，请重试。'));
+    if (receiverHasAudio(session.snapshot, receiver.confirmed)) session.monitor(receiver.receiver_uid, { enabled: true });
+    doc.dispatchEvent(new CustomEvent('websa:sdr-channels-changed'));
+    return true;
+  };
+  const close = () => { if (!busy) { candidate = null; revisions.clear(); dialog.close(); } };
+  dialog.querySelectorAll('[data-dismiss]').forEach(button => button.addEventListener('click', close));
+  dialog.addEventListener('keydown', event => event.stopPropagation());
+  dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+  dialog.addEventListener('change', update);
+  dialog.addEventListener('submit', event => {
+    event.preventDefault(); if (busy || disposed || !candidate) return;
+    if (!currentCandidate()) { update(); return; }
+    const target = session.snapshot.receivers.find(r => r.receiver_uid === selected());
+    if (!target || session.edits.get(target.receiver_uid)?.pending || session.retiring(target.receiver_uid)) return;
+    if (target.revision !== revisions.get(target.receiver_uid)) { update(); return; }
+    busy = true; error.textContent = '';
+    dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => { control.disabled = true; });
+    submit.textContent = l('Applying…', '正在覆盖…');
+    void apply(clone(candidate.config), target).then(applied => { if (applied && !disposed) { candidate = null; dialog.close(); } })
+      .catch(reason => { if (!disposed) error.textContent = String(reason.message ?? reason); })
+      .finally(() => {
+        busy = false; if (disposed) return;
+        dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => { control.disabled = false; });
+        update();
+      });
+  });
+  const stop = session.subscribe(update), stopLang = onLangChange(update);
+  return {
+    async add(): Promise<string | null> {
+      if (disposed || busy) return null;
+      if (dialog.open) { dialog.focus(); return null; }
+      const config = currentChannelConfig(session);
+      // The source already has these settings because the main panel tunes it live.
+      // It cannot satisfy a request to save a copy that stays put while tuning on.
+      const duplicate = [...session.snapshot.receivers].sort((a, b) => a.display_number - b.display_number).find(r =>
+        r.display_number !== currentSdrChannel()
+        && Math.abs(r.confirmed.baseband.frequency_hz - config.baseband.frequency_hz) < 0.5
+        && r.confirmed.processors.length === config.processors.length
+        && (['passband_hz', 'transition_hz', 'minimum_rate_hz'] as const).every(field => r.confirmed.baseband[field] === config.baseband[field])
+        && ([...modeControlKeys, 'mode', 'bandwidth_hz', 'pcm_gain', 'agc', 'squelch_dbm', 'nr', 'nr_algorithm', 'nr_strength', 'nr_atten_db'] as const)
+          .every(field => ({ ...copyModeControls(r.confirmed.processors[0]), ...r.confirmed.processors[0] })[field] === config.processors[0]?.[field]));
+      if (duplicate) {
+        if (receiverHasAudio(session.snapshot, duplicate.confirmed) && duplicate.state === 'running') session.monitor(duplicate.receiver_uid, { enabled: true });
+        session.select(duplicate.receiver_uid); onReuse?.(duplicate.receiver_uid);
+        return l(`Already saved as C${duplicate.display_number}`, `已保存至 C${duplicate.display_number}`);
+      }
+      if (session.snapshot.receivers.length < session.snapshot.capabilities.max_channels) {
+        busy = true;
+        try { return await apply(config) ? l('Channel added', '已加入信道') : null; } finally { busy = false; }
+      }
+      candidate = { config, service: session.snapshot.service_id, lifecycle: session.lifecycleVersion }; revisions.clear(); error.textContent = '';
+      dialog.querySelectorAll<HTMLInputElement>('[name=replace]').forEach(input => { input.checked = false; });
+      dialog.showModal(); update(); return null;
+    },
+    dispose() { disposed = true; candidate = null; revisions.clear(); stop(); stopLang(); dialog.remove(); },
+  };
+}

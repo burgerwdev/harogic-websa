@@ -46,6 +46,7 @@ export function setLang(l: Lang) {
 
 export function onLangChange(fn: (l: Lang) => void) {
   listeners.add(fn);
+  return () => { listeners.delete(fn); };
 }
 
 // Render all data-i18n nodes (text or placeholder/title)

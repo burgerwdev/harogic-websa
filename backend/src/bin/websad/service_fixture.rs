@@ -3,15 +3,17 @@ use super::receiver_workers::ChannelConfig;
 use super::sdr_pipeline::ChannelRegistryEntry;
 use std::f64::consts::TAU;
 use std::sync::LazyLock;
-use websa_channelizer::{encode_baseband, BasebandMagic};
+use websa_channelizer::BasebandMagic;
 
 /// Independent native-receiver inputs for the fake device. These signals are
 /// already in normalized ADC units, so IQv2 encoding must not scale them again.
+#[derive(Clone)]
 pub(super) struct FixtureSources {
     slots: BTreeMap<u32, FixtureSlot>,
     registry: Arc<[ChannelRegistryEntry]>,
 }
 
+#[derive(Clone)]
 struct FixtureSlot {
     config: ChannelConfig,
     entry: ChannelRegistryEntry,
@@ -21,7 +23,9 @@ struct FixtureSlot {
     iq: Vec<f32>,
 }
 
+#[derive(Clone)]
 enum FixtureSource {
+    Iq,
     Replay { iq: Arc<[f32]>, period_samples: usize },
     Cw { key: Arc<[f32]> },
     Analog,
@@ -57,6 +61,9 @@ pub(super) fn fixture(path: &str) -> Result<Arc<[f32]>, String> {
 
 impl FixtureSource {
     fn for_mode(mode: &str) -> Result<(Self, f64), String> {
+        if matches!(mode, "ft4" | "wspr") {
+            return Err("OnAir FT4/WSPR require UTC-aligned live IQ; looping fixture replay is unsupported".into());
+        }
         static FT8: LazyLock<Result<Arc<[f32]>, String>> =
             LazyLock::new(|| fixture("ft8/ft8_cq_iq.bin"));
         static SSTV: LazyLock<Result<Arc<[f32]>, String>> =
@@ -84,6 +91,13 @@ impl FixtureSource {
                 return Ok((Self::Analog, 48_000.0));
             }
             "radiofax" => return Ok((Self::Radiofax, 12_000.0)),
+            mode if websa_channelizer::catalog::is_external(mode) => {
+                let info = websa_channelizer::catalog::mode(mode).ok_or("external mode descriptor missing")?;
+                let rate = info.input_rate_hz.ok_or("external fixture rate missing")? as f64;
+                // External recordings are explicit inputs, never synthetic successful decodes.
+                // Place normalized f32le IQ at this exact advertised rate under WEBSA_FIXTURES.
+                (fixture(&format!("external/{mode}.f32"))?, rate, None)
+            }
             _ => return Err(format!("no fixture source for receiver mode {mode}")),
         };
         let period_samples = period.unwrap_or(iq.len() / 2);
@@ -97,6 +111,13 @@ impl FixtureSource {
         let mode = config.mode.as_str();
         out.clear();
         match self {
+            Self::Iq => {
+                let tone=config.baseband.as_ref().map_or(200.0,|b|b.passband_hz/8.0);
+                for index in first..first+count as u64 {
+                    let phase=TAU*tone*index as f64/rate;
+                    out.extend_from_slice(&[(0.25*phase.cos()) as f32,(0.25*phase.sin()) as f32]);
+                }
+            }
             Self::Replay { iq, period_samples } => {
                 for index in first..first + count as u64 {
                     let offset = (index % *period_samples as u64) as usize * 2;
@@ -162,7 +183,14 @@ impl FixtureSource {
 
 impl FixtureSlot {
     fn new(config: ChannelConfig) -> Result<Self, String> {
-        let (source, rate) = FixtureSource::for_mode(&config.mode)?;
+        let (source, rate) = if !config.processing_enabled {
+            (FixtureSource::Iq,service_ddc::channel_plan(COARSE_RATE,&config)?.output_rate)
+        } else {FixtureSource::for_mode(&config.mode)?};
+        if let Some(baseband)=config.baseband.as_ref().filter(|_|config.processing_enabled) {
+            if rate<baseband.minimum_rate_hz || rate<baseband.passband_hz+2.0*baseband.transition_hz {
+                return Err(format!("fixture replay rate {rate} S/s cannot satisfy the explicit baseband passband, transition and minimum rate"));
+            }
+        }
         let epoch = allocate_dsp_epoch().map_err(str::to_owned)?;
         let count = (rate * 0.085) as usize;
         Ok(Self {
@@ -173,7 +201,7 @@ impl FixtureSlot {
         })
     }
 
-    fn step(&mut self, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
+    fn step(&mut self, frames: &mut IqFrames) -> Result<(), String> {
         let entry = &self.entry;
         let magic = if entry.channel == 1 { BasebandMagic::Primary } else { BasebandMagic::Aux };
         let count = (entry.output_rate * 0.085) as usize;
@@ -181,13 +209,11 @@ impl FixtureSlot {
             .ok_or("fixture source sample clock exhausted")?;
         let sequence = self.sequence.checked_add(1).ok_or("fixture frame sequence exhausted")?;
         if self.sequence == 0 {
-            frames.push(encode_baseband(magic, 0, entry.output_rate, entry.frequency_hz,
-                entry.channel_id as u64, entry.epoch as u64, 0, 0.0, &[]).map_err(str::to_owned)?);
+            frames.push(IqFrame::native(magic,0,entry.output_rate,entry.frequency_hz,entry.channel_id as u64,entry.epoch as u64,0,0.0,entry.input_rate,Vec::new()).map_err(str::to_owned)?);
         }
         self.source.fill(&self.config, entry.output_rate, self.input_index, count, &mut self.iq);
-        frames.push(encode_baseband(magic, sequence, entry.output_rate, entry.frequency_hz,
-            entry.channel_id as u64, entry.epoch as u64, self.input_index, 0.0, &self.iq)
-            .map_err(str::to_owned)?);
+        frames.push(IqFrame::native(magic,sequence,entry.output_rate,entry.frequency_hz,entry.channel_id as u64,entry.epoch as u64,
+            self.input_index,0.0,entry.input_rate,std::mem::take(&mut self.iq)).map_err(str::to_owned)?);
         self.sequence = sequence;
         self.input_index = next_index;
         Ok(())
@@ -199,17 +225,24 @@ impl FixtureSources {
         Self { slots: BTreeMap::new(), registry: Arc::from([]) }
     }
 
+    /// Build the complete replacement before channel controls retire any live identity.
+    pub(super) fn staged(&self, configs: &[ChannelConfig]) -> Result<Self, String> {
+        let mut staged = self.clone();
+        staged.configure(configs)?;
+        Ok(staged)
+    }
     pub(super) fn configure(&mut self, configs: &[ChannelConfig]) -> Result<(), String> {
-        let mut seen = [false; 3];
+        let mut seen = vec![false; MAX_CHANNELS];
         let mut replacements = Vec::new();
         for config in configs {
-            if !(1..=3).contains(&config.channel) || seen[(config.channel - 1) as usize] {
-                return Err("fixture channel slots must be unique values in 1..=3".into());
+            if !(1..=MAX_CHANNELS as u32).contains(&config.channel) || seen[(config.channel - 1) as usize] {
+                return Err("fixture channel slots must be unique values within service capacity".into());
             }
             seen[(config.channel - 1) as usize] = true;
             if !config.freq.is_finite() { return Err("fixture frequency must be finite".into()); }
             if config.enabled && self.slots.get(&config.channel).is_none_or(|slot|
                 slot.config.freq != config.freq || slot.config.mode != config.mode
+                    || slot.config.baseband != config.baseband || slot.config.processing_enabled != config.processing_enabled
                     || slot.config.if_bw != config.if_bw || slot.config.pitch != config.pitch
                     || slot.config.audio_rate != config.audio_rate || slot.config.stereo != config.stereo
                     || slot.config.sstv_mode != config.sstv_mode
@@ -240,8 +273,8 @@ impl FixtureSources {
 
     /// Explicit capture geometry changes restart selected fixture clocks.
     pub(super) fn restart(&mut self, channel: Option<u32>) -> Result<(), String> {
-        if channel.is_some_and(|channel| !(1..=3).contains(&channel)) {
-            return Err("fixture channel must be in 1..=3".into());
+        if channel.is_some_and(|channel| !(1..=MAX_CHANNELS as u32).contains(&channel)) {
+            return Err("fixture channel exceeds service capacity".into());
         }
         let mut identities = Vec::new();
         for (&slot, _) in &self.slots {
@@ -262,7 +295,7 @@ impl FixtureSources {
         Ok(())
     }
 
-    pub(super) fn step(&mut self) -> Result<Vec<Vec<u8>>, String> {
+    pub(super) fn step(&mut self) -> Result<IqFrames, String> {
         let mut frames = Vec::with_capacity(self.slots.len() * 2);
         for slot in self.slots.values_mut() { slot.step(&mut frames)?; }
         Ok(frames)
@@ -272,5 +305,27 @@ impl FixtureSources {
 
     fn refresh_registry(&mut self) {
         self.registry = self.slots.values().map(|slot| slot.entry.clone()).collect::<Vec<_>>().into();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_fixture_staging_preserves_live_identity_and_samples() {
+        let mut source = FixtureSources::new();
+        let mut config = ChannelConfig::for_slot(1);
+        config.freq = 100_000_000.0;
+        source.configure(&[config.clone()]).unwrap();
+        source.step().unwrap();
+        let mut reference = source.clone();
+        let registry = source.registry();
+        config.baseband=Some(receiver_workers::BasebandConfig {passband_hz:16000.0,transition_hz:1000.0,minimum_rate_hz:96000.0});
+        assert!(source.staged(&[config.clone()]).err().unwrap().contains("fixture replay rate"));
+        assert_eq!(source.registry()[0].epoch,registry[0].epoch);
+        config.mode = "ft4".into();
+        assert!(source.staged(&[config]).err().unwrap().contains("UTC-aligned"));
+        assert_eq!(source.registry()[0].epoch, registry[0].epoch);
+        assert_eq!(source.step().unwrap(), reference.step().unwrap());
     }
 }

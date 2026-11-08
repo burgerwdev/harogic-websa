@@ -13,8 +13,12 @@ const MAX_RATIO_TERM: u128 = (u64::MAX / 2) as u128;
 pub struct Rational {
     up: u128,
     down: u128,
+    advance_whole: u128,
+    advance_remainder: u128,
     taps: usize,
     phase_taps: Vec<f32>,
+    /// Small exact ratios repeat these selectors; large ratios keep bounded grid interpolation.
+    phase_selectors: Option<Vec<(usize, f32)>>,
     re: Vec<f32>,
     im: Vec<f32>,
     pos: usize,
@@ -99,7 +103,10 @@ impl Rational {
         }
         let taps = (required as usize).max(96).next_multiple_of(8);
         let coefficients = (PHASES + 1) * taps;
-        if (coefficients + 4 * taps) * std::mem::size_of::<f32>() > MAX_FILTER_BYTES {
+        let selector_bytes = if up <= PHASES as u128 {
+            up as usize * std::mem::size_of::<(usize, f32)>()
+        } else {0};
+        if (coefficients + 4 * taps) * std::mem::size_of::<f32>() + selector_bytes > MAX_FILTER_BYTES {
             return Err("FIR allocation exceeds configured memory bound");
         }
         let denom = super::narrow::bessel0(8.6);
@@ -125,6 +132,17 @@ impl Rational {
                 *tap /= sum as f32;
             }
         }
+        let phase_selectors = if up <= PHASES as u128 {
+            Some((0..up).map(|remainder| {
+                // taps is even: causal lag is 1/2-r below the half boundary,
+                // and 3/2-r above it, in exact numerator units.
+                let lag = if 2 * remainder <= up {up - 2 * remainder}
+                    else {3 * up - 2 * remainder};
+                let scaled = lag * PHASES as u128;
+                ((scaled / (2 * up)) as usize,
+                    (scaled % (2 * up)) as f32 / (2 * up) as f32)
+            }).collect())
+        } else {None};
         let avx2 = cfg!(target_arch = "x86_64") && {
             #[cfg(target_arch = "x86_64")]
             {
@@ -136,7 +154,8 @@ impl Rational {
             }
         };
         Ok(Self {
-            up, down, taps, phase_taps,
+            up, down, advance_whole: down / up, advance_remainder: down % up,
+            taps, phase_taps, phase_selectors,
             re: vec![0.0; 2 * taps],
             im: vec![0.0; 2 * taps],
             pos: 0, input_index: 0, next_whole: 0, next_remainder: 0, avx2,
@@ -198,19 +217,22 @@ impl Rational {
             self.re[p + taps] = sample[0];
             self.im[p] = sample[1];
             self.im[p + taps] = sample[1];
-            self.pos = (p + 1) % taps;
+            self.pos = if p + 1 == taps {0} else {p + 1};
             let n = self.input_index;
             self.input_index += 1;
             loop {
-                let fraction_ticks = 2 * self.next_remainder + self.up;
-                let target = self.next_whole + ((taps - 1) / 2) as u128
-                    + fraction_ticks.div_ceil(2 * self.up);
+                let target = self.next_whole + (taps / 2) as u128
+                    + u128::from(2 * self.next_remainder > self.up);
                 if n < target { break; }
-                let lag_ticks = ((2 * (n - self.next_whole) - (taps - 1) as u128) * self.up)
-                    - 2 * self.next_remainder;
-                let scaled = lag_ticks * PHASES as u128;
-                let phase = (scaled / (2 * self.up)) as usize;
-                let blend = (scaled % (2 * self.up)) as f32 / (2 * self.up) as f32;
+                let (phase, blend) = if let Some(selectors) = &self.phase_selectors {
+                    selectors[self.next_remainder as usize]
+                } else {
+                    let lag_ticks = ((2 * (n - self.next_whole) - (taps - 1) as u128) * self.up)
+                        - 2 * self.next_remainder;
+                    let scaled = lag_ticks * PHASES as u128;
+                    ((scaled / (2 * self.up)) as usize,
+                        (scaled % (2 * self.up)) as f32 / (2 * self.up) as f32)
+                };
                 let a = &self.phase_taps[phase * taps..(phase + 1) * taps];
                 let b = &self.phase_taps[(phase + 1) * taps..(phase + 2) * taps];
                 let re = &self.re[self.pos..self.pos + taps];
@@ -225,8 +247,8 @@ impl Rational {
                 out[2 * count] = ar + blend * (br - ar);
                 out[2 * count + 1] = ai + blend * (bi - ai);
                 count += 1;
-                self.next_whole += self.down / self.up;
-                self.next_remainder += self.down % self.up;
+                self.next_whole += self.advance_whole;
+                self.next_remainder += self.advance_remainder;
                 if self.next_remainder >= self.up {
                     self.next_remainder -= self.up;
                     self.next_whole += 1;
@@ -240,6 +262,34 @@ impl Rational {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fine_channel_rates_resample_at_real_time() {
+        // Rates the live channelizer reports, including the fractional fine rates
+        // the SSTV/radiofax plans produce. Output volume must track the exact
+        // ratio: inflating it stretches every tone and breaks header timing.
+        for rate in [8_138.020833333333, 8_138.02, 15_258.7890625] {
+            let mut r = Rational::from_rates(rate, 8_000, 3_000.0).expect("build");
+            let mut out = vec![0.0f32; 8192];
+            let mut input = 0usize;
+            let mut output = 0usize;
+            let mut t = 0.0_f64;
+            for _ in 0..4_000 {
+                let mut iq = Vec::with_capacity(560);
+                for _ in 0..280 {
+                    let v = (t * 2.0 * PI * 1500.0).sin() as f32;
+                    iq.push(v); iq.push(0.0);
+                    t += 1.0 / rate;
+                }
+                input += 280;
+                output += r.process(&iq, &mut out);
+            }
+            let expected = input as f64 * 8_000.0 / rate;
+            let ratio = output as f64 / expected;
+            assert!((0.999..=1.001).contains(&ratio),
+                "rate {rate}: output ratio {ratio:.4} inflates decoder time");
+        }
+    }
 
     #[test]
     fn keeps_wfm_passband_and_rejects_new_nyquist_alias() {
@@ -355,5 +405,53 @@ mod tests {
         let alias = 20.0 * (level(49_000.0) / reference).log10();
         assert!(edge > -0.2, "DRMplus occupied-edge loss {edge:.2} dB");
         assert!(alias < -60.0, "DRMplus folded alias {alias:.2} dB");
+    }
+
+    #[test]
+    fn cached_phase_selectors_match_general_grid_and_exact_clocks() {
+        for (fs,rate,passband) in [(3_906_250.0,4_000_000,1_023_000.0),
+            (48_000.0,44_100,18_000.0),(48_000.0,96_000,18_000.0),
+            (96_000.0,48_000,18_000.0)] {
+            let mut cached=Rational::from_rates(fs,rate,passband).unwrap();
+            let mut generic=Rational::from_rates(fs,rate,passband).unwrap();
+            assert!(cached.phase_selectors.is_some());
+            generic.phase_selectors=None;
+            let iq:Vec<f32>=(0..65_536).flat_map(|n| {
+                let phase=2.0*PI*passband*0.97*n as f64/fs;
+                [(phase.cos()*0.4) as f32,(phase.sin()*0.4) as f32]
+            }).collect();
+            let expected=generic.output_frames_for_input(iq.len()/2);
+            let mut reference=vec![0.0;2*expected];
+            assert_eq!(generic.process(&iq,&mut reference),expected);
+            let mut actual=Vec::new();
+            for packet in iq.chunks(2*113) {
+                let count=cached.output_frames_for_input(packet.len()/2);
+                let mut output=vec![0.0;2*count];
+                assert_eq!(cached.process(packet,&mut output),count);
+                actual.extend(output);
+            }
+            assert_eq!(actual,reference,"cached phase coefficients changed samples at {fs}->{rate}");
+            assert_eq!((cached.next_whole,cached.next_remainder),
+                (generic.next_whole,generic.next_remainder));
+            for n in [0,1,127,128,expected as u64-1] {
+                let old_target=(2*n as u128*cached.down+(cached.taps-1) as u128*cached.up)
+                    .div_ceil(2*cached.up);
+                assert_eq!(cached.causal_input_index(n).unwrap() as u128,old_target);
+            }
+        }
+    }
+
+    #[test]
+    fn gps_half_phase_output_becomes_available_at_equal_causal_target() {
+        let mut adapter=Rational::from_rates(3_906_250.0,4_000_000,1_023_000.0).unwrap();
+        // Output 64 has source coordinate 62.5. Adding the 47.5-sample FIR
+        // delay gives exactly 110: no extra causal input sample is needed.
+        assert_eq!(adapter.causal_input_index(64).unwrap(),110);
+        let mut output=vec![0.0;256];
+        assert_eq!(adapter.process(&vec![0.25;220],&mut output),63);
+        // Outputs 63 and 64 both become available at input index 110.
+        assert_eq!(adapter.causal_input_index(63).unwrap(),110);
+        assert_eq!(adapter.process(&[0.25,0.25],&mut output),2);
+        assert_eq!(adapter.input_index,111);
     }
 }

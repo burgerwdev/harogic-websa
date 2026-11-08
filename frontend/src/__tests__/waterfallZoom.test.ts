@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { pushSpectrumRow, renderWaterfall, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
+import { pushSpectrumRow, renderWaterfall, retainedViewFloor, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
 import * as S from '../core/store';
-import { wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
+import { wfContrast, wfFloorSource, wfPaused, wfPalette, wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
 import { __testSeedCapture, zoomEnabled } from '../ui/spectrumViewport';
 import { clearSdrBadgeDrag, sdrBadgeGeometry, startSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 import { sdrListenHz } from '../ui/sdrState';
-import { canvasColors, setTheme } from '../core/theme';
+import { setTheme } from '../core/theme';
+import { setSdrHoverFrequency } from '../ui/sdrHoverPassband';
 import { clearDisplayBounds, setDisplayBounds } from '../ui/displayRef';
 
 beforeEach(() => {
@@ -13,10 +14,14 @@ beforeEach(() => {
   wfRangeMode.set('fixed');
   wfHiDbm.set(0);
   wfLoDbm.set(-100);
+  wfPalette.set('classic');
+  wfContrast.set(1);
+  wfFloorSource.set('capture'); wfPaused.set(false);
 });
 
 afterEach(() => {
   clearSdrBadgeDrag();
+  setSdrHoverFrequency(null);
   clearDisplayBounds();
   zoomEnabled.set(false);
   S.setSdrMode(false);
@@ -27,8 +32,53 @@ afterEach(() => {
 });
 
 describe('native waterfall history', () => {
+  it('keeps rendered noise dark at minimum contrast and darkens it at maximum across every palette', () => {
+    S.setSdrMode(true);wfPaused.set(true);
+    const count=1024, freq=Float64Array.from({length:count+2},(_,i)=>1e6+i);
+    __testSeedCapture({lo:freq[0],hi:freq.at(-1)!});
+    const levels=Float32Array.from({length:count+2},(_,i)=>i<count
+      ? -110+10*Math.log10(-Math.log1p(-(i+0.5)/count)) : i===count?-60:-20);
+    pushSpectrumRow(levels,freq,freq[0],freq.at(-1)!,100);
+    const row=S.waterfallRows[0], pushes=S.waterfallPushes;
+    let pixels=new Uint8ClampedArray();
+    const context={createImageData:(width:number,height:number)=>({width,height,data:new Uint8ClampedArray(width*height*4)}),
+      putImageData:(image:{data:Uint8ClampedArray})=>{pixels=image.data.slice();}};
+    const canvas={width:count+2,height:1,getContext:()=>context} as unknown as HTMLCanvasElement;
+    for (const mode of ['auto','fixed'] as const) {
+      wfRangeMode.set(mode);wfLoDbm.set(-125);wfHiDbm.set(-50);
+      for (const palette of ['classic','blue','viridis','amber'] as const) {
+        wfPalette.set(palette);
+        const brightness=new Map<number,number>();
+        for (const contrast of [0.5,1,2]) {
+          wfContrast.set(contrast);renderWaterfall(canvas,100);
+          let sum=0;
+          for (let i=0;i<count;i++) sum+=0.2126*pixels[4*i]+0.7152*pixels[4*i+1]+0.0722*pixels[4*i+2];
+          brightness.set(contrast,sum/count);
+          expect([...pixels.slice(4*count,4*count+3)]).not.toEqual([...pixels.slice(4*(count+1),4*(count+1)+3)]);
+        }
+        expect(brightness.get(0.5)!,`${mode}/${palette}: soft background`).toBeLessThan(brightness.get(1)!);
+        expect(brightness.get(2)!,`${mode}/${palette}: hard background`).toBeLessThan(brightness.get(0.5)!);
+      }
+    }
+    expect(S.waterfallRows[0]).toBe(row);expect(S.waterfallPushes).toBe(pushes);
+  });
 
-  it('erases the indicator from an empty waterfall without a new history row', () => {
+  it('estimates on original RF samples and can browse frozen old axes without live input', () => {
+    S.setSdrMode(true); wfPaused.set(true);
+    const freq = Float64Array.from({ length: 1000 }, (_, i) => 1e6 + i);
+    const levels = new Float32Array(1000).fill(-90);
+    levels.fill(-120, 100, 200); levels[150] = -10; levels[170] = NaN;
+    pushSpectrumRow(levels, freq, 1e6, 1e6 + 999, 100);
+    const original = S.waterfallRows[0].slice();
+    expect(retainedViewFloor(1e6 + 100, 1e6 + 199)).toBeCloseTo(-120, 0);
+    expect(retainedViewFloor(1e6 + 150, 1e6 + 152)).toBeCloseTo(-90, 0);
+    pushSpectrumRow(new Float32Array(1000).fill(-80), Float64Array.from(freq, v => v + 2000), 1e6 + 2000, 1e6 + 2999, 100);
+    expect(retainedViewFloor(1e6 + 100, 1e6 + 199)).toBeCloseTo(-120, 0);
+    expect(retainedViewFloor(2e6, 2e6 + 1000)).toBeNaN();
+    expect(S.waterfallRows[0]).toEqual(original);
+  });
+
+  it('keeps the current passband after a badge drag on an empty waterfall', () => {
     S.initStore();
     S.setSdrMode(true);
     const freq = Float64Array.from([10_000, 20_000]);
@@ -44,8 +94,8 @@ describe('native waterfall history', () => {
     clearSdrBadgeDrag();
     context.fillRect.mockClear();
     renderWaterfall(canvas, 100);
-    expect(context.fillRect).toHaveBeenCalledExactlyOnceWith(0, 0, 100, 40);
-    expect(context.fillStyle).toBe(canvasColors().bg);
+    expect(context.fillRect).toHaveBeenNthCalledWith(1, 0, 0, 100, 40);
+    expect(context.fillRect).toHaveBeenLastCalledWith(50, 0, 2, 40);
   });
 
   it('retains a close pair, valley, missing bin and final carrier on their native Hz', () => {
@@ -58,7 +108,7 @@ describe('native waterfall history', () => {
     expect([...sliceWaterfallRow(row, 3, 8, 11)]).toEqual([0, 0, 80]);
   });
 
-  it('recolors retained SDR levels with display bounds and keeps sub-dB carriers distinct', () => {
+  it('recolours retained SDR levels with the waterfall range and keeps sub-dB carriers distinct', () => {
     S.setSdrMode(true);
     zoomEnabled.set(true);
     const freq = Float64Array.from([10, 12, 14, 16]);
@@ -72,18 +122,57 @@ describe('native waterfall history', () => {
     pushSpectrumRow(Float32Array.from([-60.8, -60.2, NaN, -20]), freq, 10, 16, 100);
     const row = S.waterfallRows[0];
     const pushes = S.waterfallPushes;
-    setDisplayBounds(-60, -61);
+    wfHiDbm.set(-60); wfLoDbm.set(-61);
     renderWaterfall(canvas, 100);
     const narrow = pixels.slice();
     expect([...pixels.slice(0, 4)]).not.toEqual([...pixels.slice(4, 8)]);
     setDisplayBounds(0, -100);
     renderWaterfall(canvas, 100);
+    expect(pixels).toEqual(narrow); // Spectrum scale cannot flatten waterfall contrast.
+    wfHiDbm.set(0); wfLoDbm.set(-100);
+    renderWaterfall(canvas, 100);
     expect(pixels).not.toEqual(narrow);
     expect(S.waterfallRows[0]).toBe(row);
     expect(S.waterfallPushes).toBe(pushes);
-    setDisplayBounds(-60, -61);
+    wfHiDbm.set(-60); wfLoDbm.set(-61);
     renderWaterfall(canvas, 100);
     expect(pixels).toEqual(narrow);
+    wfPalette.set('amber');
+    renderWaterfall(canvas, 100);
+    expect(pixels).not.toEqual(narrow);
+    wfPalette.set('classic'); wfContrast.set(0.7);
+    renderWaterfall(canvas, 100);
+    expect(pixels).not.toEqual(narrow);
+    wfContrast.set(1);
+    renderWaterfall(canvas, 100);
+    expect(pixels).toEqual(narrow);
+    expect(S.waterfallRows[0]).toBe(row);
+    expect(S.waterfallPushes).toBe(pushes);
+  });
+
+  it('preserves exact burst boundaries and scrolls by observation on HiDPI displays', () => {
+    const freq = Float64Array.from([10, 12, 14, 16]);
+    __testSeedCapture({ lo: 10, hi: 16 });
+    let pixels = new Uint8ClampedArray();
+    const context = {
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData: (image: { data: Uint8ClampedArray }) => { pixels = image.data.slice(); },
+    };
+    const canvas = { width: 4, height: 6, getContext: () => context } as unknown as HTMLCanvasElement;
+    pushSpectrumRow(Float32Array.from([-80, -60, -40, -20]), freq, 10, 16, 100);
+    renderWaterfall(canvas, 100, 2);
+    const first = pixels.slice(0, 16);
+    expect(pixels.slice(16, 32)).toEqual(first);
+    pushSpectrumRow(Float32Array.from([-20, -40, -60, -80]), freq, 10, 16, 100);
+    renderWaterfall(canvas, 100, 2);
+    expect(pixels.slice(0, 16)).not.toEqual(first);
+    expect(pixels.slice(16, 32)).toEqual(pixels.slice(0, 16));
+    expect(pixels.slice(32, 48)).toEqual(first);
+    expect(pixels.slice(48, 64)).toEqual(first);
+    const incremental = pixels.slice();
+    canvas.width = 5; renderWaterfall(canvas, 100, 2);
+    canvas.width = 4; renderWaterfall(canvas, 100, 2);
+    expect(pixels).toEqual(incremental);
   });
 
   it('reconstructs SDR zoom slopes before colour mapping while retaining native peaks and gaps', () => {
@@ -106,22 +195,85 @@ describe('native waterfall history', () => {
     expect([...sliceWaterfallRow(row, 4, 26.5, 28)]).toEqual([0, 0, 0, 0]);
   });
 
-  it('uses projected SDR cell centres for oversized history without extrapolating capture edges', () => {
+  it('anchors historical signals in RF through repeated fractional pans, span changes and a return to the old band', () => {
     S.setSdrMode(true);
-    // Two native samples per retained cell; values form a known slope in cell space.
-    const freq = Float64Array.from({ length: 32768 }, (_, i) => i + 0.25);
-    const levels = Float32Array.from(freq, hz => hz / 2);
-    pushSpectrumRow(levels, freq, 0, 32768, 100);
+    const freq = Float64Array.from({ length: 1024 }, (_, i) => 7e6 + i * 10);
+    const levels = new Float32Array(freq.length).fill(-110);
+    levels[400] = -40; levels[402] = -50; levels[401] = -108;
+    levels[600] = NaN;
+    pushSpectrumRow(levels, freq, 7e6, 7e6 + 10240, 100);
+    const original = S.waterfallRows[0], codes = original.slice();
+    const view = sliceWaterfallRow(original, 1024, 7e6, 7e6 + 10240);
+    for (let i = 0; i < 150; i++) {
+      // Fractions smaller than one display column must not accumulate a shift error.
+      sliceWaterfallRow(original, 1024, 7e6 + i * 0.7, 7e6 + 10240 + i * 0.7);
+    }
+    expect(original).toEqual(codes);
+    expect(sliceWaterfallRow(original, 1024, 7e6, 7e6 + 10240)).toEqual(view);
+    const shifted = sliceWaterfallRow(original, 1024, 7e6 + 2000, 7e6 + 12240);
+    expect(shifted[200]).toBe(original[400]);
+    expect(shifted[201]).toBe(original[401]);
+    expect(shifted[202]).toBe(original[402]);
+    expect([...shifted.slice(824)]).toEqual(new Array(200).fill(0));
+    // A finer capture can share the history without changing its original resolution.
+    const fineFreq = Float64Array.from({ length: 4096 }, (_, i) => 7e6 + 3000 + i);
+    pushSpectrumRow(new Float32Array(4096).fill(-100), fineFreq, 7e6 + 3000, 7e6 + 7096, 100);
+    expect(S.waterfallRows[0]).toBe(original);
+    expect(sliceWaterfallRow(original, 4, 7e6 + 4000, 7e6 + 4040)).toEqual(original.slice(400, 404));
+    expect([...sliceWaterfallRow(original, 8, 8e6, 8e6 + 10000)]).toEqual(new Array(8).fill(0));
+  });
+
+  it.each([false, true])('keeps exact pixel membership on a GHz grid (nonuniform=%s)', nonuniform => {
+    S.setSdrMode(true);
+    const freq = Float64Array.from({ length: 1024 }, (_, i) => 1e9 + i * 120000 / 1023);
+    if (nonuniform) freq[400] += 20;
+    const levels = Float32Array.from(freq, (_, i) => -110 + 30 * (0.5 + 0.5 * Math.sin(i * 2.1)));
+    pushSpectrumRow(levels, freq, freq[0], freq[freq.length - 1] + 1, 100);
     const row = S.waterfallRows[0];
-    expect(row).toHaveLength(16384);
-    const slope = sliceWaterfallRow(row, 4, 101, 103);
-    expect(slope[0]).toBe(row[50]);
-    for (let x = 1; x < slope.length; x++) expect(slope[x]).toBeGreaterThan(slope[x - 1]);
-    expect(slope[3]).toBeLessThanOrEqual(row[51]);
-    expect(sliceWaterfallRow(row, 1, 102.5, 103.5)[0]).toBe(row[51]);
-    expect([...sliceWaterfallRow(row, 4, 0, 1)]).toEqual([0, 0, 0, 0]);
-    expect([...sliceWaterfallRow(row, 4, 32767.5, 32768.5)]).toEqual([0, 0, 0, 0]);
-    expect(sliceWaterfallRow(row, 1, 0, 32768)[0]).toBe(row[row.length - 1]);
+    for (const shift of [0, 0.7, 120, -120]) {
+      const lo = freq[0] + shift, hi = lo + 120001;
+      const projected = sliceWaterfallRow(row, 64, lo, hi);
+      const reference = new Uint16Array(64);
+      for (let i = 0; i < freq.length; i++) {
+        if (freq[i] < lo || freq[i] > hi) continue;
+        const pixel = Math.min(63, Math.floor((freq[i] - lo) / (hi - lo) * 64));
+        reference[pixel] = Math.max(reference[pixel], row[i]);
+      }
+      expect(projected).toEqual(reference);
+    }
+  });
+
+  it('retains every large SDR FFT bin including an adjacent valley', () => {
+    S.setSdrMode(true);
+    const freq = Float64Array.from({ length: 52429 }, (_, i) => 1e9 + i * 10);
+    const levels = new Float32Array(freq.length).fill(-110);
+    levels[40001] = -40; levels[40002] = -108; levels[40003] = -41;
+    pushSpectrumRow(levels, freq, freq[0], freq.at(-1)!, 100);
+    const row = S.waterfallRows[0];
+    expect(row).toHaveLength(52429);
+    expect(sliceWaterfallRow(row, 3, freq[40001], freq[40004])).toEqual(row.slice(40001, 40004));
+    expect(row[40002]).toBeLessThan(row[40001]);
+    expect(row[40002]).toBeLessThan(row[40003]);
+    expect(S.waterfallBytes).toBe(row.byteLength + freq.byteLength);
+  });
+
+  it('shares identical RF axes and evicts complete old rows within the byte budget', () => {
+    S.setSdrMode(true);
+    const levels = new Float32Array(52429).fill(-100);
+    const freq = Float64Array.from(levels, (_, i) => 1e9 + i);
+    for (let i = 0; i < 2; i++) pushSpectrumRow(levels, i ? freq.slice() : freq, freq[0], freq.at(-1)!, 100);
+    expect(S.waterfallBytes).toBe(2 * levels.length * 2 + freq.byteLength);
+    // The store budget applies before rendering or any expensive encoding.
+    for (let i = 2; i < 513; i++) S.pushWaterfallRow(new Uint16Array(levels.length), freq);
+    expect(S.waterfallRows).toHaveLength(512);
+    expect(S.waterfallBytes).toBe(512 * levels.length * 2 + freq.byteLength);
+    for (let i = 0; i < 150; i++) {
+      const shifted = freq.slice(); shifted[0] += i * 0.01;
+      S.pushWaterfallRow(new Uint16Array(levels.length), shifted);
+    }
+    expect(S.waterfallBytes).toBeLessThanOrEqual(S.WATERFALL_HISTORY_BYTES);
+    expect(S.waterfallRows.length).toBeLessThan(512);
+    expect(S.waterfallRows.at(-1)).toHaveLength(52429);
   });
 
   it('bounds oversized history while retaining a carrier in the last native bin', () => {

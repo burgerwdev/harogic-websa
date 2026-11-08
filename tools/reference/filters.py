@@ -66,7 +66,7 @@ def one_pole_iir(x: np.ndarray, alpha: float, prev: float,
     for start in range(0, x.size, chunk):
         seg = x[start:start + chunk]
         w = alpha ** np.arange(seg.size, dtype=np.float64)
-        seg_out = w * (y + np.cumsum(seg / w))
+        seg_out = w * (alpha * y + np.cumsum(seg / w))
         out[start:start + seg.size] = seg_out
         y = float(seg_out[-1])
     return out, y

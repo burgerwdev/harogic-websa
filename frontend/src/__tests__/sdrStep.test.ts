@@ -11,7 +11,7 @@ import { resetAll } from '../core/params';
 import { UNIT_OPTIONS, toUnit, units } from '../core/units';
 import {
 	SDR_STEP_QUICK_HZ, SDR_PREF_KEYS, currentSdrStepHz, effectiveLocateMode, parseSdrStepMap,
-	resetSdrState, sdrChannelAnchorHz, sdrChannelStepHz, sdrDemod,
+	resetSdrState, sdrChannelAnchorHz, sdrChannelStepHz, sdrDecimate, sdrDemod, sdrSpanHz,
 	sdrFineStepByMode, sdrLocateMode, sdrNormalStepByMode, setSdrStepForCurrentMode,
 } from '../ui/sdrState';
 import { signalLocateSupported, stepTierDefaults } from '../ui/sdrTuning';
@@ -45,11 +45,13 @@ describe('per-mode tier defaults', () => {
 	});
 
 	it('serves the defaults whatever the capture width: the step no longer follows the span', () => {
-		// Same mode, two very different spans: the default tiers are identical. The old
-		// per-bandwidth step made a 50 MHz sweep jump to 500 kHz and hid narrow signals.
-		const wide = stepTierDefaults('am');
-		expect(wide).toEqual(stepTierDefaults('am'));
-		expect(currentSdrStepHz()).toBe(1000); // am default, no decimate involvement
+		sdrDemod.set('am');
+		for (const [decimate, span] of [[1, 50e6], [256, 195312.5]]) {
+			sdrDecimate.confirm(decimate);
+			sdrSpanHz.confirm(span);
+			expect(['normal', 'coarse', 'fine'].map(tier => currentSdrStepHz(tier as 'normal' | 'coarse' | 'fine')))
+				.toEqual([1000, 5000, 100]);
+		}
 	});
 });
 
@@ -169,7 +171,7 @@ describe('positioning preferences', () => {
 		sdrChannelAnchorHz.set(156.25);
 		expect(sdrChannelStepHz.get()).toBe(12.5);
 		expect(sdrChannelAnchorHz.get()).toBe(156.25);
-		// A stored spacing below the floor degrades to the default, not to the raw value.
-		localStorage.setItem('web-sa-sdr-channel-step', '0.2');
+		expect(localStorage.getItem('web-sa-sdr-channel-step')).toBe('12.5');
+		expect(localStorage.getItem('web-sa-sdr-channel-anchor')).toBe('156.25');
 	});
 });

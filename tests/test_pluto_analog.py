@@ -156,18 +156,6 @@ def _remainder(value: int) -> int:
     return value & 0x3FF
 
 
-def _spec_pulse(tau: np.ndarray) -> np.ndarray:
-    """The standard's data-shaping pulse h(tau), from H_T(f) = cos(pi f td/4).
-
-    This is the receiver's matched filter. It is the IFT of the transfer function
-    the standard names, band-limited to |f| <= 2/td, with a removable singularity
-    at tau = +-1/8.
-    """
-    den = 0.0625 - 4.0 * tau ** 2
-    near = np.abs(den) < 1e-9
-    return np.where(near, 4.0 * np.pi, np.cos(4.0 * np.pi * tau) / np.where(near, 1.0, den))
-
-
 def _rds_decisions(sig: np.ndarray, rate: float,
                    deviation_hz: float = RDS_WFM_DEVIATION_HZ) -> np.ndarray:
     """The transmitted bits a standard receiver recovers from an FM baseband.
@@ -260,7 +248,7 @@ def _rt_passes(bits: np.ndarray) -> tuple[list[tuple[int, str]], list[int]]:
     flags: list[int] = []
     flag = 0
     position = 0
-    while position + 4 * rds.GROUP_BITS <= data.size:
+    while position + rds.GROUP_BITS <= data.size:
         words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
         if [_remainder(word) for word in words] != list(RDS_OFFSETS):
             position += 1
@@ -289,6 +277,14 @@ def _close_pass(chars: dict[int, str], flag: int, passes: list[tuple[int, str]],
     text = ''.join(chars[index] for index in range(rds.RT_SEGMENTS)).split('\r', 1)[0]
     passes.append((len(passes), text.rstrip(' ')))
     flags.append(flag)
+
+
+def test_rds_reference_reads_the_final_complete_pass_without_extra_groups():
+    codes = rds.text_codes('FINAL COMPLETE PASS')
+    data = np.concatenate([rds.group_2a(0x1234, 0, segment, codes[4 * segment:4 * segment + 4])
+                           for segment in range(16)])
+    sent = np.bitwise_xor.accumulate(data)
+    assert _rt_passes(sent) == ([(0, 'FINAL COMPLETE PASS')], [0])
 
 
 def _radiotext(groups: list[tuple[int, list[int]]]) -> tuple[int | None, int | None, list[str]]:
@@ -487,7 +483,7 @@ def test_rds_pilot_is_the_19khz_reference():
 
 
 def test_rds_station_stream_sends_the_group_cadence():
-    """The station sequence: four Group 0A (PS) then one Group 2A, and the PS in block D."""
+    """The station sequence: sixteen Group 2A then four Group 0A (PS)."""
     stream = rds.StationStream(0x4321, 10, 'BENCH 1', ['HELLO WORLD'])
     bits, _first = stream.transmitted(0, 2 * rds.pass_groups('') * rds.GROUP_BITS - 1)
     data = np.concatenate((bits[:1], bits[1:] ^ bits[:-1]))
@@ -495,7 +491,7 @@ def test_rds_station_stream_sends_the_group_cadence():
     kinds = []
     block_cs = set()
     position = 0
-    while position + 4 * rds.GROUP_BITS <= data.size:
+    while position + rds.GROUP_BITS <= data.size:
         words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
         if [_remainder(word) for word in words] != list(RDS_OFFSETS):
             position += 1
@@ -599,6 +595,7 @@ def test_rds_live_chunks_decode_across_the_joins():
 def test_rds_without_a_ps_name_sends_radiotext_groups_only():
     """`--rds-ps ''` drops the Group 0A cadence: RadioText alone, a 1.4 s pass."""
     assert rds.group_pattern('') == (2,) * rds.RT_SEGMENTS
+    assert rds.group_pattern('', 0) == (2,) * rds.RT_SEGMENTS
     assert rds.pass_groups('') == rds.RT_SEGMENTS
     assert abs(rds.pass_seconds('') - rds.RT_SEGMENTS * rds.GROUP_S) < 1e-12
 
@@ -606,7 +603,7 @@ def test_rds_without_a_ps_name_sends_radiotext_groups_only():
     bits, _first = stream.transmitted(0, 2 * rds.pass_groups('') * rds.GROUP_BITS - 1)
     data = np.concatenate((bits[:1], bits[1:] ^ bits[:-1]))
     kinds, position = [], 0
-    while position + 4 * rds.GROUP_BITS <= data.size:
+    while position + rds.GROUP_BITS <= data.size:
         words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
         if [_remainder(word) for word in words] != list(RDS_OFFSETS):
             position += 1
@@ -701,7 +698,7 @@ def test_rds_clock_group_carries_the_time_once_a_minute():
     data = np.concatenate((groups[:1], groups[1:] ^ groups[:-1]))
 
     found, position, kinds = [], 0, []
-    while position + 4 * rds.GROUP_BITS <= data.size:
+    while position + rds.GROUP_BITS <= data.size:
         words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
         if [_remainder(word) for word in words] != list(RDS_OFFSETS):
             position += 1
@@ -729,7 +726,7 @@ def test_rds_tp_flag_is_set_by_default():
     bits = stream.transmitted(0, 2 * rds.pass_groups('RDS TEST') * rds.GROUP_BITS)[0]
     data = np.concatenate((bits[:1], bits[1:] ^ bits[:-1]))
     tps, position = [], 0
-    while position + 4 * rds.GROUP_BITS <= data.size:
+    while position + rds.GROUP_BITS <= data.size:
         words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
         if [_remainder(word) for word in words] != list(RDS_OFFSETS):
             position += 1
@@ -755,7 +752,7 @@ def test_rds_ps_names_rotate_on_the_same_hold_as_the_texts():
 
     passes: list[dict[int, str]] = []
     position = 0
-    while position + 4 * rds.GROUP_BITS <= data.size:
+    while position + rds.GROUP_BITS <= data.size:
         words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
         if [_remainder(word) for word in words] != list(RDS_OFFSETS):
             position += 1
@@ -774,13 +771,6 @@ def test_rds_ps_names_rotate_on_the_same_hold_as_the_texts():
     assert complete[hold:2 * hold] == [names[1]] * hold
 
 
-def test_rds_without_a_ps_name_sends_no_group_0a():
-    """An empty `--rds-ps` is a request for RadioText only, not a mistake."""
-    assert rds.group_pattern('') == (2,) * rds.RT_SEGMENTS
-    assert rds.group_pattern('', 0) == (2,) * rds.RT_SEGMENTS
-    assert rds.pass_seconds('', 0) < 1.5
-
-
 def test_rds_fewer_ps_groups_per_pass_still_complete_the_name():
     """The PS segment address runs on across passes, so the name still arrives.
 
@@ -797,7 +787,7 @@ def test_rds_fewer_ps_groups_per_pass_still_complete_the_name():
 
     seen: dict[int, str] = {}
     position, order = 0, []
-    while position + 4 * rds.GROUP_BITS <= data.size:
+    while position + rds.GROUP_BITS <= data.size:
         words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
         if [_remainder(word) for word in words] != list(RDS_OFFSETS):
             position += 1

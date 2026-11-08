@@ -22,7 +22,7 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 STYLE_CSS = ROOT / 'frontend/src/style.css'
-SHOT_DIR = ROOT / 'screenshots/resolution-baseline'
+DEFAULT_ARTIFACTS = Path('/tmp/websa-resolution-baseline')
 
 # (label, CSS width, CSS height, device pixel ratio)
 VIEWPORTS = [
@@ -69,6 +69,14 @@ PROBE = """(landmarks) => {
   // The global UI scale (core/uiScale.ts) is CSS `zoom` on the frame, so a canvas in it covers
   // scale times more device pixels than its local px suggest.
   const ui = parseFloat(document.documentElement.dataset.uiScale || '1') || 1;
+  // RTA/SDR fill their plot background; alpha alone measures that filled rectangle,
+  // not the one-pixel graticule. Resolve the actual background for the ink scan.
+  const colorCanvas = document.createElement('canvas');
+  colorCanvas.width = colorCanvas.height = 1;
+  const colorContext = colorCanvas.getContext('2d');
+  colorContext.fillStyle = getComputedStyle(de).getPropertyValue('--sa-bg').trim() || '#000';
+  colorContext.fillRect(0, 0, 1, 1);
+  const background = colorContext.getImageData(0, 0, 1, 1).data;
   out.viewport = { w: vw, h: vh, dpr: dpr, uiScale: ui,
                    zoom: window.visualViewport ? window.visualViewport.scale : null,
                    svw: screen.width, svh: screen.height };
@@ -96,6 +104,11 @@ PROBE = """(landmarks) => {
     if (g && c.width && c.height && c.width * c.height <= 12_000_000) {
       try {
         const d = g.getImageData(0, 0, c.width, c.height).data;
+        const inkAt = (x, y) => {
+          const at = (y * c.width + x) * 4;
+          return d[at + 3] > 0 && (d[at] !== background[0]
+            || d[at + 1] !== background[1] || d[at + 2] !== background[2]);
+        };
         // Full-resolution scan: the strided one below answers "is anything painted", but the
         // plot extent needs single-pixel columns to be comparable with the margins.
         const colLit = new Int32Array(c.width), rowLit = new Int32Array(c.height);
@@ -104,12 +117,13 @@ PROBE = """(landmarks) => {
           const rowBase = y * c.width * 4;
           for (let x = 0; x < c.width; x++) {
             if (d[rowBase + x * 4 + 3] > 0) {
-              colLit[x]++; rowLit[y]++; n++;
+              n++;
               if (x < minX) minX = x;
               if (x > maxX) maxX = x;
               if (y < minY) minY = y;
               if (y > maxY) maxY = y;
             }
+            if (inkAt(x, y)) { colLit[x]++; rowLit[y]++; }
           }
         }
         sampled = c.width * c.height;
@@ -138,25 +152,24 @@ PROBE = """(landmarks) => {
         const col = firstMostly(colLit, c.height);
         const row = firstMostly(rowLit, c.width);
         if (col >= 0 && row >= 0) {
-          const alphaAt = (x, y) => d[(y * c.width + x) * 4 + 3] > 0;
-          const [top, bottom] = longestRun(0, c.height, (y) => alphaAt(col, y));
-          const [left, right] = longestRun(0, c.width, (x) => alphaAt(x, row));
+          const [top, bottom] = longestRun(0, c.height, (y) => inkAt(col, y));
+          const [left, right] = longestRun(0, c.width, (x) => inkAt(x, row));
           // Sharpness by hand: the graticule is a 1-logical-pixel hairline, so it must be as
           // thick as the device ratio in device pixels - never 1 px on a 2x screen (drawn at
           // logical scale) and never smeared wider. Measured on the top grid line, which has no
           // trace under it, at columns where nothing else is lit; the thinnest sighting wins
           // because a spike crossing the line would widen it.
-          let gridThickness = 99;
+          let gridThickness = Infinity;
           if (left >= 0 && right > left && bottom > top) {
             for (const frac of [0.3, 0.45, 0.6, 0.75]) {
               const x = Math.round(left + (right - left) * frac);
               let run = 0;
-              for (let y = top; y < c.height && alphaAt(x, y); y++) run++;
+              for (let y = top; y < c.height && inkAt(x, y); y++) run++;
               if (run > 0 && run < gridThickness) gridThickness = run;
             }
           }
           plot = { minX, minY, maxX, maxY, left, right, top, bottom,
-                   gridThickness: gridThickness === 99 ? 0 : gridThickness };
+                   gridThickness: Number.isFinite(gridThickness) ? gridThickness : 0 };
         } else {
           plot = { minX, minY, maxX, maxY, left: -1, right: -1, top: -1, bottom: -1,
                    gridThickness: 0 };
@@ -379,8 +392,12 @@ def fmt(metrics: dict) -> list[str]:
                      f"inputs {fonts.get('input')}px -> {per_1000:.1f} px per 1000 px of "
                      f"viewport height (local {label} x scale {ui} = "
                      f"{label * ui:.1f} screen px of {vp['h']}, dpr {vp['dpr']})")
-        if per_1000 < 10:
+        # Auto promises readable proportions; an explicit smaller manual scale
+        # is a user choice. Still require that the requested override was used.
+        if metrics.get('scaleMode', 'auto') == 'auto' and per_1000 < 10:
             findings.append(f'label text shrinks to {per_1000:.1f}px per 1000px of height')
+        elif metrics.get('scaleMode') == 'manual' and vp['uiScale'] != metrics['uiScale']:
+            findings.append(f"manual UI scale {metrics['uiScale']} was replaced with {vp['uiScale']}")
     boxes = {k: v for k, v in metrics['boxes'].items()}
     shown = '  '.join(
         f"{k} {v['w']}x{v['h']}@{v['y']}"
@@ -450,6 +467,55 @@ def plot_geometry(c: dict) -> list[str]:
     return out
 
 
+def verify_pixel_probe(browser) -> None:
+    """Known rectangles distinguish the graticule from an opaque plot fill."""
+    for dpr in [1, 1.5, 2]:
+        with closing(browser.new_context(device_scale_factor=dpr)) as context:
+            page = context.new_page()
+            page.set_content('<canvas id="spectrum" style="width:320px;height:200px"></canvas>')
+            for background, axis in [('#000000', '#448855'), ('#ffffff', '#445566')]:
+                for line_width in [1, 12]:
+                    page.evaluate("""({dpr, background, axis, lineWidth}) => {
+                      document.documentElement.style.setProperty('--sa-bg', background);
+                      const canvas=document.querySelector('canvas');
+                      canvas.width=320*dpr; canvas.height=200*dpr;
+                      const context=canvas.getContext('2d'); context.scale(dpr,dpr);
+                      context.fillStyle=background; context.fillRect(10,14,260,160);
+                      context.strokeStyle=axis; context.lineWidth=lineWidth;
+                      context.strokeRect(10,14,260,160);
+                    }""", {'dpr': dpr, 'background': background, 'axis': axis, 'lineWidth': line_width})
+                    canvas = page.evaluate(PROBE, [])['canvases'][0]
+                    findings = plot_geometry(canvas)
+                    assert bool(findings) == (line_width != 1), {
+                        'dpr': dpr, 'background': background, 'line_width': line_width,
+                        'findings': findings, 'plot': canvas['plot']}
+    print('  pixel probe: 12 independent filled-rectangle cases passed')
+
+
+def wait_async_condition(page, expression, *, arg=None, timeout=30000):
+    """Poll the resolved result; wait_for_function treats a Promise itself as truthy."""
+    deadline = time.monotonic() + timeout / 1000
+    while True:
+        remaining = (deadline - time.monotonic()) * 1000
+        if remaining <= 0:
+            raise AssertionError(f'Browser condition did not become true within {timeout} ms: {expression}')
+        result = page.evaluate('''async ({expression, arg, timeout}) => {
+          let timer;
+          try {
+            return await Promise.race([
+              Promise.resolve().then(() => {
+                const predicate = (0, eval)(expression);
+                return typeof predicate === 'function' ? predicate(arg) : predicate;
+              }),
+              new Promise((_, reject) => { timer=setTimeout(() => reject(new Error('Browser condition evaluation timed out')), timeout); })
+            ]);
+          } finally { clearTimeout(timer); }
+        }''', {'expression': expression, 'arg': arg, 'timeout': remaining})
+        if result:
+            return result
+        page.wait_for_timeout(min(40, max(0, (deadline - time.monotonic()) * 1000)))
+
+
 def wait_ui_ready(page, mode: str | None = None) -> None:
     """Await confirmed STATUS, mode controls and a painted, drawable spectrum."""
     page.wait_for_function("""(mode) => {
@@ -474,9 +540,164 @@ def wait_ui_ready(page, mode: str | None = None) -> None:
     }""", arg=mode, timeout=30000)
 
 
+def verify_resizing(browser, url: str) -> list[dict]:
+    """Exercise actual resize and manual scale changes across the column boundary."""
+    observations = []
+    with closing(browser.new_context(viewport={'width': 1280, 'height': 720})) as context:
+        context.add_init_script("localStorage.setItem('web-sa-ui-scale', '2')")
+        page = context.new_page()
+        page.goto(url, wait_until='domcontentloaded')
+        wait_ui_ready(page)
+        page.evaluate('() => document.fonts.ready.then(() => true)')
+        for width, height, scale, direction in [(1280, 720, 2, 'column'),
+                                                 (2560, 1440, 2, 'row'),
+                                                 (1280, 720, 1, 'row')]:
+            page.set_viewport_size({'width': width, 'height': height})
+            page.locator('#ui-scale').select_option(str(scale))
+            page.wait_for_function("""({scale, direction}) =>
+              document.documentElement.dataset.uiScale === String(scale)
+              && localStorage.getItem('web-sa-ui-scale') === String(scale)
+              && getComputedStyle(document.querySelector('.screen-container')).flexDirection === direction
+            """, arg={'scale': scale, 'direction': direction})
+            page.wait_for_timeout(700)
+            metrics = page.evaluate(PROBE, LANDMARKS)
+            metrics['scaleMode'] = 'manual'
+            metrics['uiScale'] = scale
+            _, findings = fmt(metrics)
+            assert not findings, {'size': [width, height], 'scale': scale, 'findings': findings}
+            observations.append({'size': [width, height], 'scale': scale, 'direction': direction,
+                                 'metrics': metrics})
+    print('  resize: 3 actual resize/manual-scale transitions passed')
+    return observations
+
+
+def verify_control_rail(browser, url: str, artifacts: Path) -> list[dict]:
+    """Real clicks must reach groups through the document or panel scroll owner."""
+    observations = []
+    with closing(browser.new_context(viewport={'width': 1280, 'height': 720})) as context:
+        context.add_init_script("localStorage.setItem('web-sa-ui-scale', '2')")
+        page = context.new_page()
+        page.set_default_timeout(3000)
+        page.goto(url, wait_until='domcontentloaded')
+        wait_ui_ready(page, 'std')
+        page.evaluate('() => document.fonts.ready.then(() => true)')
+
+        def snapshot(step: str) -> None:
+            observations.append(page.evaluate("""step => {
+              const selectors = {panel:'.control-panel', rail:'#control-rail', items:'#rail-items',
+                panelToggle:'#panel-vis-toggle', railToggle:'#rail-toggle',
+                trace:'#trace-panel', button:'#rail-items .rail-item[aria-label="Trace"]'};
+              const nodes = Object.fromEntries(Object.entries(selectors).map(([name, selector]) => {
+                const el = document.querySelector(selector), r = el.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return [name, {rect:r.toJSON(), scrollTop:el.scrollTop, scrollLeft:el.scrollLeft,
+                  scrollHeight:el.scrollHeight, clientHeight:el.clientHeight,
+                  display:getComputedStyle(el).display,
+                  hit:hit && {tag:hit.tagName, id:hit.id, label:hit.getAttribute('aria-label')}}];
+              }));
+              return {step, nodes, scrollY, width:innerWidth, height:innerHeight,
+                scale:document.documentElement.dataset.uiScale,
+                direction:getComputedStyle(document.querySelector('.screen-container')).flexDirection};
+            }""", step))
+
+        def jump_to_trace(step: str, direction: str) -> None:
+            snapshot(step + '-before')
+            page.locator('#rail-items .rail-item[aria-label="Trace"]').click(timeout=3000)
+            page.wait_for_function("""direction => {
+              const group=document.querySelector('#trace-panel'), panel=document.querySelector('.control-panel');
+              const top=direction==='column' ? 0 : panel.getBoundingClientRect().top;
+              const head=group.querySelector('.group-head').getBoundingClientRect();
+              return Math.abs(group.getBoundingClientRect().top-top)<=1
+                && head.top>=0 && head.bottom<=innerHeight
+                && document.querySelector('#rail-items .rail-item[aria-label="Trace"]').classList.contains('active');
+            }""", arg=direction, timeout=3000)
+            snapshot(step + '-after')
+
+        try:
+            for width, height, scale, direction in [(1280, 720, 2, 'column'),
+                                                     (2560, 1440, 2, 'row'),
+                                                     (800, 600, 1, 'column')]:
+                page.set_viewport_size({'width': width, 'height': height})
+                page.locator('#ui-scale').select_option(str(scale))
+                page.wait_for_function("""({scale,direction}) =>
+                  document.documentElement.dataset.uiScale===String(scale)
+                  && localStorage.getItem('web-sa-ui-scale')===String(scale)
+                  && getComputedStyle(document.querySelector('.screen-container')).flexDirection===direction
+                """, arg={'scale': scale, 'direction': direction})
+                prefix = f'{width}x{height}-scale{scale}-{direction}'
+                jump_to_trace(prefix + '-jump', direction)
+                page.locator('#panel-vis-toggle').click()
+                page.wait_for_function("""() => {
+                  const p=document.querySelector('.control-panel');
+                  return p.classList.contains('panel-hidden') && (!p.clientWidth || !p.clientHeight);
+                }""")
+                snapshot(prefix + '-hidden')
+                jump_to_trace(prefix + '-unhide', direction)
+                page.locator('#trace-panel .panel-toggle').click()
+                page.wait_for_function("() => document.querySelector('#trace-panel .group-body').offsetParent===null")
+                jump_to_trace(prefix + '-expand-group', direction)
+                assert page.locator('#trace-panel .group-body').is_visible()
+                page.locator('#rail-toggle').click()
+                page.wait_for_function("() => document.querySelector('#rail-items').offsetParent===null")
+                page.locator('#panel-vis-toggle').click()
+                page.wait_for_function("() => document.querySelector('.control-panel').classList.contains('panel-hidden')")
+                page.locator('#rail-toggle').click()
+                page.wait_for_function("""() => document.querySelector('#rail-items').offsetParent!==null
+                  && !document.querySelector('.control-panel').classList.contains('panel-hidden')""")
+                jump_to_trace(prefix + '-expand-rail', direction)
+                # Let the intentional click highlight expire, then exercise the actual
+                # scrolling surface with a wheel event rather than dispatching a click.
+                page.wait_for_timeout(1600)
+                head = page.locator('#trace-panel .group-head').bounding_box()
+                page.mouse.move(head['x'] + head['width'] / 2, head['y'] + head['height'] / 2)
+                distance = page.evaluate("""() => {
+                  const panel=document.querySelector('.control-panel');
+                  const column=getComputedStyle(document.querySelector('.screen-container')).flexDirection==='column';
+                  return document.querySelector('#level-panel').getBoundingClientRect().top
+                    - (column ? 0 : panel.getBoundingClientRect().top) + 2;
+                }""")
+                page.mouse.wheel(0, distance)
+                page.wait_for_function("""() => {
+                  const panel=document.querySelector('.control-panel');
+                  const column=getComputedStyle(document.querySelector('.screen-container')).flexDirection==='column';
+                  const top=column ? 0 : panel.getBoundingClientRect().top;
+                  const tolerance=8*Number(document.documentElement.dataset.uiScale);
+                  const groups=[...panel.children].filter(g=>g.classList.contains('control-group'));
+                  const passed=groups.filter(g=>g.getBoundingClientRect().top<=top+tolerance);
+                  const expected=passed.at(-1) ?? groups[0];
+                  const actual=[...document.querySelectorAll('#rail-items .rail-item')].find(b=>b.classList.contains('active'))
+                    ?.getAttribute('aria-label');
+                  return actual!=='Trace' && actual===expected.querySelector('.group-title').textContent.trim();
+                }""", timeout=3000)
+                snapshot(prefix + '-wheel')
+            page.locator('#btn-spectrum-zoom').click()
+            page.wait_for_function("() => document.querySelector('#control-rail').classList.contains('zoom-rail')")
+            page.locator('#zoom-rail-switch').click()
+            jump_to_trace('zoom-groups', 'column')
+            page.locator('#btn-spectrum-zoom').click()
+            page.wait_for_function("() => !document.querySelector('#control-rail').classList.contains('zoom-rail')")
+            jump_to_trace('zoom-off', 'column')
+        except Exception:
+            snapshot('failure')
+            page.screenshot(path=str(artifacts / 'rail-failure.png'))
+            raise
+        finally:
+            (artifacts / 'rail-check.json').write_text(json.dumps(observations, indent=2) + '\n')
+    print('  rail: ordinary clicks, hide/restore, group/rail expansion, wheel, zoom and 3 layouts passed')
+    return observations
+
+
 def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
             mode: str = 'swp', mode_clicks: list[str] | None = None,
             shot_path: Path | None = None, ui_scale: float | None = None) -> dict:
+    # Each case starts from sweep explicitly. A fresh browser follows the live
+    # service and must not be relied on to reconfigure it from saved preferences.
+    import urllib.request
+    request = urllib.request.Request(
+        f'{url}/api/config', data=json.dumps({'cmd': 'SET_MODE', 'mode': 'std'}).encode(),
+        headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        response.read()
     with closing(browser.new_context(
             viewport={'width': w, 'height': h}, device_scale_factor=dpr)) as ctx:
         if ui_scale is not None:
@@ -497,6 +718,10 @@ def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
                 const frames = document.getElementById('spectrum').dataset.rtaFrames;
                 return frames !== undefined && frames !== before;
             }""", arg=before, timeout=30000)
+        # A painted canvas precedes font-display:swap completion. Measure the
+        # finished page, then retain the existing strict 700ms stability check.
+        page.evaluate('() => document.fonts.ready.then(() => true)')
+        page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
         metrics = page.evaluate(PROBE, LANDMARKS)
         # A backing store derived from the box must settle: if the size keeps changing, the layout
         # is feeding the bitmap back into itself (the trap the canvas CSS now avoids).
@@ -505,12 +730,15 @@ def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
         after = page.evaluate("() => [...document.querySelectorAll('canvas')]"
                               '.map((c) => [c.width, c.height])')
         metrics['settled'] = before == after
+        metrics['backing_before'] = before
+        metrics['backing_after'] = after
         if shot_path is not None:
             page.screenshot(path=str(shot_path), full_page=False)
-            print(f"  screenshot    : {shot_path.relative_to(ROOT)}")
+            print(f"  screenshot    : {shot_path}")
         metrics['label'] = label
         metrics['mode'] = mode
         metrics['uiScale'] = ui_scale if ui_scale is not None else 1
+        metrics['scaleMode'] = 'manual' if ui_scale is not None else 'auto'
         metrics['errors'] = errors
         return metrics
 
@@ -554,17 +782,18 @@ def hyprctl(args: list[str]) -> str:
     return out.stdout.strip()
 
 
-def screens(url: str, scales: list[float | None] | None = None) -> int:
+def screens(url: str, scales: list[float | None] | None = None,
+            artifacts: Path = DEFAULT_ARTIFACTS) -> int:
     """Capture the system Chromium window on each output at the requested UI scales."""
     from playwright.sync_api import sync_playwright
-    SHOT_DIR.mkdir(parents=True, exist_ok=True)
+    artifacts.mkdir(parents=True, exist_ok=True)
     mons = monitors()
     previous_focus = next((m['name'] for m in mons if m['focused']), None)
     rc = 0
     try:
         with sync_playwright() as p:
             for scale in (scales or [None]):
-                rc |= screens_for_monitors(p, mons, url, scale)
+                rc |= screens_for_monitors(p, mons, url, scale, artifacts)
     finally:
         if previous_focus:
             hyprctl(['dispatch', f'hl.dsp.focus({{monitor="{previous_focus}"}})'])
@@ -572,7 +801,8 @@ def screens(url: str, scales: list[float | None] | None = None) -> int:
 
 
 def screens_for_monitors(p, mons: list[dict], url: str,
-                         ui_scale: float | None = None) -> int:
+                         ui_scale: float | None = None,
+                         artifacts: Path = DEFAULT_ARTIFACTS) -> int:
     rc = 0
     tag = f"ui{ui_scale}" if ui_scale else 'auto'
     for mon in mons:
@@ -612,15 +842,15 @@ def screens_for_monitors(p, mons: list[dict], url: str,
                              f'window="address:{addr}"}})'])
                 page.wait_for_timeout(3000)
                 measured = page.evaluate(PROBE, LANDMARKS)
-                page.screenshot(path=str(SHOT_DIR / f"{mon['name']}-{tag}-page.png"))
+                page.screenshot(path=str(artifacts / f"{mon['name']}-{tag}-page.png"))
                 window = next((c for c in clients() if c['address'] == addr), {}) if addr else {}
                 geo = {k: window.get(k) for k in ('address', 'at', 'size', 'monitor')}
                 # Capture while the window is still on screen, or the region shows what is behind it.
-                shot = SHOT_DIR / f"{mon['name']}-{tag}.png"
+                shot = artifacts / f"{mon['name']}-{tag}.png"
                 subprocess.run(['grim', '-g',
                                 f"{mon['x']},{mon['y']} {mon['lw']}x{mon['lh']}", str(shot)],
                                check=True)
-                (SHOT_DIR / f"{mon['name']}-{tag}.json").write_text(
+                (artifacts / f"{mon['name']}-{tag}.json").write_text(
                     json.dumps({'monitor': mon, 'url': url, 'uiScale': ui_scale,
                                 'window': geo, 'metrics': measured},
                                indent=2, ensure_ascii=False), encoding='utf-8')
@@ -635,7 +865,7 @@ def screens_for_monitors(p, mons: list[dict], url: str,
                           f"backing {c['backingW']}x{c['backingH']} stretch {c['stretch']}")
                 print(f"    card {card.get('w')}x{card.get('h')} -> "
                       f"{100 - card.get('w', 0) / vp['w'] * 100:.1f}% of the width unused")
-                print(f"    screenshot: {shot.relative_to(ROOT)}"
+                print(f"    screenshot: {shot}"
                       f" + {mon['name']}-{tag}-page.png (browser-side capture)")
                 if not shot.exists() or shot.stat().st_size == 0:
                     print('    WARN: screenshot is empty')
@@ -697,6 +927,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', default='http://127.0.0.1:8099')
     parser.add_argument('--json', default='')
+    parser.add_argument('--artifacts', type=Path, default=DEFAULT_ARTIFACTS,
+                        help='directory for one-off screenshots (default: %(default)s)')
     parser.add_argument('--check', action='store_true',
                         help='exit non-zero when a viewport reports a finding')
     parser.add_argument('--screens', action='store_true',
@@ -706,7 +938,9 @@ def main() -> int:
                              '(default: whatever the page picks)')
     parser.add_argument('--screens-only', action='store_true')
     parser.add_argument('--ui-scales', default='',
-                        help='comma list of UI scales to sweep (e.g. 1,1.5,2); default: the page decides')
+                        help='comma list of UI scales to sweep (e.g. auto,1,1.5,2); default: the page decides')
+    parser.add_argument('--viewports', default='',
+                        help='comma list of viewport labels; default: all configured viewports')
     parser.add_argument('--modes', default='swp,rta+waterfall',
                         help='comma list of UI modes to measure '
                              f"({','.join(m[0] for m in MODES)})")
@@ -721,11 +955,16 @@ def main() -> int:
 
     if args.screens_only:
         only = [float(s) for s in args.screens_scales.split(',') if s.strip()] or [None]
-        return screens(args.url, scales=only)
+        return screens(args.url, scales=only, artifacts=args.artifacts)
 
     wanted = [m.strip() for m in args.modes.split(',') if m.strip()]
     selected = [(name, sels) for name, sels in MODES if name in wanted]
-    scales = [float(s) for s in args.ui_scales.split(',') if s.strip()] or [None]
+    scales = [None if s.strip() == 'auto' else float(s) for s in args.ui_scales.split(',') if s.strip()] or [None]
+    viewport_labels = [label.strip() for label in args.viewports.split(',') if label.strip()]
+    unknown = set(viewport_labels) - {label for label, *_ in VIEWPORTS}
+    if unknown:
+        parser.error(f'unknown viewport labels: {sorted(unknown)}')
+    viewports = [row for row in VIEWPORTS if not viewport_labels or row[0] in viewport_labels]
     shot_labels = [s.strip() for s in args.shots.split(',') if s.strip()]
     if not selected:
         print(f'no mode matches {args.modes!r}; known: {[m[0] for m in MODES]}')
@@ -749,17 +988,22 @@ def main() -> int:
     with sync_playwright() as p, ExitStack() as resources:
         browser = p.chromium.launch()
         resources.callback(browser.close)
-        for label, w, h, dpr in VIEWPORTS:
+        verify_pixel_probe(browser)
+        args.artifacts.mkdir(parents=True, exist_ok=True)
+        (args.artifacts / 'resize-check.json').write_text(
+            json.dumps(verify_resizing(browser, args.url), indent=2) + '\n')
+        verify_control_rail(browser, args.url, args.artifacts)
+        for label, w, h, dpr in viewports:
             for ui_scale in scales:
                 for mode, mode_clicks in selected:
                     title = f'{label} [{mode}]' + (f' ui{ui_scale}' if ui_scale else '')
                     print(f"\n=== {title} ===")
                     shot = None
                     if label in shot_labels:
-                        SHOT_DIR.mkdir(parents=True, exist_ok=True)
+                        args.artifacts.mkdir(parents=True, exist_ok=True)
                         safe = title.replace(' [', '-').replace(']', '').replace('+', '-')
                         safe = safe.replace(' ', '')
-                        shot = SHOT_DIR / f'{safe}-{args.shot_suffix}.png'
+                        shot = args.artifacts / f'{safe}-{args.shot_suffix}.png'
                     m = collect(browser, args.url, label, w, h, dpr, mode, mode_clicks,
                                 shot, ui_scale)
                     lines, findings = fmt(m)
@@ -811,7 +1055,7 @@ def main() -> int:
     if args.screens_only or args.screens:
         print('\n=== real-session screenshots ===')
         scales = [float(s) for s in args.screens_scales.split(',') if s.strip()] or [None]
-        if screens(args.url, scales=scales):
+        if screens(args.url, scales=scales, artifacts=args.artifacts):
             total_findings += 1
 
     if args.check and total_findings:

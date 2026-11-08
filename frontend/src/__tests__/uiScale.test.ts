@@ -7,7 +7,7 @@
  * needs the scale for, and what these tests pin (the e2e asserts the same numbers in a real
  * browser: tools/e2e/viewport_baseline.py).
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	UI_SCALE_AUTO, UI_SCALE_KEY, autoScale, chooseUiScale, getUiScale, initUiScale,
 	initialScale, parseStoredScale, setUiScale,
@@ -24,6 +24,8 @@ const setBox = (w: number, h: number) => {
 	el.clientWidth = w;
 	el.clientHeight = h;
 };
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('auto scale', () => {
 	it('steps up with the viewport height and stays 1 on the panels this is designed for', () => {
@@ -69,6 +71,32 @@ describe('stored override', () => {
 		setUiScale(1.25);
 		expect(document.documentElement.style.getPropertyValue('--ui')).toBe('1.25');
 		expect(document.documentElement.dataset.uiScale).toBe('1.25');
+	});
+
+	it('initializes the scale and binds its control when storage reads are denied', () => {
+		vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
+		const select = document.createElement('select'); select.id = 'ui-scale';
+		select.innerHTML = '<option value="auto">Auto</option><option value="1.5">1.5</option>';
+		document.body.append(select);
+		try {
+			expect(() => initUiScale()).not.toThrow();
+			expect(getUiScale()).toBe(autoScale());
+			select.value = '1.5'; select.dispatchEvent(new Event('change'));
+			expect(getUiScale()).toBe(1.5);
+		} finally { select.remove(); }
+	});
+
+	it('applies a manual scale for this page when persistence is full', () => {
+		vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+		expect(() => chooseUiScale('1.5')).not.toThrow();
+		expect(getUiScale()).toBe(1.5);
+	});
+
+	it('returns to automatic scale when deleting the saved override is denied', () => {
+		setUiScale(2);
+		vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
+		expect(() => chooseUiScale(UI_SCALE_AUTO)).not.toThrow();
+		expect(getUiScale()).toBe(autoScale());
 	});
 });
 

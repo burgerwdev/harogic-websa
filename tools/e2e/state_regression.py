@@ -30,11 +30,10 @@ def skip(name: str, reason: str) -> None:
     print(f"  SKIP  {name}  <- {reason}")
 
 
-def check(name: str, ok: bool, detail: str = "", require_device: bool = False) -> None:
-    """Record one check. `require_device` skips it (visibly) on the fake backend."""
-    if require_device and FAKE_BACKEND:
-        print(f"  SKIP  {name}  <- needs the analyzer")
-        return
+def check(name: str, ok: bool, detail: str = "") -> None:
+    """Record an observable assertion; absent signal cases call skip explicitly."""
+    if not isinstance(ok, bool):
+        raise TypeError(f"check {name!r} requires a boolean, got {type(ok).__name__}")
     print(f"  {'PASS' if ok else 'FAIL'}  {name}{('  <- ' + detail) if detail else ''}")
     if not ok:
         FAILURES.append(name)
@@ -46,11 +45,11 @@ def post(url: str, cmd: dict) -> dict:
         data=json.dumps(cmd).encode(),
         headers={"Content-Type": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.load(r)
-    except Exception as exc:  # a rejected command must fail the check, not the run
-        return {"error": repr(exc)}
+    with urllib.request.urlopen(req, timeout=30) as response:
+        result = json.load(response)
+    if result.get("cmd") != "STATUS":
+        raise RuntimeError(f"setup command {cmd!r} was not accepted: {result!r}")
+    return result
 
 
 def state(url: str) -> dict:
@@ -58,9 +57,21 @@ def state(url: str) -> dict:
         return json.load(r)
 
 
+def wait_state(page: Page, url: str, matches, timeout: float = 30) -> dict:
+    """Poll the resolved server snapshot; a Promise is not a boolean UI predicate."""
+    deadline = time.monotonic() + timeout
+    while True:
+        snapshot = state(url)
+        if matches(snapshot):
+            return snapshot
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"state did not match within {timeout}s: {snapshot!r}")
+        page.wait_for_timeout(100)
+
+
 
 def painted_pixels(page) -> int:
-    """Count painted pixels to detect a blank spectrum canvas."""
+    """Count grid/label/trace pixels; this does not establish signal rendering."""
     return page.evaluate(
         """() => {
           const c = document.getElementById('spectrum');
@@ -173,7 +184,7 @@ def main() -> int:
         # 1 - tune
         print("1) tune")
         painted = painted_pixels(page)
-        check("spectrum is actually drawn (renderer registered)",
+        check("spectrum grid and labels are drawn",
               painted > 5000, f"{painted} painted pixels")
         enter_sdr(page)
         page.fill("#input-sdr-center", "90.5")
@@ -344,6 +355,8 @@ def main() -> int:
             page.wait_for_timeout(2200)
             marker_move.append(page.evaluate(OVERLAY_SCAN))
         check("the channel overlay is drawn", all(frame["band"] is not None for frame in marker_move))
+        check("raising listen frequency moves the drawn marker to the right",
+              marker_move[1]["marker"] > marker_move[0]["marker"], str(marker_move))
         for mode in ("usb", "lsb", "cw", "ft8"):
             page.click(f'[data-sdr-demod="{mode}"]')
             page.wait_for_timeout(2500)
@@ -373,12 +386,11 @@ def main() -> int:
         page.wait_for_timeout(2000)
         page.click('[data-action="preset"]')
         wait_ui_ready(page, "sdr")
-        page.wait_for_function("""async () => {
-          const s = await fetch('/api/state').then(response => response.json());
-          return s.mode === 'sdr' && Math.abs(s.sdr.center - 101.7e6) > 1e6
-            && Math.abs(Number(document.getElementById('input-sdr-center').value) * 1e6 - s.sdr.center) < 1e4;
-        }""")
-        d = state(url)
+        d = wait_state(page, url, lambda s: s["mode"] == "sdr"
+                       and abs(s["sdr"]["center"] - 101.7e6) > 1e6
+                       and page.evaluate("""center =>
+                         Math.abs(Number(document.getElementById('input-sdr-center').value) * 1e6 - center) < 1e4
+                       """, s["sdr"]["center"]))
         after = d["sdr"]["center"] / 1e6
         check(
             "no pre-Preset frequency is reapplied",
@@ -394,11 +406,11 @@ def main() -> int:
         enter_sdr(page)
         page.fill("#input-sdr-center", "433")
         page.click('[data-action="apply-sdr"]')
-        page.wait_for_function("""async () => {
-          const s = await fetch('/api/state').then(response => response.json());
-          return s.mode === 'sdr' && Math.abs(s.sdr.center - 433e6) < 1e4
-            && Math.abs(Number(document.getElementById('input-sdr-center').value) - 433) < 0.0001;
-        }""")
+        wait_state(page, url, lambda s: s["mode"] == "sdr"
+                   and abs(s["sdr"]["center"] - 433e6) < 1e4
+                   and page.evaluate("""() =>
+                     Math.abs(Number(document.getElementById('input-sdr-center').value) - 433) < 0.0001
+                   """))
         page.reload(wait_until="domcontentloaded")
         wait_ui_ready(page, "sdr")
         d = state(url)
@@ -569,7 +581,7 @@ def main() -> int:
         check("RTA frames reach the renderer after entry", after_frames > before_frames,
               f"{before_frames} -> {after_frames}",)
         painted_rta = painted_pixels(page)
-        check("the RTA view is actually drawn", painted_rta > 5000,
+        check("the RTA grid and labels are drawn", painted_rta > 5000,
               f"{painted_rta} painted pixels")
 
         # 6c - Both unit buttons and keypad apply the RTA centre.
@@ -619,9 +631,9 @@ def main() -> int:
         check("ref step reaches the backend", abs(after - before) >= 5,
               f"{before} -> {after} dBm")
         check(
-            "the stepped value is rendered while pending",
+            "the acknowledged stepped value is rendered and editable",
             abs(float(page.input_value("#input-ref")) - after) < 1.5
-            or page.evaluate("document.getElementById('input-ref').disabled") is True,
+            and not page.evaluate("document.getElementById('input-ref').disabled"),
             f"input {page.input_value('#input-ref')} vs backend {after}",
         )
 
@@ -657,10 +669,14 @@ def main() -> int:
             page.click(sel)
             settled = False
             while time.monotonic() - t0 < 3.0:
-                if state(url)["mode"] == want:
+                # The next click belongs to the confirmed browser state. Seeing the
+                # HTTP mode first does not mean its WebSocket ACK has been applied.
+                if (state(url)["mode"] == want
+                        and page.locator("body").get_attribute("data-device-mode") == want
+                        and not page.locator("#btn-mode-rta.pending, #btn-mode-sdr.pending").count()):
                     settled = True
                     break
-                time.sleep(0.15)
+                page.wait_for_timeout(50)
             check(f"switch to {want} within 3 s", settled,
                   f"mode={state(url)['mode']} after {time.monotonic() - t0:.1f}s")
         check("mode buttons usable after the burst",
@@ -692,7 +708,7 @@ def main() -> int:
         floor_now = sdr_now.get("last_noise_floor")
         peak_now = sdr_now.get("last_peak")
         caps = state(url)["caps"]
-        good_ref = round(max((floor_now or -120.0) + window / 2, (peak_now or -60.0) + 10))
+        good_ref = round(max((floor_now if floor_now is not None else -120.0) + window / 2, (peak_now if peak_now is not None else -60.0) + 10))
         good_ref = max(float(caps["ref_min"]), min(float(caps["ref_max"]), good_ref))
         page.fill("#input-ref", str(good_ref))
         page.click("#btn-ref-set")
@@ -783,10 +799,10 @@ def main() -> int:
         dbg = page.evaluate(
             "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
         check("the SDR fit is a backend decision, like the other modes",
-              sdr_ref.get("result") in ("applied", "ok", "no_signal", "no_data", "clipped"),
+              sdr_ref.get("result") in ("applied", "ok", "no_data"),
               str(sdr_ref))
         check("the display shows the level the fit decided",
-              not dbg or abs(float(dbg.get("shown", 1e9)) - float(dbg.get("ref", -1e9))) < 3,
+              bool(dbg) and abs(float(dbg.get("shown", 1e9)) - float(dbg.get("ref", -1e9))) < 3,
               str(dbg))
         check("the glow is gone once the fit landed",
               not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')"),
@@ -847,7 +863,7 @@ def main() -> int:
         after = state(url)
         result = after["auto_ref"].get("result")
         check("pressing Auto Scale produces a decision (never silence)",
-              result in ("applied", "ok", "no_signal", "no_data"), str(after["auto_ref"]))
+              result in ("applied", "ok", "no_data"), str(after["auto_ref"]))
         if result == "applied":
             check("the applied target is the level the device reports",
                   abs(float(after["ref"]) - float(after["auto_ref"]["target"])) < 0.01,
@@ -855,8 +871,7 @@ def main() -> int:
             check("the fit moved the reference once", after["ref"] != before["ref"],
                   f'{before["ref"]} -> {after["ref"]}')
         else:
-            # 'ok' (already placed well), 'no_signal' (nothing to anchor to) and 'no_data' all
-            # mean the level must be left alone.
+            # An already placed window or absent data leaves the hardware level alone.
             check(f"a '{result}' decision leaves the reference where it was",
                   after["ref"] == before["ref"], f'{before["ref"]} -> {after["ref"]}')
         check("the fitted value is the one that is rendered",
@@ -877,7 +892,7 @@ def main() -> int:
             check("a settled placement is not reconfigured again",
                   again["config_version"] == version,
                   f'config_version {version} -> {again["config_version"]}')
-        elif result2 in ("applied", "clipped", "below_window"):
+        elif result2 == "applied":
             check("a moved estimate is followed with a real step, not churn",
                   previous_target is None
                   or abs(float(again["auto_ref"].get("target")) - float(previous_target)) >= 5.0,
@@ -885,7 +900,7 @@ def main() -> int:
                   f'config_version {version} -> {again["config_version"]}')
         else:
             check("a second press reports how the placement stands, not silence",
-                  result2 in ("no_signal", "no_data"), str(again["auto_ref"]))
+                  result2 == "no_data", str(again["auto_ref"]))
 
         # 9e - Settings preserve manual Ref; Auto must still fit noise-only traces.
         print("9e) a settings change keeps the user's level, and Auto still fixes the trace")
@@ -906,12 +921,16 @@ def main() -> int:
             kept = state(url)
             check("a settings change does not undo a level the user set",
                   abs(float(kept["ref"]) - low) < 1.5, f'asked {low}, device {kept["ref"]}')
+            previous_seq = int(kept["auto_ref"].get("seq", 0))
             page.click("#btn-ref-auto")
-            # Gain changes can move the trace between Ref steps; await the bounded fit.
+            # The click queues a WebSocket command. A GET can still return the
+            # preceding idle snapshot; await this decision as well as completion.
+            # Gain changes can move the trace between Ref steps during the fit.
             fixed = {}
             for _ in range(24):                     # up to 12 s
                 fixed = state(url)
-                if not fixed.get("auto_ref", {}).get("adjusting"):
+                auto = fixed.get("auto_ref", {})
+                if int(auto.get("seq", 0)) > previous_seq and not auto.get("adjusting"):
                     break
                 page.wait_for_timeout(500)
             fixed_floor = fixed["auto_ref"].get("last_noise_floor")
@@ -921,8 +940,9 @@ def main() -> int:
                   fixed["auto_ref"].get("result") in ("applied", "ok"),
                   str(fixed["auto_ref"]))
             check("Auto Scale puts the whole trace inside the window after the change",
-                  (fixed_floor is None or fixed_floor >= bottom)
-                  and (fixed_peak is None or fixed_peak <= top),
+                  isinstance(fixed_floor, (int, float)) and math.isfinite(fixed_floor)
+                  and isinstance(fixed_peak, (int, float)) and math.isfinite(fixed_peak)
+                  and fixed_floor >= bottom and fixed_peak <= top,
                   f'ref {fixed["ref"]} window [{bottom}, {top}] '
                   f'floor {fixed_floor} peak {fixed_peak}')
 

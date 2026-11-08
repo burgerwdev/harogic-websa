@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Generate the DDC golden fixtures the Rust/WASM kernels are compared against.
 
-The DSP moved to the browser, but the *numerics* did not get to change: the Python
-implementations in `tools/reference/filters.py` (design_lowpass, StreamFilter, LinearResampler,
-Agc) are the reference the Rust kernels must agree with, and this script turns that reference
-into committed bytes.
+The Python implementations in `tools/reference/filters.py` (design_lowpass,
+StreamFilter, LinearResampler, Agc) independently define the numerical reference
+for the shared Rust kernels. This script turns that reference into committed bytes.
 
 It writes, into `tests/fixtures/dsp/`:
 
@@ -113,11 +112,13 @@ def drifted(name: str, committed: bytes, produced: bytes, manifest: dict) -> str
     b = _decode(name, produced, manifest)
     if a is None or b is None:
         return None if committed == produced else f'{name}: bytes differ'
-    if not np.array_equal(np.isnan(a), np.isnan(b)):
-        return f'{name}: NaN pattern differs'
-    diff = np.abs(a - b)
-    finite = diff[np.isfinite(diff)]
-    worst = float(finite.max()) if finite.size else 0.0
+    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(b)):
+        return f'{name}: non-finite reference or produced samples'
+    # Promote before subtraction: opposite finite f32 extrema exceed f32 range,
+    # and discarding that infinite difference would silently accept corruption.
+    dtype = np.complex128 if np.iscomplexobj(a) else np.float64
+    diff = np.abs(a.astype(dtype) - b.astype(dtype))
+    worst = float(diff.max()) if diff.size else 0.0
     tolerance = _float_tolerance(name, manifest)
     if worst > tolerance:
         return f'{name}: max|diff|={worst:g} > tolerance {tolerance:g}'
@@ -250,9 +251,8 @@ def _demod_baseband(mode: str) -> np.ndarray:
 
 #: Python modes that do not exist in `tools/reference` and how their reference is produced:
 #:   dsb -> the `am` branch (DSB with a residual carrier is detected by the same envelope + DC block)
-#:   pm  -> a phase detector assembled here from the same primitives, because the Python module has
-#:          no PM kernel and the browser port must still be compared against something independent
-#:          (adding PM to the production Python DSP would violate the "no new DSP in Python" rule).
+#:   pm  -> an offline phase-detector reference assembled from the same primitives;
+#:          production receiver processing is implemented in Rust.
 REFERENCE_ALIAS = {'dsb': 'am'}
 
 
@@ -353,7 +353,7 @@ def _stereo_rds_baseband() -> tuple[np.ndarray, float, np.ndarray]:
     # Rectangular biphase pins the decoder's bit logic. A live Pluto test covers the standard's
     # shaped symbol. Keep the XOR carry across group repeats: resetting it corrupts each boundary.
     bit_rate = 1187.5
-    reps = int(samples * bit_rate / group.size) + 2
+    reps = int((samples / fs) * bit_rate / group.size) + 2
     sent = np.bitwise_xor.accumulate(np.tile(group, reps))
     bit = np.floor(t * bit_rate).astype(np.int64)
     half = (t * bit_rate) % 1.0 < 0.5

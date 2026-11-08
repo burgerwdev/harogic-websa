@@ -15,11 +15,12 @@
  *     A translated capture (same width) keeps the view's width and its place in the band;
  *     a capture whose width changes drops the view (design §4.3).
  *
- * The functions are pure and the state is tiny on purpose: the gesture layer (ui/controls.ts)
- * computes the next window here and then calls requestRender() itself, so this file stays a
- * leaf that unit tests can drive without a canvas or a WebSocket.
+ * Window algebra is pure. Direct gestures apply immediately; automatic positioning uses a
+ * short animation of this same window, so renderers and hit tests stay in sync. No canvas
+ * or WebSocket is needed to drive this state.
  */
 import { createParam } from '../core/params';
+import { requestRender } from '../render/redraw';
 
 export type FreqWindow = { lo: number; hi: number };
 
@@ -53,6 +54,8 @@ export const SAME_WINDOW_HZ = 0.5;
 export const MARQUEE_MIN_PX = 8;
 /** Below this many samples in the view the UI shows the "no new detail" hint (design §3). */
 export const DETAIL_HINT_SAMPLES = 8;
+/** Short ease-out for automatic positioning; pointer drags always write immediately. */
+export const VIEW_SLIDE_MS = 240;
 
 // ---------------- window algebra (pure) ----------------
 
@@ -100,7 +103,9 @@ export function sameSpan(a: FreqWindow | null, b: FreqWindow | null): boolean {
 
 /** Clamp [lo,hi] into capture honouring minSpan: shrink at the edges, never exceed capture. */
 export function clampView(w: FreqWindow, capture: FreqWindow, minSpan: number): FreqWindow {
-	const cap = Math.max(capture.hi - capture.lo, minSpan);   // degenerate capture: full width
+	// A sparse grid can require more samples than the capture contains. In that case
+	// show the whole capture; the minimum must never expand its actual boundaries.
+	const cap = capture.hi - capture.lo;
 	const span = Math.min(Math.max(w.hi - w.lo, minSpan), cap);
 	let lo = Math.min(Math.max(w.lo, capture.lo), capture.hi - span);
 	let hi = lo + span;
@@ -124,6 +129,22 @@ export function panToCenter(view: FreqWindow, centerHz: number,
 	capture: FreqWindow, minSpan: number): FreqWindow {
 	const span = view.hi - view.lo;
 	return clampView({ lo: centerHz - span / 2, hi: centerHz + span / 2 }, capture, minSpan);
+}
+
+/** Reveal a receiver and its passband with the smallest pan, keeping the zoom scale. */
+export function panToReveal(view: FreqWindow, hz: number, band: FreqWindow,
+	capture: FreqWindow, minSpan: number): FreqWindow {
+	const lo = Math.max(capture.lo, Math.min(hz, band.lo));
+	const hi = Math.min(capture.hi, Math.max(hz, band.hi));
+	const span = view.hi - view.lo;
+	// A band wider than the view cannot fit without changing the user's zoom.
+	// Keep the dial visible instead (also covers an out-of-capture target).
+	if (hi - lo > span || hi < lo) {
+		return hz >= view.lo && hz <= view.hi ? clampView(view, capture, minSpan)
+			: panToCenter(view, hz, capture, minSpan);
+	}
+	const shift = lo < view.lo ? lo - view.lo : hi > view.hi ? hi - view.hi : 0;
+	return clampView({ lo: view.lo + shift, hi: view.hi + shift }, capture, minSpan);
 }
 
 /** Pan by a fraction of the view width (+1 = one full width right). */
@@ -188,10 +209,21 @@ export function nearestIdxForFreq(freq: ArrayLike<number>, fHz: number): number 
 let capture: FreqWindow | null = null;
 /** What the main plot shows; null = full capture. */
 let view: FreqWindow | null = null;
+let viewSlide: { from: FreqWindow; to: FreqWindow; start: number; frame: number; minSpan: number } | null = null;
+
+function cancelViewSlide(): void {
+	if (viewSlide) cancelAnimationFrame(viewSlide.frame);
+	viewSlide = null;
+}
 /** Raw view and master-toggle state saved only while the passband focus is active. */
 let passbandSnapshot: { view: FreqWindow | null; zoomEnabled: boolean } | null = null;
 /** A relocated receiver is focused only once its acknowledged capture is drawn. */
-let pendingRecenter: { hz: number; expected: FreqWindow; minSpan: number } | null = null;
+type ReceiverFocus = { hz: number; expected: FreqWindow; minSpan: number; band?: FreqWindow };
+let pendingRecenter: ReceiverFocus | null = null;
+let receiverFocusGeneration = 0;
+
+/** User view gestures supersede automatic focus awaiting a command acknowledgement. */
+export function receiverFocusEpoch(): number { return receiverFocusGeneration; }
 
 /** True while a second passband-view action will restore the saved display state. */
 export function passbandViewActive(): boolean {
@@ -230,13 +262,41 @@ export function viewportVersion(): number {
 
 /** Apply an acknowledged receiver relocation after its matching acquisition frame arrives. */
 export function recenterOnCapture(hz: number, expected: FreqWindow, minSpan: number): void {
+	focusOnCapture({ hz, expected, minSpan });
+}
+
+/** A new axis gesture supersedes receiver following that is waiting for a frame. */
+export function cancelReceiverFocus(): void {
+	receiverFocusGeneration++;
 	pendingRecenter = null;
-	if (!view || !Number.isFinite(hz) || !isValidWindow(expected)) return;
+	cancelViewSlide();
+}
+
+/** Follow tuning only when its dial/passband would leave the visible window. */
+export function revealOnCapture(hz: number, band: FreqWindow, expected: FreqWindow, minSpan: number): void {
+	if (!isValidWindow(band)) return;
+	focusOnCapture({ hz, band: { ...band }, expected, minSpan });
+}
+
+function focusedView(current: FreqWindow, focus: ReceiverFocus): FreqWindow {
+	const minimum = Math.min(focus.minSpan, focus.expected.hi - focus.expected.lo);
+	return focus.band
+		? panToReveal(current, focus.hz, focus.band, focus.expected, minimum)
+		: panToCenter(current, focus.hz, focus.expected, minimum);
+}
+
+function focusOnCapture(focus: ReceiverFocus): void {
+	const { hz, expected, minSpan } = focus;
+	pendingRecenter = null;
+	if (!view || !Number.isFinite(hz) || !isValidWindow(expected)
+		|| !Number.isFinite(minSpan) || minSpan <= 0) return;
 	if (sameWindow(capture, expected)) {
 		const minimum = Math.min(minSpan, expected.hi - expected.lo);
-		setView(panToCenter(view, hz, expected, minimum), minimum);
+		const next = focusedView(view, focus);
+		if (!sameWindow(next, view)) slideViewTo(next, minimum);
 	} else {
-		pendingRecenter = { hz, expected: { ...expected }, minSpan };
+		cancelViewSlide();
+		pendingRecenter = { ...focus, expected: { ...expected } };
 	}
 }
 
@@ -246,13 +306,15 @@ export function recenterOnCapture(hz: number, expected: FreqWindow, minSpan: num
  * Same window → nothing changes. A translated window of the same width (an x-axis
  * band pan) shifts the view by the same amount: the zoom box is pinned to the
  * observation FRAME, the spectrum (and the listen flag on it) slides under it,
- * clamped only at the frame's edges. When the flag slides out the backend replants
- * it and the SET_SDR acknowledgement in controls.ts drops the box onto the new
- * flag. A window whose width changed drops the view: that zoom was selected
- * against a different span. Returns true when the viewport changed.
+ * clamped only at the frame's edges. Confirmed SDR tuning in controls.ts
+ * follows an off-screen receiver once the matching capture arrives; intermediate pans
+ * keep that pending target. Axis pans retain their frame-relative view without receiver
+ * focus. A window whose width changed drops the view: that zoom
+ * was selected against a different span. Returns true when the viewport changed.
  */
 export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = SAME_WINDOW_HZ): boolean {
 	if (!isValidWindow(w)) {
+		cancelViewSlide();
 		pendingRecenter = null;
 		clearPassbandView();
 		if (capture === null && view === null) return false;
@@ -263,6 +325,7 @@ export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = S
 	}
 	const next = { lo: w.lo, hi: w.hi };
 	if (sameWindow(next, capture)) return false;
+	cancelViewSlide();
 	const recenter = pendingRecenter;
 	pendingRecenter = null;
 	clearPassbandView();
@@ -278,8 +341,12 @@ export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = S
 		view = null;
 	}
 	if (view && recenter && sameWindow(next, recenter.expected)) {
-		const centered = panToCenter(view, recenter.hz, next, Math.min(recenter.minSpan, next.hi - next.lo));
-		view = sameWindow(centered, next) ? null : centered;
+		const centered = focusedView(view, recenter);
+		slideViewTo(centered, Math.min(recenter.minSpan, next.hi - next.lo));
+	} else if (view && recenter && sameSpan(next, recenter.expected)) {
+		// Rapid tuning may confirm the newest target before older acquisition frames
+		// drain. Only its matching frame may consume the deferred focus.
+		pendingRecenter = recenter;
 	}
 	version++;
 	return true;
@@ -287,11 +354,43 @@ export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = S
 
 /** Apply a computed view (already clamped by the helpers). Null = back to full capture. */
 export function setView(w: FreqWindow | null, minSpan?: number): boolean {
-	pendingRecenter = null;
+	cancelReceiverFocus();
 	// Every external view action makes an earlier passband snapshot stale, even when the
 	// requested window happens to equal the current one.
 	clearPassbandView();
 	return applyView(w, minSpan);
+}
+
+/** Pan the actual view, so the overview, spectrum, waterfall and hit tests share every frame. */
+export function slideViewTo(w: FreqWindow, minSpan: number): boolean {
+	if (!capture || !isValidWindow(w) || !Number.isFinite(minSpan) || minSpan <= 0) return false;
+	const target = clampView(w, capture, minSpan);
+	if (viewSlide && sameWindow(viewSlide.to, target)) return false;
+	cancelViewSlide();
+	if (!view || !sameSpan(view, target) || sameWindow(view, target)
+		|| typeof requestAnimationFrame !== 'function'
+		|| window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || document.hidden) {
+		return setView(target, minSpan);
+	}
+	pendingRecenter = null;
+	clearPassbandView();
+	const slide = { from: { ...view }, to: target, start: performance.now(), frame: 0, minSpan };
+	viewSlide = slide;
+	const tick = (now: number) => {
+		if (viewSlide !== slide) return;
+		const reduced = document.hidden || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+		const progress = reduced ? 1 : Math.max(0, Math.min(1, (now - slide.start) / VIEW_SLIDE_MS));
+		const ease = 1 - Math.pow(1 - progress, 3);
+		applyView(progress === 1 ? slide.to : {
+			lo: slide.from.lo + (slide.to.lo - slide.from.lo) * ease,
+			hi: slide.from.hi + (slide.to.hi - slide.from.hi) * ease,
+		}, slide.minSpan);
+		if (progress === 1) viewSlide = null;
+		requestRender();
+		if (viewSlide === slide) slide.frame = requestAnimationFrame(tick);
+	};
+	slide.frame = requestAnimationFrame(tick);
+	return true;
 }
 
 /** Internal view write which can preserve the snapshot being entered or restored. */
@@ -319,7 +418,7 @@ function applyView(w: FreqWindow | null, minSpan?: number): boolean {
  * Returns the resulting focus state. No acquisition or receiver parameter is touched.
  */
 export function togglePassbandView(target: FreqWindow, minSpan: number): boolean {
-	pendingRecenter = null;
+	cancelReceiverFocus();
 	if (passbandSnapshot) {
 		const saved = passbandSnapshot;
 		passbandSnapshot = null;
@@ -342,7 +441,7 @@ export function togglePassbandView(target: FreqWindow, minSpan: number): boolean
 
 /** Reset everything (mode change, Preset, disconnect). The toggle stays as the user set it. */
 export function resetViewport(): void {
-	pendingRecenter = null;
+	cancelReceiverFocus();
 	clearLevelView();
 	clearPassbandView();
 	if (capture === null && view === null) return;
@@ -353,6 +452,7 @@ export function resetViewport(): void {
 
 /** For tests: seed a capture directly (production goes through the renderer/frame path). */
 export function __testSeedCapture(w: FreqWindow | null): void {
+	cancelViewSlide();
 	pendingRecenter = null;
 	clearPassbandView();
 	capture = w && isValidWindow(w) ? { lo: w.lo, hi: w.hi } : null;

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DecodeSequence, MAX_DECODE_BYTES, type DecodeEnvelope } from '../sdr/decodeProtocol';
+import { consumeDecode } from '../sdr/iqStream';
+import { setDecodeChannelMode, decodeWindowMode } from '../ui/decodeWindow';
+import { clearDecoderLog, decoderLog } from '../sdr/decoderLog';
+import { renderDecoderResults } from '../ui/decoderResults';
+import { clearFt8Spots, ft8Spots } from '../sdr/ft8Log';
 
 function frame(overrides: Partial<DecodeEnvelope> = {}): ArrayBuffer {
   const value: DecodeEnvelope = { version: 1, channel: 1, channel_id: 17, epoch: 9, seq: 0,
@@ -18,6 +23,107 @@ function amEvent(overrides: Record<string, unknown> = {}): DecodeEnvelope['event
     ...overrides } as DecodeEnvelope['event'];
 }
 describe('native decoded stream boundaries', () => {
+  it('accepts a processing end and the successor FT8 stream without failing reception', () => {
+    clearFt8Spots(1);
+    const stream = new DecodeSequence();
+    consumeDecode(stream.accept(frame()));
+    consumeDecode(stream.accept(frame({ seq: 1, event: { type: 'cw', text: 'TAIL' } })));
+    const end = { type: 'processing-end', processing_generation: '4', drained: false,
+      tail_complete: true, processing_complete: false, reason: 'reconfigured' };
+    consumeDecode(stream.accept(frame({ seq: 2, event: end })));
+    consumeDecode(stream.accept(frame({ channel_id: 18, mode: 'ft8' })));
+    consumeDecode(stream.accept(frame({ channel_id: 18, mode: 'ft8', seq: 1, event: {
+      type: 'ft8', text: 'CQ W1ABC FN42', centerHz: 14_074_000, frequencyHz: 1234, snrDb: -10,
+    } })));
+    expect(ft8Spots()[0]).toMatchObject({ text: 'CQ W1ABC FN42', hz: 14_075_234 });
+    expect(decodeWindowMode()).toBe('ft8');
+    clearFt8Spots(1);
+  });
+  it('rejects malformed processing end boundaries', () => {
+    for (const invalid of [{ processing_generation: '-1' }, { tail_complete: 'true' }, { reason: null }]) {
+      const stream = new DecodeSequence(); stream.accept(frame());
+      expect(() => stream.accept(frame({ seq: 1, event: { type: 'processing-end', processing_generation: '4',
+        drained: false, tail_complete: true, processing_complete: false, reason: 'reconfigured', ...invalid } as DecodeEnvelope['event'] }))).toThrow();
+    }
+  });
+  it('retains a retiring provider result without rolling back the confirmed pane', () => {
+    clearDecoderLog(1);
+    setDecodeChannelMode(1, 'am');
+    const sequence = new DecodeSequence();
+    sequence.accept(frame({ mode: 'ism' }));
+    consumeDecode(sequence.accept(frame({ mode: 'ism', seq: 1, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data: { model: 'Weather', temperature_C: 21.5 },
+    } })));
+    expect(decodeWindowMode()).toBe('am');
+    expect(decoderLog(1, 'ism').entries[0].source).toBe('9:17');
+    expect(decoderLog(1, 'ism').entries[0].data).toMatchObject({ temperature_C: 21.5 });
+    clearDecoderLog(1);
+  });
+  it('invalidates only the failed channel GPS fix while retaining navigation history', () => {
+    const stream = new DecodeSequence();
+    for (const channel of [1, 2]) {
+      clearDecoderLog(channel);
+      consumeDecode(stream.accept(frame({ channel, channel_id: channel, mode: 'gps' })));
+      for (const [index, data] of [
+        { table: 'satellites', rows: [{ prn: 7, tracking: true, cn0_db_hz: 42 }] },
+        { table: 'pvt', rows: [{ valid: true, lat_deg: 55.12345, lon_deg: 21.12345 }] },
+        { table: 'navigation', rows: [{ prn: 7, nav_message: 'received navigation bits' }] },
+      ].entries()) consumeDecode(stream.accept(frame({ channel, channel_id: channel, mode: 'gps', seq: index + 1,
+        event: { type: 'decoder-result', provider: 'gnss-sdr', mode: 'gps', kind: 'table', data } })));
+    }
+    const host = document.createElement('section');
+    renderDecoderResults(host, 1, 'gps', false);
+    expect(host.textContent).toContain('Valid position fix');
+    consumeDecode(stream.accept(frame({ channel: 1, channel_id: 1, mode: 'gps', seq: 4,
+      event: { type: 'error', message: 'GNSS receiver failed' } })));
+    renderDecoderResults(host, 1, 'gps', false);
+    expect(host.textContent).not.toContain('Valid position fix');
+    expect(host.textContent).not.toContain('55.12345');
+    expect(host.textContent).toContain('received navigation bits');
+    expect(decoderLog(1, 'gps').entries).toHaveLength(1);
+    expect(decoderLog(2, 'gps').entries).toHaveLength(3);
+    clearDecoderLog(1);
+    clearDecoderLog(2);
+  });
+  it('accepts provider fields and keeps their stream mode authoritative', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'ism' }));
+    const data = { model: 'weather', temperature_C: 18.7, extra: { battery: 'OK' } };
+    expect(stream.accept(frame({ mode: 'ism', seq: 1, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data,
+    } })).event.data).toEqual(data);
+    expect(() => stream.accept(frame({ mode: 'ism', seq: 2, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'aprs', kind: 'table', data,
+    } }))).toThrow(/decoder result/);
+  });
+  it('rejects excessive result nesting before delivery', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'ism' }));
+    let data: unknown = 1;
+    for (let index = 0; index < 15; index++) data = { nested: data };
+    expect(() => stream.accept(frame({ mode: 'ism', seq: 1, event: {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data,
+    } }))).toThrow(/structure limit/);
+  });
+  it('rejects a decoder result kind array before advancing the stream', () => {
+    const stream = new DecodeSequence(); stream.accept(frame({ mode: 'ism' }));
+    const event: DecodeEnvelope['event'] = {
+      type: 'decoder-result', provider: 'rtl433', mode: 'ism', kind: 'table', data: { temperature_C: 21 },
+    };
+    expect(() => stream.accept(frame({ mode: 'ism', seq: 1,
+      event: { ...event, kind: ['table'] } as unknown as DecodeEnvelope['event'] }))).toThrow(/decoder result/);
+    expect(stream.accept(frame({ mode: 'ism', seq: 1, event })).event).toEqual(event);
+  });
+  it('retains eight independent clocks including the eighth stream and rejects invalid wire numbers', () => {
+    const stream = new DecodeSequence();
+    for (let channel = 1; channel <= 8; channel++) stream.accept(frame({ channel, channel_id: channel }));
+    for (let channel = 1; channel <= 8; channel++) {
+      expect(stream.accept(frame({ channel, channel_id: channel, seq: 1, event: { type: 'cw', text: `C${channel}` } })).event.text).toBe(`C${channel}`);
+    }
+    expect(() => stream.accept(frame({ channel: 0 }))).toThrow();
+    expect(() => stream.accept(frame({ channel: 4294967296 }))).toThrow();
+    expect(() => stream.accept(frame({ channel: 8, channel_id: 8, seq: 3, event: { type: 'cw' } }))).toThrow(/sequence gap/);
+  });
   it('keeps all three channel clocks independent when one changes identity', () => {
     const stream = new DecodeSequence();
     for (const channel of [1, 2, 3]) stream.accept(frame({ channel, channel_id: channel }));
@@ -212,6 +318,14 @@ describe('native decoded stream boundaries', () => {
     expect(stream.accept(frame({ mode: 'radiofax', seq: 2,
       event: { ...event, meta: { ...meta, transmissionId: '18446744073709551615' } } })).event.meta!.transmissionId).toBe('18446744073709551615');
   });
+  it.each(['stage', 'clockStatus', 'clockSource'] as const)('rejects a radiofax %s array before advancing the stream', key => {
+    const stream = new DecodeSequence(); stream.accept(frame({ mode: 'radiofax' }));
+    const event: DecodeEnvelope['event'] = { type: 'radiofax-state', running: true, stage: 'searching', lines: 0,
+      clockStatus: 'nominal', clockSource: 'nominal', modulation: 'fm', polarity: 'normal', clockConfidence: 0, reason: null };
+    expect(() => stream.accept(frame({ mode: 'radiofax', seq: 1,
+      event: { ...event, [key]: [event[key]] } as unknown as DecodeEnvelope['event'] }))).toThrow(key);
+    expect(stream.accept(frame({ mode: 'radiofax', seq: 1, event })).event).toEqual(event);
+  });
   it('accepts radiofax rows and NR status together while keeping DRM text rows strict', () => {
     const stream = new DecodeSequence();
     stream.accept(frame({ mode: 'radiofax' }));
@@ -325,6 +439,48 @@ describe('native decoded stream boundaries', () => {
       sdrAmSync.reset();
     } finally { vi.unstubAllGlobals(); document.body.innerHTML = ''; }
   });
+  it.each(['closed', 'receiver-failed', 'disabled'])('removes live GPS fixes on %s while preserving navigation history', async (failure) => {
+    class Receiver {
+      static current: Receiver;
+      onmessage: ((event: { data: { type: string; message?: string } }) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+      constructor() { Receiver.current = this; }
+      postMessage(): void {}
+      terminate(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('Worker', Receiver);
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // Load an isolated consumer and log after installing Worker for this lifecycle.
+      const stream = await import('../sdr/iqStream');
+      const log = await import('../sdr/decoderLog');
+      const view = await import('../ui/decoderResults');
+      stream.setSdrIqEnabled(true);
+      const sequence = new DecodeSequence();
+      stream.consumeDecode(sequence.accept(frame({ mode: 'gps' })));
+      for (const [index, data] of [
+        { table: 'pvt', rows: [{ valid: true, lat_deg: 55.12345, lon_deg: 21.12345 }] },
+        { table: 'satellites', rows: [{ prn: 7, tracking: true }] },
+        { table: 'navigation', rows: [{ prn: 7, nav_message: 'received navigation bits' }] },
+      ].entries()) stream.consumeDecode(sequence.accept(frame({ mode: 'gps', seq: index + 1,
+        event: { type: 'decoder-result', provider: 'gnss-sdr', mode: 'gps', kind: 'table', data } })));
+      const host = document.createElement('section');
+      view.renderDecoderResults(host, 1, 'gps', false);
+      expect(host.querySelector('tbody')?.textContent).toContain('received navigation bits');
+      expect(host.textContent).toContain('55.12345');
+      if (failure === 'receiver-failed') stream.failSdrReceiver('GNSS receiver failed');
+      else if (failure === 'disabled') stream.setSdrIqEnabled(false);
+      else Receiver.current.onmessage!({ data: { type: 'closed', message: 'Stream disconnected' } });
+      view.renderDecoderResults(host, 1, 'gps', false);
+      expect(host.textContent).not.toContain('55.12345');
+      expect(host.textContent).not.toContain('Valid position fix');
+      expect(host.textContent).toContain('received navigation bits');
+      expect(log.decoderLog(1, 'gps').entries).toHaveLength(1);
+      stream.setSdrIqEnabled(false);
+      stream.resetSdrIq();
+    } finally { quiet.mockRestore(); vi.unstubAllGlobals(); }
+  });
   it('reports the original rejected stream error using a browser-valid close code', async () => {
     const messages: Array<{ type: string; message?: string }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
@@ -357,7 +513,7 @@ describe('native decoded stream boundaries', () => {
   it.each([
     ['receiver failed', 'Decoded-output receiver failed'],
     ['subscriber source stream invalid', 'Decoded-output source stream invalid'],
-  ])('stops on %s without reconnecting and permits an explicit new start', async (reason, message) => {
+  ])('retries %s at fresh subscription boundaries with a bounded budget', async (reason, message) => {
     const messages: Array<{ type: string; message?: string }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
       postMessage: (message: { type: string; message?: string }) => messages.push(message),
@@ -376,16 +532,114 @@ describe('native decoded stream boundaries', () => {
       // Worker initialization binds self; load only after installing this worker's globals.
       await import('../sdr/decodeWorker');
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
-      sockets[0].onclose!({ code: 1011, reason });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        sockets[attempt].onclose!({ code: 1011, reason });
+        expect(host.setTimeout.mock.calls.at(-1)?.[1]).toBe(1000 * 2 ** attempt);
+        host.setTimeout.mock.calls.at(-1)![0]();
+      }
+      sockets[3].onclose!({ code: 1011, reason });
       sockets[0].onmessage!({ data: frame() });
-      expect(messages).toEqual([{ type: 'error', message }]);
-      expect(host.setTimeout).not.toHaveBeenCalled();
-      expect(sockets).toHaveLength(1);
+      expect(messages.at(-1)).toEqual({ type: 'error', message });
+      expect(host.setTimeout).toHaveBeenCalledTimes(3);
+      expect(sockets).toHaveLength(4);
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
-      sockets[1].onmessage!({ data: frame() });
-      expect(messages[1].type).toBe('frames');
+      sockets[4].onmessage!({ data: frame() });
+      expect(messages.at(-1)?.type).toBe('frames');
     } finally { vi.unstubAllGlobals(); }
   });
+  it('keeps the decode owner alive after onerror and reconnects with an independent sequence', async () => {
+    const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message),
+      setTimeout: vi.fn(), clearTimeout: vi.fn() };
+    class Socket {
+      static instances: Socket[] = [];
+      onerror: (() => void) | null = null;
+      onclose: ((event: { code: number; reason: string }) => void) | null = null;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      constructor() { Socket.instances.push(this); }
+      close(): void {}
+    }
+    vi.resetModules(); vi.stubGlobal('self', host); vi.stubGlobal('WebSocket', Socket);
+    try {
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      const old = Socket.instances[0]; old.onmessage!({ data: frame() });
+      host.onmessage!({ data: { type: 'ack' } });
+      old.onerror!(); expect(messages.some(message => message.type === 'error')).toBe(false);
+      old.onclose!({ code: 1006, reason: '' });
+      expect(messages.at(-1)?.type).toBe('closed');
+      host.setTimeout.mock.calls.at(-1)![0]();
+      Socket.instances[1].onmessage!({ data: frame() });
+      expect(messages.at(-1)?.envelopes?.[0].seq).toBe(0);
+      const count = messages.length;
+      old.onmessage!({ data: frame({ seq: 20 }) }); old.onclose!({ code: 1011, reason: 'receiver failed' });
+      expect(messages).toHaveLength(count);
+      Socket.instances[1].onclose!({ code: 1006, reason: '' });
+      host.onmessage!({ data: { type: 'stop' } });
+      expect(host.clearTimeout).toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it.each(['receiver retired', 'receiver stopped'])('ends decoded %s without retry after delivering its accepted FIFO tail', async reason => {
+    const messages: Array<{ type: string; reason?: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: typeof messages[number]) => messages.push(message),
+      setTimeout: vi.fn(), clearTimeout: vi.fn() };
+    class Socket {
+      static instances: Socket[] = [];
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      onclose: ((event: { code: number; reason: string }) => void) | null = null;
+      send = vi.fn(); close = vi.fn();
+      constructor() { Socket.instances.push(this); }
+    }
+    vi.resetModules(); vi.stubGlobal('self', host); vi.stubGlobal('WebSocket', Socket);
+    try {
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?receiver_uid=uid-a' } });
+      const old = Socket.instances[0];
+      old.onmessage!({ data: frame({ event: { type: 'start', snapshotAck: true } }) });
+      old.onmessage!({ data: frame({ seq: 1, event: { type: 'cw', text: 'queued' } }) });
+      old.onclose!({ code: 1000, reason });
+      expect(messages.some(message => message.type === 'ended')).toBe(false);
+      expect(host.setTimeout).not.toHaveBeenCalled();
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(old.send).not.toHaveBeenCalled();
+      expect(messages.at(-1)?.envelopes?.map(envelope => envelope.event)).toEqual([{ type: 'cw', text: 'queued' }]);
+      const count = messages.length;
+      old.onmessage!({ data: frame({ seq: 2, event: { type: 'cw', text: 'late' } }) });
+      expect(messages).toHaveLength(count);
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(messages.at(-1)).toEqual({ type: 'ended', reason });
+      expect(old.send).not.toHaveBeenCalled();
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?receiver_uid=uid-b' } });
+      expect(Socket.instances).toHaveLength(2);
+      old.onclose!({ code: 1011, reason: 'receiver failed' });
+      Socket.instances[1].onmessage!({ data: frame({ channel_id: 18 }) });
+      expect(messages.at(-1)?.envelopes).toHaveLength(1);
+      expect(messages.at(-1)?.envelopes?.[0].channel_id).toBe(18);
+      expect(messages.some(message => message.type === 'error')).toBe(false);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it.each([[1000, ''], [1005, 'receiver retired'], [1011, 'receiver stopped'], [1013, 'receiver retired']] as const)
+    ('does not classify decode close %s/%s as normal receiver end', async (code, reason) => {
+      const messages: Array<{ type: string }> = [];
+      const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+        postMessage: (message: { type: string }) => messages.push(message), setTimeout: vi.fn(), clearTimeout: vi.fn() };
+      class Socket {
+        static current: Socket;
+        onclose: ((event: { code: number; reason: string }) => void) | null = null;
+        constructor() { Socket.current = this; }
+        close(): void {}
+      }
+      vi.resetModules(); vi.stubGlobal('self', host); vi.stubGlobal('WebSocket', Socket);
+      try {
+        await import('../sdr/decodeWorker');
+        host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?receiver_uid=uid-a' } });
+        Socket.current.onclose!({ code, reason });
+        expect(messages.some(message => message.type === 'ended')).toBe(false);
+        expect(['closed', 'error']).toContain(messages.at(-1)?.type);
+      } finally { vi.unstubAllGlobals(); }
+    });
   it.each(['stop', 'error'])('clears in-flight delivery on %s and ignores the old socket callbacks', async (type) => {
     const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,

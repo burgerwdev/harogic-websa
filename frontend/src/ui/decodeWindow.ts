@@ -1,27 +1,14 @@
-// The decode window: one floating panel for what the demodulator decoded.
-//
-// FT8, CW and DRM share one window because an operator asks for the current decoded output:
-//
-//   * FT8 - a table of decodes, newest first, with UTC time, SNR, audio offset and frequency.
-//     Clicking a row tunes to that signal;
-//   * CW - the text the Morse decoder heard, line by line, live while keying;
-//   * DRM - the current station and channel health, with an FAC constellation below.
-//
-// One toggle opens it in FT8, CW or DRM and the window shows that mode's pane. The interaction
-// is the same in all three:
-//
-//   * draggable by its head and resizable from all four edges and corners (position, size and
-//     opacity persist, like the keypad);
-//   * capped, with a Clear button, so a long session cannot grow without bound.
-//
-// Coordinates: the window lives in <body>, outside the zoomed frame, and carries the UI scale
-// itself (core/uiScale.ts), exactly like the keypad. That keeps one rule for all the geometry:
-// drag/resize/clamp/persist math runs in viewport pixels - where pointer clientX/Y,
-// getBoundingClientRect and window.innerWidth all agree - and the style writes convert to the
-// window's local pixels by dividing by the scale.
+import { setDomProperty, setDomAttribute } from './domState';
+import { selectIsEditing, syncSelectValue } from './selectControl';
+import { cwLineFor } from './cwLine';
+// One Decode surface for native analysis, protocol text, tables and retained images.
+// The opener owns receiver state and subscriptions; a popup adopts the same DOM subtree.
+// Floating geometry persists in viewport pixels outside the zoomed analyzer frame.
+// The popup fills its own viewport without overwriting that saved floating geometry.
+import { channelState } from '../core/channelState';
+import { currentSdrChannel, knownSdrChannelNumbers } from './sdrChannels';
 import { clearFt8Spots, clock, ft8DecoderState, ft8Spots, setFt8Channel, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
-import { clearCwLog, cwLevel, cwLog, setCwChannel, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
-	type CwLine, type CwMark } from '../sdr/cwLog';
+import { clearCwLog, cwLevel, cwLog, setCwChannel, subscribeCwLevel, subscribeCwLog } from '../sdr/cwLog';
 import { clearDrm, drmStatus, setDrmChannel, subscribeDrm } from '../sdr/drmLog';
 import {
 	deleteSstvAll,
@@ -49,10 +36,16 @@ import {
 	type RadiofaxEntry,
 	type RadiofaxPage,
 } from '../sdr/radiofaxLog';
-import { sstvModeTable } from '../sdr/registry';
-import { formatLatLon, geoFor } from '../sdr/ft8Geo';
-import { parseFt8Message } from '../sdr/ft8Message';
-import { getLang, onLangChange, t } from '../core/i18n';
+import { sstvModeTable, modeDescriptor, modeOutputs } from '../sdr/registry';
+import { clearDecoderLog, subscribeDecoderLog } from '../sdr/decoderLog';
+import { drawAudioScope as drawScope } from './audioScope';
+import { renderDecoderResults } from './decoderResults';
+import { createDecodePopout, type DecodePopout } from './decodePopout';
+import { applyFloatingGeometry, clampFloatingGeometry } from './floatingGeometry';
+import './decodeResults.css';
+import { ft8GeoTexts } from './ft8GeoText';
+import { ft8SessionKey, markQsoRows } from './ft8Qso';
+import { onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
 import { sdrAmSync, sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxClockRecovery,
 	sdrRadiofaxIoc, sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPhasePixels,
@@ -90,7 +83,7 @@ export interface RadiofaxConfigPatch {
 /// `sstv` is here for its picture: the station sends a still image, and the pane fills in while the
 /// transmission is still running.
 const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv', 'radiofax', 'wfm', 'am'] as const;
-export type DecodeMode = (typeof DECODING_MODES)[number] | null;
+export type DecodeMode = string | null;
 
 const LS_KEY = 'websa-decode-window';
 // The FM pane is the tallest: a service row, RadioText, the metrics (which reflow to two rows in
@@ -116,10 +109,10 @@ let wanted = false;
 let active = false;
 /** Which pane the window shows: the demodulator decides (null = nothing decodes right now). */
 let mode: DecodeMode = null;
-export type DecodeChannel = 1 | 2 | 3;
+export type DecodeChannel = number;
 let selectedChannel: DecodeChannel = 1;
-const channelModes: Record<DecodeChannel, DecodeMode> = { 1: null, 2: null, 3: null };
-const sstvViews: Record<DecodeChannel, number | null> = { 1: null, 2: null, 3: null };
+const channelModes = channelState<DecodeMode>(() => null);
+const sstvViews = channelState<number | null>(() => null);
 
 export interface DecodeTiming {
 	inputIndex: string;
@@ -130,10 +123,17 @@ export interface DecodeTiming {
 	delayKnown: boolean;
 	causalPresentation: boolean;
 }
-const channelTiming: Record<DecodeChannel, DecodeTiming | null> = { 1: null, 2: null, 3: null };
-const channelErrors: Record<DecodeChannel, string | null> = { 1: null, 2: null, 3: null };
+const channelTiming = channelState<DecodeTiming | null>(() => null);
+const channelErrors = channelState<string | null>(() => null);
+const channelErrorKinds = channelState<'receiver' | 'transport' | 'reconnecting'>(() => 'receiver');
 let ingesting = false;
 let pendingPaint: number | null = null;
+let paintWindow: Window | null = null;
+let surface: HTMLElement | null = null;
+let portal: DecodePopout | null = null;
+let floatingGeometry: Geometry | null = null;
+const surfaceDocument = (): Document => surface?.ownerDocument ?? document;
+const surfaceWindow = (): Window => surfaceDocument().defaultView ?? window;
 
 /** Consume decoded events synchronously; painting must not delay their acknowledgement. */
 export function ingestDecodeEvents(consume: () => void): void {
@@ -144,15 +144,19 @@ export function ingestDecodeEvents(consume: () => void): void {
 function deferDecodePaint(): boolean {
 	if (!ingesting) return false;
 	if (!open) return true;
-	if (pendingPaint === null) pendingPaint = requestAnimationFrame(() => {
-		pendingPaint = null;
-		if (open) renderContent();
-	});
+	if (pendingPaint === null) {
+		paintWindow = surfaceWindow();
+		pendingPaint = paintWindow.requestAnimationFrame(() => {
+			pendingPaint = null;
+			if (open) renderContent();
+		});
+	}
 	return true;
 }
 
-export function setDecodeError(channel: DecodeChannel, message: string | null): void {
+export function setDecodeError(channel: DecodeChannel, message: string | null, kind: 'receiver' | 'transport' | 'reconnecting' = 'receiver'): void {
 	channelErrors[channel] = message;
+	channelErrorKinds[channel] = kind;
 	if (message) { amInfo[channel] = null; amMeters[channel] = null; }
 	if (channel === selectedChannel && mode === 'am') renderAm();
 	if (channel === selectedChannel) renderDecodeTiming();
@@ -164,18 +168,21 @@ export function setDecodeTiming(channel: DecodeChannel, timing: DecodeTiming): v
 }
 
 function renderDecodeTiming(): void {
-	if (deferDecodePaint()) return;
-	const status = element('decode-source-timing');
-	const timing = channelTiming[selectedChannel];
 	const error = channelErrors[selectedChannel];
 	const errorText = error ? t('decode_error', { message: error }) : '';
-	const inline = element('sdr-receiver-error');
+	const inline = document.getElementById('sdr-receiver-error');
 	if (inline) {
-		inline.hidden = !error;
-		inline.textContent = error ? t('receiver_failed') : '';
+		setDomProperty(inline, 'hidden', !error);
+		inline.textContent = error ? t(channelErrorKinds[selectedChannel] === 'reconnecting' ? 'receiver_reconnecting'
+      : channelErrorKinds[selectedChannel] === 'transport' ? 'receiver_connection_failed' : 'receiver_failed') : '';
 		inline.title = errorText;
 		inline.setAttribute('aria-label', errorText);
 	}
+  // This badge lives in the main panel. It must update even when Decode is
+  // closed and its own rendering is deferred during a batch of recovered data.
+  if (deferDecodePaint()) return;
+  const status = element('decode-source-timing');
+  const timing = channelTiming[selectedChannel];
 	const timingTip = timing ? [
 		t(timing.delayKnown && !timing.causalPresentation ? 'decode_timing_known' : 'decode_timing_unknown'),
 		t(mode === 'drm' || mode === 'drmplus' ? 'decode_timing_drm_tip' : 'decode_timing_source_tip'),
@@ -263,6 +270,7 @@ function readGeometry(): Geometry | null {
 }
 
 function writeGeometry(geometry: Geometry): void {
+	if (portal?.isPoppedOut() && floatingGeometry) geometry = floatingGeometry;
 	try {
 		// The opacity and UTC choice ride along: one record, one writer, so they cannot drift apart.
 		localStorage.setItem(LS_KEY, JSON.stringify({ ...geometry, opacity, utc: utcTime, v: 2 }));
@@ -272,21 +280,11 @@ function writeGeometry(geometry: Geometry): void {
 }
 
 function clampToViewport(geometry: Geometry): Geometry {
-	// At least a head's worth of the window stays on screen, so it can always be dragged back.
-	const maxX = Math.max(0, window.innerWidth - 120);
-	const maxY = Math.max(0, window.innerHeight - 40);
-	const maxW = Math.max(260, window.innerWidth);
-	const maxH = Math.max(120, window.innerHeight);
-	return {
-		x: Math.min(Math.max(0, geometry.x), maxX),
-		y: Math.min(Math.max(0, geometry.y), maxY),
-		w: Math.min(Math.max(260, geometry.w), maxW),
-		h: Math.min(Math.max(120, geometry.h), maxH),
-	};
+	return clampFloatingGeometry(geometry, surfaceWindow());
 }
 
-const element = (id: string) => document.getElementById(id) as HTMLElement | null;
-const button = (id: string) => document.getElementById(id) as HTMLButtonElement | null;
+const element = (id: string) => surfaceDocument().getElementById(id) as HTMLElement | null;
+const button = (id: string) => surfaceDocument().getElementById(id) as HTMLButtonElement | null;
 
 /**
  * The window's geometry as the DOM sees it, in viewport pixels.
@@ -311,11 +309,7 @@ function currentGeometry(win: HTMLElement): Geometry {
 
 /** Write viewport-pixel geometry into the window's styles (local px: it carries the zoom). */
 function applyGeometry(win: HTMLElement, geometry: Geometry): void {
-	const scale = getUiScale();
-	win.style.left = `${geometry.x / scale}px`;
-	win.style.top = `${geometry.y / scale}px`;
-	win.style.width = `${geometry.w / scale}px`;
-	win.style.height = `${geometry.h / scale}px`;
+	applyFloatingGeometry(win, geometry, getUiScale());
 }
 
 /** Move without resizing: border-inclusive DOM dimensions must not feed back into
@@ -329,10 +323,10 @@ function placeAt(win: HTMLElement, x: number, y: number): void {
 /** Follow the UI scale (the window is not inside the zoomed frame). The zoom resize moves the
  * rendered box, so the geometry is re-clamped to keep the head reachable. */
 onUiScaleChange(() => {
-	const win = document.getElementById('decode-window');
+	const win = element('decode-window');
 	if (!win) return;
 	win.style.zoom = String(getUiScale());
-	applyGeometry(win, clampToViewport(currentGeometry(win)));
+	if (!portal?.isPoppedOut()) applyGeometry(win, clampToViewport(currentGeometry(win)));
 });
 
 /** Country names are language-dependent: re-render when the operator switches language. */
@@ -357,6 +351,7 @@ function wireResize(win: HTMLElement): void {
 		let pointerX = 0;
 		let pointerY = 0;
 		handle.addEventListener('pointerdown', (event) => {
+			if (portal?.isPoppedOut()) return;
 			start = currentGeometry(win);
 			pointerX = event.clientX;
 			pointerY = event.clientY;
@@ -399,7 +394,7 @@ function wireResize(win: HTMLElement): void {
 
 /** The FT8 table: one row per decode, newest first. */
 function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowElement {
-	const row = document.createElement('tr');
+	const row = surfaceDocument().createElement('tr');
 	row.className = 'ft8-row';
 	row.title = `${t('ft8_tune_tip')}\n${spot.text}\n${clock(spot.at, utcTime)} ${utcTime ? 'UTC' : 'LT'}  ${(spot.hz / 1e6).toFixed(6)} MHz`;
 	// The absolute frequency in MHz with 4 decimals is 100 Hz of resolution: enough to place a
@@ -416,7 +411,7 @@ function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowE
 		{ text: location },
 	];
 	for (const { text, className } of cells) {
-		const cell = document.createElement('td');
+		const cell = surfaceDocument().createElement('td');
 		cell.textContent = text;
 		if (className) cell.className = className;
 		row.appendChild(cell);
@@ -425,40 +420,9 @@ function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowE
 	return row;
 }
 
-/** Country pair and grid position as the row displays them (shared by the sort keys). */
-function ft8GeoTexts(spot: Ft8Spot): { country: string; location: string } {
-	const geo = geoFor(spot.text);
-	const isZh = getLang() === 'zh';
-	const sender = geo.sender ? (isZh ? geo.sender.zh : geo.sender.name) : '—';
-	const country = geo.receiver
-		? `${sender} → ${isZh ? geo.receiver.zh : geo.receiver.name}`
-		: sender;
-	return { country, location: geo.location ? formatLatLon(geo.location) : '—' };
-}
-
-/** The callsign pair a decode belongs to (unordered; a CQ groups by the caller alone). */
-function ft8SessionKey(text: string): string {
-	const { sender, receiver } = parseFt8Message(text);
-	if (!sender) return '';
-	return receiver ? [sender, receiver].sort().join('↔') : sender;
-}
-
-/** Highlight the hovered decode and every decode of the same callsign pair (null clears). */
-function markQsoRows(body: HTMLElement, row: Element | null): void {
-	const key = row instanceof HTMLElement ? row.dataset.qso || '' : '';
-	for (const peer of Array.from(body.querySelectorAll('tr.ft8-row'))) {
-		const el = peer as HTMLElement;
-		const pk = el.dataset.qso || '';
-		// A CQ row groups by the caller alone, so it marks every decode that call took part in.
-		const match = key !== '' && pk !== '' && (pk === key || (!key.includes('↔') && pk.split('↔').includes(key)));
-		peer.classList.toggle('qso-focus', match && peer === row);
-		peer.classList.toggle('qso-peer', match && peer !== row);
-	}
-}
-
 /** The header marker for the active sort column (the ▸ glyph comes from the CSS). */
 function syncFt8SortUi(): void {
-	for (const th of document.querySelectorAll('#decode-window-table th[data-sortable]')) {
+	for (const th of surfaceDocument().querySelectorAll('#decode-window-table th[data-sortable]')) {
 		const active = ft8SortCol !== null && Number((th as HTMLElement).dataset.col) === ft8SortCol;
 		th.classList.toggle('sorted', active);
 		if (active) th.setAttribute('aria-sort', 'ascending');
@@ -493,7 +457,7 @@ function renderFt8Rows(): void {
 	body.textContent = '';
 	const shown = ft8FilterRe
 		? spots.filter((spot) => ft8FilterRe!.test(spot.text))
-		: spots;
+		: spots.slice();
 	if (ft8SortCol !== null) {
 		const col = ft8SortCol;
 		const key = (spot: Ft8Spot, geo: { country: string; location: string }): string | number => {
@@ -508,8 +472,8 @@ function renderFt8Rows(): void {
 			}
 		};
 		shown.sort((a, b) => {
-			const ga = ft8GeoTexts(a);
-			const gb = ft8GeoTexts(b);
+			const ga = ft8GeoTexts(a.text);
+			const gb = ft8GeoTexts(b.text);
 			const ka = key(a, ga), kb = key(b, gb);
 			return (ka < kb ? -1 : ka > kb ? 1 : 0);
 		});
@@ -517,8 +481,8 @@ function renderFt8Rows(): void {
 	const count = element('decode-window-count');
 	if (count) count.textContent = ft8FilterRe ? `${shown.length}/${spots.length}` : String(spots.length);
 	if (shown.length === 0) {
-		const row = document.createElement('tr');
-		const cell = document.createElement('td');
+		const row = surfaceDocument().createElement('tr');
+		const cell = surfaceDocument().createElement('td');
 		cell.colSpan = 7;
 		cell.className = 'ft8-empty';
 		cell.textContent = t('ft8_waiting');
@@ -527,91 +491,28 @@ function renderFt8Rows(): void {
 		return;
 	}
 	for (const spot of shown.slice(0, MAX_ROWS)) {
-		body.appendChild(rowFor(spot, ft8GeoTexts(spot).country, ft8GeoTexts(spot).location));
+		body.appendChild(rowFor(spot, ft8GeoTexts(spot.text).country, ft8GeoTexts(spot.text).location));
 	}
-}
-
-/** One CW line: the clock time it started at, then the text (the current line is marked).
- *
- * The text is built as runs rather than per character: a clean decode is one text node (the common
- * case by far), and only a doubtful character breaks the run into a span - which keeps a window full
- * of lines cheap to re-render as characters keep arriving. A word-length pause is drawn as a faint
- * dot, so "the sender is thinking" cannot be mistaken for "the page is stuck".
- */
-function cwLineFor(
-	line: CwLine | { at: number; text: string; marks: CwMark[] }, current: boolean,
-): HTMLElement {
-	const row = document.createElement('div');
-	row.className = current ? 'cw-line current' : 'cw-line';
-	const at = document.createElement('span');
-	at.className = 'cw-time';
-	at.textContent = clock(line.at, utcTime);
-	const text = document.createElement('span');
-	text.className = 'cw-text';
-	let run = '';
-	let weak = false;
-	let runShare = 1;
-	const flush = (): void => {
-		if (!run) return;
-		if (weak) {
-			const span = document.createElement('span');
-			span.className = 'cw-ch weak';
-			span.textContent = run;
-			// Per *run*, not per character: a doubtful character is rare and usually lasts a few
-			// characters, and one span per character would rebuild thousands of nodes per line.
-			span.title = t('cw_confidence_tip', { pct: Math.round(runShare * 100) });
-			text.appendChild(span);
-		} else {
-			text.appendChild(document.createTextNode(run));
-		}
-		run = '';
-		runShare = 1;
-	};
-	for (let i = 0; i < line.text.length; i++) {
-		const mark = line.marks[i];
-		// Never at the start of a line: the timestamp already says a new transmission began, and a dot
-		// under it reads as stray punctuation.
-		if (mark && mark.gap && !weak && i > 0) {
-			flush();
-			// Empty on purpose: the dot is drawn by CSS (`.cw-gap::before`), so the pause is visible
-			// without ever entering the text - copying a line, or the log's own textContent, must not
-			// come back with punctuation the sender never keyed.
-			const gap = document.createElement('span');
-			gap.className = 'cw-gap';
-			gap.title = t('cw_pause_tip');
-			text.appendChild(gap);
-		}
-		const doubtful = !!mark && mark.share < CW_WEAK_SHARE;
-		if (doubtful !== weak) {
-			flush();
-			weak = doubtful;
-		}
-		if (mark && mark.share < runShare) runShare = mark.share;
-		run += line.text[i];
-	}
-	flush();
-	if (current) {
-		const cursor = document.createElement('span');
-		cursor.className = 'cw-cursor';
-		cursor.textContent = '▌';
-		text.appendChild(cursor);
-	}
-	row.appendChild(at);
-	row.appendChild(text);
-	return row;
 }
 
 function renderCwLines(): void {
 	const pane = element('decode-window-cw');
 	if (!pane) return;
-	const { lines, current, marks } = cwLog();
+	const { lines, current, marks, evictedCharacters } = cwLog();
 	// Whether to follow the text: only when the operator is already at the bottom, so reading back
 	// through the log is not yanked away by the next character.
 	const body = element('decode-window-body');
 	const follow = !body || body.scrollHeight - body.scrollTop - body.clientHeight < 24;
 	pane.textContent = '';
+	if (evictedCharacters) {
+		const notice = surfaceDocument().createElement('div');
+		notice.className = 'cw-empty';
+		notice.setAttribute('role', 'status');
+		notice.textContent = t('cw_history_trimmed', { count: evictedCharacters });
+		pane.appendChild(notice);
+	}
 	if (lines.length === 0 && !current) {
-		const empty = document.createElement('div');
+		const empty = surfaceDocument().createElement('div');
 		empty.className = 'cw-empty';
 		empty.textContent = t('cw_waiting');
 		pane.appendChild(empty);
@@ -619,11 +520,11 @@ function renderCwLines(): void {
 	}
 	// Two tracks, and the boundary is the sender's own pause: everything above is confirmed (the line
 	// is closed and will not change), the bottom row is what is arriving right now.
-	for (const line of lines.slice(-MAX_CW_ROWS)) pane.appendChild(cwLineFor(line, false));
+	for (const line of lines.slice(-MAX_CW_ROWS)) pane.appendChild(cwLineFor(line, false, surfaceDocument(), utcTime));
 	if (current) {
-		const live = document.createElement('div');
+		const live = surfaceDocument().createElement('div');
 		live.className = 'cw-live';
-		live.appendChild(cwLineFor({ at: Date.now(), text: current, marks }, true));
+		live.appendChild(cwLineFor({ at: Date.now(), text: current, marks }, true, surfaceDocument(), utcTime));
 		pane.appendChild(live);
 	}
 	if (follow && body) body.scrollTop = body.scrollHeight;
@@ -667,6 +568,9 @@ function renderContent(): void {
 	if (!showRadiofax) closeRadiofaxMenus();
 	const showWfm = mode === 'wfm';
 	const showAm = mode === 'am';
+	const showGeneric = mode !== null && !(DECODING_MODES as readonly string[]).includes(mode);
+	const generic = element('decode-window-results');
+	if (generic) generic.style.display = showGeneric ? '' : 'none';
 	const table = element('decode-window-table');
 	const cw = element('decode-window-cw');
 	const drm = element('decode-window-drm');
@@ -704,7 +608,8 @@ function renderContent(): void {
 	// Show Clear only for panes with accumulated content.
 	if (clear) clear.style.display = showDrm || showWfm || showRadiofax || showAm ? 'none' : '';
 	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM')
-		: showSstv ? 'SSTV' : showRadiofax ? 'Radiofax' : showWfm ? 'FM' : showAm ? 'AM' : showFt8 ? 'FT8' : '—';
+		: showSstv ? 'SSTV' : showRadiofax ? 'Radiofax' : showWfm ? 'FM' : showAm ? 'AM' : showFt8 ? 'FT8'
+		: mode ? (modeDescriptor(mode)?.label ?? mode.toUpperCase()) : '—';
 	const timeTh = element('decode-window-time-th');
 	if (timeTh) timeTh.title = utcTime ? 'UTC' : 'LT';
 	const searchRow = element('decode-ft8-search-row');
@@ -729,6 +634,7 @@ function renderContent(): void {
 	else if (showRadiofax) renderRadiofax();
 	else if (showWfm) renderWfm();
 	else if (showAm) renderAm();
+	else if (showGeneric && generic && mode) renderDecoderResults(generic, selectedChannel, mode, utcTime);
 }
 
 function renderSstvClearConfirmation(): void {
@@ -760,7 +666,7 @@ function renderSstv(): void {
 	const selectedMode = pin < 0 ? detected : pin;
 	const pending = sdrSstvMode.pending();
 	const counts = sstvModeCounts();
-	for (const buttonEl of document.querySelectorAll<HTMLElement>('#sstv-mode-group [data-sstv-mode]')) {
+	for (const buttonEl of surfaceDocument().querySelectorAll<HTMLElement>('#sstv-mode-group [data-sstv-mode]')) {
 		const value = buttonEl.dataset.sstvMode === 'auto' ? null : Number(buttonEl.dataset.sstvMode);
 		buttonEl.classList.toggle('active', value === selectedMode);
 		buttonEl.classList.toggle('pending', pending && value === pin);
@@ -826,7 +732,7 @@ function renderSstv(): void {
 	}
 	const anySelected = sstvStatus().history.some((e) => e.selected) || !!sstvStatus().current?.selected;
 	const save = button('btn-sstv-save');
-	if (save) save.disabled = !anySelected;
+	if (save) setDomProperty(save, 'disabled', !anySelected);
 	const selectAll = button('sstv-select-all');
 	if (selectAll) {
 		const total = sstvStatus().history.length + (sstvStatus().current ? 1 : 0);
@@ -834,13 +740,13 @@ function renderSstv(): void {
 			(sstvStatus().current?.selected ? 1 : 0);
 		// Highlight only when every stored picture is ticked; one unticked clears it.
 		selectAll.classList.toggle('active', total > 0 && selected === total);
-		selectAll.disabled = total === 0;
+		setDomProperty(selectAll, 'disabled', total === 0);
 	}
 	const del = button('btn-sstv-delete');
 	if (del) {
 		const anySelected = sstvStatus().history.some((entry) => entry.selected) ||
 			!!sstvStatus().current?.selected;
-		del.disabled = !anySelected;
+		setDomProperty(del, 'disabled', !anySelected);
 	}
 }
 
@@ -871,13 +777,13 @@ function buildSstvModeButtons(): void {
 	sstvButtons = table.map((mode) => `${mode.index}:${mode.name}`);
 	group.textContent = '';
 	for (const mode of table) {
-		const buttonEl = document.createElement('button');
+		const buttonEl = surfaceDocument().createElement('button');
 		buttonEl.className = 'btn';
 		buttonEl.dataset.sstvMode = String(mode.index);
 		buttonEl.dataset.sstvName = mode.name;
 		buttonEl.textContent = mode.name;
 		buttonEl.title = `${t('sstv_mode_tip')}\n${mode.name} · VIS ${mode.vis} · ${mode.width}×${mode.height}`;
-		const badge = document.createElement('span');
+		const badge = surfaceDocument().createElement('span');
 		badge.className = 'sstv-badge';
 		badge.style.display = 'none';
 		buttonEl.appendChild(badge);
@@ -889,21 +795,27 @@ function renderSstvThumbs(): void {
 	const host = element('sstv-thumb-list');
 	if (!host) return;
 	const set = sstvActiveSet();
+	const status = sstvStatus();
 	// Rebuild only when the set's shape changes; the live picture repaints its own thumb on a timer.
-	const shape = set.map((entry) => `${entry.id}:${entry.selected ? 1 : 0}:${Math.round(entry.meta.progress / 10)}`).join('|');
+	// The view pin and the live picture's own entry are part of the shape: both decide which
+	// thumbnail carries `viewed` (the pane shows the pinned entry, else the newest), so a click
+	// must restyle the list even when nothing else changed.
+	const viewed = status.viewId ?? set[0]?.id ?? '';
+	const shape = set.map((entry) => `${entry.id}:${entry.selected ? 1 : 0}:${Math.round(entry.meta.progress / 10)}`)
+		.join('|') + `#${viewed}`;
 	if (shape === sstvThumbsShape && host.childElementCount > 0) return;
 	sstvThumbsShape = shape;
 	host.textContent = '';
 	for (const entry of set) {
-		const thumb = document.createElement('div');
+		const thumb = surfaceDocument().createElement('div');
 		thumb.className = 'decode-sstv-thumb' + (entry.selected ? ' selected' : '') +
-			(sstvStatus().viewId === entry.id ? ' viewed' : '');
+			(viewed === entry.id ? ' viewed' : '');
 		thumb.dataset.id = entry.id;
-		const tick = document.createElement('span');
+		const tick = surfaceDocument().createElement('span');
 		tick.className = 'sstv-tick';
 		tick.textContent = '✓';
 		thumb.appendChild(tick);
-		const canvas = document.createElement('canvas');
+		const canvas = surfaceDocument().createElement('canvas');
 		canvas.width = 64;
 		canvas.height = Math.max(24, Math.round((64 * entry.picture.height) / Math.max(1, entry.picture.width)));
 		thumb.appendChild(canvas);
@@ -941,7 +853,7 @@ function saveSstvPng(): void {
 	);
 	const targets = ticked.length ? ticked : sstvVisible() ? [sstvVisible()!] : [];
 	for (const entry of targets) {
-		const canvas = document.createElement('canvas');
+		const canvas = surfaceDocument().createElement('canvas');
 		canvas.width = entry.picture.width;
 		canvas.height = entry.picture.height;
 		drawSstvPicture(canvas, entry.picture.rgb, entry.picture.width, entry.picture.height);
@@ -950,10 +862,10 @@ function saveSstvPng(): void {
 		canvas.toBlob((blob) => {
 			if (!blob) return;
 			const url = URL.createObjectURL(blob);
-			const anchor = document.createElement('a');
+			const anchor = surfaceDocument().createElement('a');
 			anchor.href = url;
 			anchor.download = `sstv-${entry.meta.name.replace(/\s+/g, '')}-${entry.meta.serial}-${stamp}.png`;
-			document.body.appendChild(anchor);
+			anchor.ownerDocument.body.appendChild(anchor);
 			anchor.click();
 			anchor.remove();
 			// Revoked on the next tick: revoking immediately can cancel the download in some browsers.
@@ -1026,13 +938,13 @@ function saveRadiofaxPng(wholePage = false): void {
 	}
 	const filename = radiofaxPageName(wholePage ? page.segments[0] : entry, wholePage);
 	try {
-		const canvas = document.createElement('canvas');
+		const canvas = surfaceDocument().createElement('canvas');
 		if (wholePage) {
 			canvas.width = entry.picture.width;
 			canvas.height = page.lines;
 			const context = canvas.getContext('2d');
 			if (!context) throw new Error('Canvas unavailable');
-			const segmentCanvas = document.createElement('canvas');
+			const segmentCanvas = surfaceDocument().createElement('canvas');
 			let row = 0;
 			for (const segment of page.segments) {
 				drawRadiofaxPicture(segmentCanvas, segment);
@@ -1045,10 +957,10 @@ function saveRadiofaxPng(wholePage = false): void {
 		canvas.toBlob((blob) => {
 			if (!blob) { showRadiofaxSaveError(true); if (activity) activity.textContent = ''; return; }
 			const url = URL.createObjectURL(blob);
-			const anchor = document.createElement('a');
+			const anchor = surfaceDocument().createElement('a');
 			anchor.href = url;
 			anchor.download = filename;
-			document.body.appendChild(anchor);
+			anchor.ownerDocument.body.appendChild(anchor);
 			anchor.click();
 			anchor.remove();
 			if (activity) { activity.textContent = t('radiofax_saved'); activity.title = filename; }
@@ -1067,7 +979,7 @@ function radiofaxReceiptTime(at: number): string {
 
 function renderRadiofaxHistory(): void {
 	const select = element('radiofax-history') as HTMLSelectElement | null;
-	if (!select || radiofaxHistoryInteracting || document.activeElement === select) return;
+	if (!select || radiofaxHistoryInteracting || selectIsEditing(select)) return;
 	const state = radiofaxStatus();
 	const choices = [{ id: '', label: t('radiofax_follow') }, ...state.pages.map((page) => ({
 		id: page.id,
@@ -1078,20 +990,20 @@ function renderRadiofaxHistory(): void {
 	for (let index = 0; index < choices.length; index++) {
 		const choice = choices[index];
 		let option = Array.from(select.options).find((item) => item.value === choice.id);
-		if (!option) { option = document.createElement('option'); option.value = choice.id; }
+		if (!option) { option = select.ownerDocument.createElement('option'); option.value = choice.id; }
 		if (option.textContent !== choice.label) option.textContent = choice.label;
-		option.title = t('radiofax_received_tip');
+		setDomProperty(option, 'title', t('radiofax_received_tip'));
 		if (select.options[index] !== option) select.insertBefore(option, select.options[index] ?? null);
 	}
 	const desired = state.viewId ?? '';
 	if (select.value !== desired) select.value = desired;
-	select.disabled = state.pages.length === 0;
-	select.setAttribute('aria-label', t('radiofax_history_tip'));
-	select.title = t('radiofax_received_tip');
+	setDomProperty(select, 'disabled', state.pages.length === 0);
+	setDomAttribute(select, 'aria-label', t('radiofax_history_tip'));
+	setDomProperty(select, 'title', t('radiofax_received_tip'));
 }
 
 function closeRadiofaxMenus(except?: HTMLDetailsElement): void {
-	for (const menu of document.querySelectorAll<HTMLDetailsElement>('#decode-window-radiofax details')) {
+	for (const menu of surfaceDocument().querySelectorAll<HTMLDetailsElement>('#decode-window-radiofax details')) {
 		if (menu === except) continue;
 		menu.open = false;
 		const panel = menu.querySelector<HTMLElement>('.decode-radiofax-menu-panel');
@@ -1122,18 +1034,18 @@ function renderRadiofaxPageDetails(page: RadiofaxPage | null, entry: RadiofaxEnt
 	const index = page?.segments.findIndex((segment) => segment.id === entry?.id) ?? -1;
 	const previous = button('radiofax-segment-prev');
 	const next = button('radiofax-segment-next');
-	if (previous) previous.disabled = index <= 0;
-	if (next) next.disabled = !page || index >= page.segments.length - 1;
+	if (previous) setDomProperty(previous, 'disabled', index <= 0);
+	if (next) setDomProperty(next, 'disabled', !page || index >= page.segments.length - 1);
 	const remove = button('radiofax-delete');
-	if (remove) remove.disabled = !page;
+	if (remove) setDomProperty(remove, 'disabled', !page);
 	const whole = button('radiofax-save-page');
-	if (whole) whole.disabled = !page || !radiofaxWholePageSafe(page);
+	if (whole) setDomProperty(whole, 'disabled', !page || !radiofaxWholePageSafe(page));
 	const segment = button('radiofax-save-segment');
-	if (segment) segment.disabled = !entry;
+	if (segment) setDomProperty(segment, 'disabled', !entry);
 	const save = element('radiofax-save');
 	if (save) { save.setAttribute('aria-disabled', String(!entry)); save.tabIndex = entry ? 0 : -1; }
 	const clear = button('radiofax-clear');
-	if (clear) clear.disabled = state.pages.length === 0;
+	if (clear) setDomProperty(clear, 'disabled', state.pages.length === 0);
 	put('radiofax-export-limit', page && !radiofaxWholePageSafe(page) ? t('radiofax_export_limit') : '');
 	const confirmation = element('radiofax-confirm');
 	if (confirmation) confirmation.style.display = radiofaxConfirmation?.channel === selectedChannel ? '' : 'none';
@@ -1160,7 +1072,7 @@ function renderRadiofax(): void {
 		if (control) {
 			control.classList.toggle('active', acquisition === value);
 			control.classList.toggle('pending', isPending && acquisition === value);
-			control.disabled = !active;
+			setDomProperty(control, 'disabled', !active);
 		}
 	}
 	for (const [id, param, isPending] of [
@@ -1172,9 +1084,9 @@ function renderRadiofax(): void {
 	] as const) {
 		const select = element(id) as HTMLSelectElement | null;
 		if (select) {
-			if (document.activeElement !== select) select.value = String(param);
+			syncSelectValue(select, String(param));
 			select.classList.toggle('pending', isPending);
-			select.disabled = !active;
+			setDomProperty(select, 'disabled', !active);
 		}
 	}
 	for (const [id, value, isPending] of [
@@ -1183,9 +1095,9 @@ function renderRadiofax(): void {
 	] as const) {
 		const input = element(id) as HTMLInputElement | null;
 		if (input) {
-			if (document.activeElement !== input) input.value = String(value);
+			if (input.ownerDocument.activeElement !== input) input.value = String(value);
 			input.classList.toggle('pending', isPending);
-			input.disabled = !active;
+			setDomProperty(input, 'disabled', !active);
 		}
 	}
 	const status = element('radiofax-state');
@@ -1209,18 +1121,18 @@ function renderRadiofax(): void {
 	renderRadiofaxHistory();
 	renderRadiofaxPageDetails(page, entry);
 	const zoom = element('radiofax-zoom') as HTMLSelectElement | null;
-	if (zoom && document.activeElement !== zoom) zoom.value = radiofaxZoom;
+	syncSelectValue(zoom, radiofaxZoom);
 	const follow = button('radiofax-follow');
 	if (follow) {
-		follow.disabled = !page;
+		setDomProperty(follow, 'disabled', !page);
 		follow.classList.toggle('active', radiofaxFollow && state.viewId === null);
 		follow.setAttribute('aria-pressed', String(radiofaxFollow && state.viewId === null));
 	}
 	const newPage = button('radiofax-new-page');
-	if (newPage) newPage.disabled = !active;
+	if (newPage) setDomProperty(newPage, 'disabled', !active);
 	const reset = button('radiofax-reset-correction');
 	if (reset) {
-		reset.disabled = !active;
+		setDomProperty(reset, 'disabled', !active);
 		reset.classList.toggle('pending', pending.phase || pending.ppm);
 	}
 	const canvas = element('decode-radiofax-canvas') as HTMLCanvasElement | null;
@@ -1286,7 +1198,7 @@ function renderDrm(): void {
 	if (!services) {
 		const host = element('decode-window-drm');
 		if (host) {
-			services = document.createElement('div');
+			services = surfaceDocument().createElement('div');
 			services.id = 'decode-drm-services';
 			host.insertBefore(services, element('decode-drm-details'));
 		}
@@ -1306,7 +1218,7 @@ function renderDrm(): void {
 		while (services.children.length > rows.length) services.lastElementChild?.remove();
 		for (const [index, text] of rows.entries()) {
 			let row = services.children[index];
-			if (!row) { row = document.createElement('div'); services.appendChild(row); }
+			if (!row) { row = surfaceDocument().createElement('div'); services.appendChild(row); }
 			if (row.textContent !== text) row.textContent = text;
 		}
 	}
@@ -1324,7 +1236,7 @@ function renderDrm(): void {
 	const cx = width / 2;
 	const cy = height / 2;
 	const scale = Math.min(width, height) / span;
-	const style = getComputedStyle(plot);
+	const style = (plot.ownerDocument.defaultView ?? window).getComputedStyle(plot);
 	ctx.fillStyle = style.getPropertyValue('--text').trim() || '#00cc00';
 	for (const p of constellation) {
 		ctx.fillRect(cx + p.re * scale - 1, cy - p.im * scale - 1, 2, 2);
@@ -1347,7 +1259,7 @@ export interface WfmInfo {
 	carrierHz: number; pilotDevHz: number; pilotSnrDb: number;
 	scopeL: Float32Array | null; scopeR: Float32Array | null;
 }
-const wfmInfo: Record<DecodeChannel, WfmInfo | null> = { 1: null, 2: null, 3: null };
+const wfmInfo = channelState<WfmInfo | null>(() => null);
 
 /** Record the worker's latest WFM info (called from the message handler in `iqStream`). */
 export function setWfmInfo(info: WfmInfo | null, channel: DecodeChannel = selectedChannel): void {
@@ -1362,23 +1274,23 @@ export interface AmInfo {
 	carrierHz: number | null; carrierOffsetHz: number | null; modulationPct: number | null; inputDbFs: number | null;
 	rmsDbFs: number | null; peakDbFs: number | null; scope: Float32Array | null;
 }
-const amInfo: Record<DecodeChannel, AmInfo | null> = { 1: null, 2: null, 3: null };
+const amInfo = channelState<AmInfo | null>(() => null);
 interface AmMeters { time: number; rmsPower: number | null; peakDb: number | null }
-const amMeters: Record<DecodeChannel, AmMeters | null> = { 1: null, 2: null, 3: null };
+const amMeters = channelState<AmMeters | null>(() => null);
 let confirmedAmSyncGeneration: number | null = null;
 
 /** STATUS and telemetry travel on different sockets; only the same detector generation may lock. */
 export function confirmAmSyncGeneration(generation: number | null): void {
 	if (generation === confirmedAmSyncGeneration) return;
 	confirmedAmSyncGeneration = generation;
-	amInfo[1] = null;
-	amMeters[1] = null;
+	amInfo[currentSdrChannel()] = null;
+	amMeters[currentSdrChannel()] = null;
 	if (mode === 'am') renderAm();
 }
 
 export function setAmInfo(info: AmInfo | null, channel: DecodeChannel = selectedChannel): void {
 	amInfo[channel] = active && channelModes[channel] === 'am' && !channelErrors[channel]
-		&& (channel !== 1 || (confirmedAmSyncGeneration !== null && info?.syncGeneration === confirmedAmSyncGeneration)) ? info : null;
+		&& (channel !== currentSdrChannel() || (confirmedAmSyncGeneration !== null && info?.syncGeneration === confirmedAmSyncGeneration)) ? info : null;
 	const accepted = amInfo[channel];
 	if (!accepted) amMeters[channel] = null;
 	else {
@@ -1398,17 +1310,17 @@ export function setAmInfo(info: AmInfo | null, channel: DecodeChannel = selected
 }
 
 export function canToggleAmSync(): boolean {
-	return active && mode === 'am' && selectedChannel === 1 && !channelErrors[1]
+	return active && mode === 'am' && selectedChannel === currentSdrChannel() && !channelErrors[selectedChannel]
 		&& !sdrAmSync.pending() && (hooks.canAmSync?.() ?? true);
 }
 
 function renderAm(): void {
 	if (deferDecodePaint()) return;
 	const info = amInfo[selectedChannel];
-	const confirmed = selectedChannel === 1 ? sdrAmSync.confirmedValue() === true : info?.syncEnabled === true;
-	const pending = selectedChannel === 1 && sdrAmSync.pending();
+	const confirmed = selectedChannel === currentSdrChannel() ? sdrAmSync.confirmedValue() === true : info?.syncEnabled === true;
+	const pending = selectedChannel === currentSdrChannel() && sdrAmSync.pending();
 	const locked = active && confirmed && !pending && info?.syncEnabled === true && info.syncLocked
-		&& (selectedChannel !== 1 || info.syncGeneration === confirmedAmSyncGeneration) && !channelErrors[selectedChannel];
+		&& (selectedChannel !== currentSdrChannel() || info.syncGeneration === confirmedAmSyncGeneration) && !channelErrors[selectedChannel];
 	const badge = element('am-title-badge');
 	if (badge) {
 		badge.textContent = t(!confirmed ? 'am_sync_off' : locked ? 'am_sync_locked' : 'am_sync_searching');
@@ -1421,7 +1333,7 @@ function renderAm(): void {
 		toggle.setAttribute('aria-busy', String(pending));
 		toggle.classList.toggle('active', confirmed);
 		toggle.classList.toggle('pending', pending);
-		toggle.disabled = !canToggleAmSync();
+		setDomProperty(toggle, 'disabled', !canToggleAmSync());
 		toggle.title = t(pending ? 'am_sync_pending_tip' : confirmed ? 'am_sync_disable' : 'am_sync_enable');
 		toggle.setAttribute('aria-label', `${t('am_sync_detector')}. ${toggle.title}`);
 	}
@@ -1450,60 +1362,6 @@ function renderAm(): void {
 	}
 	const empty = element('am-empty');
 	if (empty) { empty.textContent = t('am_waiting'); empty.style.display = info ? 'none' : ''; }
-}
-
-/**
- * Draw the demodulated audio. The window is the last block's samples, so the trace is a moving
- * scope, not a level meter: the amplitude and the shape are what the listener hears.
- */
-function drawScope(
-	canvas: HTMLCanvasElement,
-	traces: Float32Array[],
-	scalePeak: number,
-): void {
-	const ctx = canvas.getContext('2d');
-	if (!ctx) return;
-	const w = canvas.width;
-	const h = canvas.height;
-	const styles = getComputedStyle(canvas);
-	const line = styles.getPropertyValue('--text').trim() || '#ccc';
-	const grid = styles.getPropertyValue('--card-border').trim() || '#444';
-	ctx.clearRect(0, 0, w, h);
-	// Slow peak hold stabilizes the vertical scale across audio blocks. Sharing the scale
-	// between lanes preserves the visible L/R balance.
-	let peak = scalePeak;
-	if (peak <= 1e-6) {
-		for (const t of traces) for (const v of t) peak = Math.max(peak, Math.abs(v));
-	}
-	const laneH = h / traces.length;
-	const scale = peak > 1e-6 ? (laneH / 2 - 2) / peak : 0;
-	ctx.strokeStyle = grid;
-	ctx.lineWidth = 1;
-	ctx.beginPath();
-	for (let lane = 0; lane < traces.length; lane++) {
-		const mid = laneH * lane + laneH / 2;
-		ctx.moveTo(0, mid + 0.5);
-		ctx.lineTo(w, mid + 0.5);
-		if (lane > 0) {
-			ctx.moveTo(0, laneH * lane + 0.5);
-			ctx.lineTo(w, laneH * lane + 0.5);
-		}
-	}
-	ctx.stroke();
-	ctx.strokeStyle = line;
-	ctx.lineWidth = 1.25;
-	for (let lane = 0; lane < traces.length; lane++) {
-		const t = traces[lane];
-		const mid = laneH * lane + laneH / 2;
-		ctx.beginPath();
-		for (let i = 0; i < t.length; i++) {
-			const x = (i / (t.length - 1)) * (w - 1);
-			const y = mid - t[i] * scale;
-			if (i === 0) ctx.moveTo(x, y);
-			else ctx.lineTo(x, y);
-		}
-		ctx.stroke();
-	}
 }
 
 function renderWfm(): void {
@@ -1571,12 +1429,12 @@ function syncOpen(): void {
 	open = active && wanted && Object.values(channelModes).some((value) => value !== null);
 	if (!open || mode !== 'sstv') cancelSstvClear();
 	const win = element('decode-window');
-	const toggle = button('btn-decode-window');
+	const toggle = document.getElementById('btn-decode-window') as HTMLButtonElement | null;
 	if (win) win.style.display = open ? 'flex' : 'none';
 	const amToggle = button('am-sync-toggle');
-	if (amToggle) amToggle.disabled = !canToggleAmSync();
+	if (amToggle) setDomProperty(amToggle, 'disabled', !canToggleAmSync());
 	if (toggle) {
-		toggle.disabled = !available;
+		setDomProperty(toggle, 'disabled', !available);
 		toggle.title = available ? t('decode_window_tip') : t('decode_window_needs_mode');
 		toggle.textContent = open ? t('on') : t('off');
 		toggle.classList.toggle('active', open);
@@ -1602,7 +1460,8 @@ function subscribeAll(fn: () => void): () => void {
 	const offDrm = subscribeDrm(fn);
 	const offSstv = subscribeSstv(fn);
 	const offRadiofax = subscribeRadiofax(fn);
-	return () => { offFt8(); offCw(); offDrm(); offSstv(); offRadiofax(); };
+	const offGeneric = subscribeDecoderLog(fn);
+	return () => { offFt8(); offCw(); offDrm(); offSstv(); offRadiofax(); offGeneric(); };
 }
 
 export function toggleDecodeWindow(): void {
@@ -1613,7 +1472,7 @@ export function toggleDecodeWindow(): void {
 export function setDecodeActive(next: boolean): void {
 	active = next;
 	if (!next) {
-		for (const channel of [1, 2, 3] as const) { amInfo[channel] = null; amMeters[channel] = null; }
+		for (const channel of knownSdrChannelNumbers()) { amInfo[channel] = null; amMeters[channel] = null; }
 		confirmedAmSyncGeneration = null;
 		renderAm();
 	}
@@ -1639,7 +1498,7 @@ export function decodeWindowMode(): DecodeMode {
 /**
  * Gate the control on the demodulator: the toggle only means something for a mode that decodes.
  *
- * Called from the STATUS handler (the demod is a slot), so switching to an analog mode hides the
+ * Called from the STATUS handler (the demod is a slot), so modes without Decode output hide the
  * window without losing the user's choice of position or the logs.
  */
 export function setDecodeWindowAvailable(demod: string): void {
@@ -1648,7 +1507,7 @@ export function setDecodeWindowAvailable(demod: string): void {
 
 /** The confirmed demodulator for one receiver, including channels that are not being viewed. */
 export function setDecodeChannelMode(channel: DecodeChannel, demod: string): void {
-	const next = (DECODING_MODES as readonly string[]).includes(demod) ? (demod as DecodeMode) : null;
+	const next = (DECODING_MODES as readonly string[]).includes(demod) || modeOutputs(demod).some(output => output !== 'audio') ? demod : null;
 	const previous = channelModes[channel];
 	if ((previous === 'drm' || previous === 'drmplus') && previous !== next) clearDrm(channel);
 	if (previous === 'am' && previous !== next) {
@@ -1692,16 +1551,11 @@ export function setDecodeChannel(channel: DecodeChannel): void {
 	document.dispatchEvent(new CustomEvent('websa:decode-channel', { detail: { channel } }));
 }
 
-/** Wire the window: its buttons, its drag/resize handles and the tune callback. */
-export function initDecodeWindow(next: DecodeWindowHooks): void {
-	hooks = next;
-	const win = element('decode-window');
-	const head = element('decode-window-head');
-	if (!win) return;
+function bindRadiofaxOutside(): void {
 	radiofaxOutsideAbort?.abort();
 	radiofaxOutsideAbort = new AbortController();
-	document.addEventListener('pointerdown', (event) => {
-		for (const menu of document.querySelectorAll<HTMLDetailsElement>('#decode-window-radiofax details[open]')) {
+	surfaceDocument().addEventListener('pointerdown', (event) => {
+		for (const menu of surfaceDocument().querySelectorAll<HTMLDetailsElement>('#decode-window-radiofax details[open]')) {
 			if (!menu.contains(event.target as Node)) {
 				menu.open = false;
 				const panel = menu.querySelector<HTMLElement>('.decode-radiofax-menu-panel');
@@ -1709,6 +1563,39 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 			}
 		}
 	}, { signal: radiofaxOutsideAbort.signal });
+}
+
+/** Wire the window: its buttons, its drag/resize handles and the tune callback. */
+export function initDecodeWindow(next: DecodeWindowHooks): void {
+	hooks = next;
+	const win = portal?.isPoppedOut() ? surface : document.getElementById('decode-window');
+	if (!win) return;
+	if (surface === win && win.dataset.decodeBound) {
+		cancelSstvClear();
+		radiofaxConfirmation = null;
+		setOpen(false);
+		return;
+	}
+	portal?.dispose();
+	surface = win;
+	win.dataset.decodeBound = 'true';
+	const head = element('decode-window-head');
+	bindRadiofaxOutside();
+	portal = createDecodePopout(win, () => {
+		closeRadiofaxMenus();
+		radiofaxHistoryInteracting = false;
+		if (pendingPaint !== null) { paintWindow?.cancelAnimationFrame(pendingPaint); pendingPaint = null; }
+		if (!portal?.isPoppedOut()) floatingGeometry = currentGeometry(win);
+	}, () => {
+		if (!portal?.isPoppedOut() && floatingGeometry) {
+			applyGeometry(win, clampToViewport(floatingGeometry));
+			floatingGeometry = null;
+		}
+		bindRadiofaxOutside();
+		renderContent();
+	});
+	button('btn-decode-popout')?.addEventListener('click', () => portal?.popout());
+	button('btn-decode-dock')?.addEventListener('click', () => portal?.dock());
 	cancelSstvClear();
 	// Only the primary receiver has controls in the product UI. The retained
 	// per-channel stores still accept protocol events independently.
@@ -1721,19 +1608,19 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		renderAm();
 	});
 	if (head && !element('decode-source-timing')) {
-		const timing = document.createElement('span');
+		const timing = surfaceDocument().createElement('span');
 		timing.id = 'decode-source-timing';
 		timing.className = 'count';
 		head.insertBefore(timing, head.querySelector('.spacer'));
 	}
 	const meter = element('cw-meter');
 	if (meter && !element('cw-telemetry')) {
-		const telemetry = document.createElement('span');
+		const telemetry = surfaceDocument().createElement('span');
 		telemetry.id = 'cw-telemetry';
 		meter.appendChild(telemetry);
 	}
 	if (!element('decode-ft8-state')) {
-		const state = document.createElement('div');
+		const state = surfaceDocument().createElement('div');
 		state.id = 'decode-ft8-state';
 		state.className = 'decode-search-row';
 		state.style.display = 'none';
@@ -1766,7 +1653,8 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		}
 		if (mode === 'cw') clearCwLog();
 		else if (mode === 'drm' || mode === 'drmplus') clearDrm();
-		else clearFt8Spots();
+		else if (mode === 'ft8') clearFt8Spots();
+		else if (mode) clearDecoderLog(selectedChannel, mode);
 		renderContent();
 	});
 	element('btn-sstv-delete-all')?.addEventListener('click', () => {
@@ -1777,7 +1665,10 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		renderContent();
 	});
 	element('btn-sstv-clear-cancel')?.addEventListener('click', cancelSstvClear);
-	element('btn-decode-close')?.addEventListener('click', () => { if (active) setOpen(false); });
+	element('btn-decode-close')?.addEventListener('click', () => {
+		if (portal?.isPoppedOut()) portal.dock();
+		else if (active) setOpen(false);
+	});
 
 	// FT8 pane: the regex filter, the sortable headers (click sorts, click again restores the
 	// arrival order) and the QSO session marking on row hover. The rows body is rebuilt by
@@ -1916,15 +1807,15 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 			menu.addEventListener('toggle', () => {
 				if (!menu.open) { if (panel.hasAttribute('popover')) panel.hidePopover?.(); return; }
 				closeRadiofaxMenus(menu);
-				const focused = document.activeElement as HTMLElement | null;
+				const focused = panel.ownerDocument.activeElement as HTMLElement | null;
 				panel.showPopover?.();
-				if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
+				if (focused?.isConnected && panel.ownerDocument.activeElement !== focused) focused.focus({ preventScroll: true });
 				const box = summary.getBoundingClientRect();
 				const scale = getUiScale();
 				const width = panel.offsetWidth * scale;
 				const height = panel.offsetHeight * scale;
-				panel.style.left = `${Math.max(4, Math.min(box.right - width, window.innerWidth - width - 4)) / scale}px`;
-				panel.style.top = `${Math.max(4, box.bottom + height + 4 <= window.innerHeight ? box.bottom + 2 : box.top - height - 2) / scale}px`;
+				panel.style.left = `${Math.max(4, Math.min(box.right - width, surfaceWindow().innerWidth - width - 4)) / scale}px`;
+				panel.style.top = `${Math.max(4, box.bottom + height + 4 <= surfaceWindow().innerHeight ? box.bottom + 2 : box.top - height - 2) / scale}px`;
 			});
 			menu.addEventListener('keydown', (event) => {
 				if (event.key !== 'Escape' || !menu.open) return;
@@ -2070,6 +1961,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		let offsetX = 0;
 		let offsetY = 0;
 		head.addEventListener('pointerdown', (event) => {
+			if (portal?.isPoppedOut()) return;
 			if ((event.target as HTMLElement).closest('button, input, select')) return;
 			const box = win.getBoundingClientRect();
 			dragging = true;

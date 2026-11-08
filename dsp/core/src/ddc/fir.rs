@@ -126,8 +126,12 @@ impl FirState {
     pub fn process_into(&mut self, x: &[f64], out: &mut Vec<f64>) {
         out.clear();
         let ntaps = self.taps.len();
-        if ntaps <= 1 || x.is_empty() {
+        if ntaps == 0 || x.is_empty() {
             out.extend_from_slice(x);
+            return;
+        }
+        if ntaps == 1 {
+            out.extend(x.iter().map(|sample| sample * self.taps[0]));
             return;
         }
         let tlen = ntaps - 1;
@@ -144,7 +148,15 @@ impl FirState {
             }
             out.push(acc);
         }
-        for k in head..n {
+        #[cfg(target_arch = "x86_64")]
+        let body = if n - head >= 4 && std::is_x86_feature_detected!("avx") {
+            // Parallel outputs retain each output's original tap order and f64
+            // multiply/add operations. There is no horizontal sum or fused FMA.
+            unsafe { self.body_avx(x, out, head) }
+        } else { head };
+        #[cfg(not(target_arch = "x86_64"))]
+        let body = head;
+        for k in body..n {
             let window = &x[k + 1 - ntaps..=k];
             let mut acc = 0.0;
             for (tap, sample) in self.taps.iter().zip(window.iter().rev()) {
@@ -159,6 +171,27 @@ impl FirState {
             self.tail.copy_within(n.., 0);
             self.tail[tlen - n..].copy_from_slice(x);
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx")]
+    unsafe fn body_avx(&self, x: &[f64], out: &mut Vec<f64>, mut k: usize) -> usize {
+        use std::arch::x86_64::*;
+        while k + 4 <= x.len() {
+            let mut acc = _mm256_setzero_pd();
+            for (j, &tap) in self.taps.iter().enumerate() {
+                // k >= ntaps - 1 and k + 3 < x.len(), so all four
+                // consecutive input samples are inside the current block.
+                let samples = _mm256_loadu_pd(x.as_ptr().add(k - j));
+                let product = _mm256_mul_pd(_mm256_set1_pd(tap), samples);
+                acc = _mm256_add_pd(acc, product);
+            }
+            let mut values = [0.0; 4];
+            _mm256_storeu_pd(values.as_mut_ptr(), acc);
+            out.extend_from_slice(&values);
+            k += 4;
+        }
+        k
     }
 }
 
@@ -191,7 +224,8 @@ impl IqFilter {
     }
 
     pub fn is_pass_through(&self) -> bool {
-        self.i.taps().len() <= 1
+        [self.i.taps(), self.q.taps()].iter()
+            .all(|taps| taps.is_empty() || *taps == [1.0])
     }
 
     pub fn reset(&mut self) {
@@ -405,4 +439,58 @@ mod tests {
         filter.process_into(&[1.0, 0.0, 0.0, 0.0, 0.0], &mut again);
         assert_eq!(out, again);
     }
+
+    #[test]
+    fn parallel_outputs_match_scalar_bits_across_short_and_long_blocks() {
+        let input: Vec<f64> = (0..4097).map(|k| {
+            (k as f64 * 0.371).sin() * 2f64.powi((k % 47) - 23)
+        }).collect();
+        for ntaps in [2, 3, 9, 33, 129, 257] {
+            let taps: Vec<f64> = (0..ntaps).map(|j| (j as f64 * 0.73).cos() / ntaps as f64).collect();
+            let expected: Vec<f64> = (0..input.len()).map(|k| {
+                let mut acc = 0.0;
+                for (j, &tap) in taps.iter().enumerate() {
+                    acc += tap * if j <= k { input[k - j] } else { 0.0 };
+                }
+                acc
+            }).collect();
+            let mut filter = FirState::new(taps);
+            let mut position = 0;
+            let mut output = Vec::new();
+            for count in [1, 0, 2, 7, 17, 61, 129, 3, 1024].into_iter().cycle() {
+                let end = (position + count).min(input.len());
+                filter.process_into(&input[position..end], &mut output);
+                for (offset, (&actual, &wanted)) in output.iter().zip(&expected[position..end]).enumerate() {
+                    assert_eq!(actual.to_bits(), wanted.to_bits(), "taps {ntaps}, sample {}", position + offset);
+                }
+                position = end;
+                if position == input.len() { break; }
+            }
+        }
+    }
 }
+    #[test]
+    fn a_single_tap_multiplies_samples_by_its_coefficient() {
+        let input = [2.0, -4.0, 8.0];
+        let mut output = Vec::new();
+        for coefficient in [0.0, 0.5, -2.0] {
+            let mut filter = FirState::new(vec![coefficient]);
+            filter.process_into(&input, &mut output);
+            let expected: Vec<f64> = input.iter().map(|sample| sample * coefficient).collect();
+            assert_eq!(output, expected);
+            let mut iq = IqFilter::new(vec![coefficient]);
+            assert!(!iq.is_pass_through());
+            iq.process_complex_into(&[2.0, -4.0], &mut output);
+            assert_eq!(output, [2.0 * coefficient, -4.0 * coefficient]);
+        }
+        assert!(IqFilter::new(vec![1.0]).is_pass_through());
+    }
+
+    #[test]
+    fn a_single_complex_tap_obeys_complex_multiplication() {
+        let mut filter = ComplexBandFilter::new(vec![0.5], vec![0.25]);
+        let mut output = Vec::new();
+        filter.process_complex_into(&[2.0, -4.0, -8.0, 4.0], &mut output);
+        // (I+jQ)(1/2+j/4) = (I/2-Q/4) + j(I/4+Q/2).
+        assert_eq!(output, [2.0, -1.5, -5.0, 0.0]);
+    }

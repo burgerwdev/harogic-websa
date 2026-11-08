@@ -26,14 +26,11 @@ use core::f64::consts::PI;
 use crate::fft::Bluestein;
 use tables::*;
 
-/// Frequency oversampling: the waterfall's FFT has `FREQ_OSR` bins per 6.25 Hz tone, so the
-/// sub-tone resolution is `6.25 / FREQ_OSR` Hz. One is too coarse (a signal half a tone off-grid
-/// loses ~4 dB), two is what the reference uses. Four was tried and is a trap: the FFT frame is
-/// `block * FREQ_OSR` samples long, so a finer grid also means a *longer analysis window*, and the
-/// Hann window then dilutes a tone that only fills one symbol of it — a -16 dB signal halfway
-/// between sub-bins still lost its sync contrast (measured: candidate score 29.5 at two, 4-7 at
-/// four). Sub-bin granularity has to come from somewhere that does not stretch the window in time.
-const FREQ_OSR: usize = 2;
+/// FFT bins per 6.25 Hz tone. Zero padding gives a 1.5625 Hz grid without changing the
+/// analysis window: extending the window itself would mix more adjacent FSK symbols.
+const FREQ_OSR: usize = 4;
+/// Keep the reference's two-symbol Hann window, normalization, and sample-time support.
+const WINDOW_SYMBOLS: usize = 2;
 /// Time oversampling: sub-symbol subdivisions per symbol.
 const TIME_OSR: usize = 2;
 /// The audio band FT8 occupies. The tones can be anywhere in here, not just one nominal frequency.
@@ -105,6 +102,7 @@ impl Waterfall {
         let block = symbol_samples_at(rate);
         let subblock = block / TIME_OSR;
         let nfft = block * FREQ_OSR;
+        let window_samples = block * WINDOW_SYMBOLS;
         let min_bin = (F_MIN_HZ * SYMBOL_PERIOD_S) as usize;
         let max_bin = (F_MAX_HZ * SYMBOL_PERIOD_S) as usize + 1;
         let num_bins = max_bin - min_bin;
@@ -112,16 +110,16 @@ impl Waterfall {
         let block_stride = TIME_OSR * FREQ_OSR * num_bins;
         let mut mag = vec![0_u8; num_blocks * block_stride];
 
-        // Hann window with the reference's `fft_norm = 2 / nfft` scaling.
-        let mut window = vec![0.0_f64; nfft];
+        // Normalize by the actual window length; FFT padding adds no signal energy.
+        let mut window = vec![0.0_f64; window_samples];
         for (i, w) in window.iter_mut().enumerate() {
-            let x = (PI * i as f64 / nfft as f64).sin();
-            *w = x * x * (2.0 / nfft as f64);
+            let x = (PI * i as f64 / window_samples as f64).sin();
+            *w = x * x * (2.0 / window_samples as f64);
         }
 
         let mut plan = Bluestein::new(nfft);
-        let mut frame_re = vec![0.0_f64; nfft];
-        let mut frame_im = vec![0.0_f64; nfft];
+        let mut frame_re = vec![0.0_f64; window_samples];
+        let mut frame_im = vec![0.0_f64; window_samples];
         let mut re = vec![0.0_f64; nfft];
         let mut im = vec![0.0_f64; nfft];
 
@@ -129,7 +127,7 @@ impl Waterfall {
             let off = blk * block_stride;
             for ts in 0..TIME_OSR {
                 // Shift the analysis frame by one sub-block.
-                for i in 0..nfft - subblock {
+                for i in 0..window_samples - subblock {
                     frame_re[i] = frame_re[i + subblock];
                     frame_im[i] = frame_im[i + subblock];
                 }
@@ -141,13 +139,15 @@ impl Waterfall {
                     } else {
                         (0.0, 0.0)
                     };
-                    frame_re[nfft - subblock + i] = sr;
-                    frame_im[nfft - subblock + i] = si;
+                    frame_re[window_samples - subblock + i] = sr;
+                    frame_im[window_samples - subblock + i] = si;
                 }
-                for i in 0..nfft {
+                for i in 0..window_samples {
                     re[i] = frame_re[i] * window[i];
                     im[i] = frame_im[i] * window[i];
                 }
+                re[window_samples..].fill(0.0);
+                im[window_samples..].fill(0.0);
                 plan.forward(&mut re, &mut im);
                 for fsb in 0..FREQ_OSR {
                     for b in 0..num_bins {
@@ -232,11 +232,27 @@ impl Waterfall {
     /// `(score, time_offset, time_sub, freq_sub, freq_offset)`.
     fn find_candidates(&self) -> Vec<(f64, i32, usize, usize, usize)> {
         let mut scored = Vec::new();
-        let to_min = -(2 * FREQ_OSR as i32);
+        let to_min = -(2 * WINDOW_SYMBOLS as i32);
         for to in to_min..self.num_blocks as i32 {
+            // BP/OSD must determine 91 information bits from the observed data;
+            // CRC is checked only after that decode. Fewer observations cannot
+            // distinguish the LDPC codewords, even with noiseless likelihoods.
+            // In particular, a few tail sync symbols have a high-variance mean
+            // score and must not displace decodable words from this fixed budget.
+            let data_symbols = (0..NUM_DATA_SYMBOLS).filter(|&k| {
+                let symbol = k + if k < 29 { SYNC_LENGTH } else { 2 * SYNC_LENGTH };
+                let block = to + symbol as i32;
+                block >= 0 && block < self.num_blocks as i32
+            }).count();
+            if data_symbols * 3 < LDPC_K {
+                continue;
+            }
             for ts in 0..TIME_OSR {
                 for fsb in 0..FREQ_OSR {
-                    for fo in 0..self.num_bins - 8 {
+                    // The final base bin fits eight tones exactly at freq_sub=0.
+                    // Fractional offsets there would put the last tone past F_MAX_HZ.
+                    let end = self.num_bins - 7 - usize::from(fsb > 0);
+                    for fo in 0..end {
                         let s = self.sync_score(to, ts, fsb, fo);
                         if s >= MIN_SYNC_SCORE {
                             scored.push((s, to, ts, fsb, fo));
@@ -289,8 +305,8 @@ impl Waterfall {
     /// re-encoding the 77 payload bits through the generator gives the same parity, but the LDPC
     /// output already has it, and the tones come from all 174 bits. When the max-log LDPC does not
     /// converge (or converges onto a CRC miss), the ordered-statistics fallback gets one bounded
-    /// shot at the same likelihoods -- that fallback is worth roughly 2 dB of sensitivity on this
-    /// code (see `ft8_snr_sweep`'s baseline).
+    /// shot at the same likelihoods. Its generator-codeword and false-positive regressions
+    /// verify that path; sensitivity depends on the complete signal and noise scenario.
     fn decode_candidate(&self, to: i32, ts: usize, fsb: usize, fo: usize) -> Option<[u8; 174]> {
         let llr = self.extract_likelihood(to, ts, fsb, fo);
         if let Some(bits) = ldpc_decode(&llr, MAX_LDPC_ITERATIONS) {
@@ -298,12 +314,7 @@ impl Waterfall {
                 return Some(bits);
             }
         }
-        let bits = osd_decode(&llr)?;
-        if crc_ok(&bits) {
-            Some(bits)
-        } else {
-            None
-        }
+        osd_decode(&llr)
     }
 }
 
@@ -543,16 +554,191 @@ fn fit_model(
     (power, gains)
 }
 
+struct CancellationModel {
+    frequency: f64,
+    start: i64,
+    gains: [(f64, f64); NUM_SYMBOLS],
+}
+
+fn symbol_phases(tones: &[u8; NUM_SYMBOLS], frequency: f64, rate: f64) -> [f64; NUM_SYMBOLS] {
+    let duration = symbol_samples_at(rate) as f64 / rate;
+    let mut phase = 0.0;
+    core::array::from_fn(|index| {
+        let previous = phase;
+        phase = (phase
+            + 2.0 * PI * (frequency + f64::from(tones[index]) * TONE_SPACING_HZ) * duration)
+            .rem_euclid(2.0 * PI);
+        previous
+    })
+}
+
+/// Squared complex residual over the same complete observation for either model.
+/// Summing the residual explicitly avoids cancellation of two almost equal powers
+/// when a noiseless waveform fits to floating-point precision.
+fn cancellation_residual(
+    samples: &[f32],
+    rate: f64,
+    tones: &[u8; NUM_SYMBOLS],
+    model: &CancellationModel,
+) -> f64 {
+    let symbol = symbol_samples_at(rate);
+    let count = samples.len() / 2;
+    let mut consumed = 0;
+    let mut residual = 0.0;
+    for (k, &tone) in tones.iter().enumerate() {
+        let start = model.start + (k * symbol) as i64;
+        if start < 0 || start + symbol as i64 > count as i64 {
+            continue;
+        }
+        let start = start as usize;
+        for sample in &samples[consumed * 2..start * 2] {
+            residual += f64::from(*sample).powi(2);
+        }
+        let step = 2.0 * PI * (model.frequency + f64::from(tone) * TONE_SPACING_HZ) / rate;
+        let (ds, dc) = step.sin_cos();
+        let (mut wr, mut wi) = (1.0, 0.0);
+        let (gr, gi) = model.gains[k];
+        for index in start..start + symbol {
+            let re = f64::from(samples[index * 2]) - (gr * wr - gi * wi);
+            let im = f64::from(samples[index * 2 + 1]) - (gr * wi + gi * wr);
+            residual += re * re + im * im;
+            let next_re = wr * dc - wi * ds;
+            wi = wr * ds + wi * dc;
+            wr = next_re;
+        }
+        consumed = start + symbol;
+    }
+    for sample in &samples[consumed * 2..] {
+        residual += f64::from(*sample).powi(2);
+    }
+    residual
+}
+
+/// A phase-continuous burst can use one complex gain instead of 79 independent
+/// gains. This avoids fitting noise or a weaker co-channel station separately
+/// in every symbol. Keep the independent-gain model when its improvement pays
+/// for those additional parameters under the Gaussian AIC comparison below.
+fn select_cancellation_model(
+    samples: &[f32],
+    rate: f64,
+    tones: &[u8; NUM_SYMBOLS],
+    original: CancellationModel,
+) -> CancellationModel {
+    let symbol = symbol_samples_at(rate);
+    let phases = symbol_phases(tones, original.frequency, rate);
+    let mut previous: Option<f64> = None;
+    let mut unwrapped = 0.0;
+    let (mut weight, mut x, mut y, mut xx, mut xy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for (k, &(gr, gi)) in original.gains.iter().enumerate() {
+        let reliability = gr * gr + gi * gi;
+        if !reliability.is_finite() || reliability == 0.0 {
+            continue;
+        }
+        let (s, c) = phases[k].sin_cos();
+        let angle = (gi * c - gr * s).atan2(gr * c + gi * s);
+        unwrapped = if let Some(last) = previous {
+            unwrapped + (angle - last + PI).rem_euclid(2.0 * PI) - PI
+        } else {
+            angle
+        };
+        previous = Some(angle);
+        let time = k as f64 * symbol as f64 / rate;
+        weight += reliability;
+        x += reliability * time;
+        y += reliability * unwrapped;
+        xx += reliability * time * time;
+        xy += reliability * time * unwrapped;
+    }
+    let denominator = weight * xx - x * x;
+    if denominator <= 0.0 || !denominator.is_finite() {
+        return original;
+    }
+    let correction = (weight * xy - x * y) / denominator / (2.0 * PI);
+    // Phase unwrapping may fail on an incoherent/vanishing signal. The original
+    // search already localized the frequency to this sub-bin neighbourhood.
+    if !correction.is_finite() || correction.abs() > TONE_SPACING_HZ / FREQ_OSR as f64 {
+        return original;
+    }
+    let frequency = original.frequency + correction;
+    let phases = symbol_phases(tones, frequency, rate);
+    let count = samples.len() / 2;
+    let mut best_power = -1.0;
+    let mut best = None;
+    for step in -8_i32..=8 {
+        let start = original.start + (f64::from(step) * symbol as f64 / 128.0) as i64;
+        let (_, gains) = fit_model(samples, tones, frequency, rate, start);
+        let (mut real, mut imaginary, mut fitted) = (0.0, 0.0, 0_usize);
+        for (k, &(gr, gi)) in gains.iter().enumerate() {
+            let first = start + (k * symbol) as i64;
+            if first < 0 || first + symbol as i64 > count as i64 {
+                continue;
+            }
+            let (s, c) = phases[k].sin_cos();
+            real += gr * c + gi * s;
+            imaginary += gi * c - gr * s;
+            fitted += 1;
+        }
+        if fitted == 0 {
+            continue;
+        }
+        let power = (real * real + imaginary * imaginary) / fitted as f64;
+        if power <= best_power || !power.is_finite() {
+            continue;
+        }
+        best_power = power;
+        real /= fitted as f64;
+        imaginary /= fitted as f64;
+        let gains = core::array::from_fn(|k| {
+            let first = start + (k * symbol) as i64;
+            if first < 0 || first + symbol as i64 > count as i64 {
+                return (0.0, 0.0);
+            }
+            let (s, c) = phases[k].sin_cos();
+            (real * c - imaginary * s, real * s + imaginary * c)
+        });
+        best = Some(CancellationModel {
+            frequency,
+            start,
+            gains,
+        });
+    }
+    let Some(coherent) = best else {
+        return original;
+    };
+    let independent_error = cancellation_residual(samples, rate, tones, &original);
+    let coherent_error = cancellation_residual(samples, rate, tones, &coherent);
+    let fitted = (0..NUM_SYMBOLS)
+        .filter(|k| {
+            let first = original.start + (k * symbol) as i64;
+            first >= 0 && first + symbol as i64 <= count as i64
+        })
+        .count();
+    // Circular complex Gaussian noise gives 2*N real observations. The gains
+    // have 2 vs 2*fitted real parameters; frequency, start and noise variance
+    // are estimated in both models and cancel from the parameter difference.
+    // AIC = 2*k + 2*N*ln(RSS/(2*N)) + common terms (Akaike, 1974,
+    // https://doi.org/10.1109/TAC.1974.1100705). No empirically tuned gain threshold.
+    let prefer_coherent = coherent_error == 0.0
+        || (independent_error > 0.0
+            && (samples.len() as f64) * (coherent_error / independent_error).ln()
+                <= 4.0 * fitted.saturating_sub(1) as f64);
+    if prefer_coherent {
+        coherent
+    } else {
+        original
+    }
+}
+
 /// Remove one decoded transmission from the samples, the way WSJT-X does between passes.
 ///
 /// The waterfall only localizes the signal to a sub-bin (`FREQ_OSR` bins per tone) and a
 /// sub-symbol (`TIME_OSR` blocks per symbol), and its block time carries up to a symbol of lead
 /// (the analysis window straddles the symbols) — far too coarse to cancel against: one bin of
-/// residual frequency error rotates the phase a full circle every ~0.3 s and the subtraction
+/// residual frequency error rotates the phase repeatedly within a burst and the subtraction
 /// destroys itself. So the model is fitted to the data first — coarse time, then frequency, then
-/// fine time, each round maximizing the correlation power — and the per-symbol complex gains of
-/// the final fit are what gets subtracted. The per-symbol fit also absorbs phase drift between
-/// transmitter and receiver.
+/// fine time, each round maximizing the correlation power. A continuous-phase fit then refines
+/// the carrier and uses one burst gain when its residual supports that model. Otherwise the
+/// per-symbol gains retain amplitude and phase variation between transmitter and receiver.
 fn subtract_transmission(
     samples: &mut [f32],
     rate: f64,
@@ -596,8 +782,9 @@ fn subtract_transmission(
     }
     // Fine time at that frequency: the remainder of the alignment error.
     best_power = -1.0;
+    let fine_center = best_t0;
     for step in -8_i32..=8 {
-        let start = best_t0 + (step as f64 * (sym as f64 / 16.0)) as i64;
+        let start = fine_center + (step as f64 * (sym as f64 / 16.0)) as i64;
         let (power, _) = fit_model(samples, &tones, best_freq, rate, start);
         if power > best_power {
             best_power = power;
@@ -609,8 +796,9 @@ fn subtract_transmission(
     // enough to keep masking a weak co-channel neighbour. A 1/128-symbol grid takes the timing
     // error down to ~0.4 % of a symbol.
     best_power = -1.0;
+    let polish_center = best_t0;
     for step in -8_i32..=8 {
-        let start = best_t0 + (step as f64 * (sym as f64 / 128.0)) as i64;
+        let start = polish_center + (step as f64 * (sym as f64 / 128.0)) as i64;
         let (power, _) = fit_model(samples, &tones, best_freq, rate, start);
         if power > best_power {
             best_power = power;
@@ -629,6 +817,8 @@ fn subtract_transmission(
     if amplitude < MIN_FIT_AMPLITUDE {
         return;
     }
+    let CancellationModel { frequency: best_freq, start: best_t0, gains } = select_cancellation_model(
+        samples, rate, &tones, CancellationModel { frequency: best_freq, start: best_t0, gains });
     let n_complex = samples.len() / 2;
     for (k, tone) in tones.iter().enumerate() {
         let (gr, gi) = gains[k];
@@ -748,19 +938,17 @@ fn atanh_approx(x: f64) -> f64 {
 // ---------------------------------------------------------------- OSD (ordered statistics)
 
 /// Ordered-statistics decoding: the fallback for a candidate whose max-log LDPC run does not
-/// converge. This is the other half of what WSJT-X (and FT8CN after it) do at the sensitivity
-/// edge: the hard decisions are re-ordered by reliability, the 83 checks get their pivot columns
-/// by Gaussian elimination on the check matrix, and the remaining 91 columns -- the *information
-/// set* -- are re-encoded over a bounded set of error patterns. Every pattern yields a word that
+/// converge. The 83 check pivots use the least reliable independent columns, leaving the most
+/// reliable 91-bit information basis for a bounded error-pattern search. This is the parity-check
+/// dual of generator-based OSD (Fossorier and Lin, IEEE TIT 41(5), 1995,
+/// https://doi.org/10.1109/18.412683). Every pattern yields a word that
 /// satisfies all parity checks, so the discriminator is not the syndrome but the distance to the
 /// received LLRs: patterns are ranked by the reliability-weighted cost of the bits they move, and
 /// only the single best word is CRC-checked. Gating one candidate instead of ~4200 individually
-/// is what keeps the false-positive rate at the LDPC decoder's level -- CRC-checking every
-/// pattern would pass by chance at roughly 2^-14 per pattern.
+/// bounds the fallback to one CRC trial per candidate.
 ///
-/// Enumeration covers weight 0, 1 and 2 on the information set (WSJT-X's OSD-2, without parity
-/// bit flips: flipping a computed parity bit would leave valid-LDPC space, and the weight-2 sweep
-/// is where the measured gain over plain max-log LDPC saturates for FT8's code).
+/// Enumeration covers weight 0, 1 and 2 on the information set. Parity bits follow from that
+/// choice; independently flipping a computed parity bit would leave valid-LDPC space.
 fn osd_decode(llr: &[f64; 174]) -> Option<[u8; 174]> {
     // Hard decisions and the reliability order (most reliable first).
     let mut order: [usize; 174] = core::array::from_fn(|i| i);
@@ -775,15 +963,14 @@ fn osd_decode(llr: &[f64; 174]) -> Option<[u8; 174]> {
         }
     }
 
-    // Gaussian elimination in reliability order: every check gets a pivot column among the most
-    // reliable ones that keep the matrix full-rank, and the columns never picked -- the ones the
-    // rank condition skipped -- form the information set. Skipping (rather than swapping) keeps
-    // that set the most reliable columns the constraint allows, which is the whole premise of the
-    // method: the hard decisions there are the ones worth trusting.
+    // Pivot the least reliable independent columns of H. Their complement is the most
+    // reliable information basis: order-0 re-encodes its hard decisions, and orders 1/2
+    // correct a bounded number of its errors. Pivot decisions still contribute to the
+    // full received-word distance.
     let mut in_info = [true; 174];
     let mut pivot_pos = [0_usize; 83];
     let mut rank = 0;
-    for &col in order.iter() {
+    for &col in order.iter().rev() {
         if rank == 83 {
             break;
         }
@@ -816,10 +1003,10 @@ fn osd_decode(llr: &[f64; 174]) -> Option<[u8; 174]> {
     let mut hard_info = [0_u64; 2];
     let mut rel_info = [0.0_f64; 91];
     for (i, c) in coef.iter_mut().enumerate() {
+        hard_par[i] = (llr[pivot_pos[i]] > 0.0) as u8;
         for (j, &p) in info_pos.iter().enumerate() {
             if rows[i][p / 64] >> (p % 64) & 1 == 1 {
                 c[j / 64] |= 1 << (j % 64);
-                hard_par[i] ^= (llr[p] > 0.0) as u8;
             }
         }
     }
@@ -943,8 +1130,8 @@ pub fn unpack_message(payload: &[u8; 77]) -> Option<String> {
     if i3 != 1 && i3 != 2 {
         return None;                    // other message types are not implemented
     }
-    let call_to = unpack28(n29a >> 1)?;
-    let call_de = unpack28(n29b >> 1)?;
+    let call_to = unpack28(n29a >> 1, n29a & 1 != 0, i3)?;
+    let call_de = unpack28(n29b >> 1, n29b & 1 != 0, i3)?;
     let extra = unpack_grid(igrid4 & 0x7FFF, ir == 1 || igrid4 & 0x8000 != 0)?;
     let mut text = format!("{call_to} {call_de}");
     if !extra.is_empty() {
@@ -954,22 +1141,23 @@ pub fn unpack_message(payload: &[u8; 77]) -> Option<String> {
     Some(text)
 }
 
-fn unpack28(n28: u32) -> Option<String> {
+fn unpack28(n28: u32, suffix: bool, kind: u8) -> Option<String> {
     if n28 < NTOKENS {
         return Some(match n28 {
             0 => "DE".to_string(),
             1 => "QRZ".to_string(),
             2 => "CQ".to_string(),
             value if value <= 1002 => format!("CQ {:03}", value - 3),
-            value => {
+            value if value <= 532_443 => {
                 let mut n = value - 1003;
                 let mut chars = [b' '; 4];
                 for index in (0..4).rev() {
-                    chars[index] = ALPHANUM_SPACE[(n % 27) as usize];
+                    chars[index] = LETTERS_SPACE[(n % 27) as usize];
                     n /= 27;
                 }
-                format!("CQ {}", core::str::from_utf8(&chars).ok()?)
+                format!("CQ {}", core::str::from_utf8(&chars).ok()?.trim_start())
             }
+            _ => return None,
         });
     }
     let value = n28 - NTOKENS;
@@ -978,7 +1166,12 @@ fn unpack28(n28: u32) -> Option<String> {
         // hash table, which this decoder does not carry.
         return None;
     }
-    unpack_basecall(value - MAX22)
+    let mut call = unpack_basecall(value - MAX22)?;
+    // Token fields have no suffix; this bit belongs only to standard callsigns.
+    if suffix {
+        call.push_str(if kind == 1 { "/R" } else { "/P" });
+    }
+    Some(call)
 }
 
 fn unpack_basecall(n28: u32) -> Option<String> {
@@ -1012,6 +1205,12 @@ fn unpack_basecall(n28: u32) -> Option<String> {
         if *char != b' ' {
             call.push(*char as char);
         }
+    }
+    // Protocol compression of standard prefixes, inverse of ft8_lib pack_basecall.
+    if chars.starts_with(b"3D0") && chars[3] != b' ' {
+        call.insert(2, 'A');
+    } else if chars[0] == b'Q' && chars[1].is_ascii_uppercase() {
+        call.replace_range(..1, "3X");
     }
     if call.is_empty() {
         None
@@ -1060,6 +1259,74 @@ fn unpack_grid(igrid4: u16, ir: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transmitter_fixture_values(field: &str) -> Vec<u8> {
+        let manifest = include_str!("../../../../../tests/fixtures/ft8/manifest.json");
+        let key = format!("\"{field}\":");
+        manifest.split(&key).nth(1).unwrap()
+            .split('[').nth(1).unwrap().split(']').next().unwrap().split(',')
+            .map(|value| value.trim().parse().unwrap()).collect()
+    }
+
+
+    #[test]
+    fn osd_recovers_one_and_two_unreliable_bits_against_a_generator_codeword() {
+        // Encode from the protocol generator, independently of the decoder's
+        // check-matrix elimination and distance calculation.
+        let mut expected = [0_u8; 174];
+        for (index, bit) in expected[..77].iter_mut().enumerate() {
+            *bit = ((index * 13 + index / 3) % 2) as u8;
+        }
+        let payload: [u8; 77] = expected[..77].try_into().unwrap();
+        let crc = crc14(&payload);
+        for index in 0..14 { expected[77 + index] = ((crc >> (13 - index)) & 1) as u8; }
+        for (row_index, row) in LDPC_GENERATOR.iter().enumerate() {
+            let parity = (0..91).fold(0, |acc, bit|
+                acc ^ (expected[bit] & ((row[bit / 8] >> (7 - bit % 8)) & 1)));
+            expected[91 + row_index] = parity;
+        }
+        assert_eq!(parity_errors(&expected), 0);
+        assert!(crc_ok(&expected));
+        for errors in [&[0][..], &[40], &[91], &[173], &[0, 173], &[40, 91]] {
+            let mut hard = expected;
+            let llr = core::array::from_fn(|index| {
+                let weak = errors.contains(&index);
+                if weak { hard[index] ^= 1; }
+                (if hard[index] == 0 { -1.0 } else { 1.0 }) * if weak { 0.25 } else { 12.0 }
+            });
+            assert!(parity_errors(&hard) > 0, "the received hard word has errors");
+            // The known codeword differs only at the weak positions (cost <=0.5).
+            // Every other valid word must differ at a strong position (cost >=12):
+            // independently check all alternatives confined to the weak positions.
+            for mask in 1..1usize << errors.len() {
+                let mut alternate = expected;
+                for (bit, &index) in errors.iter().enumerate() {
+                    if mask >> bit & 1 != 0 { alternate[index] ^= 1; }
+                }
+                assert!(parity_errors(&alternate) > 0);
+            }
+            assert_eq!(osd_decode(&llr), Some(expected), "unreliable positions {errors:?}");
+        }
+    }
+
+    #[test]
+    fn osd_reencodes_the_most_reliable_information_basis() {
+        // The transmitter fixture supplies the independent systematic codeword.
+        // Its first 91 bits determine every parity bit, without elimination on H.
+        let expected: [u8; 174] = transmitter_fixture_values("codeword_bits").try_into().unwrap();
+        for unreliable in [3, 7, 83] {
+            let llr = core::array::from_fn(|index| {
+                let sign = if expected[index] == 0 { -1.0 } else { 1.0 };
+                if (91..91 + unreliable).contains(&index) { -sign * 0.01 } else { sign * 12.0 }
+            });
+            // All systematic bits are correct and independently reliable. The
+            // expected codeword costs <=0.83; every other codeword must change
+            // at least one of these bits and costs >=12. It is the unique ML
+            // answer and is already in the order-0 most-reliable-basis list.
+            assert!(unreliable as f64 * 0.01 < 12.0);
+            assert_eq!(osd_decode(&llr), Some(expected), "{unreliable} weak parity bits");
+        }
+    }
 
     #[test]
     fn odd_pushes_preserve_iq_pairs_and_sample_positions() {
@@ -1194,9 +1461,323 @@ mod tests {
     }
 
     #[test]
-    fn a_grid_report_and_token_round_trip() {
-        // "CQ JO1WKO PM95" is the fixture's message: its callsign token unpacks to itself.
-        assert_eq!(unpack28(2).as_deref(), Some("CQ"));
+    fn ft8_review_subtraction_cancels_exact_known_timing_grid_points() {
+        // Independent transmitter symbols and codeword from the committed Python
+        // fixture. A noiseless signal on every refinement grid has an exact
+        // least-squares solution: subtracting it must leave only f32 roundoff.
+        let word: [u8; 174] = transmitter_fixture_values("codeword_bits").try_into().unwrap();
+        let tones = transmitter_fixture_values("tones");
+        let rate = 6_000.0;
+        let symbol = 960;
+        for offset in [0, 15, 75, 135, 255, 495, 735, 945] {
+            let start = 2 * symbol + offset;
+            let mut iq = vec![0.0_f32; (start + 81 * symbol) * 2];
+            let mut phase = 0.0_f64;
+            for (k, tone) in tones.iter().enumerate() {
+                let step = 2.0 * PI * (800.0 + f64::from(*tone) * 6.25) / rate;
+                for sample in 0..symbol {
+                    let index = (start + k * symbol + sample) * 2;
+                    iq[index] = phase.cos() as f32;
+                    iq[index + 1] = phase.sin() as f32;
+                    phase += step;
+                }
+            }
+            subtract_transmission(&mut iq, rate, &word, 2, 0, 0, 112);
+            let residual = iq.iter().map(|value| f64::from(*value).powi(2)).sum::<f64>()
+                / (tones.len() * symbol) as f64;
+            assert!(residual < 1e-9, "exact timing offset {offset}: residual power {residual}");
+        }
+    }
+
+    #[test]
+    fn coherent_subtraction_refines_frequency_between_search_grid_points() {
+        let word: [u8; 174] = transmitter_fixture_values("codeword_bits")
+            .try_into()
+            .unwrap();
+        let tones = transmitter_fixture_values("tones");
+        let symbol = 960;
+        let start = 2 * symbol;
+        // At 6001 Hz each tone advances a non-integer number of cycles per
+        // 960-sample symbol, so the carrier alone cannot represent its phase.
+        for rate in [6_000.0, 6_001.0] {
+            for frequency in [800.03125, 799.9375, 800.103] {
+                let mut iq = vec![0.0_f32; (start + 81 * symbol) * 2];
+                let mut phase = 0.37_f64;
+                for (k, tone) in tones.iter().enumerate() {
+                    let step = 2.0 * PI * (frequency + f64::from(*tone) * 6.25) / rate;
+                    for index in 0..symbol {
+                        let offset = (start + k * symbol + index) * 2;
+                        iq[offset] = phase.cos() as f32;
+                        iq[offset + 1] = phase.sin() as f32;
+                        phase += step;
+                    }
+                }
+                // A single phase-continuous transmitter has an exact constant-gain
+                // model even between the coarse frequency search points. The known
+                // transmitter waveform is independent of the fitting implementation.
+                subtract_transmission(&mut iq, rate, &word, 2, 0, 0, 112);
+                let residual = iq
+                    .iter()
+                    .map(|value| f64::from(*value).powi(2))
+                    .sum::<f64>()
+                    / (tones.len() * symbol) as f64;
+                assert!(
+                    residual < 1e-9,
+                    "rate {rate}, frequency {frequency}: residual power {residual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coherent_subtraction_preserves_partial_boundary_symbols() {
+        let word: [u8; 174] = transmitter_fixture_values("codeword_bits")
+            .try_into()
+            .unwrap();
+        let tones = transmitter_fixture_values("tones");
+        let rate = 6_001.0;
+        let symbol = 960_usize;
+        let start = -(symbol as i64 / 2);
+        let count = 78 * symbol;
+        let mut iq = vec![0.0_f32; count * 2];
+        let mut phase = 0.37_f64;
+        for (k, tone) in tones.iter().enumerate() {
+            let step = 2.0 * PI * (800.03125 + f64::from(*tone) * 6.25) / rate;
+            for sample in 0..symbol {
+                let absolute = start + (k * symbol + sample) as i64;
+                if (0..count as i64).contains(&absolute) {
+                    iq[absolute as usize * 2] = phase.cos() as f32;
+                    iq[absolute as usize * 2 + 1] = phase.sin() as f32;
+                }
+                phase += step;
+            }
+        }
+        let original = iq.clone();
+        subtract_transmission(&mut iq, rate, &word, -1, 1, 0, 112);
+        // The fit observes complete symbols only. Missing samples cannot be
+        // replaced by zeros or cause a partial boundary symbol to be subtracted.
+        let first_complete = symbol / 2;
+        let last_complete_end = count - symbol / 2;
+        assert_eq!(&iq[..first_complete * 2], &original[..first_complete * 2]);
+        assert_eq!(
+            &iq[last_complete_end * 2..],
+            &original[last_complete_end * 2..]
+        );
+        let residual = iq[first_complete * 2..last_complete_end * 2]
+            .iter()
+            .map(|value| f64::from(*value).powi(2))
+            .sum::<f64>()
+            / (last_complete_end - first_complete) as f64;
+        assert!(residual < 1e-9, "complete-symbol residual power {residual}");
+    }
+
+    #[test]
+    fn coherent_subtraction_preserves_the_fit_of_varying_symbol_gains() {
+        let word: [u8; 174] = transmitter_fixture_values("codeword_bits")
+            .try_into()
+            .unwrap();
+        let tones = transmitter_fixture_values("tones");
+        let rate = 6_000.0;
+        let symbol = 960;
+        let start = 2 * symbol;
+        let mut iq = vec![0.0_f32; (start + 81 * symbol) * 2];
+        let mut phase = 0.37_f64;
+        for (k, tone) in tones.iter().enumerate() {
+            let step = 2.0 * PI * (800.0 + f64::from(*tone) * 6.25) / rate;
+            let amplitude = 0.4 + (k % 5) as f64 * 0.15;
+            let channel_phase = ((k * 13) % 7) as f64 * 0.2;
+            for index in 0..symbol {
+                let offset = (start + k * symbol + index) * 2;
+                iq[offset] = (amplitude * (phase + channel_phase).cos()) as f32;
+                iq[offset + 1] = (amplitude * (phase + channel_phase).sin()) as f32;
+                phase += step;
+            }
+        }
+        // These independent gain changes are part of the desired transmitter.
+        // A constant burst gain must not replace a better per-symbol fit.
+        subtract_transmission(&mut iq, rate, &word, 2, 0, 0, 112);
+        let residual = iq
+            .iter()
+            .map(|value| f64::from(*value).powi(2))
+            .sum::<f64>()
+            / (tones.len() * symbol) as f64;
+        assert!(residual < 1e-9, "varying-gain residual power {residual}");
+    }
+
+    #[test]
+    fn ft8_frequency_grid_matches_a_fixed_two_symbol_dft() {
+        // Independently sum the complex DFT on a two-symbol Hann window.
+        // Changing frequency granularity must not change the physical window,
+        // its normalization, or which input samples a waterfall time denotes.
+        let rate = 6_000.0;
+        let symbol = 960_usize;
+        let window_samples = 2 * symbol;
+        let mut iq = Vec::new();
+        for sample in 0..6 * symbol {
+            let time = sample as f64 / rate;
+            let envelope = if sample < 2_300 { 1.0 } else { 0.4 };
+            iq.push((envelope * ((2.0 * PI * 802.34375 * time).cos()
+                + 0.3 * (2.0 * PI * 1376.5625 * time).cos())) as f32);
+            iq.push((envelope * ((2.0 * PI * 802.34375 * time).sin()
+                + 0.3 * (2.0 * PI * 1376.5625 * time).sin())) as f32);
+        }
+        let waterfall = Waterfall::build(&iq, rate);
+        for (block, time_sub) in [(0, 0), (1, 1), (3, 0), (5, 1)] {
+            let end = (block * 2 + time_sub + 1) * (symbol / 2);
+            for bin in [112, 204] {
+                for frequency_sub in 0..4 {
+                    let frequency = 100.0 + (bin as f64 + frequency_sub as f64 / 4.0) * 6.25;
+                    let mut real = 0.0;
+                    let mut imaginary = 0.0;
+                    for index in 0..window_samples {
+                        let input = end as isize - window_samples as isize + index as isize;
+                        if input < 0 { continue; }
+                        let weight = (PI * index as f64 / window_samples as f64).sin().powi(2)
+                            * 2.0 / window_samples as f64;
+                        let angle = 2.0 * PI * frequency * index as f64 / rate;
+                        let re = iq[input as usize * 2] as f64;
+                        let im = iq[input as usize * 2 + 1] as f64;
+                        real += weight * (re * angle.cos() + im * angle.sin());
+                        imaginary += weight * (im * angle.cos() - re * angle.sin());
+                    }
+                    let expected = (240.0 + 20.0 * (1e-12 + real * real + imaginary * imaginary).log10())
+                        .round().clamp(0.0, 255.0) as u8;
+                    assert_eq!(waterfall.mag_at(block as i32, time_sub, frequency_sub, bin, 0, 0), expected,
+                        "block={block}, time_sub={time_sub}, frequency={frequency}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ft8_frequency_search_includes_the_last_complete_tone_set() {
+        let tones: Vec<usize> = transmitter_fixture_values("tones").into_iter().map(usize::from).collect();
+        let num_blocks = 90;
+        let num_bins = 64;
+        let bin = num_bins - 8;
+        let mut waterfall = Waterfall {
+            num_blocks, num_bins,
+            mag: vec![120; num_blocks * TIME_OSR * FREQ_OSR * num_bins],
+        };
+        for (symbol, tone) in tones.iter().enumerate() {
+            waterfall.mag[(symbol * TIME_OSR * FREQ_OSR) * num_bins + bin + tone] = 144;
+        }
+        assert!(waterfall.decode_candidate(0, 0, 0, bin).is_some());
+        assert!(waterfall.find_candidates().iter().any(|&(_, to, ts, fsb, fo)|
+            (to, ts, fsb, fo) == (0, 0, 0, bin)), "all eight tones fit at the upper search edge");
+    }
+
+    #[test]
+    fn incomplete_sync_only_tails_cannot_exhaust_the_candidate_budget() {
+        // A complete, unambiguous protocol word at an ordinary sync contrast.
+        // The independently encoded tones are the committed transmitter fixture.
+        let tones: Vec<usize> = transmitter_fixture_values("tones").into_iter().map(usize::from).collect();
+        let num_blocks = 100;
+        let num_bins = 160;
+        let mut waterfall = Waterfall {
+            num_blocks, num_bins,
+            mag: vec![120; num_blocks * TIME_OSR * FREQ_OSR * num_bins],
+        };
+        let (start, bin) = (5, 20);
+        for (symbol, tone) in tones.iter().enumerate() {
+            waterfall.mag[((start + symbol) * TIME_OSR * FREQ_OSR) * num_bins + bin + tone] = 144;
+        }
+        assert!(waterfall.decode_candidate(start as i32, 0, 0, bin).is_some());
+        // One final noisy FFT can create more than MAX_CANDIDATES high average
+        // sync contrasts, even though those hypotheses carry no data at all.
+        for time_sub in 0..TIME_OSR {
+            for freq_sub in 0..FREQ_OSR {
+                for noise_bin in (1..num_bins).step_by(2) {
+                    let index = (((num_blocks - 1) * TIME_OSR + time_sub) * FREQ_OSR + freq_sub)
+                        * num_bins + noise_bin;
+                    waterfall.mag[index] = 240;
+                }
+            }
+        }
+        let candidates = waterfall.find_candidates();
+        assert!(candidates.iter().any(|&(_, to, ts, fsb, fo)|
+            (to, ts, fsb, fo) == (start as i32, 0, 0, bin)),
+            "a decodable word must survive candidates containing only a truncated sync block");
+    }
+
+    #[test]
+    fn candidate_budget_keeps_messages_missing_only_boundary_sync_symbols() {
+        let tones: Vec<usize> = transmitter_fixture_values("tones").into_iter().map(usize::from).collect();
+        // Starts remain free to move across the whole receive window. Missing
+        // initial/final sync symbols leaves all 174 data bits observable.
+        for (start, num_blocks) in [(-4_i32, 80_usize), (50, 122)] {
+            let num_bins = 64;
+            let mut waterfall = Waterfall {
+                num_blocks, num_bins,
+                mag: vec![120; num_blocks * TIME_OSR * FREQ_OSR * num_bins],
+            };
+            for (symbol, tone) in tones.iter().enumerate() {
+                let block = start + symbol as i32;
+                if block >= 0 && (block as usize) < num_blocks {
+                    waterfall.mag[(block as usize * TIME_OSR * FREQ_OSR) * num_bins + 20 + tone] = 144;
+                }
+            }
+            assert!(waterfall.decode_candidate(start, 0, 0, 20).is_some());
+            assert!(waterfall.find_candidates().iter().any(|&(_, to, ts, fsb, fo)|
+                (to, ts, fsb, fo) == (start, 0, 0, 20)), "start={start}");
+        }
+    }
+
+    // Field vectors independently transcribed from ft8_lib's message.c pack28/unpack28
+    // protocol mapping: https://github.com/kgoba/ft8_lib/blob/master/ft8/message.c.
+    // 10_214_965 is the mixed-radix token for " K1ABC"; CQ letters use space+A..Z.
+    fn protocol_payload(to: u32, from: u32, suffix_to: bool, suffix_from: bool, kind: u8) -> [u8; 77] {
+        let mut payload = [0; 77];
+        for (offset, word) in [(0, to * 2 + u32::from(suffix_to)),
+                               (29, from * 2 + u32::from(suffix_from))] {
+            for bit in 0..29 {
+                payload[offset + bit] = ((word >> (28 - bit)) & 1) as u8;
+            }
+        }
+        // Field 32401 means no locator/report. The R bit is independent of suffix bits.
+        for bit in 0..15 { payload[59 + bit] = ((32_401_u16 >> (14 - bit)) & 1) as u8; }
+        payload[74] = kind >> 2;
+        payload[75] = (kind >> 1) & 1;
+        payload[76] = kind & 1;
+        payload
+    }
+
+    #[test]
+    fn protocol_message_vectors_preserve_cq_modifiers_and_reject_reserved_tokens() {
+        for (token, text) in [
+            (0, "DE"), (1, "QRZ"), (2, "CQ"), (3, "CQ 000"), (1_002, "CQ 999"),
+            (1_004, "CQ A"), (1_135, "CQ DX"), (22_229, "CQ ABCD"), (532_443, "CQ ZZZZ"),
+        ] {
+            let payload = protocol_payload(token, 10_214_965, false, false, 1);
+            assert_eq!(unpack_message(&payload), Some(format!("{text} K1ABC")), "token {token}");
+        }
+        for token in [532_444, NTOKENS - 1] {
+            for (to, from) in [(token, 10_214_965), (2, token)] {
+                assert_eq!(unpack_message(&protocol_payload(to, from, false, false, 1)), None,
+                    "reserved token {token}");
+            }
+        }
+    }
+
+    #[test]
+    fn protocol_message_vectors_preserve_each_callsign_suffix() {
+        for (kind, suffix) in [(1, "/R"), (2, "/P")] {
+            for (suffix_to, suffix_from) in [(false, false), (true, false), (false, true), (true, true)] {
+                let payload = protocol_payload(10_214_965, 10_214_965, suffix_to, suffix_from, kind);
+                let expected = format!("K1ABC{} K1ABC{}",
+                    if suffix_to { suffix } else { "" }, if suffix_from { suffix } else { "" });
+                assert_eq!(unpack_message(&payload), Some(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn protocol_message_vectors_restore_special_callsign_prefixes() {
+        // FT8 packs 3DA0XYZ as 3D0XYZ and 3XA0XYZ as QA0XYZ to fit the standard field.
+        for (token, text) in [(37_178_403, "3DA0XYZ"), (199_563_153, "3XA0XYZ")] {
+            let payload = protocol_payload(2, token, false, false, 1);
+            assert_eq!(unpack_message(&payload), Some(format!("CQ {text}")));
+        }
     }
 
     #[test]

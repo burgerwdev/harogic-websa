@@ -114,7 +114,7 @@ impl Fft {
 /// Bluestein (chirp-z) DFT for an arbitrary size `n`, computed with a power-of-two `Fft` of size
 /// `m = next_pow2(2n-1)`.
 ///
-/// The FT8 waterfall needs an FFT whose size is `block * freq_osr` (e.g. 7680 * 2 = 15360 at
+/// The FT8 waterfall needs an FFT whose size is `block * freq_osr` (e.g. 7680 * 4 = 30720 at
 /// 48 kHz), which is not a power of two but whose bin spacing must match the 6.25 Hz tone grid
 /// *exactly* — zero-padding to the next power of two and rounding to a bin was tried and lost the
 /// weak-signal margin. The kernel's FFT is precomputed once, so one transform is two FFTs plus two

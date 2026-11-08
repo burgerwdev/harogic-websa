@@ -34,6 +34,12 @@ export function percentileApprox(values: ArrayLike<number>, quantile: number): n
  */
 export function plausibleSpectrum(spec: ArrayLike<number>): boolean {
   if (spec.length < 8) return false;
+  // Empty histogram percentiles use the display floor, which is not a measurement.
+  let observed = false;
+  for (let i = 0; i < spec.length; i++) {
+    if (Number.isFinite(spec[i])) { observed = true; break; }
+  }
+  if (!observed) return false;
   const floor = percentileApprox(spec, 0.3);
   const bulk = percentileApprox(spec, 0.9);
   // A valid trace has a low noise floor and only a minority of bins near full scale;

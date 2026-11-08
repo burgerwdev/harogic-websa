@@ -1,0 +1,16 @@
+Repository: https://github.com/ggerganov/ggmorse
+Revision: 7b4822a8cfdbb1addfe497f3ae8186f142a4ee79
+License: MIT; original LICENSE and source attribution are retained.
+
+Local delta:
+- src/ggmorse.cpp grows waveformTmp (bytes) and waveformResampled (samples)
+  to the actual input request before calling the capture callback. The original
+  4,224-sample buffers were too small for supported 144-192 kHz PCM, including
+  the 6,144 samples requested at 192 kHz. Filtering, resampling, analysis frame
+  sizes and decoded sample timing are unchanged.
+- The project's backend/native/ggmorse_bridge.cpp accepts only the same
+  8-192 kHz input range as its safe Rust owner. That owner supplies at most
+  100 ms per call. The bridge is project code, separate from these upstream sources.
+
+Regression: tests/test_cw_bridge_bounds.py compiles the actual bridge and these
+sources under ASan; backend/src/cw.rs retains decoding, noise and timing tests.

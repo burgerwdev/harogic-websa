@@ -186,7 +186,7 @@ def transmit(args: argparse.Namespace) -> int:
             sent = 0
             while args.slots == 0 or sent < args.slots:
                 start = time.time()
-                stop = start + SLOT_SECONDS - len(tones) * SYMBOL_SECONDS
+                stop = start + SLOT_SECONDS
                 begin = time.strftime('%H:%M:%S', time.gmtime(start))
                 finish = time.strftime('%H:%M:%S', time.gmtime(start + len(tones) * SYMBOL_SECONDS))
                 print(f'  slot {sent + 1:3d}  burst {begin} -> {finish} UTC '

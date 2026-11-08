@@ -5,7 +5,9 @@ use serde_json::value::RawValue;
 use std::collections::{BTreeMap, VecDeque};
 
 const AUDIO_HEADER_BYTES: usize = 96;
-const MAX_IDENTITIES: usize = 3;
+// Aggregate decode subscriptions carry every enabled channel. Evicting a live
+// cursor synthesizes a duplicate start for that identity and breaks the client.
+const MAX_IDENTITIES: usize = super::MAX_CHANNELS;
 type Identity = (u32, u32);
 
 #[derive(Default)]
@@ -14,6 +16,43 @@ pub(super) struct SubscriberStream {
     audio_order: VecDeque<Identity>,
     decode: BTreeMap<Identity, DecodeCursor>,
     decode_order: VecDeque<Identity>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(channel:u32,id:u32,seq:u32)->Message {
+        let value=serde_json::json!({"channel":channel,"channel_id":id,"epoch":1,"seq":seq,
+            "event":{"type":if seq==0 {"start"} else {"ft8"}}});
+        Message::Binary(websa_channelizer::encode_decode_event(&serde_json::to_vec(&value).unwrap()).unwrap().into())
+    }
+
+    #[test]
+    fn eight_decode_channels_keep_cursors_across_interleaving_and_other_retunes() {
+        let mut subscriber=SubscriberStream::default();
+        for channel in 1..=super::super::MAX_CHANNELS as u32 {
+            assert_eq!(subscriber.frames(event(channel,channel,0)).unwrap().len(),1);
+        }
+        // The fourth channel used to evict C1 and inject a duplicate start into
+        // a perfectly healthy aggregate decode subscription.
+        for seq in 1..=3 {
+            for channel in 1..=super::super::MAX_CHANNELS as u32 {
+                let frames=subscriber.frames(event(channel,channel,seq)).unwrap();
+                assert_eq!(frames.len(),1,"C{channel} must not receive a second start");
+                let Message::Binary(bytes)=&frames[0] else {panic!("decode frame")};
+                let envelope:serde_json::Value=serde_json::from_slice(&bytes[8..]).unwrap();
+                assert_eq!(envelope["seq"],seq);
+            }
+        }
+        // A quiet channel must survive arbitrarily many retunes of its neighbor.
+        for id in 100..132 {subscriber.frames(event(1,id,0)).unwrap();}
+        for channel in 2..=super::super::MAX_CHANNELS as u32 {
+            assert_eq!(subscriber.frames(event(channel,channel,4)).unwrap().len(),1);
+        }
+        assert_eq!(subscriber.decode.len(),super::super::MAX_CHANNELS);
+        assert!(subscriber.frames(event(2,2,6)).is_err(),"real loss must remain an error");
+    }
 }
 
 struct SequenceCursor {

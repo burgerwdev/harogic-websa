@@ -4,8 +4,8 @@
 #     python3 tools/pluto/pluto_drm_tx.py --iq drm_iq.wav --lo 400e6
 #
 # Generate a mode B, 10 kHz signal with 64-QAM MSC and mono xHE-AAC audio for
-# native receiver bench checks. Run the generator from the DecDRM checkout
-# (see the DRM bench section of docs/en/ARCHITECTURE.md).
+# native receiver bench checks. Run from this repository with the external
+# DecDRM executable on PATH (see docs/en/reference/DRM.md).
 
 [channel]
 mode = "B"
@@ -32,7 +32,7 @@ iso_country = "gb"
 programme_type = "Pop Music"
 
 [service.audio]
-codec = "xhe-aac"             # xHE-AAC (MPEG-D USAC): the coding the libxaac wasm decoder handles.
+codec = "xhe-aac"             # MPEG-D USAC; distinct from the committed HE-AAC capture.
 stereo = false
 text = ["DRM bench loop", "SAN-90 + PlutoSDR"]
 

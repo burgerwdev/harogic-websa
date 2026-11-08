@@ -23,9 +23,12 @@ import { getDisplayRef, noteDisplayRefReport, setDisplayRef } from '../ui/displa
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { commitLevelOffset, rejectManualRef } from '../ui/panels/refAmp';
 import { confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession } from '../ui/sdrTuneRequest';
-import { sdrListenHz } from '../ui/sdrState';
+import { sdrDemod, sdrIfbw, sdrListenHz, sdrLocateMode } from '../ui/sdrState';
+import { spectrumFreqAtX } from '../ui/spectrumZoomGestures';
+import { locateTargetAt } from '../ui/sdrLocate';
+import { filterGeometry } from '../ui/sdrFilterGesture';
 import { __testSeedCapture, getCapture, getView, setView, setCapture } from '../ui/spectrumViewport';
-import { getY } from '../render/plot';
+import { getX, getY } from '../render/plot';
 import {
 	IDLE_COMMIT_MS,
 	axisBandAt,
@@ -102,6 +105,33 @@ describe('the axis bands', () => {
 });
 
 describe('dragging the frequency axis', () => {
+	it('uses the preview axis for tune clicks, locate and filter handles while a zoomed pan settles', () => {
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">16</option></select>';
+		graphMode.confirm('sdr');
+		S.setSdrMode(true);
+		const center = 9_810_000, span = 3_125_000;
+		const capture = { lo: center - span / 2, hi: center + span / 2 };
+		sweptFrame(capture.lo, capture.hi);
+		S.setRtaData({ freq: S.freqArray, startHz: capture.lo, stopHz: capture.hi });
+		__testSeedCapture(capture);
+		setView({ lo: center - 200_000, hi: center + 200_000 }, 1);
+		sdrListenHz.confirm(center);
+		sdrDemod.confirm('am');
+		sdrIfbw.confirm(12_000);
+		sdrLocateMode.set('free');
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		axisDragEnd();
+		const dialX = getX(0.5, 2);
+		expect(dialX).toBe(490);
+		expect(spectrumFreqAtX(dialX)).toBe(center);
+		expect(locateTargetAt(dialX, 200, 1)?.targetHz).toBe(center);
+		const filter = filterGeometry()!;
+		expect(filter.dialX).toBe(dialX);
+		expect(filter.lowX).toBe(dialX - 12);
+		expect(filter.highX).toBe(dialX + 12);
+	});
+
 	it.each(['std', 'rta', 'sdr'] as const)('preserves the zoom scale and capture bandwidth during a %s pan', mode => {
 		graphMode.confirm(mode);
 		S.setRtaData({ freq: new Float64Array([100e6, 200e6]), startHz: 100e6, stopHz: 200e6 });

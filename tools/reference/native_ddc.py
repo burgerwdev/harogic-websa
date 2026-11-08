@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import ctypes as C
+import math
+import operator
 
 import numpy as np
 
-from .ddc import DdcChannel
+from .ddc import MAX_DDC_POINTS, DdcChannel, validate_input_geometry
 
 
 class NativeDdcChannel(DdcChannel):
@@ -21,6 +23,7 @@ class NativeDdcChannel(DdcChannel):
                                              C.POINTER(C.c_float), C.c_int]
         self.lib.channel_process.restype = C.c_int
         self.lib.channel_close.argtypes = [C.c_void_p]
+        self.lib.channel_close.restype = None
         self.lib.channel_quantum.argtypes = [C.c_double]
         self.lib.channel_quantum.restype = C.c_int
         self.lib.channel_select_decimate.argtypes = [C.c_double, C.c_int]
@@ -54,11 +57,16 @@ class NativeDdcChannel(DdcChannel):
             self.lib.channel_close(self.handle)
             self.handle = None
         self._ready = False
+        self._output = None
 
     def configure(self, fs_in, offset_hz, decimate, sample_points,
                   ratio_up=1, ratio_down=1, passband_hz=0.0):
         self.close()
-        self._ready = False
+        decimate, sample_points = validate_input_geometry(fs_in, offset_hz, decimate, sample_points)
+        ratio_up, ratio_down = operator.index(ratio_up), operator.index(ratio_down)
+        if (not 1 <= ratio_up <= 2**32 - 1 or not 1 <= ratio_down <= 2**32 - 1
+                or not math.isfinite(passband_hz) or passband_hz < 0):
+            raise ValueError('Native DDC invalid ratio or passband')
         if fs_in < 31250000.0:
             self.ratio_up = self.ratio_down = 1
             self.passband_hz = 0.0
@@ -79,13 +87,29 @@ class NativeDdcChannel(DdcChannel):
         self.sample_points = int(sample_points)
         self.fs_out = self.lib.channel_output_rate(handle)
         delay = self.lib.channel_delay(handle)
-        if self.fs_out <= 0 or delay < 0:
+        # The integer FIR can carry a partial decimation phase into this
+        # packet. Size the rational output for that complete extra frame,
+        # rather than applying the average final rate to the input length.
+        base_frames = (sample_points + decimate - 1) // decimate
+        output_size = base_frames * self.fs_out / (fs_in / decimate)
+        if (not math.isfinite(self.fs_out) or self.fs_out <= 0
+                or not math.isfinite(delay) or not 0 <= delay <= MAX_DDC_POINTS
+                or not math.isfinite(output_size) or not 0 < output_size <= MAX_DDC_POINTS - 2):
             self.close()
             raise RuntimeError('Native DDC returned invalid geometry')
-        self.out_points = sample_points // decimate + 2
+        # channel_process also retains its integer-stage ABI minimum, even
+        # when the rational stage subsequently reduces the output count.
+        self.out_points = max(sample_points // decimate + 2, math.ceil(output_size) + 2)
+        if self.out_points > MAX_DDC_POINTS:
+            self.close()
+            raise RuntimeError('Native DDC returned invalid geometry')
         self.delay = float(delay)
         self._drop_pending = round(delay)
-        self._output = np.empty(self.out_points * 2, np.float32)
+        try:
+            self._output = np.empty(self.out_points * 2, np.float32)
+        except Exception:
+            self.close()
+            raise
         self._ready = True
 
     def process(self, int16_buf, n=None):

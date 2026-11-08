@@ -200,7 +200,7 @@ def station_group(pi: int, pty: int, ps: str, texts: list[str], hold_passes: int
     if pattern[position] == GROUP_RT:
         text_index = (pass_index // hold_passes) % len(texts)
         codes = text_codes(texts[text_index])
-        flag = (text_index % 2) if ab_toggle else 0
+        flag = ((pass_index // hold_passes) % 2) if ab_toggle and len(texts) > 1 else 0
         return group_2a(pi, pty, position, codes[4 * position:4 * position + 4], flag, tp)
     slot = position - RT_SEGMENTS
     if slot == 0 and clock is not None and clock.is_new_minute(pass_index):
@@ -299,15 +299,16 @@ def symbol(tau: np.ndarray) -> np.ndarray:
 def baseband(t: np.ndarray, bits: np.ndarray, first_bit: int = 0) -> np.ndarray:
     """The RDS baseband at the sample times `t`, in +-1.
 
-    The symbols overlap over three bit periods, so a sample is the sum of the bit
-    under it and its two neighbours. A 1 adds the symbol and a 0 subtracts it.
+    The support spans -1.25..1.75 bit periods. Depending on sample phase, the
+    contributing neighbours include the second future bit. A 1 adds the symbol
+    and a 0 subtracts it.
     `bits[0]` is the global bit `first_bit`. A live transmission never wraps, so
-    `bits` holds one bit of overlap on each side of the chunk.
+    `bits` holds one previous and two future bits around the chunk.
     """
     index = np.floor(t * SYMBOL_RATE).astype(np.int64) - first_bit
     frac = t * SYMBOL_RATE - np.floor(t * SYMBOL_RATE)
     out = np.zeros(t.shape)
-    for offset in (-1, 0, 1):
+    for offset in (-1, 0, 1, 2):
         bit = bits[np.clip(index + offset, 0, bits.size - 1)]
         out += np.where(bit == 1, 1.0, -1.0) * symbol(frac - offset)
     return out
@@ -375,7 +376,7 @@ def station_wave(t: np.ndarray, stream: StationStream, level: float = 1.0) -> np
     the usual injection.
     """
     first = int(np.floor(t[0] * SYMBOL_RATE)) - 1 if t.size else 0
-    last = int(np.floor(t[-1] * SYMBOL_RATE)) + 1
+    last = int(np.floor(t[-1] * SYMBOL_RATE)) + 2
     bits, bits_first = stream.transmitted(first, last)
     return level * baseband(t, bits, bits_first) * np.cos(2.0 * np.pi * SUBCARRIER_HZ * t)
 

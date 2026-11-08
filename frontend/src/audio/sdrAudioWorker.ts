@@ -1,5 +1,7 @@
+import { AUDIO_QUEUE_SECONDS } from '../sdr/streamLimits';
 // One worker owns one backend audio subscription and its playback port.
 import { StreamingFloatResampler } from './sdrResampler';
+import { receiverEndReason, StreamRetry } from '../sdr/streamRetry';
 
 interface Fraction { num: bigint; den: bigint }
 interface Identity {
@@ -13,6 +15,9 @@ let targetRate = 48000;
 let enabled = false;
 let muted = false;
 let failed = false;
+let reconnect = false;
+let retry: ReturnType<typeof setTimeout> | null = null;
+let recovery = new StreamRetry();
 let identity: Identity | null = null;
 let identityHighWater: { epoch: number; channel: number } | null = null;
 let playbackMode = 'default';
@@ -33,8 +38,6 @@ let sentFrames = 0;
 let sinkLimit = 0;
 const resampler = new StreamingFloatResampler();
 let packets = 0;
-let rms = 0;
-const MAX_QUEUE_SECONDS = 3;
 function post(message: Record<string, unknown>, transfer: Transferable[] = []): void {
   // DOM declares the Window overload; workers accept a transfer list as the second argument.
   const scope = self as unknown as { postMessage: (m: unknown, t: Transferable[]) => void };
@@ -70,11 +73,13 @@ function flush(): void {
   sentFrames = 0;
   sinkLimit = 0;
   generation++;
+  post({ type: 'meter-reset', generation });
   output({ type: 'reset', generation, playbackMode, stereo: identity?.channels === 2 });
 }
 function fail(reason: string): void {
   if (failed) return;
   failed = true;
+  cancelRetry();
   const previous = socket;
   socket = null;
   previous?.close(1000, 'Audio stream rejected');
@@ -82,7 +87,23 @@ function fail(reason: string): void {
   output({ type: 'enabled', value: false });
   post({ type: 'error', message: reason });
 }
+function cancelRetry(): void {
+  if (retry !== null) clearTimeout(retry);
+  retry = null;
+}
+function disconnected(delay: number): void {
+  // A transport gap is a new subscription boundary, never continuous PCM.
+  flush(); identity = null; modeBoundaryPending = false;
+  output({ type: 'enabled', value: false });
+  post({ type: 'connection', state: 'reconnecting' });
+  cancelRetry();
+  retry = setTimeout(() => { retry = null; connect(); }, delay);
+}
 function acceptStatus(data: Record<string, unknown>): void {
+  if (data.type === 'meter') {
+    if (data.generation === generation && identity) post(data);
+    return;
+  }
   if (data.type === 'credit') {
     if (data.generation === generation && typeof data.limit === 'number' && Number.isSafeInteger(data.limit) && data.limit >= 0) {
       sinkLimit = data.limit;
@@ -97,7 +118,7 @@ function acceptStatus(data: Record<string, unknown>): void {
     fail(String(data.message || 'Audio playback consumer failed'));
   } else if ((data.type === 'status' || data.type === 'gate-transition') && data.generation === generation && identity) {
     const channels = identity.channels;
-    post({ ...data, type: 'stats', frames: packets, rms, bufferedSamples: Number(data.available) / channels,
+    post({ ...data, type: 'stats', frames: packets, bufferedSamples: Number(data.available) / channels,
       streamKey: `${identity.epoch}:${identity.channel}`, inputIndex: (previousSource.num / previousSource.den).toString(), audioIndex: audioIndex.toString(),
       totalDelayUnknown: Boolean(identity.flags & 0x10000), causalPresentation: Boolean(identity.flags & 0x20000) });
   }
@@ -105,7 +126,7 @@ function acceptStatus(data: Record<string, unknown>): void {
 function deliver(samples: Float32Array, channels: number): void {
   const frames = samples.length / channels;
   if (frames === 0) return;
-  if (pending + frames > targetRate * MAX_QUEUE_SECONDS) {
+  if (pending + frames > targetRate * AUDIO_QUEUE_SECONDS) {
     fail('Audio consumer is too slow: delivery queue exceeded three seconds');
     return;
   }
@@ -182,6 +203,8 @@ function receive(buffer: ArrayBuffer): void {
     post({ type: 'identity', channelId: next.channel, epoch: next.epoch, streamKey: `${next.epoch}:${next.channel}`,
       inputIndex: inputIndex.toString(), audioIndex: index.toString(), delaySeconds: next.delay,
       totalDelayUnknown: Boolean(next.flags & 0x10000), causalPresentation: Boolean(next.flags & 0x20000) });
+    post({ type: 'connection', state: 'connected' });
+    output({ type: 'enabled', value: enabled });
     return;
   }
   if (!identity || identity.channel !== next.channel || identity.epoch !== next.epoch
@@ -189,7 +212,7 @@ function receive(buffer: ArrayBuffer): void {
     || identity.tuned !== next.tuned) {
     throw new Error('AUD2 identity or geometry changed without a boundary');
   }
-  if (frames === 0 || frames > next.rate * MAX_QUEUE_SECONDS || sequence === 0xffffffff || seq !== sequence + 1) {
+  if (frames === 0 || frames > next.rate * AUDIO_QUEUE_SECONDS || sequence === 0xffffffff || seq !== sequence + 1) {
     throw new Error('AUD2 sequence gap or invalid frame count');
   }
   const causal = Boolean(next.flags & 0x20000);
@@ -199,24 +222,22 @@ function receive(buffer: ArrayBuffer): void {
     throw new Error('AUD2 source or audio index discontinuity');
   }
   const samples = new Float32Array(frames * next.channels);
-  let sum = 0;
   for (let i = 0; i < samples.length; i++) {
     const sample = view.getFloat32(96 + i * 4, true);
     if (!Number.isFinite(sample)) throw new Error('Non-finite AUD2 PCM sample');
     samples[i] = sample;
-    sum += sample * sample;
   }
   sequence = seq;
+  recovery.progress();
   audioIndex += BigInt(frames);
   previousSource = position;
   source = fraction(position.num * sourceStep.den + BigInt(frames) * sourceStep.num * position.den, position.den * sourceStep.den);
   identity = next;
-  rms = Math.sqrt(sum / samples.length);
   packets++;
   if (enabled && !muted && !modeBoundaryPending) {
     deliver(resampler.process(samples, next.channels, next.rate, targetRate), next.channels);
   }
-  if (packets % 25 === 0) post({ type: 'stats', frames: packets, rms, totalDelayUnknown: Boolean(next.flags & 0x10000),
+  if (packets % 25 === 0) post({ type: 'stats', frames: packets, totalDelayUnknown: Boolean(next.flags & 0x10000),
     causalPresentation: causal, delaySeconds: next.delay, inputIndex: inputIndex.toString(), audioIndex: index.toString() });
 }
 function connect(): void {
@@ -233,10 +254,24 @@ function connect(): void {
       receive(event.data);
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   };
-  current.onerror = () => { if (socket === current) fail('Backend audio connection failed'); };
+  // onclose carries the reason needed to distinguish transport loss from a
+  // receiver, protocol or slow-consumer failure. Browsers close after onerror.
+  current.onerror = () => { if (socket === current && !reconnect) fail('Backend audio connection failed'); };
   current.onclose = (event) => {
-    if (socket === current) fail(event.code === 1011 && event.reason === 'receiver failed'
-      ? 'Backend audio receiver failed' : 'Backend audio connection closed');
+    if (socket !== current) return;
+    socket = null;
+    const reason = receiverEndReason(event.code, event.reason);
+    if (reason !== null) {
+      cancelRetry(); enabled = false;
+      flush(); identity = null; modeBoundaryPending = false;
+      output({ type: 'enabled', value: false });
+      post({ type: 'ended', reason });
+      return;
+    }
+    const delay = reconnect && enabled && !failed ? recovery.delay(event.code, event.reason) : null;
+    if (delay !== null) { disconnected(delay); return; }
+    fail(event.code === 1011 && event.reason === 'receiver failed'
+      ? 'Backend audio receiver failed' : `Backend audio connection closed (${event.code}): ${event.reason}`);
   };
 }
 self.onmessage = (event: MessageEvent) => {
@@ -244,6 +279,7 @@ self.onmessage = (event: MessageEvent) => {
   if (message.type === 'init') {
     if (url) { fail('Audio worker initialized more than once'); return; }
     url = String(message.url || '');
+    reconnect = message.reconnect === true;
     receiverMode = String(message.mode || 'default');
     playbackMode = message.mode === 'drm' || message.mode === 'drmplus' ? 'drm' : 'default';
     targetRate = Number(message.targetRate);
@@ -269,13 +305,14 @@ self.onmessage = (event: MessageEvent) => {
   } else if (message.type === 'enabled') {
     enabled = Boolean(message.value);
     if (!enabled) {
+      cancelRetry(); recovery = new StreamRetry();
       const previous = socket;
       socket = null;
       previous?.close();
       identity = null;
       modeBoundaryPending = false;
       flush();
-    } else if (!socket) { failed = false; connect(); }
+    } else if (!socket && retry === null) { failed = false; connect(); }
     output({ type: 'enabled', value: enabled && !failed });
   } else if (message.type === 'mute') {
     const nextMuted = Boolean(message.value);

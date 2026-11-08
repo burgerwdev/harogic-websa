@@ -247,20 +247,20 @@ describe('commit discipline', () => {
 });
 
 describe('premise snapshots', () => {
-	it('mode, pitch, filter and grid changes each demote to raw', () => {
-		for (const change of [
-			() => sdrDemod.set('nfm'),
-			() => sdrPitchHz.set(800),
-			() => sdrIfbw.set(9000),
-			() => sdrChannelStepHz.set(12_500),
-			() => sdrChannelAnchorHz.set(1000),
-			() => sdrListenHz.set(140_000),
-			() => sdrLocateMode.set('channel'),
-		] as (() => void)[]) {
-			beginSdrLocateClick(MID_X, MID_Y, 1);
-			change();
-			expect(commitSdrLocateClick(131_500)).toBe(131_500);
-		}
+	it.each([
+		['mode', () => sdrDemod.set('nfm')],
+		['pitch', () => sdrPitchHz.set(800)],
+		['filter', () => sdrIfbw.set(9000)],
+		['grid spacing', () => sdrChannelStepHz.set(12_500)],
+		['grid anchor', () => sdrChannelAnchorHz.set(1000)],
+		['listen frequency', () => sdrListenHz.set(140_000)],
+		['locate mode', () => sdrLocateMode.set('free')],
+	] as const)('%s changes demote a distinct frozen candidate to raw', (_name, change) => {
+		sdrLocateMode.set('channel');
+		expect(locateTargetAt(MID_X, MID_Y, 1)?.targetHz).toBe(125_000);
+		expect(beginSdrLocateClick(MID_X, MID_Y, 1)).toBe(true);
+		change();
+		expect(commitSdrLocateClick(131_500)).toBe(131_500);
 	});
 
 	it.each([1000, 5000])('expires a frozen signal with %i Hz bins instead of submitting its old carrier', (step) => {

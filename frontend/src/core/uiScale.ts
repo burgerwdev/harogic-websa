@@ -58,6 +58,15 @@ export function initialScale(stored: string | null, height = window.innerHeight)
   return parseStoredScale(stored) ?? autoScale(height);
 }
 
+/** Responsive layout uses the CSS space inside the zoomed frame. */
+function syncLayout(): void {
+  const root = document.documentElement;
+  const width = window.innerWidth / current, height = window.innerHeight / current;
+  root.classList.toggle('ui-stacked', width <= 1000);
+  root.classList.toggle('ui-narrow', width <= 700);
+  root.classList.toggle('ui-short', height <= 560);
+}
+
 export function setUiScale(scale: number) {
   current = scale;
   const root = document.documentElement;
@@ -65,30 +74,33 @@ export function setUiScale(scale: number) {
   // Read by the e2e/harness and the store's own tests; the CSS variable alone would be
   // invisible to a screenshot-based check.
   root.dataset.uiScale = String(scale);
+  syncLayout();
   listeners.forEach((fn) => fn(scale));
 }
 
 export function onUiScaleChange(fn: (scale: number) => void) {
   listeners.add(fn);
+  return () => { listeners.delete(fn); };
 }
 
 /** Apply a scale and remember it. `UI_SCALE_AUTO` forgets the override instead. */
 export function chooseUiScale(value: string): number {
-  if (value === UI_SCALE_AUTO) {
-    localStorage.removeItem(UI_SCALE_KEY);
-    const scale = autoScale();
-    setUiScale(scale);
-    return scale;
-  }
-  const scale = parseStoredScale(value) ?? autoScale();
-  localStorage.setItem(UI_SCALE_KEY, String(scale));
+  const scale = value === UI_SCALE_AUTO ? autoScale() : parseStoredScale(value) ?? autoScale();
+  try {
+    if (value === UI_SCALE_AUTO) localStorage.removeItem(UI_SCALE_KEY);
+    else localStorage.setItem(UI_SCALE_KEY, String(scale));
+  } catch { /* The chosen scale still applies to this page. */ }
   setUiScale(scale);
   return scale;
 }
 
 /** Initialise from localStorage (auto when absent) and bind the footer scale control. */
 let uiScaleBinding: AbortController | null = null;
-export function initUiScale(saved: string | null = localStorage.getItem(UI_SCALE_KEY)): number {
+export function initUiScale(saved?: string | null): number {
+  if (saved === undefined) {
+    try { saved = localStorage.getItem(UI_SCALE_KEY); }
+    catch { saved = null; }
+  }
   const scale = initialScale(saved);
   setUiScale(scale);
   const shown = saved !== null && parseStoredScale(saved) !== null ? String(scale) : UI_SCALE_AUTO;
@@ -96,6 +108,7 @@ export function initUiScale(saved: string | null = localStorage.getItem(UI_SCALE
   uiScaleBinding?.abort();
   uiScaleBinding = new AbortController();
   const signal = uiScaleBinding.signal;
+  window.addEventListener('resize', syncLayout, { signal });
   const select = document.querySelector<HTMLSelectElement>('#ui-scale');
   if (select) {
     select.value = shown;

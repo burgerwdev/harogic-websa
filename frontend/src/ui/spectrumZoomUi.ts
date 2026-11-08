@@ -25,15 +25,17 @@ import { fmtAxisLevel } from '../core/level';
 import { displayUnit } from './displayState';
 import { clearDisplayBounds, displayBoundsMax, displayBoundsMin, getDisplayRange, getDisplayTop, hasDisplayBounds, setDisplayBounds } from './displayRef';
 import { syncControlRailZoom } from './controlRail';
-import { cancelLevelPreview, previewCaptureWindow, previewFreqWindow } from './axisDrag';
+import { cancelLevelPreview, previewCaptureWindow, previewFreqWindow, syncFrequencyPreviewView } from './axisDrag';
 import {
 	DETAIL_HINT_SAMPLES,
+	cancelReceiverFocus,
 	isZoomed,
 	getCapture,
 	getView,
 	minSpanHz,
 	samplesInView,
 	setView,
+	slideViewTo,
 	clampView,
 	panToCenter,
 	viewportVersion,
@@ -53,7 +55,7 @@ function railInput(key: string): HTMLInputElement | null {
 
 function syncZoomRail(on: boolean): void {
 	syncControlRailZoom(on);
-	const capture = getCapture(), view = getView();
+	const capture = previewCaptureWindow() ?? getCapture(), view = previewFreqWindow() ?? getView();
 	const ready = on && !!capture && !!view;
 	const horizontal = railInput('horizontal');
 	if (horizontal) {
@@ -105,6 +107,7 @@ function initZoomRail(): void {
 				// Equal slider steps multiply zoom; the current centre stays fixed until an edge clamps it.
 				const span = fullSpan / Math.pow(fullSpan / min, value / 1000);
 				setView(zoomAround(view, span / (view.hi - view.lo), (view.lo + view.hi) / 2, capture, min), min);
+				syncFrequencyPreviewView();
 			} else {
 				cancelLevelPreview();
 				const top = getDisplayTop(), bottom = top - getDisplayRange();
@@ -216,7 +219,7 @@ export function toggleSpectrumZoom(): void {
 	const next = !zoomEnabled.get();
 	zoomEnabled.set(next);
 	// Off always returns to the full window (design §3); On keeps whatever comes next.
-	if (!next) { setView(null); clearDisplayBounds(); }
+	if (!next) { setView(null); syncFrequencyPreviewView(); clearDisplayBounds(); }
 	syncSpectrumZoomUi(true);
 	requestRender();
 }
@@ -225,6 +228,7 @@ export function toggleSpectrumZoom(): void {
 export function resetSpectrumZoom(): void {
 	if (!isSpectrumZoomOn()) return;
 	setView(null);
+	syncFrequencyPreviewView();
 	clearDisplayBounds();
 	syncSpectrumZoomUi(true);
 	requestRender();
@@ -281,9 +285,9 @@ function applyOverviewDrag(canvas: HTMLCanvasElement, clientX: number): void {
 		const center = (view.lo + view.hi) / 2 + (f - ovDrag.lastHz);
 		setView(panToCenter(view, center, capture, min), min);
 	} else if (ovDrag.kind === 'lo') {
-		setView(clampView({ lo: f, hi: view.hi }, capture, min), min);
+		setView(clampView({ lo: Math.min(f, view.hi - min), hi: view.hi }, capture, min), min);
 	} else {
-		setView(clampView({ lo: view.lo, hi: f }, capture, min), min);
+		setView(clampView({ lo: view.lo, hi: Math.max(f, view.lo + min) }, capture, min), min);
 	}
 	ovDrag.lastHz = f;
 	syncSpectrumZoomUi();
@@ -297,6 +301,7 @@ function initOverviewInteractions(): void {
 		const capture = getCapture();
 		const view = getView();
 		if (!isSpectrumZoomOn() || !capture || !view) return;
+		cancelReceiverFocus();
 		const min = minSpanHz(S.freqArray);
 		const edge = overviewEdgeHit(canvas, e.clientX, view, capture);
 		if (edge) {
@@ -306,7 +311,7 @@ function initOverviewInteractions(): void {
 			if (f === null) return;
 			if (f < view.lo || f > view.hi) {
 				// A click outside the highlight recentres on that frequency, width kept.
-				setView(panToCenter(view, f, capture, min), min);
+				slideViewTo(panToCenter(view, f, capture, min), min);
 				syncSpectrumZoomUi();
 				requestRender();
 				return;

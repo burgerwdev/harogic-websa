@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use websa_channelizer::{
     control_channel, pfb_pool_close, pfb_pool_finish, pfb_pool_open_strategy, pfb_pool_stats,
     pfb_pool_submit, pfb_pool_take, BasebandFramer, ChannelAction, ChannelCommand, ControlRequest,
-    FineBank, FineChannel, FineSpec, PfbBenchPool, PfbStream, PoolResult, PoolStats, MAX_IN_FLIGHT,
+    FineBank, FineChannel, FineSpec, PfbBenchPool, PfbStream, PoolResult, PoolStats, MAX_IN_FLIGHT, TASK_CAPACITY,
 };
 
 const N: usize = 16240;
@@ -875,6 +875,31 @@ fn take(
     Ok(true)
 }
 
+fn submit_input(
+    pool: &mut Engine,
+    ready: &mut VecDeque<u64>,
+    delivery: &mut DeliveryStats,
+    seq: u64,
+    stamp: u64,
+    iq: &[i16],
+) -> Result<(), String> {
+    loop {
+        let status = pool.submit(seq, stamp, iq);
+        if status == 0 {
+            // Track only admitted packets; a -2 retry first releases old
+            // metadata together with its ordered output.
+            ready.push_back(stamp);
+            if ready.len() > MAX_IN_FLIGHT {
+                return Err("PFB metadata exceeded retained capacity".into());
+            }
+            return Ok(());
+        }
+        if status != -2 || !take(pool, ready, delivery)? {
+            return Err(format!("pfb_pool_submit status={status}"));
+        }
+    }
+}
+
 fn check_service_stopped() -> Result<(), String> {
     for entry in fs::read_dir("/proc").map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
@@ -907,6 +932,9 @@ fn parse_bins(spec: &str) -> Result<Vec<u32>, String> {
         let count = spec
             .parse::<u32>()
             .map_err(|_| "invalid output bin count".to_owned())?;
+        if !(1..=128).contains(&count) {
+            return Err("output bins must be 1..128 distinct indices in 0..128".into());
+        }
         (0..count).collect()
     };
     if bins.is_empty() || bins.len() > 128 || bins.iter().any(|&bin| bin >= 128) {
@@ -1069,7 +1097,7 @@ fn run(
         let mut first_stamp = 0u64;
         let mut gaps = 0;
         let mut backwards = 0;
-        let mut ready = VecDeque::with_capacity(3);
+        let mut ready = VecDeque::with_capacity(MAX_IN_FLIGHT);
         let mut start = None;
         let mut startup_s = 0.0;
         let mut first_host = None;
@@ -1124,19 +1152,9 @@ fn run(
                 frames += 1;
                 delivery.spectrum_frames = frames;
             }
-            ready.push_back(packet.stamp);
-            if ready.len() > 5 {
-                return Err("PFB metadata exceeded five entries".into());
-            }
-            loop {
-                let status = pool.submit(seq as u64, packet.stamp, &packet.iq);
-                if status == 0 {
-                    break;
-                }
-                if status != -2 || !take(&mut pool, &mut ready, &mut delivery)? {
-                    return Err(format!("pfb_pool_submit status={status}"));
-                }
-            }
+            submit_input(
+                &mut pool, &mut ready, &mut delivery, seq as u64, packet.stamp, &packet.iq,
+            )?;
             while take(&mut pool, &mut ready, &mut delivery)? {}
         }
         pool.finish()?;
@@ -1150,7 +1168,7 @@ fn run(
         if stats.submitted != target as u64
             || stats.completed != target as u64
             || stats.groups != delivery.groups
-            || stats.task_capacity != MAX_IN_FLIGHT as u32
+            || stats.task_capacity != TASK_CAPACITY as u32
             || stats.result_capacity != MAX_IN_FLIGHT as u32
             || stats.max_ready > MAX_IN_FLIGHT as u32
             || stats.max_pending > MAX_IN_FLIGHT as u32
@@ -1353,6 +1371,37 @@ mod tests {
             center_hz: FIXTURE_CENTER_HZ,
         }
     }
+
+    #[test]
+    fn input_metadata_tracks_admission_and_backpressure_without_failed_packets() {
+        let mut engine = Engine::new(Some(vec![0, 5, 127]), false, false, None).unwrap();
+        let mut ready = VecDeque::new();
+        let mut delivery = DeliveryStats::default();
+        let iq = vec![0; 2 * N];
+        let stamp = |seq: u64| 1000 + seq * (2 * N) as u64;
+        for seq in 0..3 {
+            submit_input(&mut engine, &mut ready, &mut delivery, seq, stamp(seq), &iq).unwrap();
+        }
+        let Engine::Output { stream, .. } = &mut engine else { unreachable!() };
+        stream.flush_pending().unwrap();
+        // The next admission must drain one older output and retry once,
+        // without registering the new input twice or losing its old prefix.
+        submit_input(&mut engine, &mut ready, &mut delivery, 3, stamp(3), &iq).unwrap();
+        assert_eq!(delivery.delivered, 1);
+        assert_eq!(ready, (1..4).map(stamp).collect::<VecDeque<_>>());
+        let before = ready.clone();
+        assert_eq!(submit_input(&mut engine, &mut ready, &mut delivery, 99, stamp(99), &iq),
+            Err("pfb_pool_submit status=-1".into()));
+        assert_eq!(ready, before, "rejected input cannot reserve an output clock entry");
+        assert_eq!(delivery.delivered, 1);
+        submit_input(&mut engine, &mut ready, &mut delivery, 4, stamp(4), &iq).unwrap();
+        assert!(ready.len() <= MAX_IN_FLIGHT);
+        engine.finish().unwrap();
+        while take(&mut engine, &mut ready, &mut delivery).unwrap() {}
+        assert_eq!(delivery.delivered, 5);
+        assert!(ready.is_empty());
+    }
+
     #[test]
     fn fixture_has_contiguous_clock_and_bounded_packets() {
         run(true, 0.02, None, false, false, None, None).unwrap();
@@ -1870,7 +1919,7 @@ mod tests {
     fn rejects_invalid_bin_lists_before_opening_device() {
         assert_eq!(parse_bins("4").unwrap(), vec![0, 1, 2, 3]);
         assert_eq!(parse_bins("127,5,0").unwrap(), vec![127, 5, 0]);
-        for invalid in ["", "0", "129", "0,0", "0,128", "1,", "-1", "1,x"] {
+        for invalid in ["", "0", "129", "4294967295", "0,0", "0,128", "1,", "-1", "1,x"] {
             assert!(parse_bins(invalid).is_err(), "{invalid}");
         }
     }

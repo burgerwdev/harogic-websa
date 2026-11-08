@@ -7,11 +7,12 @@ once:
   * the AD9363 TX sample-rate floor (521 kHz),
   * the DAC scale, because `tx()` casts to int16 with no scale,
   * the measured reference-crystal error (1.98 ppm on this unit),
-  * the cyclic-buffer transmit and the exit cleanup.
+  * cyclic transmission and persistent streaming-buffer setup and cleanup.
 
-A tool builds one complex64 buffer and uses `Radio`. The class opens the radio,
+A tool builds complex64 samples and uses `Radio`. The class opens the radio,
 applies the crystal trim, sets the LO, the rate and the gain, and restores the
-crystal on exit. The signal generator stays in the tool.
+crystal on exit. Streaming tools share queue priming and draining here; waveform
+generation, sample clocks and continuity deadlines stay in the mode tool.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import argparse
 import signal
 import sys
 import time
+from typing import NamedTuple
 
 #: libiio context URI of the bench Pluto.
 DEFAULT_URI = 'ip:192.168.2.1'
@@ -120,19 +122,38 @@ def add_radio_args(parser: argparse.ArgumentParser, *, default_lo: float,
     parser.add_argument('--dry-run', action='store_true', help=dry_run_help)
 
 
+class StreamStart(NamedTuple):
+    """Activation interval and sample counts after priming the hardware queue.
+
+    Sample zero starts within the activation call, whose host UTC interval is
+    [utc_start, utc_start + activation_seconds]. libiio1 retains the most recently
+    submitted block as writable until the next push, so queued_samples excludes
+    it. Both counts include only the zero samples submitted during priming.
+    """
+
+    monotonic_start: float
+    utc_start: float
+    activation_seconds: float
+    submitted_samples: int
+    queued_samples: int
+
+
 class Radio:
     """The open radio, with the crystal trim and the cleanup around it.
 
     Use it as a context manager. The sample rate can differ from the requested
     rate: the driver rejects some values. Read `radio.rate` after entry and
-    rebuild the signal when it differs.
+    rebuild the signal when it differs. Bench callers may preserve_rate to keep
+    the device's existing sampling clock and custom FIR configuration.
     """
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, *, preserve_rate: bool = False):
         self.args = args
         self.sdr = None
         self.rate = int(args.rate)
         self.xo_restore = None
+        self.tx_lo_restore = None
+        self.preserve_rate = preserve_rate
 
     def __enter__(self) -> Radio:
         import adi  # late, so --dry-run works without pyadi-iio
@@ -144,7 +165,10 @@ class Radio:
         except BaseException:
             # A refused LO used to abort with the crystal still trimmed, and the unit
             # stayed 1.98 ppm off until a reboot: the trim must come back out here.
-            self.restore_xo()
+            try:
+                self.restore_tx_lo()
+            finally:
+                self.restore_xo()
             raise
         return self
 
@@ -160,13 +184,34 @@ class Radio:
             self.sdr.tx_lo = lo
         except (OSError, ValueError) as exc:
             raise SystemExit(self.lo_refused_message(lo, exc)) from None
-        try:
-            self.sdr.sample_rate = int(self.args.rate)
-        except ValueError as exc:
-            print(f'note: radio rejected sample_rate={int(self.args.rate)} ({exc}); '
-                  f'keeping {int(self.sdr.sample_rate)} Hz', file=sys.stderr)
+        if not self.preserve_rate:
+            try:
+                self.sdr.sample_rate = int(self.args.rate)
+            except ValueError as exc:
+                print(f'note: radio rejected sample_rate={int(self.args.rate)} ({exc}); '
+                      f'keeping {int(self.sdr.sample_rate)} Hz', file=sys.stderr)
         self.rate = int(self.sdr.sample_rate)
         self.sdr.tx_hardwaregain_chan0 = float(self.args.gain)
+        # A prior application can leave the synthesizer powered down. DMA buffer
+        # success alone does not turn the RF LO back on.
+        find_channel = getattr(self.sdr._ctrl, 'find_channel', None)
+        channel = find_channel('altvoltage1', True) if find_channel else None
+        attrs = getattr(channel, 'attrs', {})
+        if 'powerdown' in attrs:
+            attr = attrs['powerdown']
+            previous = attr.value
+            if previous.strip() != '0':
+                self.tx_lo_restore = (attr, previous)
+                attr.value = '0'
+                print(f'TX LO powerdown: {previous} -> 0')
+
+    def restore_tx_lo(self) -> None:
+        """Restore the LO power state after destroying the transmit buffer."""
+        if self.tx_lo_restore is not None:
+            attr, previous = self.tx_lo_restore
+            self.tx_lo_restore = None
+            attr.value = previous
+            print(f'TX LO powerdown restored to {previous}')
 
     def lo_refused_message(self, lo: int, exc: Exception) -> str:
         """The message for an LO the driver refuses, with the range the unit reports."""
@@ -195,7 +240,10 @@ class Radio:
                 self.sdr.tx_destroy_buffer()
             except Exception:  # pragma: no cover - driver teardown is best effort
                 pass
-            self.restore_xo()
+            try:
+                self.restore_tx_lo()
+            finally:
+                self.restore_xo()
         print('TX stopped.')
         return False
 
@@ -231,9 +279,53 @@ class Radio:
                         f'--rds-rt-cycle-seconds, or --rds-buffer off.'
                     ) from None
 
-    def open_stream(self) -> None:
-        """Switch to chunked one-shot pushes."""
+    def open_stream(self, kernel_buffers: int | None = None) -> None:
+        """Switch to persistent one-shot pushes, optionally setting queue depth.
+
+        Omitting kernel_buffers preserves the backend's existing configuration.
+        Pass an explicit depth to use drain_stream after the final signal chunk.
+        """
+        import iio
+
+        self._stream_version1 = iio.version[0] >= 1
+        self._stream_buffers = kernel_buffers
+        if kernel_buffers is not None:
+            if not self._stream_version1:
+                self.sdr._txdac.set_kernel_buffers_count(kernel_buffers)
+            elif hasattr(self.sdr, '_tx_buffer_num_blocks'):
+                self.sdr._tx_buffer_num_blocks = kernel_buffers
+            else:
+                raise RuntimeError('pyadi libiio1 backend cannot configure streaming blocks')
         self.sdr.tx_cyclic_buffer = False
+
+    def prime_stream(self, zero, minimum_blocks: int = 1) -> StreamStart:
+        """Submit silence and measure the call that activates sample zero.
+
+        libiio1's first push only fills a writable block; its second enqueues it.
+        minimum_blocks counts submissions, including that pending writable block.
+        """
+        submitted = 0
+        if self._stream_version1:
+            self.push_chunk(zero)
+            submitted += 1
+        mono0, utc0 = time.monotonic(), time.time()
+        self.push_chunk(zero)
+        activation_seconds = time.monotonic() - mono0
+        submitted += 1
+        while submitted < minimum_blocks:
+            self.push_chunk(zero)
+            submitted += 1
+        queued = submitted - int(self._stream_version1)
+        return StreamStart(mono0, utc0, activation_seconds,
+                           submitted * zero.size, queued * zero.size)
+
+    def drain_stream(self, zero) -> None:
+        """Flush the configured DMA queue, including libiio1's pending block."""
+        if self._stream_buffers is None:
+            raise ValueError('drain_stream requires open_stream(kernel_buffers=...)')
+        for _ in range(self._stream_buffers + 2):
+            self.push_chunk(zero)
+        time.sleep(self._stream_buffers * zero.size / self.rate)
 
     def push_chunk(self, part) -> None:
         self.sdr.tx(part)

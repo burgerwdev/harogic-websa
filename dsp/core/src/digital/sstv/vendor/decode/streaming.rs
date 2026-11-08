@@ -3,8 +3,7 @@
 //! This module is this project's addition. The upstream pieces it drives — the demodulator, the
 //! header/sync search, the tone cutter — are already step-wise state machines; this module owns them
 //! across sample blocks, so each scanline leaves the decoder as soon as its sequence pass completes.
-//! Upstream files change visibility only, plus the documented `pull`/`read_available`/`pop`/`is_done`
-//! additions in `assembler`.
+//! The assembler also supports incremental reads, sync acquisition and tone classification.
 //!
 //! The sample source is a shared queue: the caller pushes decoded baseband in, and the decoder pulls
 //! from it within the same call. An empty queue means "no more yet", never "the stream ended" — the
@@ -93,8 +92,6 @@ struct RowBuilder {
     values: Vec<u8>,
     /// The finished scans of the current pass.
     scans: Vec<(Channel, Vec<u8>)>,
-    /// Rows of the current pass waiting to be handed out.
-    completed: VecDeque<Vec<RgbPixel>>,
     rows_left: usize,
 }
 
@@ -105,7 +102,6 @@ impl RowBuilder {
             step: 0,
             values: Vec::new(),
             scans: Vec::new(),
-            completed: VecDeque::new(),
             rows_left: mode.resolution().1 as usize,
         }
     }

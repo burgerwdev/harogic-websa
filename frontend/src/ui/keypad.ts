@@ -48,6 +48,11 @@ let replaced = false;           // the first key press replaces the previous val
 let unitText = '';              // what the display line shows as the unit
 let moved = false;              // the user dragged the pad: keep that spot
 
+/** The pad owns numeric entry even when its source input has been blurred. */
+export function isKeypadOpen(): boolean {
+  return target !== null;
+}
+
 function el<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
 }
@@ -357,6 +362,7 @@ function press(cls: string, label: string): void {
 /** Write the value into the field and let the existing commit paths do the rest. */
 function commit(chosenUnit: string): void {
   if (!target) return;
+  if (!target.isConnected || !isServed(target)) { close(); return; }
   const input = target;
   if (isTextField(input)) {
     // keep only what the field accepts, then tidy the separators
@@ -439,12 +445,14 @@ function syncToggle(): void {
 }
 
 export function initKeypad(): void {
-  enabled = localStorage.getItem(LS_KEY) === 'on';
+  try { enabled = localStorage.getItem(LS_KEY) === 'on'; }
+  catch { enabled = false; }
   const btn = el<HTMLButtonElement>('btn-keypad');
   btn?.addEventListener('click', (e) => {
     e.stopPropagation();
     enabled = !enabled;
-    localStorage.setItem(LS_KEY, enabled ? 'on' : 'off');
+    try { localStorage.setItem(LS_KEY, enabled ? 'on' : 'off'); }
+    catch { /* Preference storage is optional; keep the live toggle working. */ }
     if (!enabled) close();
     syncToggle();
   });

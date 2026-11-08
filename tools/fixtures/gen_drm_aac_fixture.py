@@ -45,7 +45,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("ga_dir", help="directory of raw GA AAC access units (one per file)")
     ap.add_argument("out", help="output base path, e.g. tests/fixtures/drm/aac_sine_24k")
-    ap.add_argument("--rate", type=int, default=24000, help="core sample rate (24 kHz)")
+    ap.add_argument("--rate", type=int, choices=(24000,), default=24000,
+                    help="supported core sample rate (24 kHz)")
     ap.add_argument("--label", default="AAC 24kHz mono sine", help="fixture description")
     args = ap.parse_args()
 
@@ -99,8 +100,9 @@ def main() -> int:
         "ga_frame_bytes": [len(g) for g in ga_parts],
         "type9_bytes": [3, 0],  # AAC 24 kHz, no SBR, mono
         "asc_bytes": [0x13, 0x0C],  # AAC-LC 24 kHz mono, 960-sample
-        "verification": "native fdK-AAC TT_DRM decode of the .drm frames equals the TT_MP4_RAW decode of "
-                        "the .ga frames bit-for-bit (mismatches=0) and is non-silent.",
+        "verification_required": "Run verify_drm_aac on these outputs: TT_DRM and TT_MP4_RAW PCM "
+                                 "must match bit-for-bit and be non-silent. Generation alone "
+                                 "does not perform that independent decoder verification.",
     }
     with open(args.out + ".json", "w") as f:
         json.dump(meta, f, indent=2)

@@ -1,31 +1,36 @@
 #!/bin/sh
-# Build the reference FT8 decoder (ft8_lib) and run it on a raw 16-bit PCM file.
-#
-# The point of having it here: it is the implementation an Android FT8 app (and WSJT-X) uses, so it is
-# the gold standard to compare our decoder against on the *same* input. Our own decoder finds a real
-# signal's sync but never converges, and guessing at the difference cost a lot of time - the reference
-# answers it directly.
-#
-#   ffmpeg -y -i capture.wav -ac 1 -ar 48000 -f s16le /tmp/audio.raw
-#   tools/bench/ft8_reference/build.sh /tmp/audio.raw 4 2      # time_osr, freq_osr
-set -e
+# Build the pinned independent FT8 decoder and optionally read a mono PCM WAV.
+# Sources and licenses are cached outside the repository; each build is cleaned.
+# Usage: tools/bench/ft8_reference/build.sh capture.wav 4 4 48000
+set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-src="$here/ft8_lib"
-if [ ! -d "$src" ]; then
-    mkdir -p "$src"
-    for f in common/common.h common/monitor.c common/monitor.h common/wave.c common/wave.h \
-             common/audio.h ft8/constants.c ft8/constants.h ft8/crc.c ft8/crc.h ft8/debug.h \
-             ft8/decode.c ft8/decode.h ft8/ldpc.c ft8/ldpc.h ft8/message.c ft8/message.h \
-             ft8/text.c ft8/text.h fft/kiss_fft.c fft/kiss_fft.h fft/kiss_fftr.c fft/kiss_fftr.h \
-             fft/_kiss_fft_guts.h; do
-        mkdir -p "$src/$(dirname "$f")"
-        curl -sSfL -o "$src/$f" "https://raw.githubusercontent.com/kgoba/ft8_lib/master/$f"
-    done
+revision=9fec6ca39886edbf96f4f5e71edc76da5074e871
+digest=22b5f2f8c8b328e44d34f63a6eeec888bda7e7c62b08e96ba6624503ff582bd8
+cache="${WEBSA_FT8_REFERENCE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/harogic-websa/ft8-reference}/$revision"
+mkdir -p "$cache"
+work=$(mktemp -d "$cache/.build.XXXXXX")
+trap 'rm -rf -- "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+archive="$cache/source.tar.gz"
+if [ ! -f "$archive" ]; then
+    curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+        "https://codeload.github.com/kgoba/ft8_lib/tar.gz/$revision" -o "$work/source.tar.gz"
+    printf '%s  %s\n' "$digest" "$work/source.tar.gz" | sha256sum --check --status
+    mv "$work/source.tar.gz" "$archive"
 fi
-cc -O2 -o "$here/decode_ref" "$here/main.c" "$src/common/monitor.c" "$src/common/wave.c" \
+printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+src="$work/source"
+mkdir "$src"
+tar -xzf "$archive" --strip-components=1 -C "$src"
+# Preserve the complete upstream archive and an accessible license alongside it.
+cp "$src/LICENSE" "$cache/LICENSE"
+printf 'Source: https://github.com/kgoba/ft8_lib/tree/%s\nArchive SHA256: %s\n' \
+    "$revision" "$digest" > "$cache/SOURCE.txt"
+"${CC:-cc}" -O2 -DHAVE_STPCPY -o "$work/decode_ref" "$here/main.c" "$src/common/monitor.c" "$src/common/wave.c" \
    "$src/ft8/constants.c" "$src/ft8/crc.c" "$src/ft8/decode.c" "$src/ft8/ldpc.c" \
    "$src/ft8/message.c" "$src/ft8/text.c" "$src/fft/kiss_fft.c" "$src/fft/kiss_fftr.c" \
-   -I"$src" -I"$src/ft8" -I"$src/fft" -I"$src/common" -lm 2>/dev/null
-if [ $# -gt 0 ]; then
-    "$here/decode_ref" "$@"
+   -I"$src" -I"$src/ft8" -I"$src/fft" -I"$src/common" -lm
+if [ "$#" -gt 0 ]; then
+    "$work/decode_ref" "$@"
 fi

@@ -22,9 +22,11 @@ import {
 	minSpanHz,
 	panByFraction,
 	panToCenter,
+	panToReveal,
 	passbandViewActive,
 	plotXToFreq,
 	recenterOnCapture,
+	revealOnCapture,
 	resetViewport,
 	sampleStepHz,
 	samplesInView,
@@ -52,6 +54,23 @@ afterEach(() => {
 });
 
 describe('window algebra', () => {
+	it.each([
+		{ name: 'visible symmetric band', hz: 950e6, band: { lo: 945e6, hi: 955e6 }, expected: { lo: 940e6, hi: 960e6 } },
+		{ name: 'left edge only', hz: 942e6, band: { lo: 937e6, hi: 947e6 }, expected: { lo: 937e6, hi: 957e6 } },
+		{ name: 'right edge only', hz: 958e6, band: { lo: 953e6, hi: 963e6 }, expected: { lo: 943e6, hi: 963e6 } },
+		{ name: 'off-screen left', hz: 920e6, band: { lo: 915e6, hi: 925e6 }, expected: { lo: 915e6, hi: 935e6 } },
+		{ name: 'off-screen right', hz: 980e6, band: { lo: 975e6, hi: 985e6 }, expected: { lo: 965e6, hi: 985e6 } },
+		{ name: 'capture minimum', hz: 900e6, band: { lo: 895e6, hi: 905e6 }, expected: { lo: 900e6, hi: 920e6 } },
+		{ name: 'capture maximum', hz: 1000e6, band: { lo: 995e6, hi: 1005e6 }, expected: { lo: 980e6, hi: 1000e6 } },
+		{ name: 'upper sideband includes dial', hz: 935e6, band: { lo: 941e6, hi: 945e6 }, expected: { lo: 935e6, hi: 955e6 } },
+		{ name: 'lower sideband includes dial', hz: 965e6, band: { lo: 955e6, hi: 959e6 }, expected: { lo: 945e6, hi: 965e6 } },
+		{ name: 'wide band with visible dial', hz: 955e6, band: { lo: 930e6, hi: 980e6 }, expected: { lo: 940e6, hi: 960e6 } },
+		{ name: 'wide band with off-screen dial', hz: 980e6, band: { lo: 955e6, hi: 1005e6 }, expected: { lo: 970e6, hi: 990e6 } },
+		{ name: 'band exactly fits', hz: 950e6, band: { lo: 940e6, hi: 960e6 }, expected: { lo: 940e6, hi: 960e6 } },
+	])('reveals $name without changing zoom', ({ hz, band, expected }) => {
+		expect(panToReveal({ lo: 940e6, hi: 960e6 }, hz, band, CAP, 1)).toEqual(expected);
+	});
+
 	it('validates windows', () => {
 		expect(isValidWindow({ lo: 0, hi: 1 })).toBe(true);
 		expect(isValidWindow({ lo: 1, hi: 1 })).toBe(false);
@@ -183,17 +202,41 @@ describe('module state', () => {
 		expect(getView()).toEqual({ lo: 1020e6, hi: 1040e6 });
 	});
 
-	it.each(['view', 'capture', 'invalid', 'reset'] as const)('cancels deferred receiver focus after a superseding %s change', change => {
+	it.each(['before', 'after'] as const)('reveals a passband when its ACK arrives %s the relocated capture', order => {
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		const next = { lo: 1000e6, hi: 1100e6 };
+		if (order === 'after') setCapture(next);
+		revealOnCapture(1020e6, { lo: 1015e6, hi: 1025e6 }, next, 1);
+		if (order === 'before') {
+			expect(getView()).toEqual({ lo: 940e6, hi: 960e6 });
+			setCapture(next);
+		}
+		expect(getView()).toEqual({ lo: 1015e6, hi: 1035e6 });
+	});
+
+	it.each(['view', 'span', 'invalid', 'reset'] as const)('cancels deferred receiver focus after a superseding %s change', change => {
 		setView({ lo: 940e6, hi: 960e6 }, 1);
 		const next = { lo: 1000e6, hi: 1100e6 };
 		recenterOnCapture(1020e6, next, 1);
 		if (change === 'view') setView({ lo: 930e6, hi: 950e6 }, 1);
-		else if (change === 'capture') setCapture({ lo: 910e6, hi: 1010e6 });
+		else if (change === 'span') setCapture({ lo: 910e6, hi: 960e6 });
 		else if (change === 'invalid') setCapture(null);
 		else resetViewport();
 		setCapture(next);
-		expect(getView()).toEqual(change === 'view' ? { lo: 1030e6, hi: 1050e6 }
-			: change === 'capture' ? { lo: 1040e6, hi: 1060e6 } : next);
+		expect(getView()).toEqual(change === 'view' ? { lo: 1030e6, hi: 1050e6 } : next);
+	});
+
+	it.each([NaN, Infinity, 0, -1])('ignores an invalid receiver focus minimum span (%s)', minimum => {
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		recenterOnCapture(980e6, CAP, minimum);
+		expect(getView()).toEqual({ lo: 940e6, hi: 960e6 });
+	});
+
+	it('caps a coarse-grid minimum span at the actual capture width', () => {
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		recenterOnCapture(1000e6, CAP, 200e6);
+		expect(getView()).toEqual(CAP);
+		expect(isZoomed()).toBe(false);
 	});
 
 	it('drops the view when the capture span changes', () => {
@@ -252,6 +295,14 @@ describe('passband focus lifecycle', () => {
 		togglePassbandView(TARGET, 80e6); // A new grid minimum must not resize the snapshot.
 		expect(getView()).toEqual(previous);
 		expect(zoomEnabled.get()).toBe(true);
+	});
+
+	it('keeps the saved passband view when a confirmed tune is already fully visible', () => {
+		togglePassbandView(TARGET, 1);
+		const focused = getView();
+		revealOnCapture(950e6, { lo: 949e6, hi: 951e6 }, CAP, 1);
+		expect(getView()).toEqual(focused);
+		expect(passbandViewActive()).toBe(true);
 	});
 
 	it('invalidates the snapshot after a capture change, reset, or manual view', () => {

@@ -107,6 +107,11 @@ impl ComplexResampler {
         self.q.reset();
     }
 
+    /// Complex output samples for the next block; I and Q share the same phase.
+    pub fn output_length_hint(&self, complex_samples: usize) -> usize {
+        self.i.output_length_hint(complex_samples)
+    }
+
     /// Resample interleaved complex `iq` (f64) into interleaved complex `out` (f32).
     pub fn process_into(&mut self, iq: &[f64], out: &mut Vec<f32>) {
         let n = iq.len() / 2;

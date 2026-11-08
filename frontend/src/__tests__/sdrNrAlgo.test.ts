@@ -6,7 +6,7 @@
  * the preference is persisted with the other SDR receiver settings.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderSdrState, resetSdrState, sdrNrAlgo } from '../ui/sdrState';
+import { parseNrAlgo, renderSdrState, resetSdrState, sdrNrAlgo, type NrAlgo } from '../ui/sdrState';
 
 beforeEach(() => {
 	localStorage.clear();
@@ -17,7 +17,7 @@ beforeEach(() => {
 function mountNrControls() {
 	const algo = document.createElement('select');
 	algo.id = 'select-sdr-nr-algo';
-	algo.innerHTML = '<option value="wiener">Wiener</option><option value="dfn">DeepFilterNet3</option>';
+	algo.innerHTML = ['wiener','dfn','gtcrn','ul-unas','fastenhancer'].map(id => `<option value="${id}">${id}</option>`).join('');
 	const strength = document.createElement('select');
 	strength.id = 'select-sdr-nr-strength';
 	strength.innerHTML =
@@ -30,30 +30,42 @@ function mountNrControls() {
 }
 
 describe('sdrNrAlgo', () => {
-    it('persists the backend-accepted algorithm across a page reload', async () => {
-        sdrNrAlgo.set('dfn');
-        sdrNrAlgo.confirm('dfn');
+    it('loads receiver defaults when the browser storage property itself is blocked', async () => {
+        vi.resetModules();
+        const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+            throw new DOMException('denied', 'SecurityError');
+        });
+        try {
+            const state = await import('../ui/sdrState');
+            expect(state.sdrNrAlgo.get()).toBe('wiener');
+            expect(state.sdrSstvMode.get()).toBe(-1);
+        } finally { storage.mockRestore(); }
+    });
+
+    it.each<NrAlgo>(['dfn','gtcrn','ul-unas','fastenhancer'])('persists %s across a page reload', async (id) => {
+        sdrNrAlgo.set(id);
+        sdrNrAlgo.confirm(id);
         // Re-evaluate module initialization to model a page reload reading persisted state;
         // a static import would reuse the existing in-memory parameter slots.
         vi.resetModules();
         const reloaded = await import('../ui/sdrState');
-        expect(reloaded.sdrNrAlgo.get()).toBe('dfn');
+        expect(reloaded.sdrNrAlgo.get()).toBe(id);
         const unmount = mountNrControls();
         reloaded.renderSdrState();
-        expect((document.getElementById('select-sdr-nr-algo') as HTMLSelectElement).value).toBe('dfn');
+        expect((document.getElementById('select-sdr-nr-algo') as HTMLSelectElement).value).toBe(id);
         expect((document.getElementById('select-sdr-nr-strength') as HTMLSelectElement).hidden).toBe(true);
         unmount();
 	});
 
 
-	it('renders the algorithm and hides the strength control only for dfn', () => {
+	it.each<NrAlgo>(['dfn','gtcrn','ul-unas','fastenhancer'])('renders %s with attenuation instead of Wiener strength', (id) => {
 		const unmount = mountNrControls();
 		const algo = document.getElementById('select-sdr-nr-algo') as HTMLSelectElement;
 		const strength = document.getElementById('select-sdr-nr-strength') as HTMLSelectElement;
 
-		sdrNrAlgo.set('dfn');
+		sdrNrAlgo.set(id);
 		renderSdrState();
-		expect(algo.value).toBe('dfn');
+		expect(algo.value).toBe(id);
 		expect(strength.hidden).toBe(true);
 		expect(strength.disabled).toBe(true);
 
@@ -66,4 +78,8 @@ describe('sdrNrAlgo', () => {
 
 		unmount();
 	});
+    it('migrates the old DFN id and rejects unknown stored ids', () => {
+        expect(parseNrAlgo('dfn2')).toBe('dfn');
+        expect(parseNrAlgo('unavailable-model')).toBe('wiener');
+    });
 });

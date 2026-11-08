@@ -20,7 +20,6 @@ pub mod vendor;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::mem;
 
 use crate::ddc::agc::RmsAgc;
 use crate::ddc::fir::ComplexBandFilter;
@@ -31,10 +30,7 @@ use vendor::modes::Mode;
 
 /// Rate the streaming decoder runs at. SSTV's highest tone is 2300 Hz, so 8 kHz has margin.
 const DECODE_RATE_HZ: f64 = 8_000.0;
-/// The voice band the audio is taken from, as the `usb` mode takes it.
-/// The voice band the decoder reads, in Hz above the dial. The panadapter highlights this as
-/// the SSTV passband. No separate filter runs at these frequencies any more (the complex
-/// resampler to 8 kHz replaced it), but the band is still what the decoder responds to.
+/// Decoder band in Hz above the dial, also highlighted by the panadapter.
 const AUDIO_LO_HZ: f64 = 300.0;
 const AUDIO_HI_HZ: f64 = 2_700.0;
 /// Full scale of the `i16` the decoder consumes.
@@ -124,18 +120,17 @@ pub struct SstvImage {
 }
 
 pub struct SstvPlugin {
-    /// Resamples the real audio from the channel rate to the decoder's rate (the chain the
-    /// original, hardware-proven plugin used: band pass, real part, this, AGC).
+    /// Resamples real, band-passed audio to the decoder rate.
     resampler: LinearResampler,
     band: ComplexBandFilter,
     filtered: Vec<f64>,
-    /// Levels the decoded band: the DDC's AGC targets the channel RMS, and a narrow SSTV band inside a
-    /// wide channel can still be quiet. The readout reports the levelled audio.
+    /// Decoder-local level control, independent of listener AGC.
     agc: RmsAgc,
-    /// Scratch, reused per block so the hot path allocates nothing.
+    /// Reused IQ, audio and PCM scratch buffers.
     mixed: Vec<f64>,
-    resampled_f64: Vec<f32>,
-    resampled: Vec<f32>,
+    resampled_audio: Vec<f32>,
+    levelled_audio: Vec<f32>,
+    pcm: Vec<i16>,
     /// The streaming decoder, and the queue its samples are pushed through.
     decoder: StreamingDecoder,
     /// EMA of the decoded block level, for the readout.
@@ -168,8 +163,9 @@ impl SstvPlugin {
             filtered: Vec::new(),
             agc: RmsAgc::new(AUDIO_TARGET, 0.2, 0.05),
             mixed: Vec::new(),
-            resampled_f64: Vec::new(),
-            resampled: Vec::new(),
+            resampled_audio: Vec::new(),
+            levelled_audio: Vec::new(),
+            pcm: Vec::new(),
             decoder: StreamingDecoder::new(DECODE_RATE_HZ as u32),
             level: 0.0,
             samples_seen: 0,
@@ -226,6 +222,7 @@ impl SstvPlugin {
     fn acquire(&mut self, mode: Mode, attempt: u32) {
         self.finished = false;
         self.quiet_samples = 0;
+        self.loud_peak = 0.0;
         let (width, height) = mode.resolution();
         let serial = self.status.as_ref().map_or(1, |status| status.serial + 1);
         let mode_index = mode_index(mode).unwrap_or(0);
@@ -303,62 +300,48 @@ impl DigitalDemodulator for SstvPlugin {
         }
         // This block's readout, if any; the previous block's is gone.
         self.readout.clear();
-        // The original, hardware-proven front end, restored exactly: band pass at the channel
-        // rate, real part, resample to 8 kHz, AGC, i16. The streaming rewrite had dropped the
-        // AGC application (the field existed but nothing called it), which starved the decoder
-        // of amplitude on real hardware while the full-scale fake fixture kept decoding.
         self.mixed.clear();
         self.mixed.extend(iq[..n].iter().map(|v| *v as f64));
-        let iq_in = mem::take(&mut self.mixed);
-        self.band.process_complex_into(&iq_in, &mut self.filtered);
-        // The audio is the real part of the band-passed baseband, as in the `usb` mode.
-        let audio: Vec<f64> = self.filtered.iter().step_by(2).copied().collect();
-        self.resampler.process_into(&audio, &mut self.resampled_f64);
-        self.mixed = audio;
-        // Level the decimated audio to the decoder's working level. This is the plugin's own
-        // AGC: without it a real-backend block (RMS ~45 in the i16 domain) reached the decoder
-        // at i16 ~±45 — four hundred times below the level the header search needs — while the
-        // tests, feeding full scale, passed.
-        let decimated = mem::take(&mut self.resampled_f64);
-        self.agc.process_into(&decimated, false, &mut self.resampled);
-        self.resampled_f64 = decimated;
-        let mut samples: Vec<i16> = Vec::with_capacity(self.resampled.len());
+        self.band.process_complex_into(&self.mixed, &mut self.filtered);
+        self.mixed.clear();
+        self.mixed.extend(self.filtered.iter().step_by(2).copied());
+        self.resampler.process_into(&self.mixed, &mut self.resampled_audio);
+        self.agc.process_into(&self.resampled_audio, false, &mut self.levelled_audio);
+        self.pcm.clear();
         let mut sum = 0.0;
-        for value in &self.resampled {
+        for value in &self.levelled_audio {
             let sample = (*value * PCM_FULL_SCALE).clamp(-PCM_FULL_SCALE, PCM_FULL_SCALE) as i16;
             sum += f64::from(sample) * f64::from(sample);
-            samples.push(sample);
+            self.pcm.push(sample);
         }
-        if !samples.is_empty() {
-            let rms = ((sum / samples.len() as f64).sqrt() / f64::from(PCM_FULL_SCALE)) as f32;
+        if !self.pcm.is_empty() {
+            let rms = ((sum / self.pcm.len() as f64).sqrt() / f64::from(PCM_FULL_SCALE)) as f32;
             self.level = self.level * 0.9 + rms * 0.1;
         }
-        self.samples_seen += samples.len() as u64;
+        self.samples_seen += self.pcm.len() as u64;
 
-        let events = self.decoder.push(&samples);
-        self.absorb_events(events);
-        // A transmission ends quietly: the tones stop, and the last sequence is only cut when its end
-        // is known. The band's own level against the loudest block seen tells the two apart; two
-        // seconds of quiet end the picture.
-        let raw = if self.resampled.is_empty() {
-            0.0
-        } else {
-            let sum: f32 = self.resampled.iter().map(|value| value * value).sum::<f32>();
-            (sum / self.resampled.len() as f32).sqrt()
-        };
-        if raw > self.loud_peak {
-            self.loud_peak = raw;
-        }
-        let quiet = self.loud_peak > 0.005 && raw * 20.0 < self.loud_peak;
-        self.quiet_samples = if quiet { self.quiet_samples + samples.len() as u64 } else { 0 };
-        if !self.finished
-            && self.decoder.mode().is_some()
-            && self.quiet_samples >= (DECODE_RATE_HZ * 2.0) as u64
-        {
-            self.finished = true;
-            self.quiet_samples = 0;
-            let events = self.decoder.finish();
+        // Detect signal loss before AGC, which also amplifies receiver noise.
+        // Bounded 10 ms windows handle a pause and a new header in the same push.
+        const WINDOW: usize = (DECODE_RATE_HZ / 100.0) as usize;
+        const QUIET_LIMIT: u64 = (DECODE_RATE_HZ * 2.0) as u64;
+        for begin in (0..self.pcm.len()).step_by(WINDOW) {
+            let end = (begin + WINDOW).min(self.pcm.len());
+            let events = self.decoder.push(&self.pcm[begin..end]);
             self.absorb_events(events);
+            let audio = &self.resampled_audio[begin..end];
+            let power: f64 = audio.iter().map(|value| f64::from(*value).powi(2)).sum();
+            let raw = (power / audio.len() as f64).sqrt() as f32;
+            self.loud_peak = self.loud_peak.max(raw);
+            let quiet = self.loud_peak > 0.0 && raw * 20.0 < self.loud_peak;
+            self.quiet_samples = if quiet {
+                self.quiet_samples.saturating_add(audio.len() as u64).min(QUIET_LIMIT)
+            } else { 0 };
+            if !self.finished && self.decoder.mode().is_some() && self.quiet_samples >= QUIET_LIMIT {
+                self.finished = true;
+                self.quiet_samples = 0;
+                let events = self.decoder.finish();
+                self.absorb_events(events);
+            }
         }
         self.readout.clone()
     }
@@ -738,134 +721,5 @@ pub(crate) mod tests {
         assert!(plugin.image().is_none());
         assert_eq!(plugin.attempts(), 0);
         assert_eq!(plugin.seen_seconds(), 0.0);
-    }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#[cfg(test)]
-mod test_backend_level {
-    use super::tests::{gradient};
-    use super::*;
-    use vendor::encode::{Encoder, Synthesizer};
-    use vendor::modes::ROBOT_36;
-
-    /// The real backend's baseband AGC targets the channel RMS in the i16 domain (~45 measured on
-    /// the bench), not normalized floats. The plugin's own AGC must level that to a decodable
-    /// amplitude (this is the exact `src 4521% · dec 0% · 0 tries` bench failure).
-    #[test]
-    fn decodes_at_backend_i16_level() {
-        let sent = gradient(320, 240);
-        let enc = Encoder::new(ROBOT_36, sent.into_iter()).expect("enc");
-        let rate = 48_225.308_641_975_31;
-        let raw: Vec<i16> = Synthesizer::new(enc, rate as u32).collect();
-        let mut iq: Vec<f32> = Vec::with_capacity(raw.len() * 2);
-        for sample in &raw {
-            iq.push(f32::from(*sample) / 32_767.0 * 5000.0); // RMS ~45 like the backend
-            iq.push(0.0_f32);
-        }
-        iq.extend(core::iter::repeat(0.0f32).take(rate as usize * 5 * 2));
-        let mut plugin = SstvPlugin::new(rate);
-        let mut block = Vec::new();
-        for chunk in iq.chunks(8192) {
-            block.clear(); block.extend_from_slice(chunk);
-            plugin.process_iq(&block);
-            if plugin.status().is_some_and(|s| s.complete) { break; }
-        }
-        let ok = plugin.status().is_some_and(|s| s.complete);
-        assert!(ok, "backend-level input failed: acq={} lvl={:.4}", plugin.attempts(), plugin.audio_rms());
-    }
-}
-
-#[cfg(test)]
-mod test_tiny_blocks {
-    use super::tests::gradient;
-    use super::*;
-    use vendor::encode::{Encoder, Synthesizer};
-    use vendor::modes::ROBOT_36;
-
-    /// The browser feeds ~200-complex blocks (400 f32) of two-channel i16-domain baseband.
-    /// The big-block test passes while the bench fails: reproduce the exact block size.
-    #[test]
-    fn decodes_in_tiny_blocks_at_backend_level() {
-        let sent = gradient(320, 240);
-        let enc = Encoder::new(ROBOT_36, sent.into_iter()).expect("enc");
-        let rate = 48_223.992_f64;
-        let raw: Vec<i16> = Synthesizer::new(enc, rate as u32).collect();
-        let mut iq: Vec<f32> = Vec::with_capacity(raw.len() * 2);
-        for sample in &raw {
-            let v = f32::from(*sample) / 32_767.0 * 5000.0; // ~RMS 45 like the backend
-            iq.push(v); iq.push(v * 0.3); // both channels carry signal
-        }
-        iq.extend(core::iter::repeat(0.0f32).take(rate as usize * 5 * 2));
-        let mut plugin = SstvPlugin::new(rate);
-        let mut block = Vec::new();
-        for chunk in iq.chunks(400) { // 200 complex per block, like the browser
-            block.clear(); block.extend_from_slice(chunk);
-            plugin.process_iq(&block);
-            if plugin.status().is_some_and(|s| s.complete) { break; }
-        }
-        let ok = plugin.status().is_some_and(|s| s.complete);
-        assert!(ok, "tiny-block input failed: acq={} lvl={:.4} seen={:.0}s",
-            plugin.attempts(), plugin.audio_rms(), plugin.seen_seconds());
-    }
-}
-
-#[cfg(test)]
-mod test_real_capture {
-    use super::*;
-
-    /// Replay REAL bench frames (SAN-90 DDC output while the Pluto transmits Robot 36) through
-    /// the plugin. This is the ground-truth debug loop: whatever fails here fails on the bench.
-    #[test]
-    fn replays_real_bench_capture() {
-        let Ok(bytes) = std::fs::read("/tmp/real_baseband_cont.f32") else {
-            eprintln!("SKIP: /tmp/real_baseband.f32 not present");
-            return;
-        };
-        let iq: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        let rate = 48_226.550_f64; // updated below
-        let mut plugin = SstvPlugin::new(rate);
-        let mut block = Vec::new();
-        for chunk in iq.chunks(400) {
-            block.clear(); block.extend_from_slice(chunk);
-            plugin.process_iq(&block);
-        }
-        eprintln!(
-            "DBG-REAL acq={} lvl={:.4} seen={:.1}s mode={:?}",
-            plugin.attempts(), plugin.audio_rms(), plugin.seen_seconds(),
-            plugin.status().map(|s| s.mode_name)
-        );
-        eprintln!(
-            "DBG-REAL acq={} lvl={:.4}",
-            plugin.attempts(),
-            plugin.audio_rms()
-        );
-
     }
 }

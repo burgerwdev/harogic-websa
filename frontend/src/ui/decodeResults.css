@@ -1,0 +1,59 @@
+.decoder-results { padding: 8px; color: var(--text); }
+.decoder-result { padding: 8px 0; border-bottom: 1px solid var(--card-border); overflow-wrap: anywhere; }
+.decoder-result-header, .decoder-retention { color: var(--label); font-size: 11px; margin: 0 0 5px; }
+.decoder-result pre { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.decoder-result details { margin-top: 6px; }
+.decoder-result summary { color: var(--label); cursor: pointer; }
+.decoder-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 4px 0 8px; }
+.decoder-fields dt { color: var(--label); }
+.decoder-fields dd { margin: 0; }
+.decoder-table-scroll { overflow: auto; max-height: 420px; margin: 4px 0 10px; }
+.decoder-results table { border-collapse: collapse; width: 100%; font: inherit; }
+.decoder-results th, .decoder-results td { padding: 4px 7px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--card-border); white-space: nowrap; overflow-wrap: normal; min-width: 45px; }
+.decoder-results td.decoder-message-cell { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 180px; }
+.decoder-results th { position: sticky; top: 0; background: var(--panel); color: var(--label); }
+.decoder-image { position: relative; width: 100%; overflow: hidden; background: #202020; }
+.decoder-image img { position: absolute; left: 0; width: 100%; object-fit: fill; }
+.decode-popout-error { padding: 8px; color: var(--text); background: var(--panel-2); white-space: normal; }
+.decode-window [hidden] { display: none !important; }
+.decode-window-head { flex-wrap: wrap; }
+.decode-popup-body { margin: 0; overflow: hidden; background: var(--panel); }
+.decode-window.decode-window-popout { left: 0 !important; top: 0 !important; width: calc(100vw / var(--decode-scale, 1)) !important; height: calc(100vh / var(--decode-scale, 1)) !important; min-width: 0; min-height: 0; max-width: none; max-height: none; border-radius: 0; box-shadow: none; }
+.decode-window-popout .decode-resize-layer { display: none; }
+.decode-window-popout .decode-window-head { cursor: default; }
+
+/* Live telemetry uses the same instrument palette as the channel workspace. */
+.decoder-signal-heading { display:block; font-size:13px; font-weight:600; margin:2px 0 10px; overflow-wrap:anywhere; }
+.decoder-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(108px,1fr)); gap:1px; margin:0; background:var(--inner-border); border:1px solid var(--inner-border); border-radius:4px; overflow:hidden; }
+.mc-body .decoder-metrics { gap:1px; }
+.decoder-metric { min-width:0; padding:8px 10px; background:var(--panel); }
+.decoder-metric dt { color:var(--label); font-size:10px; line-height:1.4; margin-bottom:3px; }
+.decoder-metric dd { margin:0; font-size:14px; font-weight:500; line-height:1.4; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.decoder-metric dd small { color:var(--label); font-size:10px; font-weight:400; }
+.decoder-metric-wide { grid-column:1/-1; }
+.decoder-metric-wide dd { font-size:12px; font-weight:400; }
+.decoder-drm-dashboard { display:grid; grid-template-columns:minmax(0,1fr) 148px; grid-template-rows:auto auto; align-items:start; gap:8px 10px; }
+.decoder-drm-dashboard>.decoder-metrics { grid-template-columns:repeat(5,minmax(0,1fr)); }
+.decoder-drm-dashboard>.decoder-constellation { grid-column:2; grid-row:1 / 3; }
+.decoder-constellation { position:relative; margin:0; padding:7px; background:var(--panel); border:1px solid var(--inner-border); border-radius:4px; min-width:0; text-align:center; }
+.decoder-constellation svg { display:block; width:100%; aspect-ratio:1; fill:var(--text); }
+.decoder-constellation .decoder-plot-grid { fill:none; stroke:var(--inner-border); }
+.decoder-constellation .decoder-plot-target { fill:none; stroke:var(--label); opacity:.65; }
+.decoder-constellation figcaption, .decoder-constellation>span { color:var(--label); font-size:10px; }
+.decoder-constellation>span { display:block; margin-top:-50%; margin-bottom:calc(50% - 15px); position:relative; background:var(--panel); }
+.decoder-signal-extras { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:6px; }
+.decoder-service { display:flex; flex-direction:column; gap:3px; border-left:2px solid var(--text); background:var(--head-bg); padding:7px 10px; min-width:0; }
+.decoder-service strong { font-size:12px; }
+.decoder-service span { font-size:10px; color:var(--label); }
+.mc-decode-tools:not(:has(> :not([hidden]))) { display:none; }
+.mc-decode-log { padding:0; }
+.mc-decode-log .decoder-result-status { padding:8px 0; }
+.mc-decode-log .decoder-result-header { font-size:10px; margin-bottom:6px; }
+.mc-decode-log .decoder-result>details { font-size:10px; margin-top:8px; }
+.mc-decode-log .mc-audio-scope { margin-top:10px; border-radius:3px; }
+@container (max-width:680px) { .decoder-drm-dashboard>.decoder-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@container (max-width:390px) { .decoder-drm-dashboard { grid-template-columns:1fr; } .decoder-drm-dashboard>.decoder-constellation { grid-column:1; grid-row:auto; max-width:160px; } }
+
+.mc-message-table tr.ft8-row.qso-peer { background:var(--btn-active); }
+.mc-message-table tr.ft8-row.qso-focus { background:var(--btn-active); box-shadow:inset 2px 0 0 var(--text); }
+.mc-message-table tr.ft8-row:focus-visible { outline:1px solid var(--text); outline-offset:-1px; }

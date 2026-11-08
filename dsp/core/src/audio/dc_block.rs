@@ -7,7 +7,7 @@
 
 use crate::plugin::AudioStage;
 
-/// Coefficient of the reference implementation at 48 kHz (~3.3 Hz corner).
+/// Coefficient of the reference implementation at 48 kHz (~3.8 Hz corner).
 pub const DEFAULT_A: f64 = 0.9995;
 
 pub struct DcBlock {
@@ -24,6 +24,17 @@ impl DcBlock {
     pub fn reference() -> Self {
         Self::new(DEFAULT_A)
     }
+
+    /// Filter one sample without allocating. State persists across input blocks;
+    /// the first sample initializes the DC estimate without a startup impulse.
+    pub fn process_sample(&mut self, sample: f32) -> f32 {
+        let prev = self.prev.unwrap_or(sample);
+        let delta = (sample as f64 - prev as f64) * self.a;
+        // Keep the recursion in f64 so a slow fade retains precision.
+        self.y = self.a * self.y + delta;
+        self.prev = Some(sample);
+        self.y as f32
+    }
 }
 
 impl AudioStage for DcBlock {
@@ -37,16 +48,9 @@ impl AudioStage for DcBlock {
             return;
         }
         out.reserve(input.len());
-        let mut prev = self.prev.unwrap_or(input[0]);
-        for sample in input {
-            let delta = (*sample - prev) * self.a as f32;
-            // The recursion itself is f64 (the reference does the same) so a slow fade cannot
-            // lose precision sample by sample.
-            self.y = self.a * self.y + delta as f64;
-            prev = *sample;
-            out.push(self.y as f32);
+        for &sample in input {
+            out.push(self.process_sample(sample));
         }
-        self.prev = Some(prev);
     }
 
     fn reset(&mut self) {
@@ -105,5 +109,18 @@ mod tests {
         let mut again = Vec::new();
         stage.process_into(&[1.0, 1.0, 1.0], false, &mut again);
         assert_eq!(out, again);
+    }
+
+    #[test]
+    fn finite_endpoint_difference_is_scaled_before_narrowing() {
+        let endpoint = f32::MAX * 0.6;
+        let mut stage = DcBlock::new(0.5);
+        let mut output = Vec::new();
+        stage.process_into(&[endpoint, -endpoint, -endpoint], false, &mut output);
+        // For a=1/2 and initial y=0, an opposite endpoint yields -endpoint;
+        // one more constant sample halves it. Every final result is finite.
+        assert_eq!(output, [0.0, -endpoint, -endpoint * 0.5]);
+        stage.reset();
+        assert_eq!(stage.process_sample(endpoint), 0.0);
     }
 }

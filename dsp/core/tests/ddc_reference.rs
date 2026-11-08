@@ -57,6 +57,7 @@ fn compare(stage: &str, got: &[f32], want: &[f32]) -> f64 {
     let mut worst = 0.0_f64;
     let mut at = 0;
     for (index, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+        assert!(a.is_finite() && b.is_finite(), "{stage}: non-finite sample {index}: {a} vs {b}");
         let diff = (*a as f64 - *b as f64).abs();
         if diff > worst {
             worst = diff;
@@ -166,30 +167,4 @@ fn the_whole_chain_through_one_call_agrees_with_the_reference() {
     let reference = as_f32(AGC_BYTES);
     let worst = compare("full chain", &out, &reference);
     println!("full chain: worst difference {worst:e}");
-}
-
-#[test]
-fn every_complex_stage_agrees_within_one_tolerance() {
-    // A single guard that all four complex stages stay inside the documented bound, so the
-    // tolerance is asserted as a property of the chain and not only per test.
-    let iq = as_i16(IQ_BYTES);
-    let mut ddc = Ddc::new(config());
-    let mut mixed = Vec::new();
-    let mut filtered = Vec::new();
-    let mut decimated = Vec::new();
-    let mut resampled = Vec::new();
-    ddc.mix_i16_into(&iq, &mut mixed);
-    ddc.filter_into(&mixed, &mut filtered);
-    ddc.decimate_into(&filtered, &mut decimated);
-    ddc.resample_into(&decimated, &mut resampled);
-
-    let worst = [
-        compare("mixer", &mixed.iter().map(|v| *v as f32).collect::<Vec<f32>>(), &as_f32(MIX_BYTES)),
-        compare("fir", &filtered.iter().map(|v| *v as f32).collect::<Vec<f32>>(), &as_f32(FIR_BYTES)),
-        compare("decimate", &decimated.iter().map(|v| *v as f32).collect::<Vec<f32>>(), &as_f32(DEC_BYTES)),
-        compare("resample", &resampled, &as_f32(RES_BYTES)),
-    ]
-    .into_iter()
-    .fold(0.0_f64, f64::max);
-    println!("worst over the complex stages: {worst:e} (tolerance {})", tolerance());
 }

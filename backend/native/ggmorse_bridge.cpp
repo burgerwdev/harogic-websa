@@ -63,6 +63,8 @@ struct Decoder {
 
 extern "C" {
 void* native_ggmorse_new(int rate, float pitch, float tolerance) noexcept {
+    // Match the safe Rust owner before constructing buffers or decoder parameters.
+    if (rate < 8000 || rate > 192000) return nullptr;
     try { return new Decoder(rate, pitch, tolerance); }
     catch (...) { return nullptr; }
 }

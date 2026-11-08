@@ -298,6 +298,11 @@ impl Pipeline {
         self.analog.as_mut().map(|demod| demod.take_side()).unwrap_or_default()
     }
 
+    /// Inspect the side-block size without consuming its samples or gain trace.
+    pub fn pending_side_samples(&self) -> usize {
+        self.analog.as_ref().map_or(0, |demod| demod.pending_side_samples())
+    }
+
     /// Whether the stereo pilot is currently detected (the decode window's badge).
     pub fn stereo_detected(&self) -> bool {
         self.analog.as_ref().is_some_and(|demod| demod.stereo_detected())
@@ -503,6 +508,16 @@ impl Pipeline {
             active.push((id, PluginKind::Audio));
         }
         active
+    }
+
+    /// PCM count for an analog block, or adapted complex-sample count for a
+    /// digital block, before processing changes the streaming phase.
+    pub fn output_length_hint(&self, complex_samples: usize) -> Option<usize> {
+        match self.kind {
+            PathKind::Analog => self.analog.as_ref()?.output_length_hint(complex_samples),
+            PathKind::Digital => Some(self.resample.as_ref().map_or(complex_samples,
+                |resampler| resampler.output_length_hint(complex_samples))),
+        }
     }
 
     /// Process one block of channelized baseband (interleaved complex f32) into `out`.

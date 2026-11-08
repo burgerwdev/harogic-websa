@@ -12,6 +12,9 @@ import sys
 import zlib
 from pathlib import Path
 
+import numpy as np
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -216,3 +219,54 @@ def test_picture_for_prefers_the_operators_file(tmp_path: Path, capsys):
     assert (width, height) == (320, 256)
     assert bytes(rgb[0:3]) == bytes([9, 9, 9])
     capsys.readouterr()
+
+
+def test_stream_sends_silence_between_pictures_and_drains_the_final_dma_queue(monkeypatch):
+    chunks = []
+    lifecycle = []
+
+    class Radio:
+        rate = 12_000
+
+        def __init__(self, args):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            lifecycle.append('close')
+
+        def open_stream(self, kernel_buffers):
+            assert kernel_buffers == 4
+
+        def push_chunk(self, part):
+            chunks.append(part.copy())
+
+        def drain_stream(self, zero):
+            assert not np.any(zero)
+            lifecycle.append('drain')
+
+    monkeypatch.setattr(tx.radio, 'Radio', Radio)
+    tx.transmit(_args(dry_run=False, seconds=0.5, repeat=2, pause=0.3))
+    # Two 0.5 s pictures at the accepted rate, separated by two 0.25 s zero blocks.
+    assert len(chunks) == 6
+    assert all(part.size == 3_000 for part in chunks)
+    assert all(np.any(part) for part in chunks[:2] + chunks[4:])
+    assert all(not np.any(part) for part in chunks[2:4])
+    assert lifecycle == ['drain', 'close']
+
+
+@pytest.mark.parametrize('args', [('--seconds', '-1'), ('--pause', 'inf'), ('--dry-run-seconds', 'nan')])
+def test_invalid_timing_is_rejected_before_opening_the_radio(args):
+    with pytest.raises(SystemExit) as error:
+        tx.main(list(args))
+    assert error.value.code == 2
+
+
+def test_zero_sized_stream_chunk_is_rejected_before_entering_synthesis():
+    def no_tones():
+        raise AssertionError('tone iterator consumed before chunk validation')
+        yield
+    with pytest.raises(ValueError):
+        next(tx.stream_tones(no_tones(), RATE, 1., 0))

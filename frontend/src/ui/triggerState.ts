@@ -1,3 +1,4 @@
+import { setDomProperty } from './domState';
 import * as S from '../core/store';
 import { createParam, resetAll, type Param } from '../core/params';
 import { resetTriggerRuntime } from './triggerEvents';
@@ -51,17 +52,17 @@ export function validTriggerValue(key: TriggerKey, raw: string): string | number
 export function renderTriggerParameters(force = false): void {
   for (const [key, field] of Object.entries(triggerFields)) {
     const input = document.getElementById(field.id) as HTMLInputElement | HTMLSelectElement | null;
-    if (!input || (!force && document.activeElement === input)) continue;
-    if (!field.slot.pending() && input.dataset.appliedUnknown === 'true') { input.value = ''; continue; }
+    if (!input || (!force && input.contains(input.ownerDocument.activeElement))) continue;
+    if (!field.slot.pending() && input.dataset.appliedUnknown === 'true') { setDomProperty(input, 'value', ''); continue; }
     const value = mode === 'std' && key === 'source'
       ? (S.swpArmed || S.swpHold ? 'level' : 'bus') : String(field.slot.get());
     // External/API sources are displayed faithfully without adding UI capabilities.
     if (input instanceof HTMLSelectElement && !Array.from(input.options).some((o) => o.value === value)) {
       const option = document.createElement('option');
-      option.value = value; option.textContent = value; option.disabled = true; option.dataset.reported = 'true';
+      option.value = value; option.textContent = value; setDomProperty(option, 'disabled', true); option.dataset.reported = 'true';
       input.append(option);
     }
-    input.value = value;
+    setDomProperty(input, 'value', value);
   }
 }
 
@@ -73,14 +74,14 @@ export function syncTriggerMode(next: string): void {
   if (next !== mode) { mode = next; resetTriggerParameters(); resetTriggerRuntime(); }
   for (const [key, field] of Object.entries(triggerFields)) {
     const input = document.getElementById(field.id) as HTMLInputElement | HTMLSelectElement | null;
-    if (input) input.disabled = !canEditTrigger(key as TriggerKey);
+    if (input) setDomProperty(input, 'disabled', !canEditTrigger(key as TriggerKey));
     if (key === 'source' && input instanceof HTMLSelectElement) {
-      for (const option of input.options) option.disabled = mode === 'std' && option.value !== 'bus' && option.value !== 'level';
+      for (const option of input.options) setDomProperty(option, 'disabled', mode === 'std' && option.value !== 'bus' && option.value !== 'level');
     }
   }
   for (const id of ['btn-trg-capture', 'btn-trg-free', 'btn-trg-from-mkr', 'btn-trg-from-peak']) {
     const button = document.getElementById(id) as HTMLButtonElement | null;
-    if (button) button.disabled = !canCapture();
+    if (button) setDomProperty(button, 'disabled', !canCapture());
   }
 }
 
@@ -89,7 +90,7 @@ export function confirmTriggerFromStatus(req: Record<string, any>): void {
   const actual = req.trigger_actual ?? {};
   for (const field of Object.values(triggerFields)) {
     const input = document.getElementById(field.id);
-    if (input) input.dataset.appliedUnknown = String(mode === 'rta' && actual.valid === false && actual.simulated !== true);
+    if (input) setDomProperty(input.dataset, 'appliedUnknown', String(mode === 'rta' && actual.valid === false && actual.simulated !== true));
   }
   for (const [key, field] of Object.entries(triggerFields)) {
     if (mode === 'rta' && actual.valid === false && actual.simulated !== true) continue;

@@ -24,7 +24,7 @@ import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
-import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, type DensityGrid, type DensityPalette } from '../dsp/rtaDensity';
+import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, type DensityGrid, type DensityPalette, type DensityRasterBounds } from '../dsp/rtaDensity';
 import { DensityRelease } from '../dsp/densityRelease';
 import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
@@ -34,6 +34,8 @@ import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 import { renderFilterHandles, renderFilterPassband } from '../ui/sdrFilterGesture';
+import { sdrPassbandVisible } from '../ui/sdrPassbandState';
+import { renderSdrChannelBands } from './sdrChannelBands';
 import { renderSdrLocate } from '../ui/sdrLocate';
 import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 
@@ -81,7 +83,7 @@ function drawFreqRow(lo: number, hi: number, col: any, p: any) {
 function drawMarqueeOverlay() {
   const m = getMarqueePreview();
   if (!m) return;
-  const view = isZoomed() ? getView() : getCapture();
+  const view = previewFreqWindow() ?? getView();
   if (!view || !(view.hi > view.lo)) return;
   const p = plotRect();
   const x1 = p.x + (m.lo - view.lo) / (view.hi - view.lo) * p.w;
@@ -568,7 +570,8 @@ function renderRtaView() {
     } else if (peakListVisible.get()) {
       const mt2 = document.getElementById('marker-table');
       if (mt2) mt2.style.display = 'none';
-      if (rp) { updatePeakTable(rp); renderPeakMarks(rp); }
+      updatePeakTable(rp);
+      if (rp) renderPeakMarks(rp);
     } else {
       const mt2 = document.getElementById('marker-table');
       if (mt2) mt2.style.display = '';
@@ -623,13 +626,13 @@ export function renderAll() {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
-  } else if (powers) {
+  } else {
     autoPeakThr(powers);
     if (peakListOn() && c.viewMode === 'std') {
       const mt = document.getElementById('marker-table');
       if (mt) mt.style.display = 'none';
       updatePeakTable(powers);
-      renderPeakMarks(powers);
+      if (powers) renderPeakMarks(powers);
     } else if (c.measOn && c.measTabSel === 'chan') {
       const mt = document.getElementById('marker-table');
       if (mt) mt.style.display = 'none';
@@ -754,6 +757,8 @@ function renderRta() {
   const window = sdrSpectrumWindow();
   if (!window) { clearRtaDensityRelease(); return; }
   const { lo, hi } = window;
+  const viewDiagnostic = JSON.stringify({ lo, hi });
+  if (ctx.canvas.dataset.frequencyView !== viewDiagnostic) ctx.canvas.dataset.frequencyView = viewDiagnostic;
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   const activeTrace = S.traces[S.activeTraceIdx];
@@ -781,8 +786,8 @@ function renderRta() {
   const levelRef = getDisplayTop();
   const yScale = p.h / getDisplayRange();
   const levelTransform = yAxisTransform();
-  S.traces.forEach((_tr, ti) => {
-    if (hideTraces) return;
+  S.traces.forEach((tr, ti) => {
+    if (hideTraces || tr.mode === 'OFF') return;
     const disp = S.rtaDisplays[ti];
     if (!disp || disp.length < 2) return;
     const dn = Math.min(n, disp.length);   // guard against point-count mismatch
@@ -831,6 +836,7 @@ function renderRta() {
     ctx.restore();
   });
   // Preview the dial and passband together while the badge owns the pointer.
+  renderSdrChannelBands(ctx, lo, hi, p, true);
   renderFilterPassband(lo, hi, sdrBadgeDragFrequency());
   renderSdrLocate(lo, hi);
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
@@ -846,12 +852,25 @@ function renderRta() {
     ctx.fillStyle = col.bg;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(badge.label, badge.left + badge.width / 2, badge.top + badge.height / 2, badge.width - 8);
+    const box = badge.toggle;
+    const toggleGeometry = JSON.stringify(box);
+    if (ctx.canvas.dataset.passbandToggle !== toggleGeometry) ctx.canvas.dataset.passbandToggle = toggleGeometry;
+    ctx.strokeStyle = col.rta; ctx.lineWidth = 1;
+    ctx.strokeRect(box.left + 0.5, box.top + 0.5, box.width - 1, box.height - 1);
+    if (sdrPassbandVisible.get()) {
+      ctx.fillStyle = col.rta;
+      ctx.fillRect(box.left + 3, box.top + 3, box.width - 6, box.height - 6);
+    }
     ctx.restore();
-  }
+  } else delete ctx.canvas.dataset.passbandToggle;
+  const passbandVisible = String(sdrPassbandVisible.get());
+  if (ctx.canvas.dataset.passbandVisible !== passbandVisible) ctx.canvas.dataset.passbandVisible = passbandVisible;
   // Markers on the active RTA trace (length-guarded)
-  const actDisp = S.rtaDisplays[S.activeTraceIdx] || d.spec;
-  renderMarkersOnCanvas(actDisp.length >= 2 ? actDisp : d.spec);
-  renderOSD(actDisp.length >= 2 ? actDisp : d.spec);
+  const actDisp = getDisplayPowers();
+  if (actDisp && actDisp.length >= 2) {
+    renderMarkersOnCanvas(actDisp);
+    renderOSD(actDisp);
+  }
 }
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
@@ -887,7 +906,7 @@ function renderWaterfallIfOn() {
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
   if (!wfSized) sizeWaterfall(wf);
-  renderWaterfall(wf, 100);
+  renderWaterfall(wf, 100, pixelRatio);
 }
 
 
@@ -895,6 +914,9 @@ let rtaDensLayer: HTMLCanvasElement | null = null;
 let rtaDensCtx: CanvasRenderingContext2D | null = null;
 let rtaDensImage: ImageData | null = null;
 let rtaDensRaster = new Float32Array(0);
+const rtaDensBounds: DensityRasterBounds = { firstBin: 0, endBin: 0 };
+const rtaDensReleaseBounds: DensityRasterBounds = { firstBin: 0, endBin: 0 };
+let lastDensPaintTop = 0, lastDensPaintEnd = 0;
 let lastDensGrid: DensityGrid | null = null;
 let lastDensFreq: Float64Array | null = null;
 let lastDensRevision = -1;
@@ -914,6 +936,7 @@ let lastDensPlotWidth = NaN, lastDensPlotHeight = NaN, lastDensPixelRatio = NaN;
 
 function clearRtaDensityRelease(): void {
   rtaDensRelease.clear();
+  rtaDensReleaseBounds.firstBin = rtaDensReleaseBounds.endBin = 0;
   if (rtaDensPalette) rtaDensPalette.rasterBits = undefined;
   if (rtaDensFiniteMask.length) rtaDensFiniteMask = new Uint8Array(0);
   lastDensFirst = lastDensEnd = -1;
@@ -960,7 +983,7 @@ function drawRtaDensityLayer(
   const width = rtaDensWidth.get() * rows / p.h;
   // SDR native histories already replace their grid on a changed frequency axis;
   // packets may carry equal axes in freshly allocated arrays.
-  const geometryChanged = resized || lastDensGrid !== grid || (!softFootprint && lastDensFreq !== freq)
+  const geometryChanged = resized || lastDensGrid !== grid || (!grid.freq && lastDensFreq !== freq)
     || lastDensLo !== lo || lastDensHi !== hi || lastDensSource !== grid.source
     || lastDensPlotWidth !== p.w || lastDensPlotHeight !== p.h || lastDensPixelRatio !== pixelRatio
     || lastDensBins !== grid.bins || lastDensRefTop !== grid.refTop || lastDensDbPerBin !== grid.dBPerBin
@@ -971,8 +994,8 @@ function drawRtaDensityLayer(
     const rasterBins = softFootprint ? rows : grid.bins;
     if (rtaDensRaster.length !== cols * rasterBins) rtaDensRaster = new Float32Array(cols * rasterBins);
     if (softFootprint) rasterSparseDensity(grid, freq, lo, hi, cols, rtaDensRaster,
-      { bins: rows, origin: centre - 0.5, scale: pitch });
-    else rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
+      { bins: rows, origin: centre - 0.5, scale: pitch }, rtaDensBounds);
+    else rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster, rtaDensBounds);
     if (softFootprint) {
       let reset = geometryChanged || !rtaDensRelease.values.length
         || lastDensFirst !== first || lastDensEnd !== end;
@@ -988,18 +1011,36 @@ function drawRtaDensityLayer(
         rtaDensFiniteMask[i] = finite;
       }
       rtaDensRelease.apply(rtaDensRaster, grid.lastMs, rtaHalflife.get(), reset);
+      // The release floor retains old rows even when the current projection moves away.
+      rtaDensReleaseBounds.firstBin = reset ? rtaDensBounds.firstBin
+        : Math.min(rtaDensReleaseBounds.firstBin, rtaDensBounds.firstBin);
+      rtaDensReleaseBounds.endBin = reset ? rtaDensBounds.endBin
+        : Math.max(rtaDensReleaseBounds.endBin, rtaDensBounds.endBin);
       lastDensFirst = first; lastDensEnd = end;
     } else clearRtaDensityRelease();
   }
   if (rasterChanged || themeChanged || lastDensContrast !== contrast
       || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
-    if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
-      rtaDensImage = lc.createImageData(cols, rows);
+    const bounds = softFootprint ? rtaDensReleaseBounds : rtaDensBounds;
+    const paintCentre = softFootprint ? 0.5 : centre, paintPitch = softFootprint ? 1 : pitch;
+    const top = Math.max(0, Math.min(rows, Math.floor(paintCentre + bounds.firstBin * paintPitch - width / 2)));
+    const bottom = bounds.firstBin < bounds.endBin
+      ? Math.max(top, Math.min(rows, Math.ceil(paintCentre + (bounds.endBin - 1) * paintPitch + width / 2))) : top;
+    const height = bottom - top;
+    // Keep physical-pixel coverage, but never paint or upload the empty amplitude area.
+    // Grow in bands so fluctuating signal bounds reuse the same backing allocation.
+    if (height > 0) {
+      if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height < height || rtaDensImage.height > rows) {
+        rtaDensImage = lc.createImageData(cols, Math.min(rows, Math.ceil(height / 64) * 64));
+      }
+      paintDensity(softFootprint ? rtaDensRelease.values : rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
+        paintCentre, paintPitch, width, contrast, rtaDensLut!, softFootprint, rtaDensPalette, bounds, top);
+      lc.putImageData(rtaDensImage, 0, top, 0, 0, cols, height);
     }
-    paintDensity(softFootprint ? rtaDensRelease.values : rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
-      softFootprint ? 0.5 : centre, softFootprint ? 1 : pitch, width, contrast, rtaDensLut!, softFootprint,
-      softFootprint ? rtaDensPalette : undefined);
-    lc.putImageData(rtaDensImage, 0, 0);
+    // Erase history which left the occupied band, including a completely empty frame.
+    if (!resized && lastDensPaintTop < top) lc.clearRect(0, lastDensPaintTop, cols, Math.min(top, lastDensPaintEnd) - lastDensPaintTop);
+    if (!resized && lastDensPaintEnd > bottom) lc.clearRect(0, Math.max(bottom, lastDensPaintTop), cols, lastDensPaintEnd - Math.max(bottom, lastDensPaintTop));
+    lastDensPaintTop = top; lastDensPaintEnd = bottom;
     lastDensGrid = grid; lastDensRevision = grid.revision;
     lastDensFreq = freq;
     lastDensLo = lo; lastDensHi = hi; lastDensContrast = contrast;
@@ -1009,8 +1050,13 @@ function drawRtaDensityLayer(
     lastDensRefTop = grid.refTop; lastDensDbPerBin = grid.dBPerBin;
     lastDensPlotWidth = p.w; lastDensPlotHeight = p.h; lastDensPixelRatio = pixelRatio;
   }
-  ctx.save();
-  ctx.imageSmoothingEnabled = softFootprint;
-  ctx.drawImage(rtaDensLayer, p.x, p.y, p.w, p.h);
-  ctx.restore();
+  if (lastDensPaintEnd > lastDensPaintTop) {
+    // Include transparent neighbours for the existing smoothed detail interpolation.
+    const top = Math.max(0, lastDensPaintTop - 1), bottom = Math.min(rows, lastDensPaintEnd + 1);
+    ctx.save();
+    ctx.imageSmoothingEnabled = softFootprint;
+    ctx.drawImage(rtaDensLayer, 0, top, cols, bottom - top,
+      p.x, p.y + top / rows * p.h, p.w, (bottom - top) / rows * p.h);
+    ctx.restore();
+  }
 }
