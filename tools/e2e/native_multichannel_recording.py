@@ -281,7 +281,7 @@ def setup(origin):
     post(origin, {'cmd': 'SET_SDR', 'center': 100e6})
     current = reset_receivers(origin)['receivers'][0]
     for i in range(3):
-        command = {'type': 'create', 'request_id': f'create-{i}', 'config': config(100e6 + i * 10000)}
+        command = {'type': 'create', 'request_id': f'iq-create-{current["revision"]}-{i}', 'config': config(100e6 + i * 10000)}
         if i == 0:
             command.update(type='configure', receiver_uid=current['receiver_uid'], expected_revision=current['revision'])
         reply = api(origin, payload=command)

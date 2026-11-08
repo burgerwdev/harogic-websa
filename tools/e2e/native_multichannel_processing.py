@@ -11,7 +11,7 @@ import re
 import struct
 from pathlib import Path
 
-from native_multichannel import api, config, reset_receivers
+from native_multichannel import api, assert_receivers_continue, config, reset_receivers
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, post, start_service, stop
 from viewport_baseline import wait_async_condition, wait_ui_ready
@@ -82,38 +82,6 @@ async def protocol(origin, snapshot):
         except Exception as error:
             assert getattr(getattr(error, 'response', None), 'status_code', None) == 409, error
     return trace
-
-
-def assert_receivers_continue(before, after):
-    """Configuration/identities stay fixed while actual sample clocks advance."""
-    assert len(before) == len(after)
-    for old, current in zip(before, after, strict=True):
-        observations = {'clock', 'processing_statistics', 'processing_runtime', 'processing_state', 'control_receipts'}
-        assert {k: v for k, v in old.items() if k not in observations} == {k: v for k, v in current.items() if k not in observations}, (old, current)
-        # Native execution starts asynchronously and can move between active and
-        # backlogged without changing configuration or processing generation.
-        # Keep failure/retirement detectable instead of comparing live state as configuration.
-        if old.get('processing_state') in {'waiting', 'preparing', 'active', 'backlogged'}:
-            allowed = {'active', 'backlogged'}
-            if old['processing_state'] in {'waiting', 'preparing'}:
-                allowed |= {'waiting', 'preparing'}
-            assert current.get('processing_state') in allowed, (old, current)
-        else:
-            assert old.get('processing_state') == current.get('processing_state'), (old, current)
-        if old.get('processing_runtime'):
-            assert old['processing_runtime']['processing_generation'] == current['processing_runtime']['processing_generation']
-        lanes = {row['processing_generation']: row for row in current.get('processing_statistics', [])}
-        for previous in old.get('processing_statistics', []):
-            present = lanes[previous['processing_generation']]
-            assert present['packets']['successful_samples'] >= previous['packets']['successful_samples']
-            for counter in ['failed', 'rejected', 'cancelled']:
-                assert present['packets'][counter] == previous['packets'][counter], (counter, previous, present)
-        a, b = old['clock'], current['clock']
-        if a is not None:
-            assert b is not None
-            for key in ['input_index', 'output_index']:
-                assert int(b[key]) >= int(a[key]), (a, b)
-            assert {k: v for k, v in a.items() if k not in ['input_index', 'output_index']} == {k: v for k, v in b.items() if k not in ['input_index', 'output_index']}
 
 
 def browser_gate(origin, snapshot, artifacts):

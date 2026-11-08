@@ -44,7 +44,7 @@ def setup(origin, *, center=100e6, frequencies=None, reference=None, agc=False, 
             candidate['processors'][0].update(kind='decoder', bandwidth_hz=3000)
         elif mode == 'iq':
             candidate.update(purpose='iq', processors=[])
-        command = {'type': 'create', 'request_id': f'eight-create-{index}', 'config': candidate}
+        command = {'type': 'create', 'request_id': f'eight-create-{current["revision"]}-{index}', 'config': candidate}
         if index == 0:
             command.update(type='configure', receiver_uid=current['receiver_uid'], expected_revision=current['revision'])
         reply = api(origin, payload=command)
