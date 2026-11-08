@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The GPL companion is a separate executable; never linked into the MIT host.
+# The GPL companion remains a separate executable, installed under its own terms.
 set -euo pipefail
 revision=6b97328b1939f569b161c5066fbea8053a76c130
 prefix="${WEBSA_DECODERS_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders}"

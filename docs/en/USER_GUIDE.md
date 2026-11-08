@@ -32,6 +32,11 @@ Click a card name to edit it; Enter or leaving the field saves, and Escape cance
 Cards matching the main spectrum frequency show a crosshair and highlighted border,
 independently of the workbench's editing selection.
 
+An audio card's output button cycles **L/R → L → R** for the local speaker mix.
+**Mute all** in the overview title bar toggles master mute, including channels
+in separate windows; clicking again restores their existing listening routes
+and volumes. These controls do not change reception or recordings.
+
 Choose an automatic grid, 1–8 columns or free placement. Drag cards to reorder or position
 them; a moving placeholder previews the drop position. Alt+arrow keys also move a focused
 card. With snapping enabled, dragging reveals a grid of card-sized cells and the placeholder
@@ -72,6 +77,12 @@ out-of-band state.
 Main tuning always controls Current. Workbench editor selection is local to that view. Monitor volume, pan, mute and Solo
 are local speaker settings. Backend gain, AGC, squelch and noise reduction affect shared PCM
 and therefore published-audio recordings. A stopped or failed receiver cannot be monitored.
+
+The **EQ** button beside De-emph opens a movable listening equalizer. Five bands
+(80 Hz, 250 Hz, 1 kHz, 4 kHz and 12 kHz) provide ±12 dB, with output trim, bypass
+and Flat/Voice/Warm/Bright profiles. It applies to the overall stereo speaker mix
+in this browser. Settings persist locally; Preset restores enabled, flat bands
+and 0 dB trim. Recording, demodulation and decoder input remain before this EQ.
 
 For analog demodulation, the main panel offers 12, 24 and 48 kHz audio-rate shortcuts; 48 kHz is the default restored by Preset.
 These buttons change only the selected channel's sample rate. Other rates set elsewhere remain visible as their actual value. Mode-specific settings remain in the Decode window.

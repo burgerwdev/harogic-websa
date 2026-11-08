@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Standalone companion, built separately from the MIT websa host.
+// Standalone GPL companion, excluded from the WebSA host's license change.
 // Links OnAir's GPL HfdigRtty decoder; no decoder implementation is copied here.
 #include "dect2/hfdig/hfdig_rtty.h"
 #include <array>

@@ -49,6 +49,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pluto_radio as radio
+from source_setup import ensure_gps
 
 REVISION = '28ca29a6719475195e3aabd5930c4ed02d67190f'
 ARCHIVE_SHA256 = '046209d533e11628ba9cf44abf9717809f981f4de3eff13bd5a6d799f5671560'
@@ -339,6 +340,9 @@ def main(argv=None):
                          default_rate=2_600_000, default_scale=radio.DAC_FULL_SCALE / 2,
                          dry_run_help='generate a bounded 0.5 s probe and report provenance/RMS/peak; no hardware')
     parser.add_argument('--source-dir', type=Path, default=default_source_dir(), help='pinned simulator installation prefix')
+    setup = parser.add_mutually_exclusive_group()
+    setup.add_argument('--prepare', action='store_true', help='install simulator/fixture and exit without generating IQ or accessing a radio')
+    setup.add_argument('--no-setup', action='store_true', help='require an existing simulator; never download or compile')
     parser.add_argument('--duration', type=int, default=180, help='exact signal seconds, 60..3600 (default 180)')
     parser.add_argument('--stdout', action='store_true', help='offline IQ on stdout; never open hardware')
     parser.add_argument('--format', choices=('cs8', 'cf32'), default='cf32', help='offline stdout format (CF32 is little-endian, normalized CS8/128)')
@@ -359,7 +363,11 @@ def main(argv=None):
     try:
         validate_rate(int(args.rate))
         args.source_dir = args.source_dir.expanduser().resolve()
+        ensure_gps(args.source_dir, setup=not args.no_setup, force=args.prepare)
         info = provenance(args.source_dir)
+        if args.prepare:
+            print(f'GPS simulator ready: {args.source_dir}; radio untouched.', file=sys.stderr)
+            return 0
         print('SYNTHETIC GPS BENCH ONLY: 435 MHz transport, 2022 RINEX scenario at '
               '25.2,55.36,10; navigation time is sample-count based, not host UTC.', file=sys.stderr)
         if args.dry_run:
@@ -370,7 +378,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print('GPS bench interrupted; encoder stopped and radio cleanup requested.', file=sys.stderr)
         return 130
-    except (OSError, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f'GPS bench: {exc}\nInstall source with: bash tools/setup-gps-simulator.sh '
               f'--prefix {shlex.quote(str(args.source_dir))}', file=sys.stderr)
         return 1

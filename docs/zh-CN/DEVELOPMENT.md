@@ -116,13 +116,13 @@ python tools/bench/multichannel_rf.py --shim <matching-sdk-shim.so> \
 
 ## 依赖与许可
 
-- 项目代码（后端 + 前端）：**MIT** 协议
+- 有权授权的自有代码：**AGPL-3.0-only，附 HAROGIC SDK／FDK AAC 第 7 条例外**（`LicenseRef-Harogic-WebSA`）。参见[范围](../../LICENSING.md)、[第三方声明](../../THIRD_PARTY_NOTICES.md)及[源码打包／未决权利](LICENSING.md)。此前 MIT 授权继续有效。
 - 原生监听降噪包含 DeepFilterNet3，以及 GTCRN、UL_UNAS、FastEnhancer。后三项使用官方 MIT 许可 ONNX 权重和原生 ONNX Runtime CPU 库；PCM 处理和流式接收使用 Rust。参见[模型版本、许可、采样率、衰减和延迟](../../backend/models/nr/README.txt)。源码构建可先运行 `bash tools/fetch-nr-runtime.sh` 恢复固定版本库，再执行 `make package-runtime`。
-- `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；随项目附带供配合自有 SDK 使用
+- `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；排除在换证及新生成的源码归档外，厂商再分发／修改条款待核实。
 - `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
 - 官方 [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 为 **GNU LGPL v2.1 或更高版本**，在构建时下载，不纳入仓库。`tools/soapy-htra-stream-format.patch` 是本项目的兼容补丁，只应用于私有构建副本。
-- 可选 [multimon-ng](https://github.com/EliasOenal/multimon-ng) 与 [rtl_433](https://github.com/merbanan/rtl_433) 使用 GPL v2；[OnAir](https://github.com/adswill/OnAir) 使用 GPL v3，并有组件各自条款。它们作为独立安装的进程运行，不把解调代码复制进 MIT 主程序。安装脚本保留源码构建工具的固定源码/许可证，以及 OnAir 二进制说明和对应源码信息；再分发须遵守上游各项条款。
-- `tools/companions/rtty/main.cpp` 使用 **GPL-3.0-or-later**，作为独立编译的进程链接 OnAir RTTY 解码器，是主程序 MIT 许可证的明确例外；`backend/src/external/rtty.rs` 通过管道通信。参见 [RTTY 安装与回放](../../tools/README.md#independent-rtty-companion)。
+- 可选 [multimon-ng](https://github.com/EliasOenal/multimon-ng) 与 [rtl_433](https://github.com/merbanan/rtl_433) 使用 GPL v2；[OnAir](https://github.com/adswill/OnAir) 使用 GPL v3，并有组件各自条款。它们保持独立进程安装和现有管道／网络接口。安装脚本保留源码构建工具的固定源码／许可证，以及 OnAir 二进制说明和对应源码信息；再分发须遵守上游各项条款。
+- `tools/companions/rtty/main.cpp` 保持 **GPL-3.0-or-later**，作为独立编译的进程链接 OnAir RTTY 解码器，排除在自有代码换证范围外；`backend/src/external/rtty.rs` 通过管道通信。参见 [RTTY 安装与回放](../../tools/README.md#independent-rtty-companion)。
 - `tools/vendor/ggmorse/`：CW（莫尔斯）解码器来自 Georgi Gerganov 的
   [ggmorse](https://github.com/ggerganov/ggmorse)，**MIT** 协议，保留上游提交
   `7b4822a8`（见 `tools/vendor/ggmorse/LICENSE`）。`backend/cw_build.rs` 将其与本项目的

@@ -12,6 +12,7 @@ import { isKeypadOpen } from './keypad';
 import { resetWfRange, syncDisplayFftUi } from './wfRange';
 import { resetAudioFormat } from './recordingFormats';
 import { resetWorkbenchPreferences } from './workbenchPreferences';
+import { resetEqualizer } from '../audio/equalizer';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { parseNrAlgo, demodBandHz, sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
@@ -1513,6 +1514,7 @@ function applyPresetSuccess() {
   sharedReceiverModeMemory.reset();
   resetAudioFormat();
   resetWorkbenchPreferences();
+  resetEqualizer();
   document.dispatchEvent(new Event('websa:preset-applied'));
   setCurrentSdrChannel(1);
   setDecodeChannel(1);

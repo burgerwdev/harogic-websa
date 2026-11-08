@@ -1,4 +1,4 @@
-//! MIT host bridge to the separately distributed GPL OnAir RTTY companion.
+//! Project-owned host bridge to the separately distributed GPL OnAir RTTY companion.
 //! Input is protocol IQ; listener gain, squelch, AGC and NR never enter this path.
 use super::{executable, process::{self, Process}, Dependency, ExternalDecodeEvent};
 use serde_json::{json, Value};

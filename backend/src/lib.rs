@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Harogic-WebSA
+// Project-owned code: AGPL-3.0-only with ../../LICENSE-EXCEPTION; see ../../LICENSING.md.
 //! Native IQ channelization, fine DDC, and ordered baseband framing.
 mod fine;
 mod narrow;

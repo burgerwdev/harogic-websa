@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLang } from '../core/i18n';
 import { setTheme } from '../core/theme';
 import { clone } from '../core/multichannel';
-import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
+import { FixtureReceiverAdapter, fixtureConfig } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountWorkbench } from '../ui/workbenchApp';
 import { createWorkbenchOverview } from '../ui/workbenchOverview';
@@ -50,6 +50,43 @@ describe('channel overview ownership', () => {
     expect(session.snapshot).toEqual(before); expect(session.route('fixture-c1')).toMatchObject({ enabled: true, gain: .43 });
     expect(dispatch).not.toHaveBeenCalled();
     ui.recall(); expect(detail.hidden).toBe(true);
+  });
+  it('cycles card audio output without changing the receiver, listening target or other mix controls', () => {
+    session.monitor('fixture-c1', { enabled: true, gain: .43, solo: true });
+    const before = clone(session.snapshot), selected = session.selected, dispatch = vi.spyOn(adapter, 'dispatch');
+    const pan = (): HTMLButtonElement => cards()[0].querySelector('[data-card-pan]')!;
+    expect(pan().textContent).toBe('L/R');
+    for (const [value, label] of [[-1, 'L'], [1, 'R'], [0, 'L/R']] as const) {
+      pan().click();
+      expect(pan().textContent).toBe(label);
+      expect(session.route('fixture-c1')).toEqual({ enabled: true, gain: .43, solo: true, pan: value });
+    }
+    const detail = detach('fixture-c1');
+    const slider = detail.querySelector<HTMLInputElement>('[data-pan]')!;
+    slider.value = '-0.5'; slider.dispatchEvent(new Event('input', { bubbles: true }));
+    detail.querySelector<HTMLButtonElement>('[data-dock]')!.click();
+    expect(pan().textContent).toBe('L'); pan().click(); expect(session.route('fixture-c1').pan).toBe(1);
+    expect(session.snapshot).toEqual(before); expect(session.selected).toBe(selected); expect(dispatch).not.toHaveBeenCalled();
+  });
+  it('mutes all listening channels including detached cards, then restores the mix', () => {
+    session.snapshot.receivers[1].confirmed = fixtureConfig('listen', 2);
+    session.monitor('fixture-c1', { enabled: true, gain: .43, pan: -1 });
+    session.monitor('fixture-c2', { enabled: true, gain: .6, pan: 1 });
+    const routes = clone([...session.routes]), before = clone(session.snapshot), dispatch = vi.spyOn(adapter, 'dispatch');
+    detach('fixture-c2'); select('data-overview-band', 'in-band');
+    const mute = (): HTMLButtonElement => overview().querySelector('.mc-head [data-overview-mute]')!;
+    expect(session.audible('fixture-c1')).toBe(true); expect(session.audible('fixture-c2')).toBe(true);
+    mute().click();
+    expect(mute().getAttribute('aria-pressed')).toBe('true');
+    expect(session.audible('fixture-c1')).toBe(false); expect(session.audible('fixture-c2')).toBe(false);
+    setLang('zh'); expect(mute().textContent).toBe('全部静音');
+    mute().click();
+    expect(mute().getAttribute('aria-pressed')).toBe('false');
+    expect(session.audible('fixture-c1')).toBe(true); expect(session.audible('fixture-c2')).toBe(true);
+    expect([...session.routes]).toEqual(routes); expect(session.snapshot).toEqual(before); expect(dispatch).not.toHaveBeenCalled();
+    session.monitorMode = 'follow'; session.notify();
+    mute().click(); expect(session.masterMuted).toBe(true); expect(session.monitorMode).toBe('follow');
+    mute().click(); expect(session.masterMuted).toBe(false); expect(session.monitorMode).toBe('follow');
   });
   it('returns every detached channel, including a browser popup, to the unique overview', () => {
     const first = detach('fixture-c1'), second = detach('fixture-c2');

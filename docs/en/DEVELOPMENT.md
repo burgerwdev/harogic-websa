@@ -141,13 +141,13 @@ and historical reports.
 
 ## Dependencies and notices
 
-- Project code (backend + frontend): **MIT** licensed
+- Authorized project-owned code: **AGPL-3.0-only with the HAROGIC SDK / FDK AAC section 7 exception** (`LicenseRef-Harogic-WebSA`). See [scope](../../LICENSING.md), [third-party notices](../../THIRD_PARTY_NOTICES.md) and [source packaging / unresolved rights](LICENSING.md). Earlier MIT grants remain effective.
 - Native listening NR includes DeepFilterNet3, GTCRN, UL_UNAS, and FastEnhancer. The latter three use official MIT-licensed ONNX weights and the native ONNX Runtime CPU library; PCM DSP and streaming are implemented in Rust. See [model versions, notices, rates, attenuation and delay](../../backend/models/nr/README.txt). Source builds can restore the pinned library with `bash tools/fetch-nr-runtime.sh` before `make package-runtime`.
-- `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
+- `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; excluded from relicensing and generated source bundles pending confirmation of the vendor's redistribution/modification terms.
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
 - Official [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` is **GNU LGPL v2.1 or later** and is downloaded at build time, not vendored. `tools/soapy-htra-stream-format.patch` is this project's compatibility patch and is applied only to a private build copy.
-- Optional [multimon-ng](https://github.com/EliasOenal/multimon-ng) and [rtl_433](https://github.com/merbanan/rtl_433) use GPL v2; [OnAir](https://github.com/adswill/OnAir) uses GPL v3 with component-specific notices. They run as independently installed processes, not copied decoder code in the MIT host. The setup script preserves pinned sources/licenses for source-built tools and OnAir's binary notices plus corresponding-source information; redistributors must retain the applicable upstream terms.
-- `tools/companions/rtty/main.cpp` is **GPL-3.0-or-later**, a separately built companion linked to OnAir's RTTY decoder. It is an explicit exception to the host's MIT license; `backend/src/external/rtty.rs` communicates with that executable through pipes. See [RTTY setup and replay](../../tools/README.md#independent-rtty-companion).
+- Optional [multimon-ng](https://github.com/EliasOenal/multimon-ng) and [rtl_433](https://github.com/merbanan/rtl_433) use GPL v2; [OnAir](https://github.com/adswill/OnAir) uses GPL v3 with component-specific notices. They run as independently installed processes with the existing pipe/network integration. The setup script preserves pinned sources/licenses for source-built tools and OnAir's binary notices plus corresponding-source information; redistributors must retain the applicable upstream terms.
+- `tools/companions/rtty/main.cpp` remains **GPL-3.0-or-later**, a separately built companion linked to OnAir's RTTY decoder and excluded from the project-owned license change; `backend/src/external/rtty.rs` communicates with that executable through pipes. See [RTTY setup and replay](../../tools/README.md#independent-rtty-companion).
 - `tools/vendor/ggmorse/`: the CW (Morse) decoder is
   [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at
   commit `7b4822a8` (see `tools/vendor/ggmorse/LICENSE`). `backend/cw_build.rs` compiles it

@@ -3,8 +3,12 @@ name = "websa-dsp"
 version = "0.1.0"
 edition = "2021"
 description = "Shared native/WASM SDR DSP core for harogic-websa (DDC, demodulators, audio enhancement)"
-license = "MIT"
+license-file = "../../LICENSE-PACKAGE"
 publish = false
+
+[package.metadata.licensing]
+identifier = "LicenseRef-Harogic-WebSA"
+terms = "AGPL-3.0-only with the HAROGIC SDK and FDK AAC section 7 exception; see ../../LICENSE-EXCEPTION and ../../LICENSING.md. Vendored components retain their own terms."
 
 # No Rust dependencies or binding generator: the browser loads the raw WASM ABI.
 # Native builds additionally need FDK AAC via pkg-config; WASM builds link the

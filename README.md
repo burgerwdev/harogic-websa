@@ -13,7 +13,8 @@ and a TypeScript browser interface. Python is used for offline tools and tests.
 
 - Swept and real-time spectrum, four traces, density/waterfall, markers, channel power,
   occupied bandwidth, ACPR, harmonic and phase-noise measurements.
-- Up to sixteen independently tuned receivers in one capture, local audio mixing,
+- Up to sixteen independently tuned receivers in one capture, local audio mixing with
+  stereo routing and overall speaker EQ,
   floating channel/decoder windows and sixteen shared recording task slots.
 - AM/DSB/USB/LSB/CW/NFM/WFM/PM, FM stereo/RDS, noise reduction, FT8, DRM/DRM+, SSTV
   and radiofax; optional external decoder providers extend the mode catalog.
@@ -69,8 +70,16 @@ kernels; `frontend/` owns browser interaction; `contracts/` holds shared limits;
 
 ## License and attribution
 
-Project host code is [MIT](LICENSE). Vendor code, codecs, model weights and independently
-installed providers have their own terms; see [Dependencies and notices](docs/en/DEVELOPMENT.md#dependencies-and-notices).
-The HAROGIC SDK is proprietary and must be obtained separately.
+Project-owned code that we can authorize uses [AGPL-3.0-only](LICENSE) with a
+[section 7 linking exception](LICENSE-EXCEPTION) for **HAROGIC SDK and FDK AAC only**
+(`LicenseRef-Harogic-WebSA`). Project code and modifications retain their applicable
+Corresponding Source obligations, including the modified network version's source offer.
+The UI links to the license texts and a versioned local source snapshot.
+
+Third-party code, libraries, models and independent decoders retain their original terms;
+see [scope and earlier MIT grants](LICENSING.md), [third-party notices](THIRD_PARTY_NOTICES.md)
+and [review evidence / unresolved rights](docs/en/LICENSING.md). Earlier MIT releases remain
+available under their original [MIT grant](LICENSES/MIT-legacy.txt). The proprietary HAROGIC
+SDK must still be obtained separately; the exception supplies no vendor redistribution rights.
 
 Author: [好奇牛马 (Bilibili)](https://space.bilibili.com/28447213).

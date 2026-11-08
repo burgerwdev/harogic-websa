@@ -8,8 +8,12 @@ the wasm archive is never used as a native library.
 
 - Source: <https://github.com/mstorsjo/fdk-aac> (Fraunhofer FDK AAC Codec Library for
   Android), licence: the Fraunhofer FDK AAC licence (a permissive redistribution
-  licence; **no patent licence is granted** — see `NOTICE`/`MODULE_LICENSE_FRAUNHOFER`
-  in the source). The full licence text is reproduced in that source tree.
+  licence; **no patent licence is granted** — see the full [NOTICE](NOTICE) and
+  [MODULE_LICENSE_FRAUNHOFER](MODULE_LICENSE_FRAUNHOFER) retained here).
+  Binary recipients must have free access to the complete FDK source and changes
+  under its own terms. The project [linking exception](../../../LICENSE-EXCEPTION)
+  does not waive that requirement. The archive's exact revision/patch provenance
+  still needs confirmation; see the [review](../../../docs/en/LICENSING.md).
 - The live receiver uses FDK's `TT_DRM` decoder for AAC-LC, HE-AAC, HE-AAC v2 and
   xHE-AAC/USAC. FDK 2.0.3 supports the DRM type-9 xHE static configuration and USAC
   access units; libxaac remains a separate wasm diagnostic decoder.

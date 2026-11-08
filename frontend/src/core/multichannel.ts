@@ -77,6 +77,7 @@ export interface RecordingTask {
 export interface ReceiverMode {
   id: string; kind: 'analog' | 'digital'; label: string; provider: string; available: boolean;
   unavailableReason: string | null; defaultBandwidthHz: number; minimumRateHz: number;
+  startupTimeoutMs?: number;
   minBandwidthHz?: number; maxBandwidthHz?: number; bandwidthPresetsHz?: number[]; bandwidthEditable?: boolean;
   audioCompanion: string | null; outputs: string[]; sideband: string;
 }

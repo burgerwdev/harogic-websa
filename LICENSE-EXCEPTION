@@ -1,0 +1,73 @@
+Harogic WebSA linking exception, version 1.0
+Additional permission under section 7 of the GNU Affero General Public License,
+version 3
+
+1. Scope and authority
+
+This additional permission is granted by the copyright holders who license
+their project-owned Harogic WebSA code under AGPL-3.0-only with this exception
+(the "Covered Code"). It applies only to rights those holders can grant. The
+scope of project-owned code and exclusions are described in LICENSING.md.
+It does not relicense third-party material or grant an exception on behalf of
+another copyright holder.
+
+2. Designated Dependencies
+
+The permission is limited to these two dependencies, separately or together:
+
+(a) the HAROGIC device SDK: HAROGIC's device API library (libhtraapi), its API
+    headers and SDK bindings used to communicate with HAROGIC instruments;
+(b) the Fraunhofer FDK AAC Codec Library for Android (FDK AAC), including its
+    distribution at https://github.com/mstorsjo/fdk-aac.
+
+These designations include upstream releases and modifications confined to
+the respective device API or AAC codec functionality, such as bug fixes and
+platform adaptations. They do not include unrelated modules attached to,
+renamed as, or distributed alongside either dependency. Other libraries
+bundled with an SDK remain subject to their own licenses and are not made
+Designated Dependencies merely by being bundled with it.
+
+3. Permission for the combination
+
+Notwithstanding the conditions of AGPL-3.0-only that would otherwise prevent
+the combination solely because of a Designated Dependency's license, you may
+link the Covered Code or a modified version of it, statically or dynamically,
+with either or both Designated Dependencies, load them at run time, and use,
+reproduce and convey the resulting combined program in source or object form.
+You must comply with the applicable original terms of each third-party
+component, including its notices, source availability and redistribution
+requirements. This permission does not supply any missing permission from
+HAROGIC, Fraunhofer or another third party to use or distribute their work.
+
+4. Corresponding Source remains required
+
+All AGPL-3.0-only obligations for the Covered Code and modifications of it
+remain in force, including the applicable Corresponding Source obligations
+under sections 4, 5 and 6 and the remote network source offer under section 13.
+Corresponding Source includes the Covered Code's modifications, interfaces,
+adapters and scripts needed to build, install, run and modify it, to the extent
+required by AGPL-3.0-only. Using this exception does not permit withholding
+those materials or licensing modifications of the Covered Code as proprietary.
+
+Solely for the permitted combination, the Designated Dependencies themselves
+need not be relicensed under AGPL-3.0-only, and this exception does not require
+their source to be supplied under AGPL-3.0-only. Any obligation to supply their
+source under their own terms remains unchanged; in particular, this exception
+does not waive FDK AAC's source availability conditions for binary recipients.
+No source obligation for any other component is waived by this exception.
+
+5. Limits and downstream copies
+
+This is not a general exception for proprietary plugins, modules, codecs,
+libraries or services. It does not change the license of independent decoder
+programs, models, vendored code or other dependencies. It grants no additional
+patent or trademark rights and makes no representation about compatibility
+with third-party agreements.
+
+Under AGPL version 3 section 7, you may remove this additional permission from
+a copy or from a part of it. If you retain it, make this text available with
+the applicable AGPL license notices. A modifier may extend it only to material
+for which the modifier has the necessary copyright permission; this text
+cannot grant an exception for separately copyrighted AGPL code without its
+copyright holders' authorization. No later version of the AGPL is authorized
+by this exception.

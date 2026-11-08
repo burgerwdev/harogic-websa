@@ -199,7 +199,7 @@ sample acknowledgement.
 ### GPS L1 C/A from SDR IQ
 
 The `gps` mode runs the independent GPL GNSS-SDR 0.0.20 receiver behind a native
-MIT `websa-gnss` process bridge. GPS requires at least 2,600,000 complex samples/s
+project-owned `websa-gnss` process bridge (see [license scope](../LICENSING.md)). GPS requires at least 2,600,000 complex samples/s
 before rate adaptation; the provider FIFO consumes exactly 4,000,000 complex
 samples/s. Normal reception is at 1575.420 MHz with a fixed 2.046 MHz channel
 bandwidth. A centered 3.90625 MSps capture can therefore be adapted to 4 MSps;
@@ -266,7 +266,7 @@ does not start or configure a transmitter.
 
 `rtty` and `rtty-reverse` use a separately installed GPL-3.0-or-later companion
 linked to OnAir's mature `HfdigRtty` decoder. They do not depend on the stock
-OnAir Web RTTY factory, which its upstream policy filters out. The MIT host
+OnAir Web RTTY factory, which its upstream policy filters out. The WebSA host
 passes protocol IQ through its raw USB demodulator at 48 kS/s → 8 kHz mono;
 listener AGC, gain, squelch and noise reduction do not affect decoding.
 
@@ -280,7 +280,7 @@ The installer needs Git and a C++17 compiler, fetches pinned OnAir revision
 and standalone companion. No GUI, sound routing, full OnAir build or SDR driver
 is required. `--source /path/to/OnAir` uses a clean checkout of that revision;
 `--prefix DIR` selects the independent installation directory. Sources and
-GPL notices remain separate from the MIT host; retain corresponding sources
+GPL notices remain with the independent companion; retain corresponding sources
 when redistributing the companion. Discovery checks `WEBSA_RTTY_PATH`, then `PATH`,
 then `bin/websa-rtty` under `WEBSA_DECODERS_PREFIX` or the default
 `${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders`. For a custom `--prefix`
@@ -413,7 +413,29 @@ The shared radio layer enables the TX LO when a previous application left its
 `powerdown` attribute set, then restores that state after destroying the TX
 buffer on exit. A successful DMA push alone does not confirm RF transmission.
 
-The dispatcher also provides `dtmf`, `aprs`, `ais`, `ft4`, `wspr` and `gps`.
+The dispatcher also provides `dtmf`, `aprs`, `ais`, `ft4`, `wspr`, `rtty`,
+`rtty-reverse` and `gps`. Missing external encoders are prepared automatically
+on the first run, using pinned sources in the user cache. No OnAir path is
+required. Use `--prepare` to install without transmitting, and `--no-setup`
+to require existing dependencies without downloading or compiling:
+
+```sh
+python3 tools/pluto_tx.py aprs --prepare
+python3 tools/pluto_tx.py gps --prepare
+python3 tools/pluto_tx.py ft4 --dry-run
+python3 tools/pluto_tx.py wspr --dry-run
+python3 tools/pluto_tx.py rtty --message 'CQ CQ TEST 12345' --dry-run
+```
+
+The APRS/AIS/FT4/WSPR helper needs Git, a C++20 compiler and Cargo. Its GPL code,
+source revision, binary/build hashes and upstream notices stay separate from
+the host. `ONAIR_ROOT` and `--encoder` remain available for an explicit source
+checkout or executable. GPS setup needs curl, tar, sha256sum and a C compiler.
+RTTY is generated directly in Python: ITA2, five data bits, one start and
+1.5 stop bits, with a continuous phase/sample clock. Defaults are 45.45 baud,
+170 Hz shift and 2125 Hz low tone; `--baud`, `--shift-hz`, `--base-hz` and
+`rtty-reverse` support the receiver's alternatives.
+
 Digital modes and GPS share `pluto_radio.Radio` and its persistent streaming
 API: `open_stream(kernel_buffers=4)`, `prime_stream(...)`, `push_chunk(...)`
 and `drain_stream(...)`. The shared layer owns radio setup, queue priming,
@@ -421,7 +443,8 @@ draining and cleanup; each generator owns its waveform, sample clock and
 continuity deadlines. FT4/WSPR align to UTC slots; Pluto has no timestamped TX,
 so transport startup uncertainty remains part of the bench evidence.
 
-Install the independent GPS simulator with `bash tools/setup-gps-simulator.sh`.
+The GPS command prepares its independent simulator automatically; the explicit
+installer remains available as `bash tools/setup-gps-simulator.sh`.
 The GPS command generates a stationary synthetic 2022 scenario at
 25.2° N, 55.36° E, 10 m, with signal time advanced by sample count. Use
 `python3 tools/pluto_tx.py gps --dry-run` for a bounded offline probe or

@@ -59,6 +59,21 @@ function block(magic = 'IQBF'): ArrayBuffer {
   new Float32Array(data, 56).set([0.5, -0.25, 0.125, 0.75]); return data;
 }
 describe('native receiver control and shared IQ', () => {
+  it('allows the advertised ADS-B startup budget through admission and commit', async () => {
+    snapshot.capabilities.mode_descriptors = [{ id: 'adsb', kind: 'digital', provider: 'onair', label: 'ADS-B', available: true,
+      unavailableReason: null, defaultBandwidthHz: 1800000, minimumRateHz: 2500000, startupTimeoutMs: 15000,
+      audioCompanion: null, outputs: ['table'], sideband: 'center' }];
+    fetchMock.mockResolvedValue(response(snapshot)); await adapter.refresh(); fetchMock.mockClear();
+    const deadline = vi.spyOn(AbortSignal, 'timeout');
+    const config = clone(snapshot.receivers[0].confirmed); config.purpose = 'digital'; config.processors[0].mode = 'adsb';
+    fetchMock.mockResolvedValueOnce(response(impact)).mockImplementationOnce((_url, options) => {
+      const request = JSON.parse(options.body);
+      return Promise.resolve(response({ request_id: request.request_id, snapshot, fault: null }));
+    });
+    const reply = await adapter.dispatch({ type: 'create', request_id: 'adsb-start', config });
+    expect(reply.fault).toBeNull(); expect(deadline.mock.calls.map(([ms]) => ms)).toEqual([23000, 23000]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
   it('does not commit a command after disposal while its preflight reply is pending', async () => {
     let finish!: (value: unknown) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));

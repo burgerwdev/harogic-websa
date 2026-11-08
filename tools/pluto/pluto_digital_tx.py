@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Known-content FT4, WSPR, APRS, AIS and DTMF Pluto bench signals.
+"""Known-content FT4, WSPR, APRS, AIS, DTMF and RTTY Pluto bench signals.
 
-Build the external OnAir encoder once with tools/pluto/build-digital-source.sh.
+Missing external encoders are prepared automatically in the user cache.
+Use --prepare to install without transmitting, or --no-setup for offline checks.
 All modes default to the 435 MHz bench carrier. AIS uses a -25 kHz channel
 relative to that carrier; receiving it requires the explicit AIS bench mapping.
 FT4/WSPR start on UTC slots, including their 0.5/1 s protocol lead-in. Pluto
@@ -24,11 +25,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pluto_radio as radio
+from rtty_encode import source as rtty_source
+from source_setup import digital_helper, ensure_digital
 
-MODES = ('ft4', 'wspr', 'aprs', 'ais', 'dtmf')
+MODES = ('ft4', 'wspr', 'aprs', 'ais', 'dtmf', 'rtty', 'rtty-reverse')
 PERIODS = {'ft4': 7.5, 'wspr': 120.0, 'aprs': 3.0, 'ais': 3.0}
 MESSAGES = {'ft4': 'CQ K1ABC FN42', 'wspr': 'K1ABC FN42 30',
-            'aprs': '!4903.50N/07201.75W>WEBSA APRS TEST'}
+            'aprs': '!4903.50N/07201.75W>WEBSA APRS TEST',
+            'rtty': 'RYRY CQ CQ DE N0CALL TEST 12345\r\n', 'rtty-reverse': 'RYRY CQ CQ DE N0CALL TEST 12345\r\n'}
 DTMF_KEYS = ('123A', '456B', '789C', '*0#D')
 
 
@@ -54,12 +58,11 @@ def dtmf_source(args):
 
 
 def encoded_source(args):
+    if args.mode in ('rtty', 'rtty-reverse'):
+        return rtty_source(args.message, args.baud, args.shift_hz, args.base_hz, args.mode == 'rtty-reverse')
     if args.mode == 'dtmf':
         return dtmf_source(args)
-    helper = Path(args.encoder).expanduser().resolve()
-    if not helper.is_file() or not os.access(helper, os.X_OK):
-        raise ValueError(f'encoder unavailable: {helper}; build it with '
-                         'bash tools/pluto/build-digital-source.sh /path/to/OnAir')
+    helper = ensure_digital(Path(args.encoder), setup=not args.no_setup)
     message = str(args.mmsi) if args.mode == 'ais' else args.message
     base = args.base_hz if args.mode in ('ft4', 'wspr') else (-25000 if args.mode == 'ais' else 0)
     period = PERIODS[args.mode]
@@ -157,6 +160,8 @@ def transmit(args, source, source_rate, period, phase_per_period):
         print(f'first period: {time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(first_slot))} UTC '
               f'(epoch={first_slot:.6f}); startup uncertainty ±{startup / 2:.3f}s; '
               f'tx-delay={args.tx_delay:+.3f}s', flush=True)
+        if args.mode in ('ft4', 'wspr'):
+            print(f'Waiting {max(0, first_slot - time.time()):.1f}s for the next {args.mode.upper()} UTC slot…', flush=True)
         announced = -1
         while stop is None or sent < stop:
             chunk = resampler.chunk(sent, count, delay_samples)
@@ -185,18 +190,22 @@ def transmit(args, source, source_rate, period, phase_per_period):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('mode', choices=MODES)
-    parser.add_argument('--message', help='FT4/WSPR encodable text, or full APRS information field')
+    parser.add_argument('--message', help='FT4/WSPR/RTTY text, or full APRS information field')
     parser.add_argument('--mmsi', type=int, default=367000001, help='AIS type 1 identity, nine digits')
-    parser.add_argument('--base-hz', type=float, default=1500, help='lowest FT4/WSPR tone, Hz above LO')
+    parser.add_argument('--base-hz', type=float, help='lowest audio tone above LO: FT4/WSPR 1500 Hz, RTTY 2125 Hz')
+    parser.add_argument('--baud', type=float, choices=(45.45, 50, 75, 100), default=45.45, help='RTTY baud rate')
+    parser.add_argument('--shift-hz', type=int, choices=(170, 200, 425, 450, 850), default=170, help='RTTY mark/space separation')
     parser.add_argument('--offset-hz', '--offset', type=float, default=0,
                         help='additional RF carrier offset in Hz (use 1000 for DTMF offset testing)')
     parser.add_argument('--slots', '--repeat', type=int, default=1, help='complete periods to transmit (0 = forever)')
     parser.add_argument('--chunk', type=float, default=0.25, help='stream buffer seconds, 0.05..0.5')
     parser.add_argument('--tx-delay', type=float, default=0,
                         help='measured transport/DAC delay correction in seconds; positive means RF starts later')
-    parser.add_argument('--encoder', default=os.environ.get(
-                            'PLUTO_DIGITAL_SOURCE', str(Path(__file__).with_name('pluto_digital_source'))),
-                        help='built OnAir protocol encoder executable (default: PLUTO_DIGITAL_SOURCE or sibling helper)')
+    parser.add_argument('--encoder', default=os.environ.get('PLUTO_DIGITAL_SOURCE', str(digital_helper())),
+                        help='protocol encoder (default: PLUTO_DIGITAL_SOURCE or automatically prepared cache)')
+    setup = parser.add_mutually_exclusive_group()
+    setup.add_argument('--prepare', action='store_true', help='prepare encoder dependencies and exit without radio access')
+    setup.add_argument('--no-setup', action='store_true', help='require an existing encoder; never download or build dependencies')
     parser.add_argument('--digits', default='123A#', help='DTMF sequence, symbols 0-9 A-D * #')
     parser.add_argument('--tone-ms', type=float, default=200, help='DTMF tone duration in ms')
     parser.add_argument('--pause-ms', type=float, default=100, help='DTMF interdigit pause in ms')
@@ -204,6 +213,7 @@ def main(argv=None):
     radio.add_radio_args(parser, default_lo=435e6, default_gain=-40,
                          dry_run_help='encode the complete known-content source and preview DAC-rate chunks; no hardware')
     args = parser.parse_args(argv)
+    args.base_hz = args.base_hz if args.base_hz is not None else (2125 if args.mode.startswith('rtty') else 1500)
     args.message = args.message if args.message is not None else MESSAGES.get(args.mode, '')
     args.digits = args.digits.upper()
     for key in ('rate', 'lo', 'gain', 'scale', 'chunk', 'base_hz', 'offset_hz', 'tx_delay',
@@ -228,6 +238,11 @@ def main(argv=None):
     if abs(args.offset_hz) + 40000 >= args.rate / 2:
         parser.error('--offset-hz places the waveform outside the DAC Nyquist band')
     try:
+        if args.prepare:
+            if args.mode not in ('dtmf', 'rtty', 'rtty-reverse'):
+                ensure_digital(Path(args.encoder), force=True)
+            print(f'{args.mode}: encoder ready; radio untouched.')
+            return 0
         source, source_rate, period, expected, phase_per_period = encoded_source(args)
         print(f'mode           : {args.mode}\nexpected decode: {expected}\n'
               f'source         : {source_rate} Hz, {source.size} complex samples, {source.nbytes / 1e6:.3f} MB\n'

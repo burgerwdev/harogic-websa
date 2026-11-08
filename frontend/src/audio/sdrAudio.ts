@@ -1,5 +1,6 @@
 import { AUDIO_QUEUE_SECONDS } from '../sdr/streamLimits';
 import { isChannelNumber } from '../core/channelState';
+import { connectEqualizer, equalizerActive, onEqualizerChange } from './equalizer';
 // Backend AUD2 playback: each channel has one ingress worker and one output node.
 let ctx: AudioContext | null = null;
 let spectrumProbe: AnalyserNode | null = null;
@@ -28,13 +29,14 @@ function nativeBus(audio: AudioContext): GainNode {
   if (!master) {
     master = audio.createGain(); limiter = audio.createDynamicsCompressor();
     // Prepare the shared graph at unity before workbench gain/compression takes over.
-    limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = nativeOwner ? 20 : 1;
+    limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = nativeOwner || equalizerActive() ? 20 : 1;
     limiter.attack.value = 0.003; limiter.release.value = 0.1;
-    master.connect(limiter); limiter.connect(audio.destination);
+    connectEqualizer(audio, master, limiter); limiter.connect(audio.destination);
     master.gain.value = nativeOwner ? (masterMuted ? 0 : masterVolume) : 1;
   }
   return master;
 }
+onEqualizerChange(() => { if (limiter) ramp(limiter.ratio, nativeOwner || equalizerActive() ? 20 : 1); });
 
 /** True while autoplay policy holds the context suspended with playback wanted. */
 export function sdrAudioNeedsGesture(): boolean {
@@ -148,7 +150,7 @@ class AudioChain {
     return true;
   }
   private destination(audio: AudioContext): AudioNode {
-    if (typeof this.channel === 'number' && !this.source?.receiver_uid) return audio.destination;
+    if (typeof this.channel === 'number' && !this.source?.receiver_uid) return nativeBus(audio);
     if (!this.gainNode) {
       this.gainNode = audio.createGain(); this.panNode = audio.createStereoPanner();
       this.gainNode.gain.value = 0; this.panNode.pan.value = this.localPan;
@@ -544,7 +546,7 @@ export function claimNativeAudio(snapshot?: NativeAudioDirectory): () => void {
     for (const [key, playback] of chains) if (typeof key === 'string') { playback.setEnabled(false); chains.delete(key); }
     nativeOwner = false;
     if (master) ramp(master.gain, 1);
-    if (limiter) ramp(limiter.ratio, 1);
+    if (limiter) ramp(limiter.ratio, equalizerActive() ? 20 : 1);
     for (const [key, wanted] of legacyWanted) setSdrChannelAudioEnabled(key, wanted);
     document.dispatchEvent(new CustomEvent('websa:monitor-owner', { detail: { native: false } }));
   };

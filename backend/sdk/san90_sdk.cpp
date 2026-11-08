@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Harogic-WebSA
+// Project adapter: AGPL-3.0-only with ../../LICENSE-EXCEPTION; vendor SDK excluded.
 // SDK 0.55.100 ABI boundary for the native SAN-90 capture service.
 // Build with the official htra_api.h and libhtraapi.so.0.55.100: make sdk-shim.
 #include "htra_api.h"

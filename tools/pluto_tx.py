@@ -17,6 +17,8 @@ commands:
     python3 tools/pluto_tx.py drmplus --dry-run
     python3 tools/pluto_tx.py gps --dry-run  # install: bash tools/setup-gps-simulator.sh
     python3 tools/pluto_tx.py cw 'CQ CQ DE N0CALL' --pitch 700
+    python3 tools/pluto_tx.py rtty --message 'CQ TEST 12345' --dry-run
+    python3 tools/pluto_tx.py aprs --prepare  # prepare dependencies without TX
 
 Run `python3 tools/pluto_tx.py <mode> --help` for the mode's own options.
 """
@@ -43,6 +45,8 @@ TOOLS: dict[str, tuple[str | None, str]] = {
     'cw': ('pluto_cw_tx.py', 'CW: keyed Morse carrier at the Pitch'),
     'ft8': ('pluto_ft8_tx.py', 'FT8: 8-FSK burst in a 15 s slot'),
     'ft4': ('pluto_digital_tx.py', 'FT4: known message in UTC-aligned 7.5 s slots'),
+    'rtty': ('pluto_digital_tx.py', 'RTTY: native ITA2 FSK, 45.45 baud / 170 Hz by default'),
+    'rtty-reverse': ('pluto_digital_tx.py', 'RTTY reverse: exchanged mark and space tones'),
     'wspr': ('pluto_digital_tx.py', 'WSPR: known callsign/grid/power in UTC-aligned 120 s slots'),
     'aprs': ('pluto_digital_tx.py', 'APRS: AX.25 UI packet over 1200-baud AFSK/FM'),
     'ais': ('pluto_digital_tx.py', 'AIS: type 1 position report on a 435 MHz bench channel'),

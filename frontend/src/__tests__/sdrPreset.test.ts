@@ -34,6 +34,7 @@ import { savedAudioFormat } from '../ui/recordingFormats';
 import { loadWorkbenchPreferences, saveWorkbenchPreferences } from '../ui/workbenchPreferences';
 import { harmValMode, valleySeqPos } from '../ui/measurePrefs';
 import { setWaterfall } from '../ui/panels/waterfall';
+import { equalizerDefaults, getEqualizer, setEqualizer } from '../audio/equalizer';
 
 const sdrPersisted = (): string[] =>
 	Object.keys(localStorage).filter((k) => k.startsWith('web-sa-sdr-'));
@@ -75,6 +76,7 @@ describe('Preset clears the persisted SDR preferences', () => {
   });
 
   it('resets recording defaults, waterfall mapping and peak count only after a matching success', () => {
+    setEqualizer({ enabled: false, gains: [3, 2, 0, -1, -3], trim: -4 });
     localStorage.setItem('websa-audio-recording-format', 'flac');
     saveWorkbenchPreferences({ masterGain: 0.25, monitorMode: 'follow' });
     harmValMode.set('Avg'); valleySeqPos.set(3);
@@ -85,9 +87,11 @@ describe('Preset clears the persisted SDR preferences', () => {
     presetAll(); const command = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
     syncPresetStatus('SET_PRESET', 'unrelated');
     expect(savedAudioFormat()).toBe('flac'); expect(wfRangeMode.get()).toBe('fixed');
+    expect(getEqualizer().trim).toBe(-4);
     syncPresetStatus('SET_PRESET', command.request_id);
     expect(savedAudioFormat()).toBe('opus'); expect(localStorage.getItem('websa-wf-range')).toBeNull();
     expect(loadWorkbenchPreferences()).toEqual({ masterGain: 0.7, monitorMode: 'manual' });
+    expect(getEqualizer()).toEqual(equalizerDefaults());
     expect(harmValMode.get()).toBe('RT'); expect(valleySeqPos.get()).toBe(0);
     expect([wfRangeMode.get(), wfFloorSource.get(), wfPalette.get(), wfContrast.get(), wfLoDbm.get(), wfHiDbm.get()])
       .toEqual(['auto', 'capture', 'classic', 1, -110, -30]);

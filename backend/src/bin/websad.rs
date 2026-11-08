@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Harogic-WebSA
+// Project-owned code: AGPL-3.0-only with ../../../LICENSE-EXCEPTION; scope in ../../../LICENSING.md.
 //! WebSA-compatible service with captured golden-fixture defaults for STATUS and
 //! schema contract fields.
 #[path = "../hardware_iqs.rs"]

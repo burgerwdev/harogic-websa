@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Harogic-WebSA
+// Project-owned code: AGPL-3.0-only with ../../LICENSE-EXCEPTION; see ../../LICENSING.md.
 // Entry point: initialize all modules
 import './style.css';
 import * as S from './core/store';
@@ -23,6 +25,7 @@ import { initUiScale } from './core/uiScale';
 import './render/spectrum';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
 import { initSpectrumZoomUi } from './ui/spectrumZoomUi';
+import { initSdrEqualizer } from './ui/sdrEqualizer';
 import { applyI18n, setLang, t } from './core/i18n';
 import { initTheme, onThemeChange, toggleTheme } from './core/theme';
 import { updateInfoBar } from './render/infobar';
@@ -55,6 +58,7 @@ function init() {
   bindActions();
   bindCanvas();
   initSpectrumZoomUi();
+  initSdrEqualizer();
   initPopoverDrag();
   // Autoplay can hold playback silent after a reload; repaint when that state
   // changes so the status hint appears and clears without another trigger.

@@ -207,6 +207,9 @@ async fn static_files(Path(path): Path<String>) -> Response {
     match tokio::fs::read(&full).await {
         Ok(bytes) => {
             let kind = match full.extension().and_then(|ext| ext.to_str()) {
+                Some("html") => "text/html; charset=utf-8",
+                Some("txt" | "md") => "text/plain; charset=utf-8",
+                Some("gz") => "application/gzip",
                 Some("js") => "text/javascript",
                 Some("css") => "text/css",
                 Some("wasm") => "application/wasm",

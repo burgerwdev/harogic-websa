@@ -83,6 +83,8 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
   }
   function card(r: ReceiverState): string {
     const uid = r.receiver_uid, c = r.confirmed, audio = receiverHasAudio(session.snapshot, c), temporary = isCurrent(uid);
+    const pan = session.route(uid).pan, panLabel = pan < 0 ? 'L' : pan > 0 ? 'R' : 'L/R';
+    const panTitle = l(`Audio output: ${panLabel}; click to cycle L/R → L → R`, `声像：${panLabel}；点击循环切换 L/R → L → R`);
     const monitor = audio && (session.snapshot.transport === 'fixture' || !!session.snapshot.capabilities.monitor_mixing);
     const record = options.recording(uid), task = record?.task;
     const availableAudio = r.state === 'running' && !r.fault;
@@ -102,6 +104,7 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       <div class="mc-card-actions">${monitor ? cardButton('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), `aria-pressed="${session.listening(uid)}" ${availableAudio ? '' : 'disabled'}`) : ''}
       ${record && options.available('record_start') ? cardButton(`rec-${record.kind}`, 'record', task ? l('Stop recording', '停止录制') : l('Record channel', '录制信道'), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${record.pending || session.retiring(uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running') ? 'disabled' : ''}`) : ''}
       ${monitor ? `<div class="mc-card-volume"><button type="button" data-card-volume="${esc(uid)}" aria-label="${l('Channel volume', '信道音量')}" title="${l('Channel volume', '信道音量')}" aria-expanded="${volume === uid}">${icon(session.route(uid).gain ? 'volume' : 'muted')}</button><div class="mc-card-volume-panel" ${volume === uid ? '' : 'hidden'}><label>${l('Volume', '音量')}<input type="range" min="0" max="1" step="0.01" value="${session.route(uid).gain}" data-card-gain="${esc(uid)}" aria-label="${l('Channel volume', '信道音量')}"></label><output>${Math.round(session.route(uid).gain * 100)}%</output></div></div>` : ''}<span class="mc-card-spacer"></span>
+      ${monitor ? `<button type="button" class="mc-card-pan" data-card-pan="${esc(uid)}" aria-label="${esc(panTitle)}" title="${esc(panTitle)}" ${session.retiring(uid) ? 'disabled' : ''}>${panLabel}</button>` : ''}
       ${temporary ? cardButton('save-current', 'plus', l('Save current channel', '保存当前信道')) : options.available('retire') ? cardButton('retire', 'trash', l('Delete channel', '删除信道'), `class="mc-card-delete" ${session.retiring(uid) || session.edits.get(uid)?.pending ? 'disabled' : ''}`) : ''}${cardButton('detail', 'external', temporary ? l('Current settings', 'Current 设置') : l('Take channel out of overview', '从概览取出信道'), 'class="mc-card-detach"')}</div></article>`;
   }
   function update(): void {
@@ -119,6 +122,7 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       <button type="button" data-overview-direction ${['manual', 'auto'].includes(state.sort) ? 'disabled' : ''} title="${state.descending ? l('Sort ascending', '改为升序') : l('Sort descending', '改为降序')}" aria-label="${state.descending ? l('Sort ascending', '改为升序') : l('Sort descending', '改为降序')}">${icon(state.descending ? 'descending' : 'ascending')}</button>
       <select data-overview-layout aria-label="${l('Card layout', '卡片布局')}"><option value="auto" ${state.layout === 'auto' ? 'selected' : ''}>${l('Auto grid', '自动网格')}</option>${Array.from({ length: 8 }, (_, i) => `<option value="${i + 1}" ${state.layout === i + 1 ? 'selected' : ''}>${i + 1} ${l(i ? 'columns' : 'column', '列')}</option>`).join('')}<option value="free" ${state.layout === 'free' ? 'selected' : ''}>${l('Free layout', '自由摆放')}</option></select>
       <select data-overview-band aria-label="${l('Channel coverage', '信道频段筛选')}"><option value="all" ${state.bandOnly ? '' : 'selected'}>${l('All bands', '全部频段')}</option><option value="in-band" ${state.bandOnly ? 'selected' : ''}>${l('Current band only', '仅当前频段')}</option></select>
+      <button type="button" data-overview-mute aria-pressed="${session.masterMuted}" title="${session.masterMuted ? l('Unmute all channels', '取消全部信道静音') : l('Mute all channels', '全部信道静音')}" aria-label="${l('Mute all channels', '全部信道静音')}">${icon(session.masterMuted ? 'muted' : 'volume')}<span>${l('Mute all', '全部静音')}</span></button>
       <button type="button" data-overview-fit title="${l('Fit window to cards', '按卡片布局适配窗口')}" aria-label="${l('Fit window to cards', '按卡片布局适配窗口')}">${icon('fit')}</button><button type="button" data-overview-collect ${detached ? '' : 'disabled'} title="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}" aria-label="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}">${icon('collect')}</button>`);
     patchWorkbench(root, `<div class="mc-card-summary" data-key="summary"><span data-card-capacity title="${l('Defined channels / service capacity', '已建信道数／服务容量')}"><i class="mc-state-dot" data-state="running"></i>${channels.current ? `${channels.saved.length} ${l('saved', '已保存')} · ` : ''}${all.length} / ${session.snapshot.capabilities.max_channels} ${l('channels', '信道')}</span><span>${icon('headphones')}${all.filter(r => session.listening(r.receiver_uid) && receiverHasAudio(session.snapshot, r.confirmed)).length}</span><span class="mc-card-rec-count">${icon('record')}${all.filter(r => recording(r.receiver_uid)).length}</span><span class="mc-card-summary-spacer"></span>${state.layout === 'free' ? `<label><input type="checkbox" data-overview-snap ${state.snap ? 'checked' : ''}>${l('Snap to grid', '网格吸附')}</label>` : `<small>${l('Drag to arrange', '拖动卡片排列')}</small>`}</div>
       ${session.fault ? `<p class="mc-error" role="alert">${esc(session.fault.message)}</p>` : ''}<div class="mc-card-scroll" data-key="scroll"><div class="mc-card-grid ${state.layout === 'free' ? 'mc-card-free' : ''}" data-key="grid" data-layout="${state.layout}" style="${typeof state.layout === 'number' ? `--columns:${state.layout}` : ''}">${rows.map(card).join('')}${rows.length ? '' : `<div class="mc-card-empty">${icon('channels')}<strong>${all.length ? l('Your channels are in separate windows', '信道已在独立窗口中') : l('Add a channel to start monitoring', '添加信道，开始监控')}</strong>${all.length ? `<button type="button" data-overview-collect>${icon('collect')}${l('Return all channels', '收回全部信道')}</button>` : `<button type="button" data-action="create">${icon('plus')}${l('Add channel', '添加信道')}</button>`}</div>`}</div></div>
@@ -238,6 +242,16 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     const target = event.target as HTMLElement;
     const name = target.closest<HTMLElement>('[data-card-rename]');
     if (name) { event.preventDefault(); event.stopPropagation(); beginRename(name.dataset.cardRename!); return; }
+    if (target.closest('[data-overview-mute]')) {
+      event.preventDefault(); event.stopPropagation(); session.masterMuted = !session.masterMuted; session.notify(); return;
+    }
+    const pan = target.closest<HTMLButtonElement>('[data-card-pan]');
+    if (pan) {
+      event.preventDefault(); event.stopPropagation(); const uid = pan.dataset.cardPan!;
+      if (pan.disabled || !session.snapshot.receivers.some(r => r.receiver_uid === uid) || session.retiring(uid)) return;
+      const current = session.route(uid).pan;
+      session.monitor(uid, { pan: current === 0 ? -1 : current < 0 ? 1 : 0 }); return;
+    }
     if (target.closest('[data-overview-fit]')) fit();
     if (target.closest('[data-overview-collect]')) options.dockAll();
     if (target.closest('[data-overview-direction]')) { state.descending = !state.descending; sortFree(); update(); }

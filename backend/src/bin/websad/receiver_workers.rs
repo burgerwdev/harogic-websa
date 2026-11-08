@@ -379,6 +379,7 @@ impl Shared {
     fn check(&self) -> Result<(), String> {
         match self.failure.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             Some(error) => Err(error.clone()),
+            None if self.stopping.load(Ordering::Acquire) => Err("receiver processing is stopping for source recovery; retry once capture is ready".into()),
             None => Ok(()),
         }
     }
@@ -584,6 +585,9 @@ impl ReceiverWorkers {
     }
 
     fn ensure_owner(&mut self,slot:usize,searching:bool)->Result<(),String> {
+        // stop_failed closes the input senders. A channel retry cannot revive
+        // this source owner; source recovery must install a fresh worker set.
+        self.shared.check()?;
         if (self.shared.branches[slot].lifecycle.load(Ordering::Acquire)==2 || self.threads[slot].as_ref().is_some_and(JoinHandle::is_finished))
             && [slot,WORKERS+slot].iter().all(|&index|self.threads[index].as_ref().is_none_or(JoinHandle::is_finished)) {
             if let Some(handle)=self.threads[slot].take() {let _=handle.join();}
@@ -645,6 +649,7 @@ impl ReceiverWorkers {
         self.shared.metrics.progress(channel,self.shared.generations[channel as usize-1].load(Ordering::Acquire))
     }
     pub(super) fn restart_channel(&mut self,channel:u32)->Result<(),String> {
+        self.shared.check()?;
         let slot=channel.checked_sub(1).filter(|&slot|(slot as usize)<MAX_CHANNELS).ok_or("invalid receiver channel")? as usize;
         if [slot,WORKERS+slot].iter().any(|&index|self.threads[index].as_ref().is_some_and(|h|!h.is_finished())) {
             return Err(format!("channel {channel} is still retiring; its native call has not completed"));
@@ -1618,6 +1623,28 @@ fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSend
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stopped_source_workers_reject_channel_recovery_until_replaced() {
+        let mut workers=ReceiverWorkers::new().unwrap();
+        let config=ChannelConfig {channel:2,enabled:true,freq:100e6,squelch:-200.0,..ChannelConfig::default()};
+        workers.configure(&[config.clone()]).unwrap();
+        workers.ensure_owner(1,false).unwrap();
+        workers.stop_failed();
+        let started=Instant::now();
+        while !workers.stopped() {assert!(started.elapsed()<Duration::from_secs(3));thread::sleep(Duration::from_millis(1));}
+        assert!(workers.restart_channel(2).unwrap_err().contains("stopping"));
+        assert!(workers.configure(&[config.clone()]).unwrap_err().contains("stopping"));
+        let registry=[ChannelRegistryEntry {channel:2,channel_id:102,epoch:1,frequency_hz:config.freq,
+            output_rate:48000.0,input_rate:48000.0,group_delay_samples:0.0,state:"active"}];
+        let frame=websa_channelizer::encode_baseband(websa_channelizer::BasebandMagic::Primary,0,
+            48000.0,config.freq,102,1,0,0.0,&[]).unwrap();
+        assert!(workers.submit(&frame,&registry).unwrap_err().contains("stopping"));
+        let mut replacement=ReceiverWorkers::new().unwrap();
+        replacement.configure(&[config]).unwrap();
+        replacement.submit(&frame,&registry).unwrap();
+        replacement.finish().unwrap();
+        assert!(replacement.channel_failure(2).is_none());
+    }
     use super::*;
 
     fn retirement_packet(generation:u64,epoch:u32,seq:u32)->Packet {

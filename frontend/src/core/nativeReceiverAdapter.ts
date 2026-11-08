@@ -92,8 +92,15 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
       fault: fault('request', 'UNAVAILABLE', 'This operation is not available from the native receiver service') };
     const service = this.current.service_id;
     const request = { ...command, service_id: service, request_id: `${this.client}:${command.request_id}` };
+    const configs = command.type === 'scene' ? command.configs.map(row => row.config) : 'config' in command ? [command.config] : [];
+    const startup = configs.flatMap(config => config.processors.map(processor =>
+      this.current.capabilities.mode_descriptors?.find(mode => mode.id === processor.mode)?.startupTimeoutMs ?? 0))
+      .filter(value => Number.isFinite(value) && value > 0);
+    // External providers can legitimately need longer than the normal HTTP
+    // budget to start. Keep admission and commit within the advertised limit.
+    const timeout = Math.min(120_000, 8000 + Math.max(0, ...startup));
     const options: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
-      signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(8000)]) };
+      signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(timeout)]) };
     if (!command.type.startsWith('record_')) {
     const checked = await fetch(`${api}/preflight`, options);
     if (!checked.ok) throw new Error(`Receiver preflight: HTTP ${checked.status}`);
@@ -102,7 +109,7 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
     if (service !== this.current.service_id) throw new Error('Source service restarted during admission');
     if (!impact.accepted) return { request_id: command.request_id, snapshot: this.snapshot(), fault: impact.faults[0] };
     }
-    const response = await fetch(api, { ...options, signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(8000)]) });
+    const response = await fetch(api, { ...options, signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(timeout)]) });
     if (!response.ok) throw new Error(`Receiver command: HTTP ${response.status}`);
     const reply = await response.json() as CommandReply;
     if (this.disposed) throw new Error('Receiver adapter closed during command');

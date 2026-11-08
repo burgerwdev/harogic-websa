@@ -12,7 +12,7 @@ Python 用于离线工具和测试。
 ## 主要功能
 
 - 扫频及实时频谱、四条迹线、密度／瀑布、标记、信道功率、占用带宽、ACPR、谐波和相噪测量。
-- 一个采集窗口内最多十六个独立调谐信道、本地混听、信道／解码悬浮窗，以及共享的十六个录制任务名额。
+- 一个采集窗口内最多十六个独立调谐信道、本地混听、声像及整体监听 EQ、信道／解码悬浮窗，以及共享的十六个录制任务名额。
 - AM／DSB／USB／LSB／CW／NFM／WFM／PM、FM 立体声／RDS、降噪、FT8、DRM／DRM+、
   SSTV 和无线电传真；可选外部 provider 扩展解码目录。
 - IQ、音频及解码结果录制，文件试听／导出，信道预设，中英文界面和明暗主题。
@@ -63,7 +63,13 @@ make sdk-shim                  # 硬件适配器，需要厂商 SDK
 
 ## 许可与致谢
 
-项目主程序使用 [MIT](LICENSE)。厂商代码、codec、模型权重和独立 provider 各有许可，
-详见[依赖与许可说明](docs/zh-CN/DEVELOPMENT.md#依赖与许可)。HAROGIC SDK 属于专有软件，须单独获取。
+有权授权的自有代码采用 [AGPL-3.0-only](LICENSE)，并附[第 7 条链接例外](LICENSE-EXCEPTION)，
+**仅允许 HAROGIC SDK、FDK AAC 的指定组合**（`LicenseRef-Harogic-WebSA`）。自有代码及修改版本
+保留适用的对应源码义务，包括修改网络版本的源码提供。界面提供许可文本及本地构建对应的源码入口。
+
+第三方代码、库、模型和独立解码程序保留原许可，详见[适用范围及历史 MIT 授权](LICENSING.md)、
+[第三方声明](THIRD_PARTY_NOTICES.md)及[核对依据与未决问题](docs/zh-CN/LICENSING.md)。
+此前发布的 MIT 版本仍保留原 [MIT 授权](LICENSES/MIT-legacy.txt)。HAROGIC SDK 继续单独获取；
+项目链接例外不授予厂商 SDK 的再分发权。
 
 作者：[好奇牛马 (Bilibili)](https://space.bilibili.com/28447213)。

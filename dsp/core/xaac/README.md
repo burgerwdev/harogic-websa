@@ -5,7 +5,11 @@ static archive and linked into `websa-dsp` only for the wasm32 target.
 
 ## Provenance and licence
 
-- Source: <https://github.com/ittiam-systems/libxaac>, licence **Apache-2.0**.
+- Source: <https://github.com/ittiam-systems/libxaac>, licence **Apache-2.0**;
+  retain the full [LICENSE](LICENSE) and [NOTICE](NOTICE). This is not covered
+  by the project's HAROGIC SDK / FDK AAC linking exception. The exact archive
+  revision/patch provenance still needs confirmation; see the
+  [review](../../../docs/en/LICENSING.md).
 - This archive covers the **decoder** only (`decoder/` + `common/`). The encoder is
   used natively as a test-vector generator, not linked into the crate.
 

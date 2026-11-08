@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LicenseRef-Harogic-WebSA
+// Project-owned code: AGPL-3.0-only with ../../../LICENSE-EXCEPTION.
+// Third-party modules retain their own terms; see ../../../LICENSING.md.
 //! WebSA DSP kernels shared by native receivers and browser Web Workers.
 //!
 //! Modules follow the signal-processing stages:

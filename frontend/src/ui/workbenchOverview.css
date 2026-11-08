@@ -27,6 +27,8 @@
 .mc-overview-controls button { display:inline-flex; align-items:center; justify-content:center; width:27px; height:27px; padding:4px; }
 .mc-overview-controls button:disabled { opacity:.35; cursor:default; }
 .mc-overview-controls button:hover:not(:disabled) { background:var(--mc-card-fill); color:var(--mc-card-text); }
+.mc-overview-controls [data-overview-mute] { width:auto; gap:5px; padding:4px 7px; white-space:nowrap; font-size:10px; }
+.mc-overview-controls [data-overview-mute][aria-pressed=true] { background:var(--mc-card-fill); color:var(--sa-warning); border-color:var(--mc-card-active); }
 .mc-window .mc-body.mc-cards-body { display:flex; flex-direction:column; padding:0; overflow:hidden; }
 .mc-card-overview { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; color:var(--mc-card-text); }
 .mc-card-summary { display:flex; align-items:center; gap:14px; padding:6px 12px; min-height:32px; flex:none; border-bottom:1px solid var(--inner-border); color:var(--mc-card-label); font-size:10px; }
@@ -90,6 +92,7 @@
 .mc-body .mc-card-actions button[aria-pressed=true] { background:var(--mc-card-fill); color:var(--mc-card-text); border-color:var(--mc-card-active); }
 .mc-body .mc-card-actions button.mc-recording-on { color:var(--sa-warning); border-color:color-mix(in srgb,var(--sa-warning) 45%,var(--mc-card-border)); background:color-mix(in srgb,var(--sa-warning) 10%,var(--mc-card-bg)); }
 .mc-card-spacer { flex:1; }
+.mc-body .mc-card-actions .mc-card-pan { width:34px; flex:none; font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
 .mc-body .mc-card-actions .mc-card-delete:hover { color:var(--sa-warning); }
 .mc-body .mc-card-actions .mc-card-detach { margin-left:3px; padding-left:8px; width:30px; border-left-color:var(--mc-card-border); border-radius:0; }
 .mc-card-volume { position:relative; display:flex; }
