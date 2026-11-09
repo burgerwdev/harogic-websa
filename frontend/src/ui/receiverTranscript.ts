@@ -2,10 +2,19 @@ import { decoderTextLine, type DecoderLogEntry } from '../sdr/decoderLog';
 import type { CwLine } from '../sdr/cwLog';
 import { cwLineFor } from './cwLine';
 import { patchWorkbench } from './workbenchDom';
+import { getLang } from '../core/i18n';
+
+const rendered = new WeakMap<HTMLElement, { entries: readonly DecoderLogEntry[]; utc: boolean;
+  live: boolean; source: string | null | undefined; language: string }>();
 
 /** Reconstruct chronological transmissions without combining different processing streams. */
 export function renderReceiverTranscript(host: HTMLElement, entries: readonly DecoderLogEntry[], utc: boolean,
   live: boolean, source?: string | null): void {
+  const previous = rendered.get(host), language = getLang();
+  if (previous && previous.utc === utc && previous.live === live && previous.source === source && previous.language === language
+    && previous.entries.length === entries.length && previous.entries.every((entry, i) => entry === entries[i])) return;
+  rendered.set(host, { entries: [...entries], utc, live, source, language });
+  if (!entries.length && !host.childNodes.length) return;
   const follow = host.scrollHeight - host.scrollTop - host.clientHeight < 24;
   const rows: { key: number; source: string; mode: string; line: CwLine; complete: boolean }[] = [];
   for (const entry of [...entries].sort((a, b) => a.id - b.id)) {

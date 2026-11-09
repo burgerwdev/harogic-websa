@@ -6,8 +6,9 @@ import { clock } from '../sdr/ft8Log';
 import { decoderTextLine, type DecoderImage, type DecoderLogEntry, type DecoderRaster } from '../sdr/decoderLog';
 import { renderDecoderEntries } from './decoderResults';
 import { downloadResult, pictureExport, pictureIsPartial, resultExport } from './receiverExport';
-import { patchWorkbench } from './workbenchDom';
+import { createWorkbenchPatcher } from './workbenchDom';
 import './decodeResults.css';
+import { setDomProperty } from './domState';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -21,6 +22,9 @@ export interface ReceiverDecodeView {
 
 /** A view owns its filters and viewing position; the session owns reception and retained data. */
 export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
+  const patch = createWorkbenchPatcher(host);
+  const messageRows = new WeakMap<DecoderLogEntry, { language: string; rows: Message[] }>();
+  let messageTable: { key: string; rows: readonly Message[]; html: string } | undefined;
   let entries: readonly DecoderLogEntry[] = [], identity = '', mode = '', notice = '', evicted = 0;
   let activeSource: string | null | undefined;
   const clearedText = new Map<number, number>();
@@ -76,13 +80,17 @@ export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
     for (const entry of shown) {
       const data = entry.data;
       if (entry.kind === 'table' && object(data) && Array.isArray(data.decodes)) {
-        data.decodes.forEach((row, index) => {
-          if (!object(row)) return;
-          const text = String(row.msg ?? row.message ?? row.text ?? '');
-          if (search && !text.toLocaleLowerCase().includes(search.toLocaleLowerCase())) return;
-          messages.push({ key: `${entry.id}:${index}`, time: typeof row.slot_utc === 'number' ? row.slot_utc * 1000 : entry.at,
-            snr: row.snr_db, dt: row.dt_s, hz: row.audio_hz, text, ...(['ft8', 'ft4'].includes(entry.mode) ? ft8GeoTexts(text) : { country: '', location: '' }), qso: ['ft8', 'ft4'].includes(entry.mode) ? ft8SessionKey(text) : '' });
-        });
+        let cached = messageRows.get(entry);
+        if (!cached || cached.language !== getLang()) {
+          const rows = data.decodes.flatMap((row, index): Message[] => {
+            if (!object(row)) return [];
+            const text = String(row.msg ?? row.message ?? row.text ?? '');
+            return [{ key: `${entry.id}:${index}`, time: typeof row.slot_utc === 'number' ? row.slot_utc * 1000 : entry.at,
+              snr: row.snr_db, dt: row.dt_s, hz: row.audio_hz, text, ...(['ft8', 'ft4'].includes(entry.mode) ? ft8GeoTexts(text) : { country: '', location: '' }), qso: ['ft8', 'ft4'].includes(entry.mode) ? ft8SessionKey(text) : '' }];
+          });
+          cached = { language: getLang(), rows }; messageRows.set(entry, cached);
+        }
+        for (const row of cached.rows) if (!search || row.text.toLocaleLowerCase().includes(search.toLocaleLowerCase())) messages.push(row);
       } else if (decoderTextLine(entry)) {
         if (!search || decoderTextLine(entry)!.text.toLocaleLowerCase().includes(search.toLocaleLowerCase())) textEntries.push(entry);
       } else if (entry.kind !== 'image' && (!search || entry.kind === 'status' || JSON.stringify(data).toLocaleLowerCase().includes(search.toLocaleLowerCase()))) generic.push(entry);
@@ -94,7 +102,16 @@ export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
     });
     const pages = Math.max(1, Math.ceil(messages.length / 50)); page = Math.min(page, pages - 1);
     const header = (key: typeof sort, text: string): string => `<th aria-sort="${sort === key ? direction === 1 ? 'ascending' : 'descending' : 'none'}"><button type="button" title="${esc(l(`Sort by ${text}`, `按${text}排序`))}" data-sort="${key}" data-key="sort-${key}">${esc(text)}${sort === key ? direction === 1 ? ' ▴' : ' ▾' : ''}</button></th>`;
-    patchWorkbench(host, `<div data-key="tools" class="mc-decode-tools">
+    const tableKey = `${sort}:${direction}:${page}:${utc}:${getLang()}`;
+    if (!messageTable || messageTable.key !== tableKey || messageTable.rows.length !== messages.length
+      || messageTable.rows.some((row, i) => row !== messages[i])) {
+      messageTable = { key: tableKey, rows: [...messages], html: `<section data-key="messages" class="mc-decode-messages" ${messages.length ? '' : 'hidden'}>
+      <div data-key="message-pages" class="mc-message-pages"><span>${messages.length} ${l('messages', '条消息')}</span><button type="button" data-key="previous" title="${l('Previous page of messages', '查看上一页消息')}" aria-label="${l('Previous page', '上一页')}" data-decode-action="previous" ${page === 0 ? 'disabled' : ''}>‹</button><span>${page + 1} / ${pages}</span><button type="button" data-key="next" title="${l('Next page of messages', '查看下一页消息')}" aria-label="${l('Next page', '下一页')}" data-decode-action="next" ${page + 1 >= pages ? 'disabled' : ''}>›</button></div>
+      <div data-key="message-scroll" class="decoder-table-scroll"><table class="mc-message-table"><thead><tr>${header('time', `${t('ft8_time')} (${utc ? 'UTC' : 'LT'})`)}${header('snr', 'SNR / dB')}${header('dt', 'Δt / s')}${header('hz', l('Audio / Hz', '音频 / Hz'))}${header('text', t('ft8_message'))}${hasGeo ? header('country', t('ft8_country')) + header('location', t('ft8_location')) : ''}</tr></thead>
+      <tbody>${messages.slice(page * 50, page * 50 + 50).map(row => `<tr data-key="${row.key}" ${row.qso ? `class="ft8-row" data-qso="${esc(row.qso)}" tabindex="0"` : ''}><td>${clock(row.time, utc)}</td><td>${number(row.snr)}</td><td>${number(row.dt, 2)}</td><td>${number(row.hz)}</td><td class="decoder-message-cell">${esc(row.text)}</td>${hasGeo ? `<td class="mc-message-country">${esc(row.country || '—')}</td><td class="mc-message-location" title="${l('Transmitted grid cell centre', '消息所含网格的中心坐标')}">${esc(row.location || '—')}</td>` : ''}</tr>`).join('')}</tbody></table></div>
+    </section>` };
+    }
+    const changed = patch(`<div data-key="tools" class="mc-decode-tools">
       <label ${modes.length < 2 ? 'hidden' : ''}>${l('Results', '结果')} <select data-result-mode aria-label="${l('Result mode', '结果模式')}"><option value="current" ${modeFilter === 'current' ? 'selected' : ''}>${l('Current mode', '当前模式')} · ${esc(mode.toUpperCase() || 'IQ')}</option><option value="all" ${modeFilter === 'all' ? 'selected' : ''}>${l('All modes', '全部模式')}</option>${modes.map(m => `<option value="${esc(m)}" ${modeFilter === m ? 'selected' : ''}>${esc(m.toUpperCase())}</option>`).join('')}</select></label>
       <input ${searchable ? '' : 'hidden'} title="${l('Filter received text; plain text, case insensitive', '按普通文本筛选已接收内容，不区分大小写')}" data-decode-search type="search" value="${esc(search)}" placeholder="${l('Filter messages', '筛选消息')}" aria-label="${l('Filter messages', '筛选消息')}">
       <button ${hasMessages || images.length ? '' : 'hidden'} type="button" data-decode-action="utc" data-key="utc" aria-pressed="${utc}" title="${utc ? l('Switch timestamps to local time', '将时间切换为本地时间') : l('Switch timestamps to UTC', '将时间切换为 UTC')}">UTC</button>
@@ -112,24 +129,20 @@ export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
       <button type="button" data-key="image-export" data-decode-action="image-export" ${exporting ? 'disabled' : ''} title="${l('Download the selected picture; unfinished pictures are labelled partial', '下载当前图像；未完成的图像会标为部分图像')}">${l('Save PNG', '保存 PNG')}</button>
     </div>
     <section data-key="image" data-result-lane="image" class="decoder-results mc-decode-image" ${image ? '' : 'hidden'}></section>
-    <section data-key="messages" class="mc-decode-messages" ${messages.length ? '' : 'hidden'}>
-      <div data-key="message-pages" class="mc-message-pages"><span>${messages.length} ${l('messages', '条消息')}</span><button type="button" data-key="previous" title="${l('Previous page of messages', '查看上一页消息')}" aria-label="${l('Previous page', '上一页')}" data-decode-action="previous" ${page === 0 ? 'disabled' : ''}>‹</button><span>${page + 1} / ${pages}</span><button type="button" data-key="next" title="${l('Next page of messages', '查看下一页消息')}" aria-label="${l('Next page', '下一页')}" data-decode-action="next" ${page + 1 >= pages ? 'disabled' : ''}>›</button></div>
-      <div data-key="message-scroll" class="decoder-table-scroll"><table class="mc-message-table"><thead><tr>${header('time', `${t('ft8_time')} (${utc ? 'UTC' : 'LT'})`)}${header('snr', 'SNR / dB')}${header('dt', 'Δt / s')}${header('hz', l('Audio / Hz', '音频 / Hz'))}${header('text', t('ft8_message'))}${hasGeo ? header('country', t('ft8_country')) + header('location', t('ft8_location')) : ''}</tr></thead>
-      <tbody>${messages.slice(page * 50, page * 50 + 50).map(row => `<tr data-key="${row.key}" ${row.qso ? `class="ft8-row" data-qso="${esc(row.qso)}" tabindex="0"` : ''}><td>${clock(row.time, utc)}</td><td>${number(row.snr)}</td><td>${number(row.dt, 2)}</td><td>${number(row.hz)}</td><td class="decoder-message-cell">${esc(row.text)}</td>${hasGeo ? `<td class="mc-message-country">${esc(row.country || '—')}</td><td class="mc-message-location" title="${l('Transmitted grid cell centre', '消息所含网格的中心坐标')}">${esc(row.location || '—')}</td>` : ''}</tr>`).join('')}</tbody></table></div>
-    </section>
+    ${messageTable.html}
     <section data-key="transcript" data-result-lane="transcript" class="mc-text-transcript" aria-label="${l('Decoded text', '解码文本')}" ${textEntries.length ? '' : 'hidden'}></section>
     <p data-key="no-matches" class="mc-notice" ${search && !messages.length && !textEntries.length && !generic.some(entry => entry.kind !== 'status') ? '' : 'hidden'}>${l('No matching messages', '没有匹配的消息')}</p>
     <section data-key="generic" data-result-lane="generic" class="decoder-results mc-decode-log"></section>`,
     element => element.hasAttribute('data-result-lane') || element === host.ownerDocument.activeElement && element.matches('input,select'));
-    mark();
+    if (changed) mark();
     const textHost = host.querySelector<HTMLElement>('[data-result-lane=transcript]')!;
-    textHost.hidden = !textEntries.length;
+    setDomProperty(textHost, 'hidden', !textEntries.length);
     renderReceiverTranscript(textHost, textEntries, utc, !notice, activeSource);
     const imageHost = host.querySelector<HTMLElement>('[data-result-lane=image]')!;
-    imageHost.hidden = !image;
+    setDomProperty(imageHost, 'hidden', !image);
     renderDecoderEntries(imageHost, image ? [image] : [], identity, utc, 0, 24);
     const genericHost = host.querySelector<HTMLElement>('[data-result-lane=generic]')!;
-    genericHost.hidden = !generic.length;
+    setDomProperty(genericHost, 'hidden', !generic.length);
     renderDecoderEntries(genericHost, generic, identity, utc, evicted, 24);
   };
   const click = (event: Event): void => {
@@ -188,7 +201,7 @@ export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
         && entries.length === next.length && entries.every((entry, index) => entry === next[index])) return;
       if (mode !== nextMode || identity !== nextIdentity) { hovered = focused = null; }
       if (mode !== nextMode) { search = ''; exportError = ''; }
-      if (identity !== nextIdentity) { clearedText.clear(); search = ''; exportError = ''; cleared = 0; confirmClear = false; page = 0; modeFilter = 'current'; followImage = true; }
+      if (identity !== nextIdentity) { patch.reset(); clearedText.clear(); search = ''; exportError = ''; cleared = 0; confirmClear = false; page = 0; modeFilter = 'current'; followImage = true; }
       entries = next; activeSource = nextSource; identity = nextIdentity; mode = nextMode; evicted = nextEvicted; notice = nextNotice; language = getLang(); draw();
     },
     dispose(): void { disposed = true; hovered = focused = null; mark();

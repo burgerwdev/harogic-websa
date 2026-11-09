@@ -3,6 +3,7 @@ import type { ReceiverState } from '../core/multichannel';
 import type { DecoderLogEntry } from '../sdr/decoderLog';
 import { ft8GeoTexts } from './ft8GeoText';
 import { belongsToReceiverStream } from './receiverLevel';
+import { setDomAttribute, setDomProperty } from './domState';
 
 const textModes = new Set(['ft8', 'ft4', 'wspr', 'cw', 'rtty', 'rtty-reverse', 'navtex', 'dsc']);
 const continuousModes = new Set(['cw', 'rtty', 'rtty-reverse']);
@@ -44,11 +45,23 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
   let language = getLang();
   let identity = '', mode = '', items: StripMessage[] = [], index = 0, continuous = false, receiving = false;
   let target = '', visible = '', glyphs: string[] = [], written = 0, lastTick = 0, elapsed = 0;
-  let hovered = false, focused = false, wasActive = false, disposed = false, width = 0;
+  let hovered = false, focused = false, wasActive = false, disposed = false, width = 0, overflow = 0, needsMeasure = true;
   let animations: Animation[] = [], outgoing: HTMLElement | undefined;
   const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : undefined;
   const cancelMotion = (): void => { animations.forEach(animation => animation.cancel()); animations = []; outgoing?.remove(); outgoing = undefined; };
-  const write = (value: string): void => { visible = value; text.textContent = value.replace(/\s+/g, ' '); };
+  const write = (value: string): void => {
+    visible = value;
+    const shown = value.replace(/\s+/g, ' ');
+    if (text.textContent !== shown) { text.textContent = shown; needsMeasure = true; }
+  };
+  const measure = (): void => {
+    const next = viewport.clientWidth;
+    if (width !== next) { width = next; elapsed = 0; }
+    overflow = Math.max(0, text.scrollWidth - width); needsMeasure = false;
+  };
+  const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+  observer?.observe(viewport); observer?.observe(text);
+  const motion = doc.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)');
   const choose = (next: number, animate: boolean): void => {
     cancelMotion();
     if (animate && line.animate && visible) {
@@ -73,9 +86,9 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
     if (!active) { if (wasActive) cancelMotion(); wasActive = false; return; }
     if (!wasActive) { elapsed = 0; wasActive = true; }
     if (!items.length || !receiving) return;
-    const reduced = host.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const reduced = motion?.matches ?? false;
     if (hovered || focused) return;
-    if (width !== viewport.clientWidth) { width = viewport.clientWidth; elapsed = 0; }
+    if (!observer || needsMeasure) measure();
     elapsed += delta;
     if (continuous) {
       if (written < glyphs.length) {
@@ -83,12 +96,11 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
         const step = reduced ? glyphs.length : Math.max(1, Math.ceil((glyphs.length - written) / 36));
         written = Math.min(glyphs.length, written + step); write(glyphs.slice(0, written).join(''));
       }
-      const overflow = Math.max(0, text.scrollWidth - viewport.clientWidth);
+      if (needsMeasure) measure();
       text.style.transform = `translateX(${-overflow}px)`;
-      viewport.title = target;
+      setDomProperty(viewport, 'title', target);
     } else {
       if (reduced) { if (index !== items.length - 1) choose(items.length - 1, false); text.style.transform = ''; return; }
-      const overflow = Math.max(0, text.scrollWidth - viewport.clientWidth);
       const travel = overflow / 32 * 1000;
       text.style.transform = `translateX(${-Math.min(overflow, Math.max(0, elapsed - 1400) * .032)}px)`;
       if (elapsed > 3000 + travel) {
@@ -123,13 +135,13 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
       const retained = receiver && paused && !receiver.stream && historicalStream ? { ...receiver, stream: historicalStream } as ReceiverState : receiver;
       const next = retained && (receiving || paused) ? stripMessages(entries, retained, paused ? undefined : source) : [];
       if (paused) { cancelMotion(); if (continuous && target) { written = glyphs.length; write(target); } }
-      host.hidden = !receiver || !textModes.has(mode) && !next.length;
+      setDomProperty(host, 'hidden', !receiver || !textModes.has(mode) && !next.length);
       root.classList.toggle('mc-has-strip-text', !host.hidden);
-      host.dataset.presentation = continuous ? 'typing' : 'messages';
-      badge.textContent = mode.toUpperCase();
+      setDomProperty(host.dataset, 'presentation', continuous ? 'typing' : 'messages');
+      setDomProperty(badge, 'textContent', mode.toUpperCase());
       const waiting = paused ? getLang() === 'zh' ? '带外 · 等待覆盖' : 'Out of band · waiting for coverage'
         : getLang() === 'zh' ? receiving ? '等待解码文字…' : '接收已暂停' : receiving ? 'Waiting for decoded text…' : 'Reception paused';
-      viewport.setAttribute('aria-label', getLang() === 'zh' ? '解码文字；悬停或聚焦暂停滚动' : 'Decoded text; hover or focus to pause');
+      setDomAttribute(viewport, 'aria-label', getLang() === 'zh' ? '解码文字；悬停或聚焦暂停滚动' : 'Decoded text; hover or focus to pause');
       if (!next.length) {
         cancelMotion(); items = []; target = ''; glyphs = []; written = 0; write(waiting); text.style.transform = ''; viewport.title = waiting; return;
       }
@@ -151,7 +163,7 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
       lastTick = performance.now();
     },
     dispose(): void {
-      disposed = true; clearInterval(timer); cancelMotion();
+      disposed = true; clearInterval(timer); observer?.disconnect(); cancelMotion();
       viewport.removeEventListener('pointerenter', enter); viewport.removeEventListener('pointerleave', leave);
       viewport.removeEventListener('focus', focus); viewport.removeEventListener('blur', blur);
       host.replaceChildren(); root.classList.remove('mc-has-strip-text');

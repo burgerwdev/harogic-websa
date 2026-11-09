@@ -1,3 +1,7 @@
+import { getTheme } from '../core/theme';
+
+const palette = new WeakMap<HTMLCanvasElement, { theme: string; document: Document; line: string; grid: string }>();
+
 /** Shared presentation for actual demodulated audio samples in receiver views. */
 export function drawAudioScope(
 	canvas: HTMLCanvasElement,
@@ -8,9 +12,16 @@ export function drawAudioScope(
 	if (!ctx) return;
 	const w = canvas.width;
 	const h = canvas.height;
-	const styles = (canvas.ownerDocument.defaultView ?? window).getComputedStyle(canvas);
-	const line = styles.getPropertyValue('--text').trim() || '#ccc';
-	const grid = styles.getPropertyValue('--card-border').trim() || '#444';
+	let colors = palette.get(canvas);
+	if (!colors || colors.theme !== getTheme() || colors.document !== canvas.ownerDocument) {
+		const styles = (canvas.ownerDocument.defaultView ?? window).getComputedStyle(canvas);
+		const line = styles.getPropertyValue('--text').trim(), grid = styles.getPropertyValue('--card-border').trim();
+		colors = { theme: getTheme(), document: canvas.ownerDocument,
+			line: line || '#ccc', grid: grid || '#444' };
+		// A Pop out document can paint before its copied stylesheet loads.
+		if (line && grid) palette.set(canvas, colors);
+	}
+	const { line, grid } = colors;
 	ctx.clearRect(0, 0, w, h);
 	// Slow peak hold stabilizes the vertical scale across audio blocks. Sharing the scale
 	// between lanes preserves the visible L/R balance.

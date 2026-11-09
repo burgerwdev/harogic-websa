@@ -3,6 +3,7 @@ import { addDecoderRaster, addDecoderResult, decoderLog, forgetDecoderLog, type 
 import { mountReceiverDecodeView } from '../ui/receiverDecodeView';
 import { renderDecoderEntries } from '../ui/decoderResults';
 import { setLang } from '../core/i18n';
+import * as geography from '../ui/ft8GeoText';
 
 let host: HTMLElement;
 const uid = 'decode-ui';
@@ -13,6 +14,23 @@ beforeEach(() => { setLang('en'); host = document.createElement('div'); document
 afterEach(() => { vi.restoreAllMocks(); forgetDecoderLog(uid); document.body.replaceChildren(); });
 
 describe('receiver Decode interaction and live results', () => {
+  it('does not rebuild retained FT8 rows or measure an empty transcript for live status updates', () => {
+    const view = mountReceiverDecodeView(host), geo = vi.spyOn(geography, 'ft8GeoTexts');
+    const entries = [message(1, 'CQ W1ABC FN42'), message(2, 'CQ JA1ABC PM95')];
+    view.update(entries, uid, 'ft8', 0, '');
+    const row = host.querySelector('tr[data-key="1:0"]');
+    expect(geo).toHaveBeenCalledTimes(2);
+    geo.mockClear();
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get');
+    try {
+      for (let i = 0; i < 5; i++) view.update([{ ...message(10 + i, ''), kind: 'status', data: { type: 'ft8-state', attempts: i } }, ...entries], uid, 'ft8', 0, '');
+      expect(host.querySelector('tr[data-key="1:0"]')).toBe(row);
+      expect(geo).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+      setLang('zh'); view.update(entries, uid, 'ft8', 0, '');
+      expect(geo).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('.mc-message-country')!.textContent).toMatch(/美国|日本/);
+    } finally { view.dispose(); }
+  });
   it('renders a retained long CW transmission without exceeding function argument limits', () => {
     const view = mountReceiverDecodeView(host);
     try {

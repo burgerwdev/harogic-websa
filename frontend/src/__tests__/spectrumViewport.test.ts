@@ -95,6 +95,17 @@ describe('window algebra', () => {
 		expect(tiny.hi - tiny.lo).toBeCloseTo(2e6, 3);
 	});
 
+	it('keeps the pointer anchor fixed when zoom reaches the sample-resolution limit', () => {
+		const view = { lo: 940e6, hi: 944e6 }, anchor = 941e6;
+		const next = zoomAround(view, 0.1, anchor, CAP, 2e6);
+		expect(next.hi - next.lo).toBe(2e6);
+		expect((anchor - next.lo) / (next.hi - next.lo)).toBe((anchor - view.lo) / (view.hi - view.lo));
+		for (const fraction of [0, 0.25, 0.5, 0.9, 1]) {
+			const pointer = next.lo + fraction * (next.hi - next.lo);
+			expect(zoomAround(next, 0.8, pointer, CAP, 2e6)).toEqual(next);
+		}
+	});
+
 	it('zooms around the pointer anchor', () => {
 		const anchor = 950e6;
 		const v = zoomAround({ lo: 900e6, hi: 1000e6 }, 0.5, anchor, CAP, 2e6);

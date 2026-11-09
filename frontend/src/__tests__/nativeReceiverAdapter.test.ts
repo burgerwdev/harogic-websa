@@ -345,7 +345,10 @@ describe('native receiver control and shared IQ', () => {
     expect(live.getAttribute('data-live-state')).toBe('fault');
     const diagnostics = live.querySelector<HTMLDetailsElement>('[data-section=live-diagnostics]')!;
     expect(diagnostics.open).toBe(false);
+    expect(diagnostics.querySelector('pre')!.textContent).toBe('');
+    diagnostics.open = true; diagnostics.dispatchEvent(new Event('toggle'));
     expect(diagnostics.textContent).toContain('Input interrupted');
+    expect(overview.querySelector('[name=frequency]')).toBe(input); expect(input.value).toBe('7.123456');
     ui.dispose(); session.dispose();
   });
   it('rejects a delayed task snapshot even when receiver configuration revision is unchanged', async () => {

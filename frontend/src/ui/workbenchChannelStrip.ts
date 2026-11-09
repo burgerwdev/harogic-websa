@@ -5,7 +5,8 @@ import type { WorkbenchSession } from './workbenchSession';
 import { liveStatus } from './receiverLive';
 import { ReceiverMeter, receiverLevel, receiverLevelScale } from './receiverLevel';
 import { mountReceiverTicker, type ReceiverTicker } from './receiverTicker';
-import { patchWorkbench } from './workbenchDom';
+import { createWorkbenchPatcher } from './workbenchDom';
+import { setDomAttribute, setDomProperty } from './domState';
 import { workbenchIcon as icon } from './workbenchIcons';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
@@ -34,6 +35,7 @@ export interface WorkbenchChannelStrip {
 /** Owns only this window's compact view and edit draft; confirmed state stays in the session. */
 export function mountWorkbenchChannelStrip(root: HTMLElement, session: WorkbenchSession, options: ChannelStripOptions): WorkbenchChannelStrip {
   const strip = root.ownerDocument.createElement('div'); strip.className = 'mc-channel-strip';
+  const patch = createWorkbenchPatcher(strip);
   root.querySelector('.mc-head strong')!.after(strip);
   const fixture = session.snapshot.transport === 'fixture';
   const { available, readouts: native } = options;
@@ -54,11 +56,11 @@ export function mountWorkbenchChannelStrip(root: HTMLElement, session: Workbench
     const scale = receiverLevelScale(reading ? { ...reading, db: display.level } : null);
     const peak = receiverLevelScale(reading ? { ...reading, db: display.peak } : null);
     const label = reading ? `${reading.source === 'playback' ? l('Playing audio (before monitor volume)', '播放音频（监听音量之前）') : reading.source === 'audio' ? l('Demodulated audio (not playing)', '解调音频（未播放）') : l('RF input', '射频输入')} · ${reading.source === 'playback' ? 'RMS ' : ''}${reading.db.toFixed(1)} dBFS${reading.peakDb !== undefined ? ` · ${l('Peak', '峰值')} ${reading.peakDb.toFixed(1)} dBFS` : ''}${display.clipped ? ` · ${l('CLIP', '削波')}` : ''}` : l('No live level', '暂无实时电平');
-    meter.dataset.available = String(!!reading); meter.dataset.clipped = String(display.clipped);
-    meter.title = label; meter.setAttribute('aria-label', label); meter.setAttribute('aria-valuetext', label);
-    meter.setAttribute('aria-valuemin', String(scale.min)); meter.setAttribute('aria-valuenow', String(scale.value));
+    setDomProperty(meter.dataset, 'available', String(!!reading)); setDomProperty(meter.dataset, 'clipped', String(display.clipped));
+    setDomProperty(meter, 'title', label); setDomAttribute(meter, 'aria-label', label); setDomAttribute(meter, 'aria-valuetext', label);
+    setDomAttribute(meter, 'aria-valuemin', String(scale.min)); setDomAttribute(meter, 'aria-valuenow', String(scale.value));
     meter.style.setProperty('--level', `${scale.percent}%`); meter.style.setProperty('--peak', `${peak.percent}%`);
-    meter.querySelector('small')!.textContent = reading ? `${reading.db.toFixed(0)} dBFS` : '— dBFS';
+    setDomProperty(meter.querySelector('small')!, 'textContent', reading ? `${reading.db.toFixed(0)} dBFS` : '— dBFS');
   }
   function update(): void {
     if (disposed) return;
@@ -75,7 +77,7 @@ export function mountWorkbenchChannelStrip(root: HTMLElement, session: Workbench
     const temporary = options.current?.() ?? false, name = temporary ? 'Current' : r.confirmed.name;
     strip.dataset.frequencyMatch = String(options.matchesCurrent?.() ?? false);
     const recordLabel = kind === 'audio' ? l('audio', '音频') : kind === 'results' ? l('results', '结果') : 'IQ';
-    patchWorkbench(strip, `<div class="mc-strip-identity" title="${esc(`${name} · ${reception.label}`)}"><span><i class="mc-state-dot" data-state="${state}"></i>${temporary ? '<b>Current</b>' : rename ? `<input data-strip-name-edit data-key="strip-name-${esc(uid)}" data-no-drag aria-label="${l('Channel name', '信道名称')}" value="${esc(rename.value)}" maxlength="128">` : `<b data-strip-name data-no-drag tabindex="0" role="button" title="${l('Double-click to rename; Enter to save, Escape to cancel', '双击改名；回车提交，Esc 取消')}">${esc(name)}</b>`}</span><small>${(r.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} <span>MHz</span>${options.matchesCurrent?.() ? `<span class="mc-strip-current" title="${l('Matches Current frequency', '与 Current 调谐频率一致')}">${icon('crosshair')}Current</span>` : ''}</small></div>
+    patch(`<div class="mc-strip-identity" title="${esc(`${name} · ${reception.label}`)}"><span><i class="mc-state-dot" data-state="${state}"></i>${temporary ? '<b>Current</b>' : rename ? `<input data-strip-name-edit data-key="strip-name-${esc(uid)}" data-no-drag aria-label="${l('Channel name', '信道名称')}" value="${esc(rename.value)}" maxlength="128">` : `<b data-strip-name data-no-drag tabindex="0" role="button" title="${l('Double-click to rename; Enter to save, Escape to cancel', '双击改名；回车提交，Esc 取消')}">${esc(name)}</b>`}</span><small>${(r.confirmed.baseband.frequency_hz / 1e6).toFixed(6)} <span>MHz</span>${options.matchesCurrent?.() ? `<span class="mc-strip-current" title="${l('Matches Current frequency', '与 Current 调谐频率一致')}">${icon('crosshair')}Current</span>` : ''}</small></div>
       <div data-strip-text data-key="strip-text"></div>
       <div class="mc-strip-level" data-strip-meter data-no-drag role="meter" aria-valuemax="0"><span class="mc-strip-level-fill"></span><span class="mc-strip-level-peak"></span><small></small></div>
       <div class="mc-strip-actions">${monitor ? control('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), `aria-pressed="${session.listening(uid)}" ${r.state !== 'running' || r.fault ? 'disabled' : ''}`) : ''}
@@ -88,6 +90,7 @@ export function mountWorkbenchChannelStrip(root: HTMLElement, session: Workbench
   }
 
   function reset(): void {
+    patch.reset();
     rename = undefined; volume = false; meterState = new ReceiverMeter();
   }
   const beginRename = (): void => {

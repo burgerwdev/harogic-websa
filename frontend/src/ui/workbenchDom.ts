@@ -15,14 +15,21 @@ const key = (node: Node): string | null => {
 export function patchWorkbench(host: HTMLElement, html: string, preserve: (element: Element) => boolean = () => false): void {
   const template = host.ownerDocument.createElement('template');
   template.innerHTML = html;
+  // Ownership keys do not change during reconciliation. Each compatibility
+  // check used to scan the same attributes again throughout the subtree.
+  const keys = new WeakMap<Node, string | null>();
+  const nodeKey = (node: Node): string | null => {
+    if (!keys.has(node)) keys.set(node, key(node));
+    return keys.get(node)!;
+  };
   const compatible = (left: Node, right: Node): boolean => left.nodeType === right.nodeType
-    && (left.nodeType !== 1 || (left as Element).tagName === (right as Element).tagName) && key(left) === key(right);
+    && (left.nodeType !== 1 || (left as Element).tagName === (right as Element).tagName) && nodeKey(left) === nodeKey(right);
   const patch = (parent: Node, source: Node): void => {
     const old = [...parent.childNodes], used = new Set<Node>();
-    const keyed = new Map(old.filter(node => key(node) !== null).map(node => [key(node), node]));
+    const keyed = new Map(old.filter(node => nodeKey(node) !== null).map(node => [nodeKey(node), node]));
     let cursor = parent.firstChild;
     for (const next of [...source.childNodes]) {
-      const id = key(next);
+      const id = nodeKey(next);
       const current = id !== null ? keyed.get(id) : old.find(node => !used.has(node) && compatible(node, next));
       if (!current || !compatible(current, next)) {
         parent.insertBefore(next, cursor);
@@ -60,4 +67,20 @@ export function patchWorkbench(host: HTMLElement, html: string, preserve: (eleme
     for (const node of old) if (!used.has(node)) node.remove();
   };
   patch(host, template.content);
+}
+
+/** For a surface owned by one renderer, keep live child lanes and skip identical
+ * chrome. Reset after replacing the host's children outside this renderer. */
+export function createWorkbenchPatcher(host: HTMLElement) {
+  let previous: string | undefined;
+  const patch = (html: string, preserve?: (element: Element) => boolean): boolean => {
+    const editing = host.contains(host.ownerDocument.activeElement)
+      && host.ownerDocument.activeElement?.matches('input,select,textarea');
+    if (!editing && previous === html) return false;
+    patchWorkbench(host, html, preserve);
+    // A preserved input may still need the same update once editing ends.
+    previous = editing ? undefined : html;
+    return true;
+  };
+  return Object.assign(patch, { reset: () => { previous = undefined; } });
 }

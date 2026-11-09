@@ -49,7 +49,16 @@ export function confirmSdrChannels(next: SdrChannelMark[]): void {
     .map(({ channel, freq, mode, if_bw, pitch, enabled, processing_enabled, baseband, control }) =>
       ({ channel, freq, mode, if_bw, pitch, enabled, processing_enabled, baseband,
         control: control ? { ...control } : undefined }));
-  if (JSON.stringify(marks) !== JSON.stringify(channels)) { channels = marks; requestRender(); }
+  // Control revisions/tokens can rotate on an unchanged STATUS. Keep them
+  // current for edits without repainting the spectrum and waterfall.
+  const changed = marks.length !== channels.length || marks.some((mark, i) => {
+    const previous = channels[i];
+    return mark.channel !== previous.channel || mark.freq !== previous.freq || mark.mode !== previous.mode
+      || mark.if_bw !== previous.if_bw || mark.pitch !== previous.pitch || mark.enabled !== previous.enabled
+      || mark.processing_enabled !== previous.processing_enabled || mark.baseband?.passband_hz !== previous.baseband?.passband_hz;
+  });
+  channels = marks;
+  if (changed) requestRender();
 }
 
 /** Freeze the identity observed when an edit is created, including unsent tuning. */

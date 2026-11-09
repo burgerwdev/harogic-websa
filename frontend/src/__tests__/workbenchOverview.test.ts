@@ -29,6 +29,28 @@ afterEach(() => {
   ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); setLang('en'); setTheme('dark'); vi.restoreAllMocks(); vi.useRealTimers();
 });
 describe('channel overview ownership', () => {
+  it('defers hidden channel windows and refreshes them when reopened', () => {
+    const detail = detach('fixture-c2');
+    detail.querySelector<HTMLButtonElement>('[data-dock]')!.click();
+    expect(detail.hidden).toBe(true);
+    const hidden = detail.textContent;
+    session.snapshot.receivers[1].confirmed.name = 'Renamed while docked'; session.notify();
+    expect(detail.textContent).toBe(hidden);
+    expect(detach('fixture-c2')).toBe(detail);
+    expect(detail.textContent).toContain('Renamed while docked');
+  });
+
+  it('renders the current diagnostic snapshot only while the disclosure is open', () => {
+    const detail = detach('fixture-c2');
+    const section = detail.querySelector<HTMLDetailsElement>('[data-section=live-diagnostics]')!;
+    expect(section.querySelector('pre')!.textContent).toBe('');
+    session.snapshot.receivers[1].clock!.output_index = '7654321'; session.notify();
+    section.open = true; section.dispatchEvent(new Event('toggle'));
+    expect(section.querySelector('pre')!.textContent).toContain('7654321');
+    section.open = false; section.dispatchEvent(new Event('toggle'));
+    expect(section.querySelector('pre')!.textContent).toBe('');
+  });
+
   it('shows creation times and accessible icon-only monitoring without sending commands', () => {
     const send = vi.spyOn(session, 'send');
     expect(cards()).toHaveLength(3);
@@ -296,6 +318,36 @@ it('releases waveform probes on hidden cards and disposal without creating audio
   surface.hidden = true; vi.advanceTimersByTime(100); manager.paint();
   expect(waveform).toHaveBeenCalledWith('fixture-c1', null);
   manager.dispose();
+});
+
+it('updates only the changed decoder lane and leaves unchanged card controls intact', () => {
+  ui.dispose();
+  const results = vi.fn(() => ({ entries: [], evicted: 0 }));
+  const manager = createWorkbenchOverview(session, { available: () => true, recording: () => undefined, detached: () => false,
+    fit: vi.fn(), dockAll: vi.fn(), readouts: { results } });
+  const surface = document.createElement('section'); surface.className = 'mc-window';
+  surface.innerHTML = '<header class="mc-head"><div class="mc-window-actions"></div></header><div class="mc-body"></div>';
+  document.body.append(surface);
+  manager.attach(surface.querySelector('.mc-body')!, surface.querySelector('.mc-head')!);
+  const actions = surface.querySelector<HTMLElement>('[data-uid="fixture-c2"] .mc-card-actions')!;
+  const observer = new MutationObserver(() => {}); observer.observe(actions, { attributes: true, childList: true, subtree: true });
+  const storage = vi.spyOn(Storage.prototype, 'setItem');
+  results.mockClear();
+  try {
+    manager.updateResults(new Set(['fixture-c2']));
+    expect(results.mock.calls).toEqual([['fixture-c2']]);
+    // Polls advance clocks without changing the card's presentation.
+    session.snapshot.receivers[1].clock!.output_index = '1000';
+    manager.update(); manager.update();
+    expect(observer.takeRecords()).toEqual([]);
+    expect(storage).not.toHaveBeenCalled();
+    surface.hidden = true;
+    const layout = vi.spyOn(Element.prototype, 'getBoundingClientRect');
+    results.mockClear();
+    manager.paint(true); manager.updateResults(new Set(['fixture-c2']));
+    expect(layout).not.toHaveBeenCalled();
+    expect(results).not.toHaveBeenCalled();
+  } finally { observer.disconnect(); manager.dispose(); }
 });
 
 it.each(['adsb', 'ais', 'gps', 'ism', 'meteor'])('%s overview follows reception despite historical decodes and closed audio squelch', mode => {

@@ -9,7 +9,7 @@ import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import { WorkbenchSession } from './workbenchSession';
 import { mountReceiverDecodeView, type ReceiverDecodeView } from './receiverDecodeView';
 import { workbenchTip } from './workbenchTips';
-import { patchWorkbench } from './workbenchDom';
+import { createWorkbenchPatcher, patchWorkbench } from './workbenchDom';
 import { mountWorkbenchCreate } from './workbenchCreate';
 import { defaultTransitionHz, occupiedBandwidth } from '../core/receiverBandwidth';
 import { workbenchIcon as icon } from './workbenchIcons';
@@ -87,6 +87,7 @@ interface Draft {
 }
 interface Pane {
   window: FloatingWindow;
+  patch?: ReturnType<typeof createWorkbenchPatcher>;
   title(): string;
   kind: 'overview' | 'detail' | 'results';
   overviewMode?: boolean;
@@ -456,7 +457,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     return `<header data-key="channel-heading-${ownerKey}" class="mc-channel-heading" style="--channel:${esc(c.color)}"><div class="mc-channel-title"><span class="mc-channel-avatar">${r.display_number.toString().padStart(2, '0')}</span><div><p class="mc-eyebrow">${l('Channel name', '信道名称')}</p><label class="mc-name-editor"><input data-channel-name name="name" form="${esc(formId)}" value="${esc(channelName(r))}" ${isCurrent(r.receiver_uid) ? 'readonly' : ''} maxlength="128" required aria-label="${l('Channel name', '信道名称')}" title="${l('Edit the channel name; press Enter or Apply settings to save', '修改信道名称，按 Enter 或应用设置保存')}" ${session.retiring(r.receiver_uid) ? 'disabled' : ''}>${icon('edit')}</label></div></div><div data-key="channel-actions" class="mc-channel-actions"><button type="button" data-action="toggle-receiver" role="switch" aria-checked="${c.enabled}" title="${c.enabled ? l('Stop receiving this channel', '停止此信道的接收') : l('Start receiving this channel', '开始此信道的接收')}" ${edit?.pending || session.retiring(r.receiver_uid) ? 'disabled' : ''}><span>${receiverLabel(r.state)}</span><span class="mc-receiver-switch" aria-hidden="true"></span></button>${managementButtons(r.receiver_uid)}</div></header>
       ${pane.tab === 'output' ? `<details data-section="clock" ${expanded('clock')}><summary>${l('Stream details', '数据流详情')}</summary>${copyDetailsButton('copy-stream')}<p class="mc-clock">${l('Revision', '修订')} ${r.revision}<br>${esc(r.stream ? `${r.stream.source_id} / epoch ${r.stream.epoch} / channel ${r.stream.channel_id}` : l('No continuous stream', '当前无连续流'))}<br>${r.clock?.actual_rate_hz ?? '—'} S/s</p></details>` : ''}
       ${r.fault && pane.tab!=='receive' ? `<p data-key="receiver-fault" class="mc-error" role="alert">${esc(r.fault.scope)}: ${esc(r.fault.message)}</p>` : ''}
-      ${pane.tab!=='receive'?receiverRuntime(r):''}
+      ${pane.tab!=='receive'?receiverRuntime(r,pane.expanded.has('processing-diagnostics')):''}
       ${native?.status(r.receiver_uid) ? `<p data-key="consumer-fault" class="mc-error" role="alert">${esc(native.status(r.receiver_uid))} ${button('retry-stream', l('Retry local consumer', '重试本地消费'))}</p>` : ''}
       ${edit?.pending && pane.tab !== 'receive' ? `<p data-key="pending" role="status">${l('Applying settings…', '正在应用设置…')}</p>` : ''}
       ${edit?.fault ? `<p data-key="edit-fault" class="mc-error" role="alert">${esc(edit.fault.code)}: ${esc(faultText(edit.fault, edit.attempted))} ${button('retry', l('Retry', '重试'))}</p>` : ''}
@@ -502,12 +503,19 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     if (!sameEditor) rememberDraft(pane);
     body.classList.toggle('mc-overview-body', pane.kind === 'overview');
     const focused = body.ownerDocument.activeElement;
-    const patch = (html: string): void => patchWorkbench(body, html, element =>
+    pane.patch ??= createWorkbenchPatcher(body);
+    if (!sameEditor) pane.patch.reset();
+    const patch = (html: string): void => {
+      pane.patch!(html, element =>
       element.hasAttribute('data-decode-view') || element.hasAttribute('data-inline-decode') || element.hasAttribute('data-receiver-presets') || (element.hasAttribute('data-scene') && !!scene) || (sameEditor && (
         (element.hasAttribute('data-config') && (!!pane.dirty || !!focused && !!focused.closest('input,select,textarea') && element.contains(focused)))
         || (element.hasAttribute('data-channel-name') && !!pane.dirty)
         || (element.hasAttribute('data-preview') && !!pane.dirty)
         || (element === focused && element.matches('input,select,textarea')))));
+      // Drafts and scene previews preserve externally edited children. Once
+      // they end, the same template must be reconciled to clear those edits.
+      if (pane.dirty || scene) pane.patch!.reset();
+    };
     pane.renderedUid = uid; pane.renderedTab = pane.tab;
     if (!sameEditor) pane.dirty = pane.drafts.has(uid) && pane.tab === 'receive';
     if (pane.kind === 'overview') {
@@ -621,6 +629,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       const section = event.target as HTMLDetailsElement;
       if (section.matches('details[data-section]') && section.isConnected) {
         if (section.open) pane.expanded.add(section.dataset.section!); else pane.expanded.delete(section.dataset.section!);
+        if (section.dataset.section?.endsWith('diagnostics')) renderPane(pane);
       }
     }, { capture: true, signal: events.signal });
     let gestureDocument: Document | null = null;
@@ -970,7 +979,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     const markers = host.querySelector<HTMLElement>('[data-markers]')!;
     patchWorkbench(markers, session.snapshot.receivers.filter(r => r.confirmed.enabled && session.snapshot.capture.usable_bandwidth_hz !== null).map(r =>
       `<button type="button" data-key="${esc(r.receiver_uid)}" title="${l('Select this channel for editing', '选中此信道以编辑设置')}" data-marker-uid="${esc(r.receiver_uid)}" style="left:${50 + (r.confirmed.baseband.frequency_hz - session.snapshot.capture.center_hz) / session.snapshot.capture.usable_bandwidth_hz! * 100}%;top:${r.display_number % 2 * 28 + 8}px;border-color:${esc(r.confirmed.color)}">${esc(`${channelLabel(r)}${session.route(r.receiver_uid).enabled ? ` · ${l('Listen', '监听')}` : ''}`)}</button>`).join(''));
-    panes.forEach(pane => renderPane(pane));
+    panes.forEach(pane => {
+      if (!pane.window.root.hidden && !pane.window.root.ownerDocument.hidden) renderPane(pane);
+    });
     syncOverviewButton();
   };
   const recall = (reset = false): void => { if (disposed) return; panes.forEach(pane => { if (!pane.docked || pane.overviewMode) pane.window.recall(reset); }); archives.recall(reset); audioArchives?.recall(reset); library.recall(reset); };
@@ -1042,8 +1053,9 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     if (resultsTimer !== undefined) return;
     resultsTimer = setTimeout(() => {
       resultsTimer = undefined;
+      overview.updateResults(changedResults);
       for (const pane of panes.values()) {
-        if (pane.overviewMode) { overview.update(); continue; }
+        if (pane.overviewMode) continue;
         const uid = session.resolve(pane.binding);
         if (!changedResults.has(uid) || pane.interacting || pane.window.root.hidden || pane.window.root.ownerDocument.hidden) continue;
         pane.strip?.update();
