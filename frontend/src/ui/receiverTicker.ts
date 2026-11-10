@@ -7,6 +7,22 @@ import { setDomAttribute, setDomProperty } from './domState';
 
 const textModes = new Set(['ft8', 'ft4', 'wspr', 'cw', 'rtty', 'rtty-reverse', 'navtex', 'dsc']);
 const continuousModes = new Set(['cw', 'rtty', 'rtty-reverse']);
+const ticking = new Set<() => void>();
+let tickerClock: ReturnType<typeof setInterval> | undefined;
+function syncTickerClock(): void {
+  if (document.hidden || !ticking.size) { clearInterval(tickerClock); tickerClock = undefined; }
+  else tickerClock ??= setInterval(() => { for (const fn of ticking) fn(); }, 40);
+}
+document.addEventListener('visibilitychange', syncTickerClock);
+function scheduleTicker(tick: () => void, enabled: boolean): void {
+  if (enabled) {
+    ticking.add(tick);
+    syncTickerClock();
+  } else {
+    ticking.delete(tick);
+    if (!ticking.size) { clearInterval(tickerClock); tickerClock = undefined; }
+  }
+}
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 export interface StripMessage { key: string; text: string }
 export function stripMessages(entries: readonly DecoderLogEntry[], receiver: ReceiverState, source?: string | null): StripMessage[] {
@@ -34,7 +50,7 @@ export interface ReceiverTicker {
 }
 
 /** Animation belongs to this view; it never consumes or clears shared decoder history. */
-export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): ReceiverTicker {
+export function mountReceiverTicker(host: HTMLElement, root: HTMLElement, inView: () => boolean = () => true): ReceiverTicker {
   const doc = host.ownerDocument;
   host.className = 'mc-strip-text'; host.dataset.noDrag = ''; host.hidden = true;
   const badge = doc.createElement('span'); badge.className = 'mc-ticker-mode';
@@ -81,7 +97,7 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
   const tick = (): void => {
     if (disposed) return;
     const now = performance.now(), delta = Math.min(80, Math.max(0, now - lastTick)); lastTick = now;
-    const active = root.isConnected && !host.hidden && !root.closest('[hidden]')
+    const active = inView() && root.isConnected && !host.hidden && !root.closest('[hidden]')
       && (root.classList.contains('mc-collapsed') || root.classList.contains('mc-overview-card')) && !host.ownerDocument.hidden;
     if (!active) { if (wasActive) cancelMotion(); wasActive = false; return; }
     if (!wasActive) { elapsed = 0; wasActive = true; }
@@ -115,7 +131,6 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
   const blur = (): void => { focused = false; };
   viewport.addEventListener('pointerenter', enter); viewport.addEventListener('pointerleave', leave);
   viewport.addEventListener('focus', focus); viewport.addEventListener('blur', blur);
-  const timer = setInterval(tick, 40);
   return {
     update(entries, receiver, service, source): void {
       const languageChanged = language !== getLang(); language = getLang();
@@ -143,8 +158,9 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
         : getLang() === 'zh' ? receiving ? '等待解码文字…' : '接收已暂停' : receiving ? 'Waiting for decoded text…' : 'Reception paused';
       setDomAttribute(viewport, 'aria-label', getLang() === 'zh' ? '解码文字；悬停或聚焦暂停滚动' : 'Decoded text; hover or focus to pause');
       if (!next.length) {
-        cancelMotion(); items = []; target = ''; glyphs = []; written = 0; write(waiting); text.style.transform = ''; viewport.title = waiting; return;
+        scheduleTicker(tick, false); cancelMotion(); items = []; target = ''; glyphs = []; written = 0; write(waiting); text.style.transform = ''; viewport.title = waiting; return;
       }
+      scheduleTicker(tick, receiving);
       if (items.length === next.length && items.every((item, i) => item.key === next[i].key && item.text === next[i].text)) { if (languageChanged && !continuous) choose(index, false); return; }
       const previous = items, oldKey = items[index]?.key; items = next;
       if (continuous) {
@@ -163,7 +179,7 @@ export function mountReceiverTicker(host: HTMLElement, root: HTMLElement): Recei
       lastTick = performance.now();
     },
     dispose(): void {
-      disposed = true; clearInterval(timer); observer?.disconnect(); cancelMotion();
+      disposed = true; scheduleTicker(tick, false); observer?.disconnect(); cancelMotion();
       viewport.removeEventListener('pointerenter', enter); viewport.removeEventListener('pointerleave', leave);
       viewport.removeEventListener('focus', focus); viewport.removeEventListener('blur', blur);
       host.replaceChildren(); root.classList.remove('mc-has-strip-text');

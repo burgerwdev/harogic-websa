@@ -4,9 +4,7 @@ use super::*;
 
 pub(super) fn prepare_service(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:usize,
     selected:usize,extra_bin:bool)->Result<(),String> {
-    admit_service(configs,fs,taps,selected)?;
-    if extra_bin {admit_service(configs,fs,taps,selected+1)?;}
-    Ok(())
+    admit_service(configs,fs,taps,selected+usize::from(extra_bin))
 }
 pub(super) fn admit_service(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:usize,selected:usize)->Result<(),String> {
     service_cost_report(configs,fs,taps,selected).map(|_|())
@@ -14,12 +12,16 @@ pub(super) fn admit_service(configs:&[receiver_workers::ChannelConfig],fs:f64,ta
 fn service_cost_report(configs:&[receiver_workers::ChannelConfig],fs:f64,taps:usize,selected:usize)->Result<Value,String> {
     if !fs.is_finite()||fs<=0.0||!matches!(taps,4|8|16) {return Err("fine/framer: invalid input geometry".into());}
     let bin_count=PFB_BINS.min((fs/BIN_SPACING).round() as i64).max(2) as usize;
-    if selected==0||selected>bin_count {return Err("fine/framer: invalid selected-bin count".into());}
+    if selected>bin_count {return Err("fine/framer: invalid selected-bin count".into());}
     let mut seen=std::collections::BTreeSet::new();let mut output=0.0;
     for config in configs {
         if !(1..=MAX_CHANNELS as u32).contains(&config.channel) {return Err("service channel exceeds capacity".into());}
         if !seen.insert(config.channel) {return Err("duplicate service channel".into());}
-        if config.enabled {output+=super::service_ddc::source_plan(fs,config)?.plan().output_rate*8.0;}
+        if config.enabled {
+            let source=super::service_ddc::source_plan(fs,config)?;
+            if selected==0 && !source.is_direct() {return Err("fine/framer: active coarse channel has no selected bin".into());}
+            output+=source.plan().output_rate*8.0;
+        }
     }
     Ok(json!({"policy":"observed_runtime","scope":"fine+framer","required_ns_per_second":null,
         "limit_ns_per_second":null,"reserve":null,"calibration_required":false,

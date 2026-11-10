@@ -62,6 +62,7 @@ pub(super) async fn serve() -> Result<(), Box<dyn std::error::Error>> {
             return Err("WEBSA_RUST_IQS_SHIM is empty".into());
         }
         check_hardware_exclusive()?;
+        websa_channelizer::capture_scheduling::enable();
         state.hardware_shim = Some(shim);
     }
     let recording_root = std::env::var_os("WEBSA_RECORDING_DIR")

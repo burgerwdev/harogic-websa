@@ -134,7 +134,7 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
     geometry: () => ({ ...layout.geometry }),
     setGeometry: geometry => { layout.geometry = { ...layout.geometry, ...geometry }; apply(); save(); },
     setCollapsed: collapsed => { layout.collapsed = collapsed; apply(); save(); },
-    setDockHandler: handler => { dockHandler = handler; apply(); },
+    setDockHandler: handler => { const changed = !!dockHandler !== !!handler; dockHandler = handler; if (changed) apply(); },
     recall: (reset = false) => { portal.dock(); if (reset) { layout.geometry = { ...initial }; layout.collapsed = false; } show(); },
     dispose: () => { observer?.disconnect(); if (resizeFrame !== null) parent.cancelAnimationFrame(resizeFrame); portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
 }

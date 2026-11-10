@@ -105,3 +105,49 @@ mod tests {
         assert_eq!(snapshot.p99_ns, 127);
     }
 }
+
+/// Execution time on this thread, excluding scheduling and blocking waits.
+pub fn thread_cpu_ns() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        (unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) } == 0)
+            .then(|| (time.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(time.tv_nsec as u64))
+    }
+    #[cfg(not(target_os = "linux"))]
+    { None }
+}
+
+/// Opt-in scheduling attribution. Called only for sampled diagnostic jobs;
+/// fixed stack storage keeps this out of the ordinary allocation path.
+#[derive(Clone, Copy, Default, Debug, serde::Serialize)]
+pub struct ThreadSchedule {
+    pub runnable_wait_ns: u64,
+    pub voluntary_switches: u64,
+    pub involuntary_switches: u64,
+    pub minor_faults: u64,
+}
+pub fn thread_schedule() -> Option<ThreadSchedule> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Read;
+        let mut bytes=[0u8;128];
+        let count=std::fs::File::open("/proc/thread-self/schedstat").ok()?.read(&mut bytes).ok()?;
+        let wait=std::str::from_utf8(&bytes[..count]).ok()?.split_whitespace().nth(1)?.parse().ok()?;
+        let mut usage=std::mem::MaybeUninit::<libc::rusage>::uninit();
+        if unsafe {libc::getrusage(libc::RUSAGE_THREAD,usage.as_mut_ptr())} != 0 {return None;}
+        let usage=unsafe {usage.assume_init()};
+        Some(ThreadSchedule {runnable_wait_ns:wait,voluntary_switches:usage.ru_nvcsw as u64,
+            involuntary_switches:usage.ru_nivcsw as u64,minor_faults:usage.ru_minflt as u64})
+    }
+    #[cfg(not(target_os = "linux"))]
+    { None }
+}
+impl ThreadSchedule {
+    pub fn since(self, before: Self) -> Self {
+        Self {runnable_wait_ns:self.runnable_wait_ns.saturating_sub(before.runnable_wait_ns),
+            voluntary_switches:self.voluntary_switches.saturating_sub(before.voluntary_switches),
+            involuntary_switches:self.involuntary_switches.saturating_sub(before.involuntary_switches),
+            minor_faults:self.minor_faults.saturating_sub(before.minor_faults)}
+    }
+}

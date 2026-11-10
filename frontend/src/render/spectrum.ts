@@ -38,6 +38,7 @@ import { sdrPassbandVisible } from '../ui/sdrPassbandState';
 import { renderSdrChannelBands } from './sdrChannelBands';
 import { renderSdrLocate } from '../ui/sdrLocate';
 import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
+import { CanvasLayer } from './canvasLayer';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -57,12 +58,19 @@ function cur() {
 
 // Fixed plot rectangle: W/H/MARGIN move with the window, so this is recomputed per draw
 // rather than cached - allocating one small object per frame is not the hot path (points are).
+const frequencyLabels = new CanvasLayer(), levelLabels = new CanvasLayer();
 function drawFreqRow(lo: number, hi: number, col: any, p: any) {
+  const key = `${lo}:${hi}:${col.axis}:${col.text}:${W}`;
+  if (frequencyLabels.draw(ctx, key, p.x, p.y + p.h + 8, W - p.x, 18, pixelRatio,
+    layer => paintFreqRow(layer, lo, hi, col, 0, 0))) return;
+  paintFreqRow(ctx, lo, hi, col, p.x, p.y + p.h + 8);
+}
+function paintFreqRow(ctx: CanvasRenderingContext2D, lo: number, hi: number, col: any, x: number, y: number) {
   ctx.font = '11px monospace';
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  let fx = p.x;
-  const fy = p.y + p.h + 8;
+  let fx = x;
+  const fy = y;
   const cHz = (lo + hi) / 2;
   const segs: [string, string][] = [
     ['Start ', formatFreqHz(lo)],
@@ -584,7 +592,7 @@ function renderRtaView() {
 export function renderAll() {
   validateSdrBadgeDrag();
   const c = cur();
-  if (!S.rtaMode || !S.rtaDensity2d || !(rtaHalflife.get() > 0)) clearRtaDensityRelease();
+  if (!S.rtaMode || !S.rtaDensity2d || !(rtaHalflife.get() > 0) || rtaDensLayers.get() === 'trace') releaseRtaDensityRaster();
   resetStatusBlocks();                             // status area is rebuilt every pass
   // Waterfall container replaces the table slot in ALL modes (incl. RTA)
   const wfc = document.getElementById('waterfall-container');
@@ -668,15 +676,10 @@ registerViewRenderer({ mode: 'rta', render: () => renderRtaView() });
  */
 function drawYAxisLabels(p: { x: number; y: number; w: number; h: number },
                          col: { axis: string }, displayRef: number, dbPerDiv: number) {
-  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   const labelX = p.x + p.w + 42;
   const labels: string[] = [];
   for (let i = 0; i <= S.totalDivs; i++) {
-    const y = p.y + i * p.h / S.totalDivs;
-    const text = fmtAxisLevel(displayRef - i * dbPerDiv);
-    labels.push(text);
-    ctx.fillText(text, labelX, y);
+    labels.push(fmtAxisLevel(displayRef - i * dbPerDiv));
   }
   // Written only on change (this runs on every pass; they change with ref/dB-per-div/offset/unit).
   const text = labels.join(',');
@@ -686,6 +689,13 @@ function drawYAxisLabels(p: { x: number; y: number; w: number; h: number },
   // canvas text cannot tell the two apart from outside.
   const unit = displayUnit.get();
   if (ctx.canvas.dataset.levelUnit !== unit) ctx.canvas.dataset.levelUnit = unit;
+  const paint = (drawing: CanvasRenderingContext2D, x: number, y: number): void => {
+    drawing.fillStyle = col.axis; drawing.font = '11px monospace';
+    drawing.textAlign = 'right'; drawing.textBaseline = 'middle';
+    labels.forEach((text, i) => drawing.fillText(text, x, y + i * p.h / S.totalDivs));
+  };
+  if (!levelLabels.draw(ctx, `${text}:${col.axis}:${p.h}`, p.x + p.w, p.y - 10, 44, p.h + 20,
+    pixelRatio, layer => paint(layer, 42, 10))) paint(ctx, labelX, p.y);
 }
 
 // Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn
@@ -944,6 +954,22 @@ function clearRtaDensityRelease(): void {
 }
 
 
+function releaseRtaDensityRaster(): void {
+  clearRtaDensityRelease();
+  if (rtaDensLayer) { rtaDensLayer.width = 0; rtaDensLayer.height = 0; }
+  rtaDensLayer = null; rtaDensCtx = null; rtaDensImage = null;
+  if (rtaDensRaster.length) rtaDensRaster = new Float32Array(0);
+  lastDensGrid = null; lastDensFreq = null;
+  lastDensPaintTop = lastDensPaintEnd = 0;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (rtaDensSource.get() !== 'trace' || S.traces[S.activeTraceIdx]?.mode !== 'VIEW') S.setRtaDensity2d(null);
+    releaseRtaDensityRaster();
+  }
+});
+
+
 function drawRtaDensityLayer(
   grid: DensityGrid, freq: Float64Array, lo: number, hi: number,
   p: { x: number; y: number; w: number; h: number },
@@ -969,10 +995,9 @@ function drawRtaDensityLayer(
     softFootprint = end - first > 1
       && (freq[end - 1] - freq[first]) * p.w > 2 * (hi - lo) * (end - first - 1);
   }
-  if (softFootprint && (themeChanged || lastDensContrast !== contrast || !rtaDensPalette)) {
+  if (themeChanged || lastDensContrast !== contrast || !rtaDensPalette) {
     rtaDensPalette = densityPalette(contrast, rtaDensLut!);
   }
-  if (!softFootprint) rtaDensPalette = undefined;
   // Reproject frozen history on every offset/reference/scale/gesture change. The footprint
   // remains CSS pixels even when the native amplitude grid stretches or the DPR changes.
   const level = densityLevelPlacement(grid, getDisplayTop(), getDisplayRange(), displayOffset.get());

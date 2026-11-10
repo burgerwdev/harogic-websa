@@ -14,7 +14,7 @@ import { initKeypad } from './ui/keypad';
 import { initPopoverDrag } from './ui/popoverDrag';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
-import { requestRender } from './render/redraw';
+import { requestRender, renderStatus } from './render/redraw';
 import { initStore } from './core/store';
 import { initUiScale } from './core/uiScale';
 // Imported for its registration side effects: render/spectrum.ts is the swept/RTA view hub
@@ -32,6 +32,7 @@ import { updateInfoBar } from './render/infobar';
 import { syncToggleTexts } from './ui/controls';
 
 function init() {
+  Object.assign(window, { websaRenderStatus: renderStatus });
   // The UI scale first: the frame is CSS-zoomed, so it decides the box the canvas gets when
   // initStore() sizes it (core/uiScale.ts, core/store.ts).
   initUiScale();
@@ -94,7 +95,7 @@ function init() {
 
   // WS + periodic render (measurement view)
   connectWS();
-  setInterval(() => { if (S.viewMode === 'pnm' || S.viewMode === 'harm') requestRender(); }, 200);
+  setInterval(() => { if (!document.hidden && (S.viewMode === 'pnm' || S.viewMode === 'harm')) requestRender(); }, 200);
 }
 
 import { getTheme as S_getTheme } from './core/theme';

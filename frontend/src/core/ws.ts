@@ -1,6 +1,6 @@
 import { syncSelectValue } from '../ui/selectControl';
 // WebSocket protocol layer + STATUS handling
-import { requestRender } from '../render/redraw';
+import { requestRender, requestStreamRender, streamRenderInterval } from '../render/redraw';
 import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
 import { decodeFrame } from './frames';
@@ -54,7 +54,7 @@ import {
   rbwMode, vbwMode, currentRBW, currentPoints, currentSpur,
   frameDetector, traceAlign, pointsStrategy,
 } from '../ui/swpState';
-import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { rtaAmpBins, rtaDensSource, rtaDensLayers, rtaHalflife, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { getCapture, resetViewport, sameSpan, setCapture } from '../ui/spectrumViewport';
 import { confirmSdrChannelRegistry, confirmSdrReceiverError, failSdrReceiver, sdrIqStats } from '../sdr/iqStream';
@@ -148,6 +148,7 @@ let sdrTransition: { center: number; decimate: number; version: number } | null 
 
 // Only spectrum arrivals use this trailing throttle; UI redraws remain synchronous.
 const SPECTRUM_INTERVAL = 1000 / 30;
+const BACKGROUND_SPECTRUM_INTERVAL = 1000;
 let spectrumTimer: number | null = null;
 let pendingSpectrumWork: (() => void) | null = null;
 let lastSpectrumDraw = -Infinity;
@@ -158,9 +159,12 @@ function cancelSpectrumWork() {
   pendingSpectrumWork = null;
 }
 
-function drawSpectrumFrame() {
+function drawSpectrumFrame(immediate = false) {
+  const first = lastSpectrumDraw === -Infinity;
   lastSpectrumDraw = performance.now();
-  requestRender();
+  // First/changed-axis frames and trigger captures must replace the old view
+  // synchronously. Only ordinary arrivals share the display budget.
+  if (immediate || first) requestRender(); else requestStreamRender();
 }
 
 function scheduleSpectrumWork(work: () => void, immediate = false) {
@@ -174,7 +178,14 @@ function scheduleSpectrumWork(work: () => void, immediate = false) {
         || S.configVersion !== version)) return;
     work();
   };
-  if (immediate || performance.now() - lastWork >= SPECTRUM_INTERVAL) {
+  // Preparing density/trace history at 30 Hz while painting at 10–15 Hz spends
+  // CPU on superseded display frames. Use the same deadline as painting. Armed
+  // triggers still admit synchronously; receiver IQ/audio/decodes are separate.
+  const interval = document.hidden && !S.trigArmed ? BACKGROUND_SPECTRUM_INTERVAL
+    : Math.max(SPECTRUM_INTERVAL, streamRenderInterval());
+  // Keep armed trigger admission immediate; background display snapshots only
+  // need the newest packet. Audio, decode and backend recording keep their clocks.
+  if (immediate && (!document.hidden || S.trigArmed) || performance.now() - lastWork >= interval) {
     cancelSpectrumWork();
     guardedWork();
     return;
@@ -186,8 +197,14 @@ function scheduleSpectrumWork(work: () => void, immediate = false) {
     spectrumTimer = null;
     pendingSpectrumWork = null;
     latest?.();
-  }, Math.ceil(SPECTRUM_INTERVAL - (performance.now() - lastWork)));
+  }, Math.ceil(interval - (performance.now() - lastWork)));
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && pendingSpectrumWork) {
+    const work = pendingSpectrumWork; cancelSpectrumWork(); work();
+  }
+}, true);
 
 onTriggerReset(cancelSpectrumWork);
 onCommandSent(command => {
@@ -468,7 +485,10 @@ export function connectWS() {
         const bins = S.sdrMode
           ? Math.max(1, Math.min(rtaAmpBins.get(), Math.floor(96 * 1024 * 1024 / (spec.length * 8))))
           : rtaAmpBins.get();
-        S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, densSpec,
+        // Density is display history. Hidden pages and trace-only views have
+        // no density consumer; release live history, retaining a frozen VIEW.
+        S.setRtaDensity2d(document.hidden || rtaDensLayers.get() === 'trace'
+          ? (densSource === 'trace' && active.mode === 'VIEW' ? S.rtaDensity2d : null) : advanceDensity(S.rtaDensity2d, densSpec,
           bins, rtaHalflife.get(), getDisplayRef() - displayOffset.get(), range / bins,
           densSource === 'live' ? 'CLEAR_WRITE' : active.mode, freq, densSource, processAt));
         updateTrackingMarkers();
@@ -481,7 +501,7 @@ export function connectWS() {
         const captureComplete = triggerMode() === 'rta' && noteFrameArrived(frame.trigger);
         // Capture listeners synchronously paint the completed packet and its overlay.
         if (captureComplete) lastSpectrumDraw = performance.now();
-        else drawSpectrumFrame();
+        else drawSpectrumFrame(immediate);
       };
       scheduleSpectrumWork(processRtaFrame, immediate);
       return;

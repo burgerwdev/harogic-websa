@@ -692,21 +692,27 @@ impl ReceiverWorkers {
         }
     }
     pub(super) fn runtime_status(&self,channel:u32,uid:&str)->serde_json::Value {
+        self.runtime_status_detail(channel,uid,true)
+    }
+    pub(super) fn live_runtime_status(&self,channel:u32,uid:&str)->serde_json::Value {
+        self.runtime_status_detail(channel,uid,false)
+    }
+    fn runtime_status_detail(&self,channel:u32,uid:&str,diagnostics:bool)->serde_json::Value {
         let slot=channel as usize-1;let generation=self.shared.generations[slot].load(Ordering::Acquire);
-        let statistics=self.uid_stats(channel,uid);
-        let current=statistics.as_array().unwrap().iter().rev().find(|row|row["processing_generation"]==generation.to_string());
-        let waiting=current.map_or(0,|row|row["occupancy"]["input_queued"]["oldest_age_ns"].as_u64().unwrap_or(0));
+        let current=if diagnostics {self.shared.metrics.runtime(channel,uid,generation)}
+            else {self.shared.metrics.live_runtime(channel,uid,generation)};
+        let waiting=current.as_ref().map_or(0,|row|row.oldest_input_wait_ns);
         let failure=self.channel_failure(channel);
         let state=if !self.configs[slot].enabled||!self.configs[slot].processing_enabled {"disabled"}
             else if failure.is_some() {"failed"}
             else if self.shared.branches[slot].lifecycle.load(Ordering::Acquire)==2 {"retiring"}
             else if self.channel_preparing(channel) {"preparing"}
             else if waiting>250_000_000 {"backlogged"}
-            else if current.is_none_or(|row|row["packets"]["successful_samples"].as_u64().unwrap_or(0)==0) {"waiting"}
+            else if current.as_ref().is_none_or(|row|row.successful_samples==0) {"waiting"}
             else {"active"};
         serde_json::json!({"state":state,"processing_generation":generation.to_string(),"fault":failure,
             "oldest_input_wait_ns":waiting,"backlog_notice_after_ns":250_000_000_u64,
-            "observed_receiver":current.map(|row|row["receiver"].clone()),
+            "observed_receiver":current.map(|row|row.receiver),
             "input_held_bytes":self.shared.branches[slot].input_bytes.load(Ordering::Acquire),
             "input_held_media_ns":self.shared.branches[slot].input_media_ns.load(Ordering::Acquire)})
     }
@@ -1378,6 +1384,7 @@ fn close_retired_state(worker:usize,states:&mut [Option<ChannelState>],output:&m
 
 fn run_realtime(worker:usize,mut input: mpsc::Receiver<PendingWork>, output: mpsc::SyncSender<Output>,
     search: mpsc::SyncSender<SearchJob>, shared: Arc<Shared>, returns:Option<mpsc::Receiver<PendingWork>>) {
+    websa_channelizer::capture_scheduling::normal();
     let mut states: Vec<Option<ChannelState>> = (0..MAX_CHANNELS).map(|_|None).collect();
     let mut prefer_return=false;
     while !shared.stopping.load(Ordering::Acquire) {

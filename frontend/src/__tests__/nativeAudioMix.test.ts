@@ -205,3 +205,8 @@ describe('local speaker graph', () => {
     audio.setSdrAudioEnabled(false);
   });
 });
+// Graph tests use isolated ingress endpoints; the shared pool has its own
+// 16-source ownership and port-isolation checks in audioIngressPool.test.ts.
+vi.mock('../audio/audioIngressPool', () => ({
+  audioIngressClient: () => new globalThis.Worker(new URL('../audio/sdrAudioWorker.ts', import.meta.url), { type: 'module' }),
+}));

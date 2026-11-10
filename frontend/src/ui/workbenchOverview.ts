@@ -1,4 +1,8 @@
 import { getLang } from '../core/i18n';
+import { html, nothing, render as renderTemplate, type TemplateResult } from 'lit-html';
+import { repeat } from 'lit-html/directives/repeat.js';
+import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
+import { live } from 'lit-html/directives/live.js';
 import { getTheme } from '../core/theme';
 import { getUiScale } from '../core/uiScale';
 import { clone, receiverHasAudio, receiverInCapture, type ReceiverState, type RecordingTask, type TrackKind } from '../core/multichannel';
@@ -8,13 +12,12 @@ import { liveStatus } from './receiverLive';
 import { ReceiverMeter, receiverLevel, receiverLevelScale } from './receiverLevel';
 import { mountReceiverTicker, type ReceiverTicker } from './receiverTicker';
 import { createWorkbenchPatcher } from './workbenchDom';
-import { setDomAttribute, setDomProperty } from './domState';
+import { setDomAttribute, setDomProperty, setStyleProperty } from './domState';
 import { workbenchIcon as icon } from './workbenchIcons';
 import { matchesCurrentFrequency, workbenchChannels, type WorkbenchCurrent } from './workbenchCurrent';
 import { cardGrid, cardSize, loadOverviewState, moveOverviewCard, receiverCreatedAt, reconcileOverview, saveOverviewState, snapOverviewPosition, sortOverview, vacantOverviewPosition, type CardPosition, type OverviewLayout, type OverviewSort } from './workbenchOverviewState';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
-const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const textModes = new Set(['ft8', 'ft4', 'wspr', 'cw', 'rtty', 'rtty-reverse', 'navtex', 'dsc']);
 interface Options {
   available(command: string): boolean;
@@ -25,6 +28,7 @@ interface Options {
   detached(uid: string): boolean;
   dockAll(): void;
   fit(width: number, height: number): void;
+  clearChannels?(document: Document): void;
 }
 interface CardView {
   root: HTMLElement;
@@ -32,6 +36,7 @@ interface CardView {
   samples: Float32Array<ArrayBuffer>;
   ticker?: ReceiverTicker;
   probe: boolean;
+  inView: boolean;
   theme?: string;
   color?: string;
 }
@@ -42,7 +47,11 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
   const controls = document.createElement('div'); controls.className = 'mc-overview-controls'; controls.dataset.noDrag = '';
   const state = loadOverviewState(session.snapshot.service_id ?? 'fixture');
   const views = new Map<string, CardView>();
-  const patchControls = createWorkbenchPatcher(controls), patchCards = createWorkbenchPatcher(root);
+  const patchControls = createWorkbenchPatcher(controls);
+  const dates = new Map<string, { created: number | null; language: string; label: string; title: string; iso: string }>();
+  const dateFormats = new Map<string, Intl.DateTimeFormat>();
+  let arrangement = '';
+  let cardVisibility: IntersectionObserver | null | undefined;
   let savedState = '';
   const events = new AbortController();
   let volume: string | undefined, stopGesture: (() => void) | undefined, lastPaint = 0, suppressClickUntil = 0, disposed = false;
@@ -60,10 +69,11 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     return all.filter(r => isCurrent(r.receiver_uid) ? channels.showCurrent : !options.detached(r.receiver_uid)
       && (!state.bandOnly || receiverInCapture(session.snapshot, r.confirmed) !== false));
   };
-  const cardButton = (action: string, glyph: string, label: string, extra = ''): string => `<button type="button" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}" ${extra}>${icon(glyph)}</button>`;
+  const glyph = (name: string) => unsafeHTML(icon(name));
+  const cardButton = (action: string, symbol: string, label: string, disabled = false, pressed?: boolean, className = '') => html`<button type="button" data-action=${action} aria-label=${label} title=${label} ?disabled=${disabled} aria-pressed=${pressed === undefined ? nothing : String(pressed)} class=${className}>${glyph(symbol)}</button>`;
   const visible = (): boolean => root.isConnected && !root.closest<HTMLElement>('.mc-window')?.hidden && !root.closest<HTMLElement>('.mc-body')?.hidden && !root.ownerDocument.hidden;
   const releaseProbe = (uid: string, view: CardView): void => { if (view.probe) options.readouts?.waveform?.(uid, null); view.probe = false; };
-  const disposeView = (uid: string, view: CardView): void => { releaseProbe(uid, view); view.ticker?.dispose(); views.delete(uid); };
+  const disposeView = (uid: string, view: CardView): void => { cardVisibility?.unobserve(view.root); releaseProbe(uid, view); view.ticker?.dispose(); views.delete(uid); dates.delete(uid); };
   function positionNewCards(rows: ReceiverState[]): void {
     const columns = typeof state.layout === 'number' ? state.layout : Math.max(1, Math.floor((root.clientWidth - cardSize.padding * 2) / columnPitch));
     let slot = 0;
@@ -84,31 +94,37 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       }
     }
   }
-  function card(r: ReceiverState): string {
+  function card(r: ReceiverState): TemplateResult {
     const uid = r.receiver_uid, c = r.confirmed, audio = receiverHasAudio(session.snapshot, c), temporary = isCurrent(uid);
-    const pan = session.route(uid).pan, panLabel = pan < 0 ? 'L' : pan > 0 ? 'R' : 'L/R';
+    const route = session.route(uid), pan = route.pan, panLabel = pan < 0 ? 'L' : pan > 0 ? 'R' : 'L/R';
     const panTitle = l(`Audio output: ${panLabel}; click to cycle L/R → L → R`, `声像：${panLabel}；点击循环切换 L/R → L → R`);
     const monitor = audio && (session.snapshot.transport === 'fixture' || !!session.snapshot.capabilities.monitor_mixing);
     const record = options.recording(uid), task = record?.task;
     const availableAudio = r.state === 'running' && !r.fault;
-    const created = receiverCreatedAt(r), date = created === null ? null : new Date(created);
-    const dateLabel = date ? new Intl.DateTimeFormat(getLang() === 'zh' ? 'zh-CN' : 'en-GB', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date) : '—';
-    const point = state.positions[uid];
-    const position = state.layout === 'free' && point ? `;left:${point.x}px;top:${point.y}px` : '';
-    const editing = rename?.uid === uid;
+    const created = receiverCreatedAt(r), language = getLang();
+    let date = dates.get(uid);
+    if (!date || date.created !== created || date.language !== language) {
+      const locale = language === 'zh' ? 'zh-CN' : 'en-GB', value = created === null ? null : new Date(created);
+      let format = dateFormats.get(language);
+      if (!format) { format = new Intl.DateTimeFormat(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }); dateFormats.set(language, format); }
+      date = { created, language, label: value ? format.format(value) : '—', iso: value?.toISOString() ?? '',
+        title: `${l('Created', '创建')} ${value ? value.toLocaleString(locale) : l('Unknown', '未知')}` };
+      dates.set(uid, date);
+    }
+    const point = state.positions[uid], position = state.layout === 'free' && point ? `;left:${point.x}px;top:${point.y}px` : '';
+    const editing = rename?.uid === uid, busy = session.retiring(uid) || !!session.edits.get(uid)?.pending;
     const renameLabel = l('Rename channel; Enter saves, Escape cancels', '改名：回车保存，Esc 取消');
-    const dateTitle = `${l('Created', '创建')} ${date ? date.toLocaleString(getLang() === 'zh' ? 'zh-CN' : 'en-GB') : l('Unknown', '未知')}`;
-    return `<article class="mc-overview-card" data-uid="${esc(uid)}" data-tuning-source="${temporary}" data-out-of-band="${r.coverage?.state === 'out_of_band'}" data-key="card-${esc(uid)}" data-listening="${monitor && session.listening(uid)}" style="--channel:${esc(c.color)}${position}" tabindex="0" aria-label="${esc(`${temporary ? 'Current' : c.name} · ${(c.baseband.frequency_hz / 1e6).toFixed(6)} MHz`)}">
-      <header class="mc-card-heading"><span class="mc-card-number">${temporary ? 'Current' : `C${r.display_number.toString().padStart(2, '0')}`}</span>${temporary ? `<strong class="mc-card-temporary-name">${l('Temporary tuning', '临时调谐')}</strong>` : editing ? `<input data-card-name-edit data-key="name-${esc(uid)}" aria-label="${renameLabel}" value="${esc(rename!.value)}" maxlength="128" ${rename!.pending ? 'readonly' : ''}>` : `<button type="button" class="mc-card-name" data-card-rename="${esc(uid)}" title="${esc(`${c.name} · ${renameLabel}`)}" aria-label="${esc(`${c.name} · ${renameLabel}`)}" ${!options.available('configure') || session.edits.get(uid)?.pending || session.retiring(uid) ? 'disabled' : ''}><span>${esc(c.name)}</span>${icon('edit')}</button>`}${r.coverage?.state === 'out_of_band' ? `<span class="mc-card-band-status" title="${esc(liveStatus(r).label)}">${l('Out of band', '带外')}</span>` : ''}<span data-card-current hidden title="${l('Matches Current frequency', '与 Current 调谐频率一致')}">${icon('crosshair')}</span><i class="mc-state-dot" data-state="${r.state}" title="${esc(liveStatus(r).label)}"></i></header>
+    return html`<article class="mc-overview-card" data-uid=${uid} data-tuning-source=${temporary} data-out-of-band=${r.coverage?.state === 'out_of_band'} data-key=${`card-${uid}`} data-listening=${monitor && session.listening(uid)} style=${`--channel:${c.color}${position}`} tabindex="0" aria-label=${`${temporary ? 'Current' : c.name} · ${(c.baseband.frequency_hz / 1e6).toFixed(6)} MHz`}>
+      <header class="mc-card-heading"><span class="mc-card-number">${temporary ? 'Current' : `C${r.display_number.toString().padStart(2, '0')}`}</span>${temporary ? html`<strong class="mc-card-temporary-name">${l('Temporary tuning', '临时调谐')}</strong>` : editing ? html`<input data-card-name-edit data-key=${`name-${uid}`} aria-label=${renameLabel} .value=${live(rename!.value)} maxlength="128" ?readonly=${rename!.pending}>` : html`<button type="button" class="mc-card-name" data-card-rename=${uid} title=${`${c.name} · ${renameLabel}`} aria-label=${`${c.name} · ${renameLabel}`} ?disabled=${!options.available('configure') || busy}><span>${c.name}</span>${glyph('edit')}</button>`}${r.coverage?.state === 'out_of_band' ? html`<span class="mc-card-band-status" title=${liveStatus(r).label}>${l('Out of band', '带外')}</span>` : nothing}<span data-card-current hidden title=${l('Matches Current frequency', '与 Current 调谐频率一致')}>${glyph('crosshair')}</span><i class="mc-state-dot" data-state=${r.state} title=${liveStatus(r).label}></i></header>
       <div class="mc-card-frequency">${(c.baseband.frequency_hz / 1e6).toFixed(6)}<small>MHz</small></div>
-      <div class="mc-card-meta"><span class="mc-card-mode">${esc(c.processors[0]?.mode.toUpperCase() ?? 'IQ')}</span><span>BW ${((c.processors[0]?.bandwidth_hz ?? c.baseband.passband_hz) / 1000).toLocaleString(getLang(), { maximumFractionDigits: 2 })} kHz</span><span class="mc-card-created" title="${esc(dateTitle)}">${icon('clock')}<time aria-label="${esc(dateTitle)}" ${date ? `datetime="${date.toISOString()}"` : ''}>${dateLabel}</time></span></div>
-      <div class="mc-card-visual" data-card-visual><div data-card-message></div><canvas data-card-wave width="256" height="32" hidden aria-label="${l('Audio waveform before monitor volume; normalized display', '监听音量之前的声音波形；幅度归一化显示')}"></canvas><span data-card-placeholder></span></div>
-      <div class="mc-card-meter" data-card-meter role="meter" aria-label="${l('Channel level', '信道电平')}" aria-valuemin="-60" aria-valuemax="0"><span data-card-source>AF</span><div class="mc-card-meter-track"><i class="mc-strip-level-fill"></i><i class="mc-strip-level-peak"></i></div><small>— dBFS</small></div>
-      <div class="mc-card-actions">${monitor ? cardButton('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), `aria-pressed="${session.listening(uid)}" ${availableAudio ? '' : 'disabled'}`) : ''}
-      ${record && options.available('record_start') ? cardButton(`rec-${record.kind}`, 'record', task ? l('Stop recording', '停止录制') : l('Record channel', '录制信道'), `aria-pressed="${!!task}" class="${task ? 'mc-recording-on' : ''}" ${record.pending || session.retiring(uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running') ? 'disabled' : ''}`) : ''}
-      ${monitor ? `<div class="mc-card-volume"><button type="button" data-card-volume="${esc(uid)}" aria-label="${l('Channel volume', '信道音量')}" title="${l('Channel volume', '信道音量')}" aria-expanded="${volume === uid}">${icon(session.route(uid).gain ? 'volume' : 'muted')}</button><div class="mc-card-volume-panel" ${volume === uid ? '' : 'hidden'}><label>${l('Volume', '音量')}<input type="range" min="0" max="1" step="0.01" value="${session.route(uid).gain}" data-card-gain="${esc(uid)}" aria-label="${l('Channel volume', '信道音量')}"></label><output>${Math.round(session.route(uid).gain * 100)}%</output></div></div>` : ''}<span class="mc-card-spacer"></span>
-      ${monitor ? `<button type="button" class="mc-card-pan" data-card-pan="${esc(uid)}" aria-label="${esc(panTitle)}" title="${esc(panTitle)}" ${session.retiring(uid) ? 'disabled' : ''}>${panLabel}</button>` : ''}
-      ${temporary ? cardButton('save-current', 'plus', l('Save current channel', '保存当前信道')) : options.available('retire') ? cardButton('retire', 'trash', l('Delete channel', '删除信道'), `class="mc-card-delete" ${session.retiring(uid) || session.edits.get(uid)?.pending ? 'disabled' : ''}`) : ''}${cardButton('detail', 'external', temporary ? l('Current settings', 'Current 设置') : l('Take channel out of overview', '从概览取出信道'), 'class="mc-card-detach"')}</div></article>`;
+      <div class="mc-card-meta"><span class="mc-card-mode">${c.processors[0]?.mode.toUpperCase() ?? 'IQ'}</span><span>BW ${((c.processors[0]?.bandwidth_hz ?? c.baseband.passband_hz) / 1000).toLocaleString(language, { maximumFractionDigits: 2 })} kHz</span><span class="mc-card-created" title=${date.title}>${glyph('clock')}<time aria-label=${date.title} datetime=${date.iso || nothing}>${date.label}</time></span></div>
+      <div class="mc-card-visual" data-card-visual><div data-card-message></div><canvas data-card-wave width="256" height="32" hidden aria-label=${l('Audio waveform before monitor volume; normalized display', '监听音量之前的声音波形；幅度归一化显示')}></canvas><span data-card-placeholder></span></div>
+      <div class="mc-card-meter" data-card-meter role="meter" aria-label=${l('Channel level', '信道电平')} aria-valuemin="-60" aria-valuemax="0"><span data-card-source>AF</span><div class="mc-card-meter-track"><i class="mc-strip-level-fill"></i><i class="mc-strip-level-peak"></i></div><small>— dBFS</small></div>
+      <div class="mc-card-actions">${monitor ? cardButton('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), !availableAudio, session.listening(uid)) : nothing}
+      ${record && options.available('record_start') ? cardButton(`rec-${record.kind}`, 'record', task ? l('Stop recording', '停止录制') : l('Record channel', '录制信道'), record.pending || session.retiring(uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running'), !!task, task ? 'mc-recording-on' : '') : nothing}
+      ${monitor ? html`<div class="mc-card-volume"><button type="button" data-card-volume=${uid} aria-label=${l('Channel volume', '信道音量')} title=${l('Channel volume', '信道音量')} aria-expanded=${volume === uid}>${glyph(route.gain ? 'volume' : 'muted')}</button><div class="mc-card-volume-panel" ?hidden=${volume !== uid}><label>${l('Volume', '音量')}<input type="range" min="0" max="1" step="0.01" .value=${live(String(route.gain))} data-card-gain=${uid} aria-label=${l('Channel volume', '信道音量')}></label><output>${Math.round(route.gain * 100)}%</output></div></div>` : nothing}<span class="mc-card-spacer"></span>
+      ${monitor ? html`<button type="button" class="mc-card-pan" data-card-pan=${uid} aria-label=${panTitle} title=${panTitle} ?disabled=${session.retiring(uid)}>${panLabel}</button>` : nothing}
+      ${temporary ? cardButton('save-current', 'plus', l('Save current channel', '保存当前信道')) : options.available('retire') ? cardButton('retire', 'trash', l('Delete channel', '删除信道'), busy, undefined, 'mc-card-delete') : nothing}${cardButton('detail', 'external', temporary ? l('Current settings', 'Current 设置') : l('Take channel out of overview', '从概览取出信道'), false, undefined, 'mc-card-detach')}</div></article>`;
   }
   function update(): void {
     if (disposed || stopGesture || !root.isConnected) return;
@@ -126,22 +142,33 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       <select data-overview-layout aria-label="${l('Card layout', '卡片布局')}"><option value="auto" ${state.layout === 'auto' ? 'selected' : ''}>${l('Auto grid', '自动网格')}</option>${Array.from({ length: 8 }, (_, i) => `<option value="${i + 1}" ${state.layout === i + 1 ? 'selected' : ''}>${i + 1} ${l(i ? 'columns' : 'column', '列')}</option>`).join('')}<option value="free" ${state.layout === 'free' ? 'selected' : ''}>${l('Free layout', '自由摆放')}</option></select>
       <select data-overview-band aria-label="${l('Channel coverage', '信道频段筛选')}"><option value="all" ${state.bandOnly ? '' : 'selected'}>${l('All bands', '全部频段')}</option><option value="in-band" ${state.bandOnly ? 'selected' : ''}>${l('Current band only', '仅当前频段')}</option></select>
       <button type="button" data-overview-mute aria-pressed="${session.masterMuted}" title="${session.masterMuted ? l('Unmute all channels', '取消全部信道静音') : l('Mute all channels', '全部信道静音')}" aria-label="${l('Mute all channels', '全部信道静音')}">${icon(session.masterMuted ? 'muted' : 'volume')}<span>${l('Mute all', '全部静音')}</span></button>
-      <button type="button" data-overview-fit title="${l('Fit window to cards', '按卡片布局适配窗口')}" aria-label="${l('Fit window to cards', '按卡片布局适配窗口')}">${icon('fit')}</button><button type="button" data-overview-collect ${detached ? '' : 'disabled'} title="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}" aria-label="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}">${icon('collect')}</button>`);
-    const changed = patchCards(`<div class="mc-card-summary" data-key="summary"><span data-card-capacity title="${l('Defined channels / service capacity', '已建信道数／服务容量')}"><i class="mc-state-dot" data-state="running"></i>${channels.current ? `${channels.saved.length} ${l('saved', '已保存')} · ` : ''}${all.length} / ${session.snapshot.capabilities.max_channels} ${l('channels', '信道')}</span><span>${icon('headphones')}${all.filter(r => session.listening(r.receiver_uid) && receiverHasAudio(session.snapshot, r.confirmed)).length}</span><span class="mc-card-rec-count">${icon('record')}${all.filter(r => recording(r.receiver_uid)).length}</span><span class="mc-card-summary-spacer"></span>${state.layout === 'free' ? `<label><input type="checkbox" data-overview-snap ${state.snap ? 'checked' : ''}>${l('Snap to grid', '网格吸附')}</label>` : `<small>${l('Drag to arrange', '拖动卡片排列')}</small>`}</div>
-      ${session.fault ? `<p class="mc-error" role="alert">${esc(session.fault.message)}</p>` : ''}<div class="mc-card-scroll" data-key="scroll"><div class="mc-card-grid ${state.layout === 'free' ? 'mc-card-free' : ''}" data-key="grid" data-layout="${state.layout}" style="${typeof state.layout === 'number' ? `--columns:${state.layout}` : ''}">${rows.map(card).join('')}${rows.length ? '' : `<div class="mc-card-empty">${icon('channels')}<strong>${all.length ? l('Your channels are in separate windows', '信道已在独立窗口中') : l('Add a channel to start monitoring', '添加信道，开始监控')}</strong>${all.length ? `<button type="button" data-overview-collect>${icon('collect')}${l('Return all channels', '收回全部信道')}</button>` : `<button type="button" data-action="create">${icon('plus')}${l('Add channel', '添加信道')}</button>`}</div>`}</div></div>
-      <footer class="mc-card-footer" data-key="footer"><span data-overview-arrangement></span><span>${detached ? `${detached} ${l('in separate windows', '个独立窗口')}` : l('Double-click a card for details', '双击卡片查看详情')}</span></footer>`, element => element.hasAttribute('data-card-visual') || element.hasAttribute('data-card-meter') || element === root.ownerDocument.activeElement && element.matches('input,select'));
+      <button type="button" data-overview-fit title="${l('Fit window to cards', '按卡片布局适配窗口')}" aria-label="${l('Fit window to cards', '按卡片布局适配窗口')}">${icon('fit')}</button><button type="button" data-overview-collect ${detached ? '' : 'disabled'} title="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}" aria-label="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}">${icon('collect')}</button>${options.clearChannels ? `<button type="button" data-overview-clear class="mc-overview-clear" ${!all.length || session.clearingChannels || !options.available('retire') ? 'disabled' : ''} title="${l('Delete saved channels and stop Current; confirmation required', '删除已保存信道并停止 Current，操作前需确认')}">${icon('trash')}<span>${l('Clear all channels', '清除所有信道')}</span></button>` : ''}`);
+    // Lit compiles the static template once. UID keys retain each card and its
+    // independently owned canvas/ticker while bindings update only changed fields.
+    renderTemplate(html`<div class="mc-card-summary"><span data-card-capacity title=${l('Defined channels / service capacity', '已建信道数／服务容量')}><i class="mc-state-dot" data-state="running"></i>${channels.current ? `${channels.saved.length} ${l('saved', '已保存')} · ` : ''}${all.length} / ${session.snapshot.capabilities.max_channels} ${l('channels', '信道')}</span><span>${glyph('headphones')}${all.filter(r => session.listening(r.receiver_uid) && receiverHasAudio(session.snapshot, r.confirmed)).length}</span><span class="mc-card-rec-count">${glyph('record')}${all.filter(r => recording(r.receiver_uid)).length}</span><span class="mc-card-summary-spacer"></span>${state.layout === 'free' ? html`<label><input type="checkbox" data-overview-snap .checked=${state.snap}>${l('Snap to grid', '网格吸附')}</label>` : html`<small>${l('Drag to arrange', '拖动卡片排列')}</small>`}</div>
+      ${session.fault ? html`<p class="mc-error" role="alert">${session.fault.message}</p>` : nothing}<div class="mc-card-scroll"><div class=${`mc-card-grid${state.layout === 'free' ? ' mc-card-free' : ''}`} data-layout=${state.layout} style=${typeof state.layout === 'number' ? `--columns:${state.layout}` : ''}>${repeat(rows, r => `${state.service}:${r.receiver_uid}`, card)}${rows.length ? nothing : html`<div class="mc-card-empty">${glyph('channels')}<strong>${all.length ? l('Your channels are in separate windows', '信道已在独立窗口中') : l('Add a channel to start monitoring', '添加信道，开始监控')}</strong>${all.length ? html`<button type="button" data-overview-collect>${glyph('collect')}${l('Return all channels', '收回全部信道')}</button>` : html`<button type="button" data-action="create">${glyph('plus')}${l('Add channel', '添加信道')}</button>`}</div>`}</div></div>
+      <footer class="mc-card-footer"><span data-overview-arrangement></span><span>${detached ? `${detached} ${l('in separate windows', '个独立窗口')}` : l('Double-click a card for details', '双击卡片查看详情')}</span></footer>`, root);
     for (const [uid, view] of views) if (!rows.some(r => r.receiver_uid === uid) || !root.contains(view.root)) disposeView(uid, view);
+    const elements = new Map([...root.querySelectorAll<HTMLElement>('.mc-overview-card')].map(el => [el.dataset.uid, el]));
+    if (cardVisibility === undefined) cardVisibility = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const uid = (entry.target as HTMLElement).dataset.uid!, view = views.get(uid); if (!view || view.root !== entry.target) continue;
+        view.inView = entry.isIntersecting; if (!view.inView) releaseProbe(uid, view);
+      }
+    }, { root: root.querySelector('.mc-card-scroll') });
     for (const r of rows) {
-      const element = [...root.querySelectorAll<HTMLElement>('.mc-overview-card')].find(el => el.dataset.uid === r.receiver_uid)!;
+      const element = elements.get(r.receiver_uid)!;
       let view = views.get(r.receiver_uid);
-      if (!view) { view = { root: element, meter: new ReceiverMeter(), samples: new Float32Array(256), probe: false }; views.set(r.receiver_uid, view); }
+      if (!view) { view = { root: element, meter: new ReceiverMeter(), samples: new Float32Array(256), probe: false, inView: true }; views.set(r.receiver_uid, view); cardVisibility?.observe(element); }
       const result = options.readouts?.results(r.receiver_uid);
       if (textModes.has(r.confirmed.processors[0]?.mode)) {
-        view.ticker ??= mountReceiverTicker(element.querySelector<HTMLElement>('[data-card-message]')!, element);
+        const ownedView = view;
+        view.ticker ??= mountReceiverTicker(element.querySelector<HTMLElement>('[data-card-message]')!, element, () => ownedView.inView);
         view.ticker.update(result?.entries ?? [], r, state.service, result?.source);
       } else if (view.ticker) { view.ticker.dispose(); view.ticker = undefined; }
     }
-    if (changed) resizeCanvas();
+    const nextArrangement = `${getLang()}:${state.layout}:${rows.map(r => r.receiver_uid).join(':')}`;
+    if (arrangement !== nextArrangement) { arrangement = nextArrangement; resizeCanvas(); }
     const nextState = JSON.stringify(state);
     if (savedState !== nextState) { saveOverviewState(state); savedState = nextState; }
     paint(true);
@@ -174,10 +201,10 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     lastPaint = performance.now();
     const active = visible();
     if (!active) { for (const [uid, view] of views) releaseProbe(uid, view); return; }
-    const viewport = root.querySelector<HTMLElement>('.mc-card-scroll')?.getBoundingClientRect();
+    const viewport = cardVisibility ? undefined : root.querySelector<HTMLElement>('.mc-card-scroll')?.getBoundingClientRect();
     // Read all card geometry before changing meters/labels. Interleaving writes
     // and reads forces a separate layout flush for each receiver.
-    const frames = [...views].map(([uid, view]) => ({ uid, view, rect: view.root.getBoundingClientRect() }));
+    const frames = [...views].map(([uid, view]) => ({ uid, view, rect: cardVisibility ? undefined : view.root.getBoundingClientRect() }));
     const frequency = options.selectedFrequency?.();
     for (const { uid, view, rect } of frames) {
       const r = session.snapshot.receivers.find(r => r.receiver_uid === uid); if (!r) continue;
@@ -185,14 +212,14 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       setDomProperty(view.root.dataset, 'frequencyMatch', String(matched));
       if (matched) setDomAttribute(view.root, 'aria-current', 'true'); else if (view.root.hasAttribute('aria-current')) view.root.removeAttribute('aria-current');
       setDomProperty(view.root.querySelector<HTMLElement>('[data-card-current]')!, 'hidden', !matched);
-      if (viewport && (rect.bottom < viewport.top || rect.top > viewport.bottom || rect.right < viewport.left || rect.left > viewport.right)) { releaseProbe(uid, view); continue; }
+      if (!view.inView || viewport && rect && (rect.bottom < viewport.top || rect.top > viewport.bottom || rect.right < viewport.left || rect.left > viewport.right)) { releaseProbe(uid, view); continue; }
       const result = options.readouts?.results(uid);
       const hasAudio = receiverHasAudio(session.snapshot, r.confirmed);
       const reading = receiverLevel(r, result?.entries ?? [], options.readouts?.playback?.(uid), result?.source);
       const display = view.meter.update(reading, `${state.service}:${uid}:${r.stream?.epoch}:${r.stream?.channel_id}:${r.processing_runtime?.processing_generation}:${reading?.source}`);
       const scale = receiverLevelScale(reading ? { ...reading, db: display.level } : null), peak = receiverLevelScale(reading ? { ...reading, db: display.peak } : null);
       const meter = view.root.querySelector<HTMLElement>('[data-card-meter]')!;
-      meter.style.setProperty('--level', `${scale.percent}%`); meter.style.setProperty('--peak', `${peak.percent}%`);
+      setStyleProperty(meter, '--level', `${scale.percent}%`); setStyleProperty(meter, '--peak', `${peak.percent}%`);
       setDomProperty(meter.dataset, 'available', String(!!reading)); setDomProperty(meter.dataset, 'clipped', String(display.clipped));
       setDomAttribute(meter, 'aria-valuemin', String(scale.min)); setDomAttribute(meter, 'aria-valuenow', String(scale.value));
       const sourceLabel = reading?.source === 'input' ? l('RF input', '射频输入') : reading?.source === 'playback' ? l('Playing audio before monitor volume', '播放音频，监听音量之前') : l('Demodulated audio, not playing', '解调音频，未播放');
@@ -272,6 +299,7 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       const current = session.route(uid).pan;
       session.monitor(uid, { pan: current === 0 ? -1 : current < 0 ? 1 : 0 }); return;
     }
+    if (target.closest('[data-overview-clear]')) { event.preventDefault(); event.stopPropagation(); options.clearChannels?.(root.ownerDocument); return; }
     if (target.closest('[data-overview-fit]')) fit();
     if (target.closest('[data-overview-collect]')) options.dockAll();
     if (target.closest('[data-overview-direction]')) { state.descending = !state.descending; sortFree(); update(); }
@@ -429,6 +457,6 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     },
     detach(): void { stopGesture?.(); root.remove(); controls.remove(); for (const [uid, view] of views) releaseProbe(uid, view); },
     update, updateResults, paint, fit,
-    dispose(): void { disposed = true; stopGesture?.(); events.abort(); observer?.disconnect(); for (const [uid, view] of views) disposeView(uid, view); root.remove(); controls.remove(); },
+    dispose(): void { disposed = true; stopGesture?.(); events.abort(); observer?.disconnect(); cardVisibility?.disconnect(); for (const [uid, view] of views) disposeView(uid, view); renderTemplate(nothing, root); root.remove(); controls.remove(); },
   };
 }

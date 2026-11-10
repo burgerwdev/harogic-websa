@@ -1,4 +1,4 @@
-import { knownSdrChannelNumbers } from '../ui/sdrChannels';
+import { currentSdrChannel, knownSdrChannelNumbers } from '../ui/sdrChannels';
 // Native SDR decoded output. The browser controls, renders and plays; it performs no receiver DSP.
 import { send } from '../core/wsSend';
 import { setSdrReceiverAudioError } from '../audio/sdrAudio';
@@ -12,6 +12,7 @@ import { appendRadiofaxRows, endRadiofaxStream, parseRadiofaxTransmissionId, set
 import type { DecodeEnvelope, ReceiverEvent } from './decodeProtocol';
 import type { Ft8Report } from './types';
 import { addDecoderResult, clearDecoderLog, clearGpsSnapshots } from './decoderLog';
+import { nativeDecodeOwned, onDecodeOwnership, onNativeDecode } from './decodeOwnership';
 
 export interface ChannelRegistryEntry {
   channel: number;
@@ -144,7 +145,7 @@ function clearAmState(): void {
   for (const channel of knownSdrChannelNumbers()) { setAmInfo(null, channel); setDecodeError(channel, null); }
 }
 function startStream(): void {
-  if (worker || !enabled || failedRegistry !== null || streamFailed) return;
+  if (nativeDecodeOwned() || worker || !enabled || failedRegistry !== null || streamFailed) return;
   clearAmState();
   const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/decode`;
   let receiver: Worker;
@@ -449,4 +450,24 @@ export function sdrIqStats() {
     delayKnown: current?.delay_known ?? false, causalPresentation: current?.causal_presentation ?? false,
     identityChanges, identityMixes: 0, confirmedRegistry, lastError, receiverFailed: failedRegistry !== null };
 }
+onDecodeOwnership(owned => {
+  if (owned) { worker?.postMessage({ type: 'stop' }); worker?.terminate(); worker = null; }
+  else startStream();
+});
+onNativeDecode(envelopes => {
+  if (!enabled || failedRegistry !== null) return;
+  try {
+    ingestDecodeEvents(() => {
+      for (const envelope of envelopes) {
+        // Saved receivers already retain their UID history in the workbench.
+        // The main panel presents only its tuning source; copying every scope
+        // into another numeric-channel log duplicates work for every receiver.
+        if (envelope.channel !== currentSdrChannel()) continue;
+        if (transportErrors.delete(envelope.channel)) setDecodeError(envelope.channel, null);
+        consumeDecode(envelope); blocks++; current = envelope;
+      }
+    });
+    lastError = ''; connected = true; publishIqDebug();
+  } catch (error) { reportError(error instanceof Error ? error.message : String(error), 'transport'); }
+});
 export type { Ft8Report };

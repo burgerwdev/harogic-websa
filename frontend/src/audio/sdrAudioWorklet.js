@@ -26,6 +26,12 @@ const FILL_ERROR_FOR_FULL_STEP = 0.05;
 // Maximum ratio change per fill averaging window.
 const DRIFT_STEP = 0.0005;
 class SdrAudioProcessor extends AudioWorkletProcessor {
+  // The data port is transferred to the ingress worker. Keep a separate,
+  // audio-thread control for permanently retiring a source node: disconnecting
+  // a source whose process() always returns true does not end its lifetime.
+  static get parameterDescriptors() {
+    return [{ name: 'active', defaultValue: 1, minValue: 0, maxValue: 1, automationRate: 'k-rate' }];
+  }
   constructor() {
     super();
     this.capacity = Math.ceil(sampleRate * (DRM_MAX_FILL_S + 0.1)) * 2;
@@ -70,13 +76,17 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.meterPeak = 0;
     this.failed = false;
     this.generation = 0;
+    this.feedback = [];
+    this.acceptedDelivery = null;
     // Source frames actually removed from the ring in the current generation.
     this.consumedFrames = 0;
     this.port.onmessage = (event) => {
       const message = event.data || {};
       if (message.type === 'samples' && message.samples) {
         this.push(message.samples);
-        this.port.postMessage({ type: 'accepted', delivery: message.delivery, generation: message.generation });
+        // This FIFO port admits deliveries in order. One cumulative watermark
+        // at the meter cadence replaces a separate wakeup for every PCM block.
+        if (!this.failed && message.generation === this.generation && Number.isSafeInteger(message.delivery)) this.acceptedDelivery = message.delivery;
       } else if (message.type === 'reset') {
         this.generation = message.generation ?? this.generation;
         this.setBufferMode(message.playbackMode);
@@ -114,6 +124,8 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   reset() {
     const wasPlaying = this.playing;
     this.resets++;
+    this.feedback.length = 0;
+    this.acceptedDelivery = null;
     this.meterFrames = this.meterPower = this.meterPeak = 0;
     this.tailGain = 0;
     this.lastSample = 0;
@@ -144,12 +156,13 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   }
 
   /** Absolute source-frame allowance; repeated reports do not grant extra space. */
-  postCredit() {
+  postCredit(deferred = false) {
     const channels = this.layout === 'stereo' ? 2 : 1;
-    this.port.postMessage({
+    const message = {
       type: 'credit', generation: this.generation,
       limit: this.maxFill / channels + this.consumedFrames,
-    });
+    };
+    if (deferred) this.feedback.push(message); else this.port.postMessage(message);
   }
 
   setBufferMode(mode) {
@@ -192,15 +205,16 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ type: 'error', message: 'Audio consumer is too slow or received invalid PCM: playback queue limit exceeded' });
       return;
     }
-    for (let i = 0; i < samples.length; i++) {
-      this.ring[this.writePos] = samples[i];
-      this.writePos = (this.writePos + 1) % this.capacity;
-    }
+    const first = Math.min(samples.length, this.capacity - this.writePos);
+    this.ring.set(samples.subarray(0, first), this.writePos);
+    if (first < samples.length) this.ring.set(samples.subarray(first), 0);
+    this.writePos = (this.writePos + samples.length) % this.capacity;
     this.available += samples.length;
     this.received += samples.length;
   }
 
-  process(_inputs, outputs) {
+  process(_inputs, outputs, parameters) {
+    if (parameters?.active?.[0] === 0) return false;
     const out = outputs[0] && outputs[0][0];
     if (!out) return true;
     if (this.enabled) this.renderedFrames += out.length;
@@ -215,7 +229,30 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     if (outR) outR.fill(0);
     const stereo = this.layout === 'stereo';
     const step = stereo ? 2 : 1;                     // ring values consumed per output sample
-    for (let i = 0; i < out.length; i++) {
+    // The common, fully primed block has no gate/fade transitions. Keep ring
+    // state in locals and wrap with a comparison, instead of modulo and many
+    // object writes for every sample of every receiver. The slow path below
+    // still owns priming, fading, starvation and their exact counters.
+    const steady = this.enabled && this.playing && this.tailGain === 0 && this.fade === 1
+      && this.available >= (Math.ceil(this.frac + out.length * this.ratio) + 2) * step;
+    if (steady) {
+      const ring = this.ring, capacity = this.capacity, ratio = this.ratio;
+      let read = this.readPos, frac = this.frac, consumed = 0, value = 0, right = 0;
+      for (let i = 0; i < out.length; i++) {
+        let next = read + step; if (next >= capacity) next -= capacity;
+        value = ring[read] * (1 - frac) + ring[next] * frac;
+        right = stereo ? ring[read + 1] * (1 - frac) + ring[next + 1] * frac : value;
+        out[i] = value; if (outR) outR[i] = right;
+        frac += ratio;
+        while (frac >= 1) {
+          frac -= 1; read += step; if (read >= capacity) read -= capacity; consumed++;
+        }
+      }
+      this.readPos = read; this.frac = frac; this.available -= consumed * step;
+      this.consumedFrames += consumed; this.playedFrames += out.length;
+      this.lastSample = value; this.lastSampleR = right;
+    }
+    for (let i = 0; !steady && i < out.length; i++) {
       if (this.tailGain > 0) {
         out[i] = this.lastSample * this.tailGain;
         if (outR) outR[i] = this.lastSampleR * this.tailGain;
@@ -273,8 +310,9 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
       this.meterPeak = Math.max(this.meterPeak, Math.abs(left), Math.abs(right));
     }
     this.meterFrames += out.length;
-    if (this.meterFrames >= sampleRate * METER_S) {
-      this.port.postMessage({ type: 'meter', generation: this.generation, playing: this.playing,
+    const feedbackDue = this.meterFrames >= sampleRate * METER_S;
+    if (feedbackDue) {
+      this.feedback.push({ type: 'meter', generation: this.generation, playing: this.playing,
         rms: Math.sqrt(this.meterPower / this.meterFrames), peak: this.meterPeak });
       this.meterFrames = this.meterPower = this.meterPeak = 0;
     }
@@ -289,8 +327,8 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.reportCountdown -= out.length;
     if (this.reportCountdown <= 0) {
       this.reportCountdown = Math.floor(sampleRate * REPORT_S);
-      this.postCredit();
-      this.port.postMessage({
+      this.postCredit(true);
+      this.feedback.push({
         type: 'status',
         generation: this.generation,
         sampleRate,
@@ -309,6 +347,14 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         playing: this.playing,
         primed: this.primed,
       });
+    }
+    if (feedbackDue) {
+      if (this.acceptedDelivery !== null) {
+        this.feedback.push({ type: 'accepted-through', delivery: this.acceptedDelivery, generation: this.generation });
+        this.acceptedDelivery = null;
+      }
+      this.port.postMessage({ type: 'feedback', messages: this.feedback });
+      this.feedback = [];
     }
     return true;
   }

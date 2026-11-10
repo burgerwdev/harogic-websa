@@ -53,6 +53,24 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('AUD2 audio ingress', () => {
+  it('releases only the current generation with cumulative playback feedback and retains the slow-consumer bound', () => {
+    receive(packet({ seq: 0 }));
+    const generation = Number(posted.filter(message => message.type === 'reset').at(-1)!.generation);
+    for (let seq = 1; seq <= 10; seq++) {
+      receive(packet({ seq, frames: 48000, index: BigInt(seq - 1) * 48000n, input: BigInt(seq - 1) * 96000n }));
+      const delivery = posted.filter(message => message.type === 'samples').at(-1)!.delivery;
+      send({ type: 'feedback', messages: [{ type: 'accepted-through', generation, delivery }] });
+    }
+    expect(posted.filter(message => message.type === 'error')).toEqual([]);
+    receive(packet({ seq: 0, epoch: 2 }));
+    for (let seq = 1; seq <= 4; seq++) {
+      receive(packet({ seq, epoch: 2, frames: 48000, index: BigInt(seq - 1) * 48000n, input: BigInt(seq - 1) * 96000n }));
+      const delivery = posted.filter(message => message.type === 'samples').at(-1)!.delivery;
+      send({ type: 'feedback', messages: [{ type: 'accepted-through', generation, delivery }] });
+    }
+    expect(posted.filter(message => message.type === 'error')).toHaveLength(1);
+    expect(posted.find(message => message.type === 'error')!.message).toContain('consumer is too slow');
+  });
   it.each(['receiver retired', 'receiver stopped'])('ends %s without retry, stale PCM or pending sink delivery', async reason => {
     vi.useFakeTimers(); vi.resetModules(); posted = []; sockets = [];
     await import('../audio/sdrAudioWorker');

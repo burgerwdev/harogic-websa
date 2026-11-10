@@ -98,6 +98,16 @@ describe('Param', () => {
 });
 
 describe('Param persistence', () => {
+  it('does not rewrite localStorage on repeated status confirmations', () => {
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    const p = slot({ persistKey: 'test.performance' });
+    p.confirm(12);
+    for (let i = 0; i < 100; i++) p.confirm(12);
+    expect(writes).toHaveBeenCalledTimes(1);
+    p.set(13); p.confirm(13);
+    expect(writes).toHaveBeenCalledTimes(2);
+    writes.mockRestore();
+  });
   it('uses the fallback when the browser storage property itself is blocked', () => {
     const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
       throw new DOMException('denied', 'SecurityError');

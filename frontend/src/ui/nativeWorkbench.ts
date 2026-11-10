@@ -36,6 +36,7 @@ async function ensureNativeWorkbench(): Promise<NativeWorkbenchOwner | null> {
     const adapter = await NativeReceiverAdapter.connect();
     if (version !== generation) { adapter.dispose(); return null; }
     const session = new WorkbenchSession(adapter,sharedReceiverModeMemory);
+    session.setCurrentReceiverSource(() => session.snapshot.receivers.find(r => r.display_number === 1)?.receiver_uid ?? null);
     const syncReceivers = () => confirmSdrReceiverNumbers(session.snapshot.receivers.map(r => r.display_number), session.snapshot);
     const stopReceivers = session.subscribe(syncReceivers); syncReceivers();
     session.masterMuted = !sdrAudioOn.get();

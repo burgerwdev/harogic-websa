@@ -92,6 +92,7 @@ use websa_channelizer::{IqFrame,IqInput};
 type IqFrames=Vec<IqFrame>;
 use sdr_pipeline::{Pipeline, PipelineConfig};
 use websa_channelizer::timing::Timing;
+use websa_channelizer::capture_scheduling;
 use axum::{
     body::Bytes,
     extract::{
@@ -404,6 +405,7 @@ struct DevState {
     ddc_error_count: u64,
     ddc_error_last: Option<String>,
     ddc_failure_diagnostics: Option<Value>,
+    ddc_first_failure_diagnostics: Option<Value>,
     ddc_retry_at: Option<std::time::Instant>,
     hardware_shim: Option<String>,
     server: PLMutex<server_mode::SoapyServer>,
@@ -623,6 +625,7 @@ impl DevState {
             ddc_error_count: 0,
             ddc_error_last: None,
             ddc_failure_diagnostics: None,
+            ddc_first_failure_diagnostics: None,
             ddc_retry_at: None,
             hardware_shim: None,
             server: PLMutex::new(server_mode::SoapyServer::default()),
@@ -927,7 +930,17 @@ impl DevState {
             self.sdr_agc = true;
             self.sdr_pitch = 700.0;
             self.sdr_deemph = -1.0;
+            // A preset in another graph mode must not turn saved SDR receivers
+            // into disabled 0 Hz placeholders. Preserve their settings and UIDs.
+            let saved = self.channel_intents();
+            let saved_slots: Vec<_> = saved.iter().filter(|c| self.receiver_uid_for_slot(c.channel).is_some())
+                .map(|c| c.channel).collect();
             self.sdr_channels = Self::preset_service_channels();
+            for config in self.sdr_channels.iter_mut().skip(1) {
+                if saved_slots.contains(&config.channel) {
+                    *config = saved[(config.channel - 1) as usize].clone();
+                }
+            }
             self.sdr_aux = json!({"2":self.sdr_channels[1],"3":self.sdr_channels[2]});
         }
         self.sdr_ref = 0.0;
@@ -936,7 +949,10 @@ impl DevState {
         self.swp_error = None;
         self.rta_error = None;
         self.status_warning = 0;
-        if self.receiver_failure.is_none() {self.ddc_failure_diagnostics = None;}
+        if self.receiver_failure.is_none() {
+            self.ddc_failure_diagnostics = None;
+            self.ddc_first_failure_diagnostics = None;
+        }
         match self.swp.mode.as_str() {
             "sdr" => Ok(()),
             "harmonic" => {
@@ -2228,6 +2244,7 @@ struct Ddc {
     direct: BTreeMap<u32, sdr_pipeline::DirectChannel>,
     carry: IqFrames,
     pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
+    default_fft: Option<display_fft::Analyzer>,
     display_fft: Option<display_fft::Analyzer>,
     display_fft_error: Option<String>,
     capture_center: f64,
@@ -2236,6 +2253,7 @@ struct Ddc {
     listen: f64,
     next_seq: u64,
     input_pos: u64,
+    capture_scratch: Vec<i16>,
     stamp_gaps: u64,
     last_stamp: Option<u64>,
     /// IQS configuration generation of the packets that this plan accepts.
@@ -2372,7 +2390,7 @@ impl Ddc {
             direct: BTreeMap::new(),
             carry: Vec::new(),
             pan: Vec::new(),
-            display_fft: None, display_fft_error: None,
+            default_fft: None, display_fft: None, display_fft_error: None,
             capture_center: center,
             usable_bandwidth: bandwidth,
             device_decimate: if hardware.is_some() {
@@ -2384,6 +2402,7 @@ impl Ddc {
             listen,
             next_seq: 0,
             input_pos: 0,
+            capture_scratch: Vec::new(),
             stamp_gaps: 0,
             last_stamp: None,
             generation,
@@ -2685,7 +2704,8 @@ impl Ddc {
         const N: usize = SDR_PACKET_SAMPLES;
         let batch = self.capture_batch_packets();
         let (raw, stamp) = if self.hardware.is_some() {
-            let mut raw = Vec::with_capacity(if batch > 1 { 2 * N * batch } else { 0 });
+            let mut raw = std::mem::take(&mut self.capture_scratch);
+            raw.clear();
             let mut first_stamp = 0;
             for index in 0..batch {
                 let capture = self.hardware.as_ref().unwrap();
@@ -2718,6 +2738,15 @@ impl Ddc {
                     }
                 }
                 self.last_stamp = Some(packet.stamp);
+                if let Some(analyzer) = &mut self.default_fft {
+                    let meta = display_fft::Meta {epoch:self.stream.epoch(),generation:packet.generation,
+                        center:self.capture_center,rate:self.stream.input_sample_rate(),bandwidth:self.usable_bandwidth,
+                        scale:packet.scale_to_v};
+                    match analyzer.push(meta,packet.seq,packet.stamp,&packet.iq,packet.warning) {
+                        Ok(Some((freq,power,warning,generation,seq)))=>self.pan.push((freq,power,warning,generation,seq,0)),
+                        Ok(None)=>(), Err(error)=>{self.default_fft=None;self.display_fft_error=Some(error);}
+                    }
+                }
                 if let Some(analyzer) = &mut self.display_fft {
                     let meta = display_fft::Meta {epoch:self.stream.epoch(),generation:packet.generation,
                         center:self.capture_center,rate:self.stream.input_sample_rate(),bandwidth:self.usable_bandwidth,
@@ -2744,7 +2773,9 @@ impl Ddc {
             }
             (raw, self.input_pos + N as u64)
         };
-        self.process_capture_packet(&raw, stamp)
+        let result = self.process_capture_packet(&raw, stamp);
+        self.capture_scratch = raw;
+        result
     }
 
     /// Raw capture input follows the same PFB, fine filters and framing for hardware and probes.
@@ -2786,14 +2817,15 @@ impl Ddc {
             if let Some(worker) = self.fine_worker.as_mut() {
                 let (seq, stamp, input_index) = (packet.seq, packet.stamp, packet.input_index);
                 let started = std::time::Instant::now();
-                let submitted = worker.submit(packet, &mut frames);
+                let submitted = worker.submit(&packet, &mut frames);
                 let elapsed = started.elapsed();
                 self.pipeline_timing.fine_handoff.observe(elapsed);
                 self.pipeline_timing.observe_slow("fine_handoff", seq, stamp, input_index, elapsed);
                 submitted?;
             } else {
-                frames.extend(self.fine.as_mut().unwrap().deliver(packet)?);
+                frames.extend(self.fine.as_mut().unwrap().deliver(&packet)?);
             }
+            self.stream.recycle_output(packet.iq);
         }
         if let Some(worker) = self.fine_worker.as_mut() {
             worker.collect(&mut frames)?;
@@ -3200,6 +3232,7 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 state.stop_pipeline().map_err(device)?;
                 state.finish_radiofax_with_registry(registry).map_err(device)?;
                 state.ddc_failure_diagnostics = None;
+                state.ddc_first_failure_diagnostics = None;
                 // SET_MODE ends the IQ session. Never replay its retained tails
                 // when SDR is opened again under a later transport epoch.
                 state.pending_iq.clear();
@@ -3784,6 +3817,7 @@ async fn publisher_loop(
         if let Some(before_loop) = hooks.before_loop.take() { before_loop.await; }
         let mut status_due = tokio::time::Instant::now();
         let mut preparation_failed = None;
+        let mut fixture_cadence = service_fixture::Cadence::default();
         while !stopping.load(Ordering::Acquire) {
             let started = tokio::time::Instant::now();
             let mut prepared = None;
@@ -3926,7 +3960,7 @@ async fn publisher_loop(
                                 Err(error)=>state.ddc_error=Some(error),
                             }
                         }
-                        Duration::from_micros(85_333)
+                        service_fixture::PERIOD
                     }
                     _ => {
                         let (freq, powr) = state.fetch_sweep();
@@ -4019,7 +4053,7 @@ async fn publisher_loop(
                 drop(superseded_preparation);
                 let mut status = None;
                 if send_status || auto_changed || failed_revision.is_some() {
-                    let snapshot = compute.state.lock().unwrap().status_snapshot();
+                    let snapshot = compute.state.lock().unwrap().live_status_snapshot();
                     let mut built = snapshot.build();
                     let clients = compute.clients.lock();
                     let dropped: u64 = clients
@@ -4112,12 +4146,16 @@ async fn publisher_loop(
                     return Err(format!("GNSS worker failed: {error}"));
                 }
             }
-            let elapsed = started.elapsed();
-            let rest = pace.saturating_sub(elapsed);
-            if rest.is_zero() {
+            let deadline = if pace == service_fixture::PERIOD {
+                fixture_cadence.deadline(epoch, started)
+            } else {
+                fixture_cadence.reset();
+                started + pace
+            };
+            if deadline <= tokio::time::Instant::now() {
                 tokio::task::yield_now().await;
             } else {
-                tokio::time::sleep(rest).await;
+                tokio::time::sleep_until(deadline).await;
             }
         }
         Ok::<(), String>(())

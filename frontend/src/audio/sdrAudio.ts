@@ -1,7 +1,8 @@
 import { AUDIO_QUEUE_SECONDS } from '../sdr/streamLimits';
 import { isChannelNumber } from '../core/channelState';
 import { connectEqualizer, equalizerActive, onEqualizerChange } from './equalizer';
-// Backend AUD2 playback: each channel has one ingress worker and one output node.
+import { audioIngressClient, type AudioIngressClient } from './audioIngressPool';
+// Backend AUD2 playback: isolated sources share one worker; each has an output node.
 let ctx: AudioContext | null = null;
 let spectrumProbe: AnalyserNode | null = null;
 let spectrumProbeBin = 1;
@@ -20,6 +21,22 @@ let master: GainNode | null = null;
 let limiter: DynamicsCompressorNode | null = null;
 let masterVolume = 0.7;
 let masterMuted = false;
+let idleSuspend: ReturnType<typeof setTimeout> | null = null;
+function retireWorklet(output: AudioWorkletNode): void {
+  const active = output.parameters?.get('active'); if (active) active.value = 0;
+  output.onprocessorerror = null; output.disconnect(); output.port.close();
+}
+function suspendIdleAudio(): void {
+  if (idleSuspend !== null || !ctx || typeof ctx.suspend !== 'function' || [...chains.values()].some(playback => playback.wantsPlayback())) return;
+  idleSuspend = setTimeout(() => {
+    idleSuspend = null;
+    if (!ctx || ctx.state !== 'running' || [...chains.values()].some(playback => playback.wantsPlayback())) return;
+    void ctx.suspend().catch(() => {}).finally(() => {
+      // A route can start while suspend() is awaiting the audio thread.
+      for (const playback of chains.values()) if (playback.wantsPlayback()) playback.resume();
+    });
+  }, 200);
+}
 function ramp(param: AudioParam, value: number): void {
   const now = ctx!.currentTime;
   param.cancelScheduledValues(now); param.setValueAtTime(param.value, now);
@@ -79,8 +96,9 @@ class AudioChain {
   enabled = false;
   muted = false;
   error = '';
-  private worker: Worker | null = null;
+  private worker: AudioIngressClient | null = null;
   private node: AudioWorkletNode | ScriptProcessorNode | null = null;
+  private initializingNode: AudioWorkletNode | null = null;
   private initialization: Promise<void> | null = null;
   private receiverFailed = false;
   private generation = 0;
@@ -166,6 +184,7 @@ class AudioChain {
     if (this.panNode && this.localPan !== previousPan) ramp(this.panNode.pan, this.localPan);
   }
   monitorEnabled(on: boolean): void {
+    if (on === this.enabled && this.fadeTimer === null) return;
     if (!on && this.fadeTimer !== null) return;
     if (this.fadeTimer !== null) { clearTimeout(this.fadeTimer); this.fadeTimer = null; }
     if (on) {
@@ -233,12 +252,15 @@ class AudioChain {
     this.clearWatchdog();
     this.worker?.terminate();
     this.worker = null;
+    if (this.initializingNode) { retireWorklet(this.initializingNode); this.initializingNode = null; }
     if (this.node) {
-      if ('port' in this.node) { this.node.onprocessorerror = null; this.node.port.close(); }
-      else this.node.onaudioprocess = null;
-      this.node.disconnect();
+      if ('port' in this.node) {
+        retireWorklet(this.node);
+      }
+      else { this.node.onaudioprocess = null; this.node.disconnect(); }
     }
     this.node = null;
+    this.ring = new Float32Array(0);
     this.waveformProbe?.disconnect(); this.waveformProbe = null;
     this.gainNode?.disconnect(); this.panNode?.disconnect(); this.gainNode = null; this.panNode = null;
     if (this.probe) {
@@ -250,6 +272,7 @@ class AudioChain {
     this.connectionState = '';
     this.rms = 0;
     this.clearRing();
+    suspendIdleAudio();
   }
   resume(): void {
     if (!this.enabled || this.sourceEnded || this.receiverFailed || this.error || !ctx) return;
@@ -418,6 +441,7 @@ class AudioChain {
         candidate = new AudioWorkletNode(audio, 'sdr-audio-processor', {
           numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
         });
+        this.initializingNode = candidate;
         const output = candidate;
         await new Promise<void>((resolve, reject) => {
           const timer = window.setTimeout(() => reject(new Error('AudioWorklet ready timeout')), 1000);
@@ -433,13 +457,14 @@ class AudioChain {
           };
           output.connect(this.destination(audio));
         });
-        if (generation !== this.generation) { candidate.disconnect(); candidate.port.close(); return; }
+        if (this.initializingNode === candidate) this.initializingNode = null;
+        if (generation !== this.generation) { retireWorklet(candidate); return; }
         this.node = candidate;
         port = candidate.port;
         candidate.onprocessorerror = () => { if (generation === this.generation) this.fail('AudioWorklet processor stopped'); };
       } catch (error) {
-        candidate?.disconnect();
-        candidate?.port.close();
+        if (candidate) retireWorklet(candidate);
+        if (this.initializingNode === candidate) this.initializingNode = null;
         if (generation !== this.generation) return;
         console.warn(`SDR audio channel ${this.channel}: using compatibility output`, error);
         this.legacy(audio);
@@ -452,7 +477,7 @@ class AudioChain {
       spectrumProbeBin = audio.sampleRate / spectrumProbe.fftSize;
     }
     this.playbackRate = playbackRate;
-    const worker = new Worker(new URL('./sdrAudioWorker.ts', import.meta.url), { type: 'module' });
+    const worker = audioIngressClient();
     this.worker = worker;
     worker.onmessage = (event: MessageEvent) => { if (this.worker === worker) this.message(event.data || {}); };
     worker.onerror = (event: ErrorEvent) => { if (this.worker === worker) this.fail(event.message || 'Audio worker failed'); };
@@ -471,6 +496,7 @@ class AudioChain {
     this.worker?.postMessage({ type: 'mode', mode: next });
   }
   setEnabled(on: boolean): void {
+    if (on && idleSuspend !== null) { clearTimeout(idleSuspend); idleSuspend = null; }
     if (on && this.enabled && (this.sourceEnded || this.error && !this.receiverFailed)) return;
     if (!on) this.sourceEnded = false;
     this.clearWatchdog();
@@ -542,7 +568,9 @@ export function claimNativeAudio(snapshot?: NativeAudioDirectory): () => void {
   }
   setNativeMaster(masterVolume, masterMuted);
   document.dispatchEvent(new CustomEvent('websa:monitor-owner', { detail: { native: true } }));
+  let released = false;
   return () => {
+    if (released) return; released = true;
     for (const [key, playback] of chains) if (typeof key === 'string') { playback.setEnabled(false); chains.delete(key); }
     nativeOwner = false;
     if (master) ramp(master.gain, 1);
@@ -560,6 +588,7 @@ export function setNativeAudioRoute(uid: string, mode: string, on: boolean, gain
   playback.local(gain, pan); playback.setMode(mode); playback.monitorEnabled(on);
 }
 export function forgetNativeAudio(uid: string): void { chains.get(uid)?.setEnabled(false); chains.delete(uid); }
+export function getNativeAudioStatus(uid: string): Record<string, string | number | boolean> | undefined { return chains.get(uid)?.status(); }
 export function sampleNativeAudioWaveform(uid: string, samples: Float32Array<ArrayBuffer> | null): boolean {
   return chains.get(uid)?.waveform(samples) ?? false;
 }

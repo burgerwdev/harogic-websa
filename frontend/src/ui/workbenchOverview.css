@@ -27,7 +27,7 @@
 .mc-overview-controls button { display:inline-flex; align-items:center; justify-content:center; width:27px; height:27px; padding:4px; }
 .mc-overview-controls button:disabled { opacity:.35; cursor:default; }
 .mc-overview-controls button:hover:not(:disabled) { background:var(--mc-card-fill); color:var(--mc-card-text); }
-.mc-overview-controls [data-overview-mute] { width:auto; gap:5px; padding:4px 7px; white-space:nowrap; font-size:10px; }
+.mc-overview-controls :is([data-overview-mute], [data-overview-clear]) { width:auto; gap:5px; padding:4px 7px; white-space:nowrap; font-size:10px; }
 .mc-overview-controls [data-overview-mute][aria-pressed=true] { background:var(--mc-card-fill); color:var(--sa-warning); border-color:var(--mc-card-active); }
 .mc-window .mc-body.mc-cards-body { display:flex; flex-direction:column; padding:0; overflow:hidden; }
 .mc-card-overview { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; color:var(--mc-card-text); }
@@ -80,7 +80,7 @@
 .mc-card-visual .mc-strip-text { width:100%; color:var(--mc-card-label); }
 .mc-card-visual .mc-ticker-mode { display:none; }
 .mc-card-visual .mc-ticker-line { font-size:11px; }
-.mc-card-meter { display:flex; align-items:center; gap:6px; padding:3px 0; margin-top:auto; color:var(--mc-card-dim); font-size:8px; }
+.mc-card-meter { display:flex; align-items:center; gap:6px; padding:3px 0; margin-top:auto; color:var(--mc-card-dim); font-size:8px; contain:layout paint style; }
 .mc-card-meter-track { position:relative; height:5px; flex:1; background:color-mix(in srgb,var(--mc-card-border) 55%,var(--panel-2)); border-radius:1px; overflow:hidden; }
 .mc-card-meter small { min-width:41px; font-size:8px; text-align:right; font-variant-numeric:tabular-nums; }
 .mc-card-meter[data-available=false] .mc-strip-level-peak { display:none; }

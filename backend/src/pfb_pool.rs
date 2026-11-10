@@ -22,6 +22,8 @@ struct Task {
     history: Vec<i16>,
     bins: Arc<Vec<u32>>,
     iq: Vec<i16>,
+    output: Vec<f32>,
+    submitted_at: Instant,
     #[cfg(test)]
     execution_gate: Option<Arc<ExecutionGate>>,
 }
@@ -92,6 +94,9 @@ pub struct PoolSlowEvent {
     pub is_slow: bool,
     /// Time from worker completion to receive; only set on result_wait events.
     pub age_ns: Option<u64>,
+    /// Same task as a Process event: actual CPU work and admission-to-start delay.
+    pub cpu_ns: Option<u64>,
+    pub queue_ns: Option<u64>,
 }
 
 /// Rust-only diagnostics; the C `PoolStats` layout and counters are unchanged.
@@ -106,14 +111,26 @@ pub struct PoolTimingSnapshot {
     pub admission_wait: TimingSnapshot,
     pub process: TimingSnapshot,
     pub result_age: TimingSnapshot,
+    pub worker_queue: TimingSnapshot,
+    pub process_cpu: TimingSnapshot,
     /// Slots follow PoolTimingStage declaration order; ties retain the first event.
     pub max_events: [Option<PoolSlowEvent>; 9],
+    pub scheduling_sample: Option<PoolSchedulingSample>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct PoolSchedulingSample {
+    seq: u64, stamp: u64, worker: usize, wall_ns: u64, cpu_ns: Option<u64>,
+    queue_ns: u64, schedule: crate::timing::ThreadSchedule,
 }
 
 #[derive(Default)]
 struct PoolTimings {
     stages: [Timing; 9],
+    worker_queue: Timing,
+    process_cpu: Timing,
     max_events: [Option<PoolSlowEvent>; 9],
+    scheduling_sample: Option<PoolSchedulingSample>,
 }
 
 impl PoolTimings {
@@ -126,6 +143,7 @@ impl PoolTimings {
             self.max_events[slot] = Some(PoolSlowEvent {
                 stage, seq, stamp, expected_seq, elapsed_ns, threshold_ns,
                 is_slow: elapsed_ns >= threshold_ns, age_ns: None,
+                cpu_ns: None, queue_ns: None,
             });
         }
     }
@@ -152,7 +170,10 @@ impl PoolTimings {
             admission_wait: self.stages[6].snapshot(),
             process: self.stages[7].snapshot(),
             result_age: self.stages[8].snapshot(),
+            worker_queue: self.worker_queue.snapshot(),
+            process_cpu: self.process_cpu.snapshot(),
             max_events: self.max_events,
+            scheduling_sample: self.scheduling_sample,
         }
     }
 }
@@ -164,6 +185,10 @@ struct WorkerResult {
     iq: Vec<f32>,
     packet_samples: usize,
     completed_at: Instant,
+    queue_time: Duration,
+    cpu_time: Option<Duration>,
+    input_buffers: (Vec<i16>, Vec<i16>),
+    scheduling_sample: Option<PoolSchedulingSample>,
 }
 
 pub struct PfbOutput {
@@ -194,6 +219,8 @@ pub struct PfbBenchPool {
     receiver: Receiver<Result<WorkerResult, ()>>,
     workers: Vec<JoinHandle<()>>,
     idle_workers: VecDeque<usize>,
+    recycled_inputs: Vec<(Vec<i16>, Vec<i16>)>,
+    recycled_outputs: Vec<Vec<f32>>,
     max_packet_samples: usize,
     in_flight: usize,
     expected_submit: u64,
@@ -225,7 +252,7 @@ impl PfbBenchPool {
         let mut controller = Pfb::with_taps(fs, 2, taps_per_phase)?;
         if !controller.avx2
             || strategy > 1
-            || bins.is_empty()
+            || (!emit_iq && bins.is_empty())
             || bins.len() > controller.m
             || bins.iter().any(|&bin| bin as usize >= controller.m)
             || packet_samples == 0
@@ -252,6 +279,7 @@ impl PfbBenchPool {
         let bins = Arc::new(bins);
         let mut senders = Vec::with_capacity(WORKERS);
         let (result_tx, receiver) = sync_channel::<Result<WorkerResult, ()>>(MAX_IN_FLIGHT);
+        let sample_scheduling = std::env::var_os("WEBSA_DIAGNOSTIC_SCHEDULING").is_some();
         let workers = (0..WORKERS)
             .map(|worker_id| {
                 // Admit one outstanding packet per worker. A private
@@ -261,7 +289,8 @@ impl PfbBenchPool {
                 senders.push(sender);
                 let writer = result_tx.clone();
                 let mut reusable = controller.clone();
-                thread::spawn(move || {
+                thread::Builder::new().name(format!("pfb-{worker_id}")).spawn(move || {
+                    crate::capture_scheduling::capture();
                     let mut output = vec![0f32; 2 * bin_count * (packet_samples / hop + 2)];
                     loop {
                         let item = reader.recv();
@@ -280,33 +309,49 @@ impl PfbBenchPool {
                                     thread::sleep(Duration::from_millis(1));
                                 }
                             }
+                            let schedule = (sample_scheduling && task.seq % 64 == 0)
+                                .then(crate::timing::thread_schedule).flatten();
                             let started = Instant::now();
+                            let queue_time = started.duration_since(task.submitted_at);
+                            let cpu_started = crate::timing::thread_cpu_ns();
                             let restore_history = task.state.is_none();
                             let state = task.state.as_mut().unwrap_or(&mut reusable);
                             if restore_history {
                                 assert!(state.load_history(task.input_index, &task.history));
                             }
                             let bin_count = task.bins.len();
-                            output.resize(2 * bin_count * (packet_samples / hop + 2), 0.0);
-                            let groups = state.process(&task.iq, &task.bins, &mut output);
+                            let target = if emit_iq { &mut task.output } else { &mut output };
+                            target.resize(2 * bin_count * (packet_samples / hop + 2), 0.0);
+                            let groups = state.process(&task.iq, &task.bins, target);
+                            let first_re = if groups > 0 && bin_count > 0 { target[0] } else { 0.0 };
                             let samples = if emit_iq {
-                                output[..2 * groups * bin_count].to_vec()
-                            } else {
-                                Vec::new()
-                            };
+                                task.output.truncate(2 * groups * bin_count);
+                                std::mem::take(&mut task.output)
+                            } else { Vec::new() };
+                            let elapsed = started.elapsed();
+                            let cpu_time = cpu_started.zip(crate::timing::thread_cpu_ns())
+                                .map(|(a, b)| Duration::from_nanos(b.saturating_sub(a)));
+                            let scheduling_sample = schedule.zip(schedule.and_then(|_|crate::timing::thread_schedule()))
+                                .map(|(before,after)| PoolSchedulingSample {seq:task.seq,stamp:task.stamp,worker:worker_id,
+                                    wall_ns:elapsed.as_nanos() as u64,cpu_ns:cpu_time.map(|t|t.as_nanos() as u64),
+                                    queue_ns:queue_time.as_nanos() as u64,schedule:after.since(before)});
                             WorkerResult {
                                 worker_id,
                                 meta: PoolResult {
                                     seq: task.seq,
                                     stamp: task.stamp,
                                     groups: groups as u32,
-                                    first_re: if groups > 0 { output[0] } else { 0.0 },
-                                    process_ns: started.elapsed().as_nanos() as u64,
+                                    first_re,
+                                    process_ns: elapsed.as_nanos() as u64,
                                 },
                                 input_index: task.input_index,
                                 packet_samples: task.iq.len() / 2,
                                 iq: samples,
+                                cpu_time,
+                                scheduling_sample,
+                                queue_time,
                                 completed_at: Instant::now(),
+                                input_buffers: (std::mem::take(&mut task.iq), std::mem::take(&mut task.history)),
                             }
                         })).map_err(|_| ());
                         let failed = result.is_err();
@@ -314,7 +359,7 @@ impl PfbBenchPool {
                             break;
                         }
                     }
-                })
+                }).expect("spawn PFB worker")
             })
             .collect();
         drop(result_tx);
@@ -328,6 +373,8 @@ impl PfbBenchPool {
             receiver,
             workers,
             idle_workers: (0..WORKERS).collect(),
+            recycled_inputs: Vec::with_capacity(WORKERS),
+            recycled_outputs: Vec::with_capacity(MAX_IN_FLIGHT),
             max_packet_samples: packet_samples,
             in_flight: 0,
             expected_submit: 0,
@@ -351,7 +398,23 @@ impl PfbBenchPool {
     fn receive_one(&mut self) -> Result<(), ()> {
         let expected_seq = self.expected_output;
         let started = Instant::now();
-        let result = match self.receiver.recv() {
+        let result = self.receiver.recv();
+        self.receive_result(result, started, expected_seq)
+    }
+
+    fn receive_available(&mut self) -> Result<bool, ()> {
+        let started = Instant::now();
+        match self.receiver.try_recv() {
+            Ok(result) => self.receive_result(Ok(result), started, self.expected_output).map(|()|true),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(false),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) if self.in_flight == 0 => Ok(false),
+            Err(_) => { self.failed = true; Err(()) }
+        }
+    }
+
+    fn receive_result(&mut self, received: Result<Result<WorkerResult, ()>, std::sync::mpsc::RecvError>,
+        started: Instant, expected_seq: u64) -> Result<(), ()> {
+        let mut result = match received {
             Ok(result) => {
                 self.in_flight = self.in_flight.saturating_sub(1);
                 match result {
@@ -365,6 +428,14 @@ impl PfbBenchPool {
                 return Err(());
             }
         };
+        self.timings.worker_queue.observe(result.queue_time);
+        if let Some(sample) = result.scheduling_sample {
+            if self.timings.scheduling_sample.is_none_or(|old| sample.wall_ns > old.wall_ns) {
+                self.timings.scheduling_sample = Some(sample);
+            }
+        }
+        if let Some(cpu) = result.cpu_time { self.timings.process_cpu.observe(cpu); }
+        self.recycled_inputs.push(std::mem::take(&mut result.input_buffers));
         self.idle_workers.push_back(result.worker_id);
         let received = Instant::now();
         let elapsed = received.duration_since(started);
@@ -374,6 +445,12 @@ impl PfbBenchPool {
         let threshold_ns = ((result.packet_samples as f64 * self.slow_ns_per_sample) as u64).max(1);
         self.timings.observe(PoolTimingStage::Process, Duration::from_nanos(result.meta.process_ns),
             seq, stamp, None, threshold_ns);
+        if let Some(event) = self.timings.max_events[PoolTimingStage::Process as usize].as_mut() {
+            if event.seq == seq {
+                event.cpu_ns = result.cpu_time.map(|value| value.as_nanos().min(u64::MAX as u128) as u64);
+                event.queue_ns = Some(result.queue_time.as_nanos().min(u64::MAX as u128) as u64);
+            }
+        }
         let age = received.duration_since(result.completed_at);
         self.timings.observe(PoolTimingStage::ResultAge, age,
             seq, stamp, Some(expected_seq), threshold_ns);
@@ -432,8 +509,13 @@ impl PfbBenchPool {
         self.stats.clone_ns += elapsed.as_nanos() as u64;
         self.timings.observe(PoolTimingStage::Clone, elapsed, seq, stamp, None, threshold_ns);
         let before = Instant::now();
-        let history = if self.overlap_history {
-            let history = self.tail.clone();
+        // Return input storage with each completion. The acquisition owner
+        // reuses its allocations rather than allocating/freeing 260 KiB jobs
+        // across worker threads about a thousand times per second.
+        let (mut input_buffer, mut history) = self.recycled_inputs.pop().unwrap_or_default();
+        history.clear();
+        if self.overlap_history {
+            history.extend_from_slice(&self.tail);
             let n = iq.len() / 2;
             let len = self.controller.history_len();
             if n >= len {
@@ -442,16 +524,16 @@ impl PfbBenchPool {
                 self.tail.copy_within(2 * n.., 0);
                 self.tail[2 * (len - n)..].copy_from_slice(iq);
             }
-            history
         } else {
             self.controller.process(iq, &[], &mut []);
-            Vec::new()
-        };
+        }
         let elapsed = before.elapsed();
         self.stats.advance_ns += elapsed.as_nanos() as u64;
         self.timings.observe(PoolTimingStage::History, elapsed, seq, stamp, None, threshold_ns);
         self.input_index += (iq.len() / 2) as u64;
         let before = Instant::now();
+        input_buffer.clear();
+        input_buffer.extend_from_slice(iq);
         let task = Task {
             seq,
             stamp,
@@ -459,7 +541,9 @@ impl PfbBenchPool {
             state,
             history,
             bins: self.bins.clone(),
-            iq: iq.to_vec(),
+            iq: input_buffer,
+            output: self.recycled_outputs.pop().unwrap_or_default(),
+            submitted_at: Instant::now(),
             #[cfg(test)]
             execution_gate: self.execution_gate.clone(),
         };
@@ -548,8 +632,7 @@ impl PfbStream {
     /// before submitting more IQ. FIR history, sample clocks, epoch and sequence survive.
     /// Invalid selections and undrained streams are left unchanged.
     pub fn replace_bins(&mut self, bins: Vec<u32>) -> Result<(), &'static str> {
-        if bins.is_empty()
-            || bins.len() > self.bin_count()
+        if bins.len() > self.bin_count()
             || bins.iter().any(|&bin| bin as usize >= self.bin_count())
             || bins.iter().enumerate().any(|(column, bin)| bins[..column].contains(bin))
         {
@@ -598,6 +681,11 @@ impl PfbStream {
     }
 
     pub fn take(&mut self) -> Option<PfbOutput> {
+        // Consume completed work at the ordinary drain point, rather than
+        // leaving it in the result mailbox until a later admission blocks.
+        while self.pool.ready.is_empty() && self.pool.in_flight > 0 && !self.pool.failed {
+            if !self.pool.receive_available().ok()? { break; }
+        }
         let item = self.pool.ready.pop_front()?;
         Some(PfbOutput {
             seq: item.meta.seq,
@@ -608,6 +696,14 @@ impl PfbStream {
             process_ns: item.meta.process_ns,
             iq: item.iq,
         })
+    }
+
+    /// Return a consumed output allocation; no sample references survive fine
+    /// fanout. Storage stays bounded by the existing retained task budget.
+    pub fn recycle_output(&mut self, iq: Vec<f32>) {
+        if self.pool.recycled_outputs.len() < MAX_IN_FLIGHT {
+            self.pool.recycled_outputs.push(iq);
+        }
     }
 
     /// Wait for already submitted work without stopping the stream. Control changes can
@@ -757,7 +853,8 @@ mod tests {
             let _ = sender.send(Task {
                 seq: 99, stamp: 0, input_index: 0,
                 state: Some(Pfb::new(62_500_000.0, 2).unwrap()), history: Vec::new(),
-                bins: Arc::new(vec![u32::MAX]), iq: vec![0; 128], execution_gate: None,
+                bins: Arc::new(vec![u32::MAX]), iq: vec![0; 128], output:Vec::new(), execution_gate: None,
+                submitted_at: Instant::now(),
             });
         }
         let _ = release.send(());
@@ -799,12 +896,31 @@ mod tests {
                         (seq, stamp, index, 7, groups as u32));
                     assert_eq!(actual.iq.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
                         expected[..2 * groups * bins.len()].iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+                    stream.recycle_output(actual.iq);
                     assert!(stream.take().is_none());
                     index += n as u64;
                 }
                 stream.finish().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn ordinary_drain_observes_completed_work_without_another_submission() {
+        let mut stream=PfbStream::new(62_500_000.0,16240,vec![0],9).unwrap();
+        stream.submit(0,123,&vec![100;32480]).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(3);
+        let output=loop {
+            if let Some(output)=stream.take() {break output;}
+            assert!(Instant::now()<deadline,"completed output stranded until the next admission");
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!((output.seq,output.stamp,output.epoch),(0,123,9));
+        let storage=output.iq.as_ptr();
+        stream.recycle_output(output.iq);
+        stream.submit(1,456,&vec![100;32480]).unwrap();
+        stream.flush_pending().unwrap();
+        assert_eq!(stream.take().unwrap().iq.as_ptr(),storage);
     }
     #[test]
     fn stream_reselects_only_at_drained_boundary_without_losing_history() {
@@ -817,10 +933,12 @@ mod tests {
             if seq == 1 {
                 stream.replace_bins(vec![31, 127, 5]).unwrap();
             } else if seq == 2 {
+                stream.replace_bins(vec![]).unwrap();
+            } else if seq == 3 {
                 stream.replace_bins(vec![127, 31]).unwrap();
             }
             let selected = stream.bins().to_vec();
-            for invalid in [vec![], vec![31, 31], vec![stream.bin_count() as u32]] {
+            for invalid in [vec![31, 31], vec![stream.bin_count() as u32]] {
                 assert!(stream.replace_bins(invalid).is_err());
                 assert_eq!(stream.bins(), selected);
             }
@@ -1089,6 +1207,10 @@ mod tests {
                 iq: Vec::new(),
                 packet_samples: 16240,
                 completed_at: Instant::now(),
+                queue_time: Duration::ZERO,
+                cpu_time: None,
+                input_buffers: Default::default(),
+                scheduling_sample: None,
             }))
             .unwrap();
         }

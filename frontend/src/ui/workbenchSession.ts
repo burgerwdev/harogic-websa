@@ -1,8 +1,9 @@
 import { clone, receiverHasAudio, type ReceiverAdapter, type ServiceSnapshot, type ReceiverConfig, type Fault,
-  type MonitorRoute, type ViewBinding, type ServiceCommand, type CommandReply } from '../core/multichannel';
+  type MonitorRoute, type ViewBinding, type ServiceCommand, type CommandReply, type ReceiverState } from '../core/multichannel';
 import { ReceiverModeMemory } from './receiverModeMemory';
 import { loadWorkbenchPreferences, saveWorkbenchPreferences, workbenchAudioDefaults } from './workbenchPreferences';
 import { canClearInterruption } from './receiverLive';
+import { representsCurrent } from './workbenchCurrent';
 
 const CLEARED_INTERRUPTION_KEY = 'websa-cleared-interruptions';
 
@@ -51,9 +52,26 @@ export class WorkbenchSession {
   /** Invalidates local continuations on Preset, service replacement, and disposal. */
   get lifecycleVersion(): number { return this.generation; }
   private disposed = false;
+  clearingChannels = false;
+  private currentReceiverSource?: () => string | null;
+  private silencedCurrent: { uid: string; hz: number } | null = null;
+  setCurrentReceiverSource(source: () => string | null): void { this.currentReceiverSource = source; }
+  /** A hidden Current never keeps an independent speaker behind its saved card. */
+  private currentRepresentative(): string | null {
+    const current = this.snapshot.receivers.find(r => r.receiver_uid === this.currentReceiverSource?.());
+    if (!current) return null;
+    return this.snapshot.receivers.filter(r => representsCurrent(r, current))
+      .sort((a, b) => a.display_number - b.display_number)[0]?.receiver_uid ?? null;
+  }
+  private monitorTarget(uid: string): string { return uid === this.currentReceiverSource?.() ? this.currentRepresentative() ?? uid : uid; }
+  private currentSilenced(uid: string): boolean {
+    const silence = this.silencedCurrent, row = this.snapshot.receivers.find(r => r.receiver_uid === uid);
+    return !!silence && silence.uid === uid && !!row && Math.abs(row.confirmed.baseband.frequency_hz - silence.hz) < .5;
+  }
   private retiredServices = new Set<string | undefined>();
   private stop: () => void;
   private readonly resetPreset = (): void => {
+    this.silencedCurrent = null;
     this.generation++; this.mutationTail = Promise.resolve(); this.recoveries.clear();
     if (this.monitorMode === 'follow' && this.selected) this.routes.set(this.selected, { ...this.route(this.selected), enabled: true });
     this.audioPreferences = workbenchAudioDefaults();
@@ -74,9 +92,9 @@ export class WorkbenchSession {
     document.addEventListener('websa:preset-applied', this.resetPreset);
   }
   subscribe(fn: () => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  notify(): void { if (!this.disposed) this.listeners.forEach(fn => fn()); }
+  notify(): void { if (!this.disposed) for (const fn of [...this.listeners]) if (this.listeners.has(fn)) fn(); }
   subscribeResults(fn: (uid: string) => void): () => void { this.resultListeners.add(fn); return () => this.resultListeners.delete(fn); }
-  notifyResults(uid: string): void { this.resultListeners.forEach(fn => fn(uid)); }
+  notifyResults(uid: string): void { if (!this.disposed) for (const fn of [...this.resultListeners]) if (this.resultListeners.has(fn)) fn(uid); }
   private accept(snapshot: ServiceSnapshot): void {
     if (this.disposed || this.retiredServices.has(snapshot.service_id)) return;
     if (snapshot.service_id === this.snapshot.service_id && BigInt(snapshot.revision) < BigInt(this.snapshot.revision)) return;
@@ -84,6 +102,7 @@ export class WorkbenchSession {
       && BigInt(snapshot.state_revision) < BigInt(this.snapshot.state_revision)) return;
     const serviceChanged = snapshot.service_id !== this.snapshot.service_id;
     if (serviceChanged) {
+      this.silencedCurrent = null;
       this.retiredServices.add(this.snapshot.service_id); this.generation++;
       this.clearedInterruptions.clear();
       this.recoveries.clear(); this.routes.clear(); this.edits.clear(); this.retirements.clear(); this.mutationTail = Promise.resolve();
@@ -102,23 +121,40 @@ export class WorkbenchSession {
   resolve(binding: ViewBinding): string { return binding.type === 'follow' ? this.selected : binding.receiver_uid; }
   select(uid: string): void { this.selected = uid; this.notify(); }
   route(uid: string): MonitorRoute { return this.routes.get(uid) ?? { enabled: false, gain: 0.7, pan: 0, solo: false }; }
-  listening(uid: string): boolean { return this.monitorMode === 'follow' ? uid === this.selected : this.route(uid).enabled; }
+  listening(uid: string): boolean {
+    if (this.monitorTarget(uid) !== uid || this.currentSilenced(uid)) return false;
+    return this.monitorMode === 'follow' ? uid === this.monitorTarget(this.selected) : this.route(uid).enabled;
+  }
   monitor(uid: string, patch: Partial<MonitorRoute>): void {
+    if (this.clearingChannels) return;
+    uid = this.monitorTarget(uid);
+    const currentUid = this.currentReceiverSource?.();
+    if (patch.enabled !== undefined && uid === currentUid) this.silencedCurrent = null;
+    else if (patch.enabled !== undefined && uid === this.currentRepresentative()) {
+      const current = this.snapshot.receivers.find(r => r.receiver_uid === currentUid);
+      if (current) this.silencedCurrent = patch.enabled ? null : { uid: current.receiver_uid, hz: current.confirmed.baseband.frequency_hz };
+    }
     if (this.monitorMode === 'follow' && (patch.enabled !== undefined || patch.solo !== undefined)) {
       // A direct listening action keeps the editing target and becomes a manual
       // mix, initially preserving the source the user was already listening to.
-      if (this.selected) this.routes.set(this.selected, { ...this.route(this.selected), enabled: true });
+      const selected = this.monitorTarget(this.selected);
+      if (selected) this.routes.set(selected, { ...this.route(selected), enabled: true });
       this.monitorMode = 'manual';
     }
     this.routes.set(uid, { ...this.route(uid), ...patch }); this.notify();
   }
+  private monitorAvailable(r: ReceiverState): boolean {
+    return !this.clearingChannels && !this.retiring(r.receiver_uid) && this.monitorTarget(r.receiver_uid) === r.receiver_uid
+      && !this.currentSilenced(r.receiver_uid)
+      && r.coverage?.state !== 'out_of_band' && (!r.reception || r.reception.state === 'receiving') && !r.fault
+      && r.processing_state !== 'failed' && r.state === 'running' && receiverHasAudio(this.snapshot, r.confirmed);
+  }
   private monitorEligible(uid: string): boolean {
-    if (this.retiring(uid)) return false;
     const r = this.snapshot.receivers.find(r => r.receiver_uid === uid);
-    if (!r || r.coverage?.state === 'out_of_band' || r.reception && r.reception.state!=='receiving' || r.fault || r.processing_state === 'failed' || r.state !== 'running' || !receiverHasAudio(this.snapshot, r.confirmed)) return false;
+    if (!r || !this.monitorAvailable(r)) return false;
     const route = this.route(uid);
-    if (this.monitorMode === 'follow') return uid === this.selected;
-    const solo = this.snapshot.receivers.some(r => r.state === 'running' && receiverHasAudio(this.snapshot, r.confirmed) && this.route(r.receiver_uid).enabled && this.route(r.receiver_uid).solo);
+    if (this.monitorMode === 'follow') return uid === this.monitorTarget(this.selected);
+    const solo = this.snapshot.receivers.some(r => this.route(r.receiver_uid).enabled && this.route(r.receiver_uid).solo && this.monitorAvailable(r));
     return route.enabled && (!solo || route.solo);
   }
   /** A scratch receiver can revisit a saved frequency without doubling the same audio. */
@@ -159,6 +195,7 @@ export class WorkbenchSession {
   }
   /** Observe identity at dispatch, after earlier local mutations have committed. */
   create(config: ReceiverConfig): Promise<{ receiver_uid: string | null; fault: Fault | null }> {
+    if (this.clearingChannels) return Promise.resolve({ receiver_uid: null, fault: this.clearingFault() });
     const command: ServiceCommand = { type: 'create', request_id: this.requestId(), config: clone(config) };
     const generation = this.generation;
     return this.serialize(async () => {
@@ -188,11 +225,20 @@ export class WorkbenchSession {
   }
   async send(command: ServiceCommand): Promise<CommandReply> {
     if (this.disposed) return this.invalidated(command);
+    if (this.clearingChannels) return { request_id: command.request_id, snapshot: this.snapshot, fault: this.clearingFault() };
     if ((command.type === 'configure' || command.type === 'record_start' || command.type === 'output' && command.enabled)
       && this.retiring(command.receiver_uid)) return { request_id: command.request_id,
       snapshot: this.snapshot, fault: { scope: 'request', code: 'BUSY', message: 'Receiver deletion pending',
         receiver_uid: command.receiver_uid, retryable: true } };
     if (command.type !== 'retire') return ['create', 'configure', 'scene'].includes(command.type) ? this.enqueue(command) : this.dispatch(command);
+    // Deleting the saved representative must not resurrect hidden Current audio.
+    if (command.receiver_uid === this.currentRepresentative()) {
+      const current = this.snapshot.receivers.find(r => r.receiver_uid === this.currentReceiverSource?.());
+      if (current) {
+        this.routes.set(current.receiver_uid, { ...this.route(current.receiver_uid), enabled: false });
+        this.silencedCurrent = { uid: current.receiver_uid, hz: current.confirmed.baseband.frequency_hz };
+      }
+    }
     const pending = this.retirements.get(command.receiver_uid);
     if (pending) return { ...await pending, request_id: command.request_id };
     // Configuration and deletion share the native commit revision. Preserve
@@ -241,6 +287,32 @@ export class WorkbenchSession {
       }
     }
     edit.pending = false; edit.request_id = null; this.notify();
+  }
+  private clearingFault(): Fault { return { scope: 'request', code: 'BUSY', message: 'Clearing channels', retryable: true }; }
+  /** Serialize the confirmed set with edits; never target new channels or a new service. */
+  async clearChannels(uids: readonly string[], currentUid: string | null): Promise<void> {
+    if (this.clearingChannels || this.disposed) return;
+    const generation = this.generation;
+    this.clearingChannels = true; this.monitorMode = 'manual';
+    for (const uid of uids) this.routes.set(uid, { ...this.route(uid), enabled: false, solo: false });
+    this.notify();
+    const faults: Fault[] = [];
+    try {
+      await this.serialize(async () => {
+        for (const uid of uids) {
+          if (this.disposed || generation !== this.generation) return;
+          const row = this.snapshot.receivers.find(r => r.receiver_uid === uid); if (!row) continue;
+          const reply = await this.dispatch(uid === currentUid
+            ? { type: 'configure', request_id: this.requestId(), receiver_uid: uid, expected_revision: row.revision, config: { ...clone(row.confirmed), enabled: false } }
+            : { type: 'retire', request_id: this.requestId(), receiver_uid: uid });
+          if (reply.fault) faults.push(reply.fault);
+        }
+      });
+    } finally {
+      this.clearingChannels = false;
+      if (!this.disposed && generation === this.generation && faults.length) this.fault = { ...faults[0], message: faults.map(f => f.message).join('; ') };
+      this.notify();
+    }
   }
   dispose(): void { this.disposed = true; this.generation++; document.removeEventListener('websa:preset-applied', this.resetPreset); this.stop(); this.listeners.clear(); this.resultListeners.clear(); this.retirements.clear(); }
 }

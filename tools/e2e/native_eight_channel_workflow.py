@@ -39,9 +39,12 @@ def setup(origin, *, center=100e6, frequencies=None, reference=None, agc=False, 
         candidate['processors'] = [{'id': 'primary', 'kind': 'demodulator', 'mode': mode, 'minimum_rate_hz': 0,
             'bandwidth_hz': 12000 if mode == 'nfm' else 2400 if mode in ['usb', 'lsb'] else 6000,
             'pcm_gain': 0.8, 'agc': agc, 'squelch_dbm': -200}]
-        if mode == 'ft8':
+        if mode in {'ft8', 'ft4', 'wspr', 'rtty', 'rtty-reverse', 'navtex', 'dsc'}:
             candidate['purpose'] = 'digital'
-            candidate['processors'][0].update(kind='decoder', bandwidth_hz=3000)
+            bandwidth = 6000 if mode in {'ft4', 'wspr'} else 3400 if mode in {'rtty', 'rtty-reverse'} else 3000
+            candidate['processors'][0].update(kind='decoder', bandwidth_hz=bandwidth)
+            if mode in {'ft4', 'wspr'}:
+                candidate['baseband']['minimum_rate_hz'] = 250000
         elif mode == 'iq':
             candidate.update(purpose='iq', processors=[])
         command = {'type': 'create', 'request_id': f'eight-create-{current["revision"]}-{index}', 'config': candidate}
@@ -72,19 +75,40 @@ def browser_gate(origin, snapshot, artifacts, *, source_kind='fixture'):
                     const row = {script: String(args[0]), url: null, terminated: false,
                         connected: 0, closed: 0, ended: 0, errors: 0};
                     if (probe.rows.length < 256) probe.rows.push(row); else probe.overflow = true;
-                    const send = this.postMessage.bind(this), terminate = this.terminate.bind(this);
+                    const send = this.postMessage.bind(this), terminate = this.terminate.bind(this), sources = new Map();
                     this.postMessage = (message, ...rest) => {
                         if (message?.type === 'start' && typeof message.url === 'string') row.url = message.url;
+                        for (const item of message?.type === 'source-commands' ? message.items : []) {
+                            if (item.message.url && !sources.has(item.clientId)) {
+                                const source = {script:'shared-source',url:String(item.message.url),terminated:false,connected:0,closed:0,ended:0,errors:0};
+                                sources.set(item.clientId,source); if (probe.rows.length < 256) probe.rows.push(source); else probe.overflow=true;
+                            }
+                            if (item.message.type==='dispose' && sources.has(item.clientId)) sources.get(item.clientId).terminated=true;
+                        }
                         return send(message, ...rest);
                     };
                     this.terminate = () => {row.terminated = true; return terminate();};
                     this.addEventListener('message', event => {
                         const type = event.data?.type;
+                        for (const item of type==='source-events' ? event.data.items : []) {
+                            const source=sources.get(item.clientId), kind=item.message.type;
+                            if (!source) continue; if (['connected','closed','ended'].includes(kind)) source[kind]++; if (kind==='error') source.errors++;
+                        }
                         if (['connected', 'closed', 'ended'].includes(type)) row[type]++;
                         if (type === 'error') row.errors++;
                     });
                 }
             };
+            const portSend = MessagePort.prototype.postMessage, portClose = MessagePort.prototype.close;
+            MessagePort.prototype.postMessage = function(message, ...rest) {
+                if (message?.url && !this.consumerProbe) {
+                    const row = this.consumerProbe = {script:'shared-port',url:String(message.url),terminated:false,connected:0,closed:0,ended:0,errors:0};
+                    if (probe.rows.length < 256) probe.rows.push(row); else probe.overflow = true;
+                    this.addEventListener('message', event => { const type=event.data?.type; if (['connected','closed','ended'].includes(type)) row[type]++; if (type==='error') row.errors++; });
+                }
+                return portSend.call(this, message, ...rest);
+            };
+            MessagePort.prototype.close = function() { if (this.consumerProbe) this.consumerProbe.terminated = true; return portClose.call(this); };
         }''')
         page = context.new_page()
         errors, commands, sockets, wire_commands, socket_lifecycle = [], [], [], [], []

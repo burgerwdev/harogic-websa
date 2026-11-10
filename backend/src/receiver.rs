@@ -283,6 +283,7 @@ pub struct PreparedDecoder {
 
 impl PreparedDecoder {
     pub fn new(mode: &str, center_hz: u64) -> Result<Self, String> {
+        crate::capture_scheduling::normal();
         let descriptor = crate::catalog::mode(mode).ok_or("receiver mode unavailable")?;
         let rate = descriptor.input_rate_hz.ok_or("external decoder rate unavailable")?;
         let decoder = crate::external::ExternalDecoder::new(mode, rate, center_hz)?;

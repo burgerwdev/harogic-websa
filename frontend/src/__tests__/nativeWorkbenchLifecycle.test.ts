@@ -4,11 +4,14 @@ import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import { WorkbenchSession } from '../ui/workbenchSession';
 import { mountNativeWorkbenchStreams } from '../ui/nativeWorkbenchStreams';
 import { decoderLog, forgetDecoderLog } from '../sdr/decoderLog';
-import { forgetNativeAudio, getSdrAudioStatus, sampleNativeAudioWaveform, setNativeAudioRoute } from '../audio/sdrAudio';
+import { forgetNativeAudio, getNativeAudioStatus, sampleNativeAudioWaveform, setNativeAudioRoute } from '../audio/sdrAudio';
 import { publishCommandReply, send, setWS } from '../core/wsSend';
+import { nativeDecodeOwned, onNativeDecode } from '../sdr/decodeOwnership';
 
+vi.mock('../sdr/decodeIngressPool', () => ({ decodeIngressClient: () =>
+  new globalThis.Worker(new URL('../sdr/decodeWorker.ts', import.meta.url), { type: 'module' }) }));
 vi.mock('../audio/sdrAudio', () => ({ claimNativeAudio: () => vi.fn(), forgetNativeAudio: vi.fn(),
-  getSdrAudioStatus: vi.fn(() => []), sampleNativeAudioWaveform: vi.fn(() => false), setNativeAudioRoute: vi.fn(), setNativeMaster: vi.fn() }));
+  getNativeAudioStatus: vi.fn(() => undefined), sampleNativeAudioWaveform: vi.fn(() => false), setNativeAudioRoute: vi.fn(), setNativeMaster: vi.fn() }));
 class Worker {
   static instances: Worker[] = [];
   onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -24,7 +27,7 @@ class Worker {
 }
 let adapter: FixtureReceiverAdapter, session: WorkbenchSession, streams: ReturnType<typeof mountNativeWorkbenchStreams>;
 beforeEach(() => {
-  vi.mocked(getSdrAudioStatus).mockReset().mockReturnValue([]); vi.mocked(sampleNativeAudioWaveform).mockReset().mockReturnValue(false);
+  vi.mocked(getNativeAudioStatus).mockReset().mockReturnValue(undefined); vi.mocked(sampleNativeAudioWaveform).mockReset().mockReturnValue(false);
   Worker.instances = []; vi.stubGlobal('Worker', Worker);
   adapter = new FixtureReceiverAdapter(); session = new WorkbenchSession(adapter); streams = mountNativeWorkbenchStreams(session);
 });
@@ -34,6 +37,14 @@ afterEach(() => {
   vi.unstubAllGlobals(); vi.clearAllMocks();
 });
 describe('UID consumer lifecycle', () => {
+  it('shares validated UID deliveries with the main panel and releases the decoded-output owner', () => {
+    const consume = vi.fn(), stop = onNativeDecode(consume);
+    expect(nativeDecodeOwned()).toBe(true);
+    Worker.instances[0].result();
+    expect(consume).toHaveBeenCalledOnce(); expect(consume.mock.calls[0][0][0].receiver_uid).toBe('fixture-c1');
+    streams.dispose(); expect(nativeDecodeOwned()).toBe(false);
+    Worker.instances[0].result(); expect(consume).toHaveBeenCalledOnce(); stop();
+  });
   it('shares waveform and level readouts for duplicate audio without releasing a visible sibling probe', () => {
     session.snapshot = clone(session.snapshot);
     const [first, second] = session.snapshot.receivers;
@@ -41,7 +52,7 @@ describe('UID consumer lifecycle', () => {
     for (const r of [first, second]) session.routes.set(r.receiver_uid, { enabled: true, gain: .7, pan: 0, solo: false });
     session.notify();
     const playback = { channel: first.receiver_uid, enabled: true, playing: true, rms: .2, peak: .4 };
-    vi.mocked(getSdrAudioStatus).mockReturnValue([playback]);
+    vi.mocked(getNativeAudioStatus).mockReturnValue(playback);
     vi.mocked(sampleNativeAudioWaveform).mockImplementation((_, samples) => !!samples);
     const a = new Float32Array(256), b = new Float32Array(256);
     expect(streams.playback(second.receiver_uid)).toBe(playback);

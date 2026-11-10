@@ -2051,6 +2051,9 @@ dependencies = [
 [[package]]
 name = "websa-dsp"
 version = "0.1.0"
+dependencies = [
+ "rustfft",
+]
 
 [[package]]
 name = "winapi-util"

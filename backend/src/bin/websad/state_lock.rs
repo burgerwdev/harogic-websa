@@ -23,6 +23,7 @@ pub(super) struct StatusSnapshot {
     rta_trigger_actual: Value,
     sdr_center: f64,
     sdr_actual: Value,
+    pipeline_diagnostics: Option<sdr_pipeline::PipelinePresentation>,
     sdr_ref: f64,
     receiver_failure: Option<String>,
     channel_registry: Arc<[sdr_pipeline::ChannelRegistryEntry]>,
@@ -44,6 +45,7 @@ pub(super) struct StatusSnapshot {
     config_version: u64,
     ddc_error: Option<String>,
     ddc_failure_diagnostics: Option<Value>,
+    ddc_first_failure_diagnostics: Option<Value>,
     rta_error: Option<String>,
     swp_error: Option<String>,
     pnm_error: Option<String>,
@@ -85,8 +87,16 @@ impl DevState {
     }
 
     pub(super) fn status_snapshot(&self) -> StatusSnapshot {
+        self.status_snapshot_detail(true)
+    }
+
+    pub(super) fn live_status_snapshot(&self) -> StatusSnapshot {
+        self.status_snapshot_detail(false)
+    }
+
+    fn status_snapshot_detail(&self, diagnostics: bool) -> StatusSnapshot {
         let mut sdr_actual = self.sdr_actual.clone();
-        if self.swp.mode == "sdr" {
+        if diagnostics && self.swp.mode == "sdr" {
             sdr_actual["receiver_workers"] = self.receiver_workers.as_ref()
                 .map(|workers| workers.stats()).unwrap_or(Value::Null);
         }
@@ -138,9 +148,10 @@ impl DevState {
             rta_trigger_actual: self.rta_trigger_actual.clone(),
             sdr_center: self.sdr_center.clone(),
             sdr_actual,
+            pipeline_diagnostics:diagnostics.then(||self.pipeline.as_ref().map(|p|p.presentation())).flatten(),
             sdr_ref: self.sdr_ref.clone(),
             receiver_failure: self.receiver_failure.clone(),
-            channels: self.channel_status(),
+            channels: self.channel_status_detail(diagnostics),
             channel_registry: self.stream_registry(),
             actual: self.actual.clone(),
             link_up: self.link_up.clone(),
@@ -158,8 +169,10 @@ impl DevState {
             sweep_ms_meas: self.sweep_ms_meas.clone(),
             config_version: self.config_version.clone(),
             ddc_error: self.ddc_error.clone(),
-            ddc_failure_diagnostics: self.pipeline.as_ref().and_then(|pipeline|pipeline.terminal_failure())
-                .or_else(||self.ddc_failure_diagnostics.clone()),
+            ddc_failure_diagnostics: diagnostics.then(||self.pipeline.as_ref().and_then(|pipeline|pipeline.terminal_failure())
+                .or_else(||self.ddc_failure_diagnostics.clone())).flatten(),
+            ddc_first_failure_diagnostics: diagnostics.then(||self.ddc_first_failure_diagnostics.clone()
+                .or_else(||self.pipeline.as_ref().and_then(|pipeline|pipeline.terminal_failure()))).flatten(),
             rta_error: self.rta_error.clone(),
             swp_error: self.swp_error.clone(),
             pnm_error: self.pnm_error.clone(),
@@ -187,6 +200,12 @@ impl DevState {
 }
 impl StatusSnapshot {
     pub fn build(&self) -> Value {
+        let mut sdr_actual = self.sdr_actual.clone();
+        if let Some(pipeline) = &self.pipeline_diagnostics {
+            if let Some(detail) = pipeline.encode().as_object() {
+                sdr_actual.as_object_mut().unwrap().extend(detail.clone());
+            }
+        }
         let mut s = self.golden.clone();
         let p = &self.swp;
         let mode = p.mode.as_str();
@@ -205,12 +224,12 @@ impl StatusSnapshot {
             ),
             "sdr" => (
                 json!({
-                    "center": self.sdr_center, "span": self.sdr_actual["bandwidth"],
-                    "points": self.sdr_actual["pan_points"],
+                    "center": self.sdr_center, "span": sdr_actual["bandwidth"],
+                    "points": sdr_actual["pan_points"],
                     "rbw_mode": "auto", "rbw": 0.0, "vbw_mode": "equal", "vbw": 0.0,
                     "ref_mode": "manual", "ref": self.sdr_ref,
                 }),
-                self.sdr_actual.clone(),
+                sdr_actual.clone(),
             ),
             _ => (
                 json!({
@@ -257,6 +276,7 @@ impl StatusSnapshot {
         // New diagnostics have no key in the embedded compatibility fixture.
         // set_path deliberately updates existing keys only, so insert this one.
         s["sdr_last_failure"] = json!(self.ddc_failure_diagnostics);
+        s["sdr_first_failure"] = json!(self.ddc_first_failure_diagnostics);
         for (path, value) in [
             (
                 "/connected",
@@ -404,7 +424,7 @@ impl StatusSnapshot {
             ("/sdr/agc", json!(self.sdr_agc)),
             ("/sdr/pitch", json!(self.sdr_pitch)),
             ("/sdr/aux", self.sdr_aux.clone()),
-            ("/sdr/actual", self.sdr_actual.clone()),
+            ("/sdr/actual", sdr_actual.clone()),
             ("/sdr/level_dbfs", self.channels.as_array().and_then(|channels| channels.iter()
                 .find(|channel| channel["channel"] == 1)).map_or(Value::Null,
                     |channel| channel["level_dbfs"].clone())),
@@ -445,7 +465,7 @@ pub(super) struct StateMutex {
 }
 impl StateMutex {
     pub fn new(state: DevState) -> Self {
-        let snapshot = state.status_snapshot();
+        let snapshot = state.live_status_snapshot();
         let status = (snapshot.revision, snapshot.build());
         let revision = Arc::new(AtomicU64::new(snapshot.revision));
         Self { state:PLMutex::new(state), status:PLMutex::new(status), revision }
@@ -497,6 +517,10 @@ mod tests {
         state.ddc_failure_diagnostics=Some(failure.clone());
         state.ddc_error=Some("SDK timeout".into());
         assert_eq!(state.status_snapshot().build()["sdr_last_failure"],failure);
+        let live = state.live_status_snapshot().build();
+        assert!(live["sdr_last_failure"].is_null());
+        assert_eq!(live["last_error"],"SDK timeout");
+        assert!(live["sdr"]["actual"].get("receiver_workers").is_none());
         state.ddc_error=None;
         assert_eq!(state.status_snapshot().build()["sdr_last_failure"],failure);
     }

@@ -27,6 +27,7 @@ pub struct Channel {
     rational: Option<super::rational::Rational>,
     intermediate: Vec<f32>,
     stages: Option<Vec<Decimator>>,
+    final_fft: Option<crate::fir_fft::FirFft>,
 }
 
 /// Streaming FIR stage. Only output instants evaluate taps; doubled history is contiguous for SIMD.
@@ -62,8 +63,8 @@ impl Decimator {
         self.phase += 1;
         if self.phase < self.factor { return None; }
         self.phase = 0;
-        Some((dot(&self.taps, &self.re[self.pos..self.pos + n], avx2),
-            dot(&self.taps, &self.im[self.pos..self.pos + n], avx2)))
+        Some(dot_iq(&self.taps, &self.re[self.pos..self.pos + n],
+            &self.im[self.pos..self.pos + n], avx2))
     }
 }
 
@@ -91,6 +92,33 @@ pub(crate) fn dot(a: &[f32], b: &[f32], avx2: bool) -> f32 {
     }
     let _ = avx2;
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+// I and Q use the same coefficients. Traverse both histories together so a
+// decimated output pays for one coefficient load/loop, while retaining each
+// component's FMA and horizontal-sum order exactly.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dot_iq_avx2(a: &[f32], re: &[f32], im: &[f32]) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    let mut real = _mm256_setzero_ps();
+    let mut imag = _mm256_setzero_ps();
+    for k in (0..a.len()).step_by(8) {
+        let coefficient = _mm256_loadu_ps(a.as_ptr().add(k));
+        real = _mm256_fmadd_ps(coefficient, _mm256_loadu_ps(re.as_ptr().add(k)), real);
+        imag = _mm256_fmadd_ps(coefficient, _mm256_loadu_ps(im.as_ptr().add(k)), imag);
+    }
+    let mut r = [0.0f32; 8];
+    let mut i = [0.0f32; 8];
+    _mm256_storeu_ps(r.as_mut_ptr(), real);
+    _mm256_storeu_ps(i.as_mut_ptr(), imag);
+    (r.iter().sum(), i.iter().sum())
+}
+
+fn dot_iq(a: &[f32], re: &[f32], im: &[f32], avx2: bool) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
+    if avx2 { return unsafe { dot_iq_avx2(a, re, im) }; }
+    (dot(a, re, false), dot(a, im, false))
 }
 
 pub(crate) fn bessel0(x: f64) -> f64 {
@@ -222,6 +250,7 @@ pub extern "C" fn channel_open(fs: f64, offset: f64, decimate: i32) -> *mut Chan
         rational: None,
         intermediate: Vec::new(),
         stages: None,
+        final_fft: None,
     }))
 }
 
@@ -271,6 +300,11 @@ pub fn channel_open_planned(fs: f64, offset: f64, plan: &crate::rate_plan::RateP
     let Some(stage) = Decimator::new(rate, 1, plan.occupied_bandwidth_hz / 2.0, plan.stopband_hz)
         else { return std::ptr::null_mut(); };
     stages.push(stage);
+    // Wide minimum IQ clocks with a narrow RF passband can require thousands
+    // of taps at every output sample. Apply that same final FIR in blocks;
+    // short analog filters keep the direct SIMD kernel.
+    let final_fft = stages.last().filter(|stage| stage.taps.len() >= 1024)
+        .map(|stage| crate::fir_fft::FirFft::new(&stage.taps));
     #[cfg(target_arch = "x86_64")]
     let avx2 = std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma");
     #[cfg(not(target_arch = "x86_64"))]
@@ -282,6 +316,7 @@ pub fn channel_open_planned(fs: f64, offset: f64, plan: &crate::rate_plan::RateP
         pos1: 0, pos2: 0, h1: Vec::new(), h2: Vec::new(), fused: None, avx2,
         r1: Vec::new(), i1: Vec::new(), r2: Vec::new(), i2: Vec::new(),
         rational: None, intermediate: Vec::new(), stages: Some(stages),
+        final_fft,
     }))
 }
 
@@ -467,8 +502,9 @@ fn process_samples<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut [f3
                 continue;
             }
             c.phase2 = 0;
-            base_out[2 * produced] = dot(fused, &c.r1[c.pos1..c.pos1 + n1], c.avx2);
-            base_out[2 * produced + 1] = dot(fused, &c.i1[c.pos1..c.pos1 + n1], c.avx2);
+            let (re, im) = dot_iq(fused, &c.r1[c.pos1..c.pos1 + n1], &c.i1[c.pos1..c.pos1 + n1], c.avx2);
+            base_out[2 * produced] = re;
+            base_out[2 * produced + 1] = im;
             produced += 1;
             continue;
         }
@@ -477,8 +513,8 @@ fn process_samples<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut [f3
             continue;
         }
         c.phase1 = 0;
-        let ar = dot(&c.h1, &c.r1[c.pos1..c.pos1 + n1], c.avx2);
-        let ai = dot(&c.h1, &c.i1[c.pos1..c.pos1 + n1], c.avx2);
+        let (ar, ai) = dot_iq(&c.h1, &c.r1[c.pos1..c.pos1 + n1],
+            &c.i1[c.pos1..c.pos1 + n1], c.avx2);
         c.r2[c.pos2] = ar;
         c.r2[c.pos2 + n2] = ar;
         c.i2[c.pos2] = ai;
@@ -492,8 +528,8 @@ fn process_samples<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut [f3
             continue;
         }
         c.phase2 = 0;
-        let ar = dot(&c.h2, &c.r2[c.pos2..c.pos2 + n2], c.avx2);
-        let ai = dot(&c.h2, &c.i2[c.pos2..c.pos2 + n2], c.avx2);
+        let (ar, ai) = dot_iq(&c.h2, &c.r2[c.pos2..c.pos2 + n2],
+            &c.i2[c.pos2..c.pos2 + n2], c.avx2);
         base_out[2 * produced] = ar;
         base_out[2 * produced + 1] = ai;
         produced += 1;
@@ -509,6 +545,8 @@ fn process_samples<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut [f3
 
 fn process_multistage<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut [f32]) -> i32 {
     let mut produced = 0;
+    let stages = c.stages.as_mut().unwrap();
+    let direct_stages = stages.len() - usize::from(c.final_fft.is_some());
     for sample in iq.chunks_exact(2) {
         let (ir, ii): (f64, f64) = (sample[0].into(), sample[1].into());
         let mut value = Some(((ir * c.re - ii * c.im) as f32, (ir * c.im + ii * c.re) as f32));
@@ -522,7 +560,7 @@ fn process_multistage<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut 
             c.im /= mag;
             c.normalize = 0;
         }
-        for stage in c.stages.as_mut().unwrap() {
+        for stage in &mut stages[..direct_stages] {
             let Some((re, im)) = value else { break; };
             value = stage.push(re, im, c.avx2);
         }
@@ -532,6 +570,7 @@ fn process_multistage<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut 
             produced += 1;
         }
     }
+    if let Some(filter) = &mut c.final_fft { filter.process(&mut out[..2 * produced]); }
     c.input_samples += (iq.len() / 2) as u64;
     c.output_samples += produced as u64;
     produced as i32
@@ -540,6 +579,54 @@ fn process_multistage<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_planned_fir_matches_direct_filter_and_packet_clocks() {
+        let fs = 976_562.5;
+        for (minimum, transition) in [(250_000.0, 1_000.0), (500_000.0, 500.0)] {
+            let plan = crate::rate_plan::RatePlan::baseband(fs, 16_000.0, transition, minimum).unwrap();
+            let mut optimized = unsafe { Box::from_raw(channel_open_planned(fs, 12_345.0, &plan)) };
+            let mut direct = unsafe { Box::from_raw(channel_open_planned(fs, 12_345.0, &plan)) };
+            assert!(optimized.final_fft.is_some());
+            direct.final_fft = None;
+            assert_eq!(unsafe { channel_delay(&*optimized) }, unsafe { channel_delay(&*direct) });
+            let mut index = 0;
+            for count in [0, 1, 13, 507, 508, 509, 16_381, 3, 4096, 15] {
+                let iq: Vec<f32> = (2 * index..2 * (index + count)).map(|n|
+                    ((n as f64 * 0.17).sin() + (n as f64 * 0.0031).cos()) as f32).collect();
+                let mut a = vec![0.0; 2 * (count / plan.decimate as usize + 2)];
+                let mut b = a.clone();
+                let produced = process_samples(&mut optimized, &iq, &mut a);
+                assert_eq!(produced, process_samples(&mut direct, &iq, &mut b));
+                assert_eq!((optimized.input_samples, optimized.output_samples),
+                    (direct.input_samples, direct.output_samples));
+                let max_error = a.iter().zip(&b).map(|(a,b)| (a-b).abs()).fold(0.0f32, f32::max);
+                assert!(max_error < 3e-6, "maximum absolute error {max_error}");
+                index += count;
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "CPU benchmark; run alone in release mode with --nocapture"]
+    fn benchmark_long_planned_fir() {
+        let fs = 976_562.5;
+        let plan = crate::rate_plan::RatePlan::baseband(fs, 16_000.0, 1_000.0, 250_000.0).unwrap();
+        for count in [508, 1015, 4096] {
+            let iq: Vec<f32> = (0..2 * count).map(|n| (n as f64 * 0.011).sin() as f32).collect();
+            for repeat in 0..6 {
+                for fft in if repeat % 2 == 0 { [false, true] } else { [true, false] } {
+                    let mut channel = unsafe { Box::from_raw(channel_open_planned(fs, 0.0, &plan)) };
+                    if !fft { channel.final_fft = None; }
+                    let mut output = vec![0.0; 2 * (count / plan.decimate as usize + 2)];
+                    let start = crate::timing::thread_cpu_ns().unwrap();
+                    for _ in 0..1000 { std::hint::black_box(process_samples(&mut channel, &iq, &mut output)); }
+                    let ns = crate::timing::thread_cpu_ns().unwrap() - start;
+                    println!("{{\"count\":{count},\"repeat\":{repeat},\"fft\":{fft},\"cpu_us_per_packet\":{}}}", ns as f64 / 1e6);
+                }
+            }
+        }
+    }
 
     #[test]
     fn narrow_boundary_ratio_capacity_rejection_preserves_filter_and_clock() {

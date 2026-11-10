@@ -99,6 +99,17 @@ function sweep(kind: 'FREQ' | 'POWR', peak = -60, version = 1, shift = 0, extraS
 }
 
 describe('spectrum arrival cadence', () => {
+  it('prepares only the latest replaceable RTA frame at the current paint cadence', async () => {
+    const { S, redraw } = await load('rta');
+    vi.spyOn(redraw, 'streamRenderInterval').mockReturnValue(80);
+    rta(-100);
+    vi.advanceTimersByTime(20); rta(-60);
+    vi.advanceTimersByTime(20); rta(-40);
+    expect(S.rtaData.spec[16]).toBe(-100);
+    vi.advanceTimersByTime(40);
+    expect(S.rtaData.spec[16]).toBe(-40);
+  });
+
   it('retains SWP zoom after a pan settles onto a realigned native grid, but resets it on a span edit', async () => {
     await load('std');
     // These imports must share load()'s fresh graph after vi.resetModules().
@@ -138,6 +149,8 @@ describe('spectrum arrival cadence', () => {
     vi.advanceTimersByTime(20);
     // SWP processes every accepted frame; RTA and SDR coalesce superseded packets.
     expect(mode === 'std' ? S.traces[0].powers![16] : S.rtaDisplays[0]![16]).toBe(mode === 'std' ? -20 : -90);
+    // Ingestion is complete before the independently scheduled canvas paint.
+    vi.advanceTimersByTime(40);
     expect(draws.at(-1)!.peak).toBe(mode === 'std' ? -20 : -90);
     S.traces[0].mode = 'CLEAR_WRITE';
     feed(-60);

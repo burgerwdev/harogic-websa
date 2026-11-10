@@ -6,7 +6,7 @@ use super::{
     service_commands, service_preflight, service_stream, with_request_id, ws_handler, App,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -14,6 +14,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::collections::HashMap;
 
 pub(super) fn router(app: Arc<App>) -> Router {
     Router::new()
@@ -109,7 +110,14 @@ pub(super) fn state_worker_failed(error: tokio::task::JoinError) -> StatusCode {
     StatusCode::SERVICE_UNAVAILABLE
 }
 
-async fn api_state(State(app): State<Arc<App>>) -> Result<Json<Value>, StatusCode> {
+async fn api_state(State(app): State<Arc<App>>, Query(params):Query<HashMap<String,String>>) -> Result<Json<Value>, StatusCode> {
+    if params.get("detail").is_none_or(|detail|detail!="live") {
+        let snapshot = tokio::task::spawn_blocking(move || {
+            let snapshot = app.state.lock().unwrap().status_snapshot();
+            snapshot.build()
+        }).await.map_err(state_worker_failed)?;
+        return Ok(Json(snapshot));
+    }
     let worker_app = app.clone();
     let status = tokio::task::spawn_blocking(move || worker_app.state.status_with_revision())
         .await

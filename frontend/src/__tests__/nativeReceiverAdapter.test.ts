@@ -28,6 +28,21 @@ beforeEach(async () => {
 });
 afterEach(() => { adapter.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); document.body.replaceChildren(); });
 
+it('loads one diagnostic identity without publishing full histories or reviving a retired receiver', async () => {
+  const row = snapshot.receivers[0], listener = vi.fn(); adapter.subscribe(listener);
+  const details = { ...clone(row), processing_statistics: [{ generation: 'diagnostic-only' }] };
+  fetchMock.mockResolvedValueOnce(response({ ...snapshot, receivers: [details] }));
+  expect(await adapter.diagnostics(row.receiver_uid, new AbortController().signal)).toEqual(details);
+  expect(fetchMock.mock.calls[0][0]).toBe(`/api/sdr/receivers?receiver_uid=${encodeURIComponent(row.receiver_uid)}`);
+  expect(listener).not.toHaveBeenCalled(); expect(adapter.snapshot().receivers[0].processing_statistics).toBeUndefined();
+  let finish!: (reply: unknown) => void;
+  fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const pending = adapter.diagnostics(row.receiver_uid, new AbortController().signal);
+  fetchMock.mockResolvedValueOnce(response({ ...snapshot, receivers: [] })); await adapter.refresh();
+  finish(response({ ...snapshot, receivers: [details] }));
+  expect(await pending).toBeUndefined();
+});
+
 it.each(['idle', 'failed'] as const)('shows unavailable %s capture without fabricated bandwidth and blocks listening preflight', async state => {
   snapshot.capture = { ...snapshot.capture, state, parameters_state:'unknown', usable_bandwidth_hz:null, input_rate_hz:null };
   fetchMock.mockResolvedValue(response(snapshot)); await adapter.refresh();
@@ -44,6 +59,12 @@ it.each(['idle', 'failed'] as const)('shows unavailable %s capture without fabri
   ui.dispose();session.dispose();
 });
 const uid = 'fixture-c1';
+it('requests live snapshots for periodic UI refreshes', async () => {
+  await adapter.refresh();
+  expect(fetchMock).toHaveBeenCalledOnce();
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/sdr/receivers?detail=live');
+  expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined();
+});
 const output = () => adapter.dispatch({ type: 'output', request_id: 'subscribe', receiver_uid: uid, enabled: true });
 function start(socket: Socket): void {
   socket.emit({ type: 'stream_start', receiver_uid: uid, stream: { source_id: 'primary', channel_id: '7', epoch: '9' },

@@ -926,6 +926,10 @@ mod tests {
             FaultKind::SourceGap
         );
         assert_eq!(
+            FaultKind::capture("USB IQ capture handoff queue full: status=-130 samples=0; capture continuity lost"),
+            FaultKind::SourceGap
+        );
+        assert_eq!(
             FaultKind::capture("SDK IQS next/FFT status=-8 samples=0"),
             FaultKind::Device
         );

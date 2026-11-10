@@ -243,7 +243,7 @@ impl FineState {
             output_send:Timing::default(), snapshot_publish:Timing::default(), slow_io:SlowPipeline::default(),
             period:Duration::from_secs_f64(16240.0/input_rate), slow:SlowStage::default() }
     }
-    pub fn deliver(&mut self, packet: PfbOutput) -> Result<IqFrames, String> {
+    pub fn deliver(&mut self, packet: &PfbOutput) -> Result<IqFrames, String> {
         let mut frames = Vec::new();
         let started = Instant::now();
         let mut framing = Duration::ZERO;
@@ -462,6 +462,7 @@ impl Ddc {
         let mut value=self.display_fft.as_ref().map(|a|a.status(self.stream.input_sample_rate()))
             .unwrap_or_else(||json!({"size":0,"fft_points":16240,"window":"FlatTop"}));
         value["available"]=json!(self.hardware.is_some());
+        value["analysis"]=self.default_fft.as_ref().map(|a|a.status(self.stream.input_sample_rate())).unwrap_or(Value::Null);
         value["error"]=json!(self.display_fft_error);value
     }
     pub(super) fn finish_framers(&mut self, frames: &mut IqFrames) -> Result<(), String> {
@@ -577,6 +578,18 @@ pub(super) struct PipelinePresentation {
     diagnostics: hardware_iqs::CaptureDiagnostics,
 }
 impl PipelinePresentation {
+    /// Ordinary status contains controls and source clocks. Detailed timings and
+    /// event histories are serialized only by explicit diagnostic requests.
+    pub fn encode_live(&self) -> Value {
+        let (refclk, refclk_src) = self.diagnostics.clock();
+        let front_end = self.snapshot.front_end;
+        let mut actual = json!({"refclk":refclk,"refclk_src":refclk_src,
+            "ref":front_end.map(|f|f.ref_dbm),"atten":front_end.map(|f|f.atten),
+            "preamp":front_end.map(|f|f.preamp),"ifgain":front_end.map(|f|f.ifgain),
+            "iqs_stamp_gaps":self.snapshot.stamp_gaps});
+        self.snapshot.write_channel_status(&mut actual);
+        actual
+    }
     pub fn encode(&self) -> Value {
         let snapshot = &self.snapshot;
         let pool = snapshot.pool;
@@ -622,7 +635,8 @@ impl PipelinePresentation {
                 "fetch_max_ms":s.fetch_max_ms,"fail_calls":s.fail_calls,"fail_max_ms":s.fail_max_ms,
                 "recovery_stall_ms":s.recovery_stall_ms,"queue_full":s.queue_full,
                 "queue_wait_ms":s.queue_wait_ms,"queue_wait_max_ms":s.queue_wait_max_ms,
-                "spectrum_frames":s.spectrum_frames,"skips":s.skips,"last_skip_status":s.last_skip_status,"recoveries":s.recoveries,
+                "spectrum_frames":s.spectrum_frames,
+                "skips":s.skips,"last_skip_status":s.last_skip_status,"recoveries":s.recoveries,
                 "sdk_timing_available":s.sdk_timing_available,"sdk_entry_interval":s.sdk_entry_interval,
                 "sdk_fetch":s.sdk_fetch,"sdk_memcpy":s.sdk_memcpy,"sdk_fft":s.sdk_fft,
                 "sdk_failed_fetch":s.sdk_failed_fetch,"sdk_failed_fft":s.sdk_failed_fft,
@@ -655,6 +669,7 @@ impl Pipeline {
         let terminal = Arc::new(PLMutex::new(None));
         let failed_capture = terminal.clone();
         let join = thread::Builder::new().name("sdr-pfb".into()).spawn(move || {
+            websa_channelizer::capture_scheduling::capture();
             // Publish a terminal result before dropping owners that may still
             // need to join native work. Never resume DDC state after a panic.
             let mut owned_ddc = None;
@@ -667,23 +682,17 @@ impl Pipeline {
                     } else {capture_decimate(config.center, config.listen, &frequencies, config.display_decimate, config.taps)};
                     if let Some(channels)=&channels {
                         let fs=IQ_FS/device_decimate as f64;
-                        let m=PFB_BINS.min((fs/BIN_SPACING).round() as i64).max(2);
-                        let mut bins=Vec::new();
-                        for c in channels.iter().filter(|c|c.enabled && !service_ddc::is_direct(c)) {
-                            let signed=signed_bin(c.freq,config.center);
-                            for neighbour in signed-PLAN_NEIGHBOURS..=signed+PLAN_NEIGHBOURS {
-                                if (-m/2..m/2).contains(&neighbour) {
-                                    let bin=neighbour.rem_euclid(m) as u32;
-                                    if !bins.contains(&bin){bins.push(bin);}
-                                }
-                            }
-                        }
+                        let bins=service_ddc::coarse_bins(config.center,fs,channels)?;
                         service_cost::admit_service(channels,fs,config.taps,bins.len().max(1))?;
                     }
-                    let capture = HardwareCapture::start(config.shim, config.center, config.front_end, device_decimate)?;
+                    // Open/validate the independent FFT context before arming IQ.
+                    // Display failures are reported independently; never fall back
+                    // to running transforms on the continuous acquisition owner.
+                    let analyzer = display_fft::Analyzer::start(config.shim.clone(), SDR_PACKET_SAMPLES);
+                    let capture = HardwareCapture::start_raw(config.shim, config.center, config.front_end, device_decimate)?;
                     let g = capture.geometry;
                     let fs = g.sample_rate;
-                    let ddc = if let Some(channels) = &channels {
+                    let mut ddc = if let Some(channels) = &channels {
                         Ddc::configured_service(g.center,g.bandwidth,&mut Some(capture),config.taps,fs,channels)?
                     } else {
                         let mut ddc = Ddc::configured_with_budget(g.center, config.listen, config.fine, g.bandwidth,
@@ -691,6 +700,10 @@ impl Pipeline {
                         for &(channel, frequency) in &config.aux { ddc.configure_aux(channel, true, frequency)?; }
                         ddc
                     };
+                    match analyzer {
+                        Ok(analyzer)=>ddc.default_fft=Some(analyzer),
+                        Err(error)=>ddc.display_fft_error=Some(error),
+                    }
                     Ok::<_, String>(ddc)
                 })();
                 let ddc = match setup { Ok(ddc) => owned_ddc.insert(ddc), Err(e) => { let _ = ready.send(Err(e)); return; } };

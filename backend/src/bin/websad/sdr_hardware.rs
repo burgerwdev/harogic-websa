@@ -36,7 +36,7 @@ pub(super) struct PresentedHardware {
 }
 impl HardwarePresentation {
     pub fn finish(mut self) -> Result<PresentedHardware, String> {
-        // Diagnostic JSON follows the spectrum cadence, not the IQ polling loop.
+        // Presentation never serializes diagnostic histories or worker metrics.
         if self.output.pan.is_empty() {
             return Ok(PresentedHardware { pan:Vec::new(), frames:self.output.frames,
                 actual:Value::Null, version:self.version, timing:self.timing, peak:None, channel_power:None });
@@ -48,7 +48,7 @@ impl HardwarePresentation {
         let lo = (self.center - bandwidth / 2.0).max(self.rf_limits.0);
         let hi = (self.center + bandwidth / 2.0).min(self.rf_limits.1);
         let window = hi.max(lo) - lo;
-        let mut actual = self.pipeline.encode();
+        let mut actual = self.pipeline.encode_live();
         actual.as_object_mut().unwrap().extend(json!({
             "iq_rate":snapshot.input_rate,"ddc_rate":snapshot.rate,
             "bandwidth":bandwidth,"capture_bandwidth":snapshot.usable_bandwidth,
@@ -322,7 +322,7 @@ impl DevState {
             if diagnostics.get("error").is_none() {
                 diagnostics = json!({"error":&error,"actual":diagnostics});
             }
-            self.ddc_failure_diagnostics = Some(diagnostics);
+            self.remember_capture_failure(diagnostics);
         }
         self.ddc_error_count += 1;
         self.ddc_error_last = Some(error.clone());
@@ -330,11 +330,30 @@ impl DevState {
         self.pipeline = None;
         self.ddc_retry_at = Some(std::time::Instant::now()+Duration::from_secs(1));
     }
+
+    fn remember_capture_failure(&mut self, diagnostics: Value) {
+        // A failed automatic retry must not erase the incident that ended the
+        // original continuous stream. Retain one first and one latest snapshot;
+        // these are only copied on failure and encoded by explicit diagnostics.
+        self.ddc_first_failure_diagnostics.get_or_insert_with(|| diagnostics.clone());
+        self.ddc_failure_diagnostics = Some(diagnostics);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_retry_preserves_first_capture_failure_and_reports_latest() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        let first = json!({"error":"original queue overflow", "input_index":19_500_000_000u64});
+        let retry = json!({"error":"retry overflow", "input_index":16_240});
+        state.remember_capture_failure(first.clone());
+        state.remember_capture_failure(retry.clone());
+        assert_eq!(state.ddc_first_failure_diagnostics, Some(first));
+        assert_eq!(state.ddc_failure_diagnostics, Some(retry));
+    }
 
     #[test]
     fn independent_fixture_lanes_report_a_simulated_window() {

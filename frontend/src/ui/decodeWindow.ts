@@ -45,7 +45,7 @@ import { applyFloatingGeometry, clampFloatingGeometry } from './floatingGeometry
 import './decodeResults.css';
 import { ft8GeoTexts } from './ft8GeoText';
 import { ft8SessionKey, markQsoRows } from './ft8Qso';
-import { onLangChange, t } from '../core/i18n';
+import { getLang, onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
 import { sdrAmSync, sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxClockRecovery,
 	sdrRadiofaxIoc, sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPhasePixels,
@@ -449,12 +449,18 @@ function compileFt8Filter(): void {
 	}
 }
 
+const ft8Tables = new WeakMap<HTMLElement, { spots: Ft8Spot[]; key: string; presentation: string; rows: Map<Ft8Spot, HTMLTableRowElement> }>();
 function renderFt8Rows(): void {
 	syncFt8SortUi();
 	const body = element('decode-window-rows');
 	if (!body) return;
 	const spots = ft8Spots();
-	body.textContent = '';
+	const presentation = `${utcTime}:${getLang()}`, key = `${selectedChannel}:${ft8SortCol}:${ft8FilterRe}:${presentation}`;
+	const previous = ft8Tables.get(body);
+	// Decoder heartbeats update progress, not the retained message table.
+	if (previous?.spots === spots && previous.key === key) return;
+	const rows = previous?.presentation === presentation ? previous.rows : new Map<Ft8Spot, HTMLTableRowElement>();
+	ft8Tables.set(body, { spots, key, presentation, rows });
 	const shown = ft8FilterRe
 		? spots.filter((spot) => ft8FilterRe!.test(spot.text))
 		: spots.slice();
@@ -487,12 +493,19 @@ function renderFt8Rows(): void {
 		cell.className = 'ft8-empty';
 		cell.textContent = t('ft8_waiting');
 		row.appendChild(cell);
-		body.appendChild(row);
+		body.replaceChildren(row); rows.clear();
 		return;
 	}
-	for (const spot of shown.slice(0, MAX_ROWS)) {
-		body.appendChild(rowFor(spot, ft8GeoTexts(spot.text).country, ft8GeoTexts(spot.text).location));
+	const visible = shown.slice(0, MAX_ROWS), retained = new Set(visible);
+	for (const spot of rows.keys()) if (!retained.has(spot)) { rows.get(spot)!.remove(); rows.delete(spot); }
+	let cursor = body.firstChild;
+	for (const spot of visible) {
+		let row = rows.get(spot);
+		if (!row) { const geo = ft8GeoTexts(spot.text); row = rowFor(spot, geo.country, geo.location); rows.set(spot, row); }
+		if (row !== cursor) body.insertBefore(row, cursor);
+		cursor = row.nextSibling;
 	}
+	while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
 }
 
 function renderCwLines(): void {
@@ -1460,7 +1473,7 @@ function subscribeAll(fn: () => void): () => void {
 	const offDrm = subscribeDrm(fn);
 	const offSstv = subscribeSstv(fn);
 	const offRadiofax = subscribeRadiofax(fn);
-	const offGeneric = subscribeDecoderLog(fn);
+  const offGeneric = subscribeDecoderLog(channel => { if (channel === selectedChannel) fn(); });
 	return () => { offFt8(); offCw(); offDrm(); offSstv(); offRadiofax(); offGeneric(); };
 }
 
@@ -1470,6 +1483,7 @@ export function toggleDecodeWindow(): void {
 
 /** Hide an inactive receiver without discarding its logs, channel modes or visibility choice. */
 export function setDecodeActive(next: boolean): void {
+	if (active === next) return;
 	active = next;
 	if (!next) {
 		for (const channel of knownSdrChannelNumbers()) { amInfo[channel] = null; amMeters[channel] = null; }
@@ -1509,6 +1523,7 @@ export function setDecodeWindowAvailable(demod: string): void {
 export function setDecodeChannelMode(channel: DecodeChannel, demod: string): void {
 	const next = (DECODING_MODES as readonly string[]).includes(demod) || modeOutputs(demod).some(output => output !== 'audio') ? demod : null;
 	const previous = channelModes[channel];
+	if (previous === next) return;
 	if ((previous === 'drm' || previous === 'drmplus') && previous !== next) clearDrm(channel);
 	if (previous === 'am' && previous !== next) {
 		amInfo[channel] = null;

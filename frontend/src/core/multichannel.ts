@@ -44,6 +44,7 @@ export interface ReceiverState {
   audio_signature?: string;
   processing_state?: 'disabled'|'waiting'|'preparing'|'active'|'backlogged'|'retiring'|'failed';
   processing_fault?: {error:string;generation:number;receiver_uid:string;service_id:string}|null;
+  processing_statistics?: unknown;
   processing_runtime?: {state:string;processing_generation:string;oldest_input_wait_ns:number;input_held_bytes:number;input_held_media_ns:number;
     observed_receiver?: {nr_requested:string;nr_effective:string|null;nr_state:string;nr_reason?:string|null;protocol_waiting?:boolean;squelch?:{open:boolean;gain:number}|null;model_sessions?:unknown}|null;
     fault?: {error:string}|null}|null;
@@ -142,6 +143,7 @@ export interface ReceiverAdapter {
   subscribe(listener: (snapshot: ServiceSnapshot) => void): () => void;
   preflight(command: ConfigureCommand | SceneCommand): Impact;
   dispatch(command: ServiceCommand): Promise<CommandReply>;
+  diagnostics?(uid: ReceiverUid, signal: AbortSignal): Promise<ReceiverState | undefined>;
 }
 /** Browser-only state. Never serializes into receiver configuration or recording commands. */
 export interface MonitorRoute { enabled: boolean; gain: number; pan: number; solo: boolean }

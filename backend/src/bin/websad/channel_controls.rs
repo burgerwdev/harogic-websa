@@ -156,6 +156,9 @@ impl DevState {
     }
 
     pub(super) fn channel_status(&self) -> Value {
+        self.channel_status_detail(true)
+    }
+    pub(super) fn channel_status_detail(&self,diagnostics:bool) -> Value {
         let registry = self.stream_registry();
         let processing = self.processing_registry();
         let power = self.fresh_channel_power();
@@ -166,7 +169,8 @@ impl DevState {
             value["confirmed"]=multichannel::config_value(&config,None);
             value["reception"]=self.reception.snapshot(config.channel);
             value["processing_runtime"]=self.receiver_uid_for_slot(config.channel).and_then(|uid|
-                self.receiver_workers.as_ref().map(|workers|workers.runtime_status(config.channel,uid))).unwrap_or(Value::Null);
+                self.receiver_workers.as_ref().map(|workers|if diagnostics {workers.runtime_status(config.channel,uid)}
+                    else {workers.live_runtime_status(config.channel,uid)})).unwrap_or(Value::Null);
             value["control_receipts"]=self.receiver_uid_for_slot(config.channel).and_then(|uid|
                 self.receiver_workers.as_ref().map(|workers|workers.control_receipts(config.channel,uid))).unwrap_or_else(||json!([]));
             value["actual_iq_rate"] = entry.map_or(Value::Null, |entry| json!(entry.output_rate));

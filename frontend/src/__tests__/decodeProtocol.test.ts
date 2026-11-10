@@ -22,6 +22,37 @@ function amEvent(overrides: Record<string, unknown> = {}): DecodeEnvelope['event
     modulationPct: 42, inputDbFs: -26, rmsDbFs: -32, peakDbFs: -24, scope: [-1, 0, 1],
     ...overrides } as DecodeEnvelope['event'];
 }
+it('isolates sequence checks, acknowledgements and failures between shared decoded consumers', async () => {
+  vi.useFakeTimers();
+  const sockets: Socket[] = [];
+  class Socket {
+    binaryType = ''; onmessage: ((event: MessageEvent) => void) | null = null;
+    onopen: (() => void) | null = null; onclose: ((event: CloseEvent) => void) | null = null;
+    onerror: (() => void) | null = null; close = vi.fn(); send = vi.fn();
+    constructor() { sockets.push(this); }
+  }
+  vi.stubGlobal('WebSocket', Socket);
+  const { createDecodeIngress } = await import('../sdr/decodeIngress');
+  type Host = Parameters<typeof createDecodeIngress>[0];
+  const hosts: Host[] = [0, 1].map(() => ({ onmessage: null, postMessage: vi.fn() }));
+  const command = (index: number, type: string): void => hosts[index].onmessage!({ data: { type, url: `ws://localhost/ws/decode?channel=${index + 1}` } } as MessageEvent);
+  try {
+    hosts.forEach((host, i) => { createDecodeIngress(host); command(i, 'start'); });
+    for (let i = 0; i < 2; i++) sockets[i].onmessage!({ data: frame({ channel_id: 17 + i, event: { type: 'start', snapshotAck: true } }) } as MessageEvent);
+    command(0, 'ack'); expect(sockets[0].send).toHaveBeenCalledOnce(); expect(sockets[1].send).not.toHaveBeenCalled();
+    command(1, 'ack');
+    sockets[0].onmessage!({ data: new ArrayBuffer(0) } as MessageEvent);
+    expect(sockets[0].close).toHaveBeenCalledOnce(); expect(sockets[1].close).not.toHaveBeenCalled();
+    sockets[1].onmessage!({ data: frame({ channel_id: 18, seq: 1, event: { type: 'cw', text: 'CONTINUES' } }) } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(100);
+    const posted = vi.mocked(hosts[1].postMessage).mock.calls.map(([message]) => message as { type: string; envelopes?: DecodeEnvelope[] });
+    expect(posted.some(message => message.type === 'error')).toBe(false);
+    expect(posted.at(-1)?.envelopes?.[0].event.text).toBe('CONTINUES');
+  } finally {
+    hosts.forEach((_host, i) => command(i, 'dispose'));
+    vi.unstubAllGlobals(); vi.useRealTimers();
+  }
+});
 describe('native decoded stream boundaries', () => {
   it('accepts a processing end and the successor FT8 stream without failing reception', () => {
     clearFt8Spots(1);
@@ -743,6 +774,7 @@ describe('native decoded stream boundaries', () => {
     } finally { vi.unstubAllGlobals(); }
   });
   it('keeps wire ACK enabled after the initial advertisement even if a later start omits it', async () => {
+    vi.useFakeTimers();
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null, postMessage: () => {} };
     class Socket {
       static current: Socket;
@@ -765,12 +797,13 @@ describe('native decoded stream boundaries', () => {
       socket.onmessage!({ data: frame({ channel_id: 18 }) });
       host.onmessage!({ data: { type: 'ack' } });
       socket.onmessage!({ data: frame({ channel_id: 18, seq: 1, event: { type: 'cw' } }) });
+      await vi.advanceTimersByTimeAsync(100);
       host.onmessage!({ data: { type: 'ack' } });
       expect(socket.sent.slice(1)).toEqual([
         { type: 'ack', channel: 1, channel_id: 18, epoch: 9, seq: 0 },
         { type: 'ack', channel: 1, channel_id: 18, epoch: 9, seq: 1 },
       ]);
-    } finally { vi.unstubAllGlobals(); }
+    } finally { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); }
   });
   it('rejects a non-boolean snapshotAck and accepts an explicit false without enabling the wire ACK', () => {
     const stream = new DecodeSequence();
@@ -780,6 +813,7 @@ describe('native decoded stream boundaries', () => {
   });
   it('applies a retained 20 MiB radiofax snapshot with bounded outstanding transport credit', async () => {
     vi.resetModules();
+    vi.useFakeTimers();
     // Reset stream/store ownership to model a fresh browser before loading the worker host.
     const stream = await import('../sdr/iqStream');
     const store = await import('../sdr/radiofaxLog');
@@ -806,9 +840,10 @@ describe('native decoded stream boundaries', () => {
       await import('../sdr/decodeWorker');
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
       const socket = Socket.current;
-      const apply = (packet: ArrayBuffer, seq: number): void => {
+      const apply = async (packet: ArrayBuffer, seq: number): Promise<void> => {
         expect(packet.byteLength).toBeLessThan(2 * 1024 * 1024);
         socket.onmessage!({ data: packet });
+        await vi.advanceTimersByTimeAsync(100);
         expect(socket.applied).toBe(seq === 0 ? null : seq - 1);
         const delivered = messages.pop()!;
         expect(delivered.type).toBe('frames');
@@ -816,14 +851,14 @@ describe('native decoded stream boundaries', () => {
         host.onmessage!({ data: { type: 'ack' } });
         expect(socket.applied).toBe(seq);
       };
-      apply(frame({ mode: 'radiofax', event: { type: 'start', snapshotAck: true } }), 0);
+      await apply(frame({ mode: 'radiofax', event: { type: 'start', snapshotAck: true } }), 0);
       const pixels = btoa(String.fromCharCode(81).repeat(1810 * 64));
       let seq = 0;
       for (let segmentIndex = 0; segmentIndex < 5; segmentIndex++) {
         const lines = segmentIndex === 4 ? 1986 : 2400;
         for (let row = 0; row < lines; row += 64) {
           const rows = Math.min(64, lines - row);
-          apply(frame({ mode: 'radiofax', seq: ++seq, event: { type: 'radiofax-image', width: 1810, row, rows,
+          await apply(frame({ mode: 'radiofax', seq: ++seq, event: { type: 'radiofax-image', width: 1810, row, rows,
             gray: rows === 64 ? pixels : btoa(String.fromCharCode(81).repeat(1810 * rows)), revision: 1,
             meta: { serial: String(segmentIndex), epoch: 'paper', hz: 9_110_000, ioc: 576, lpm: 120,
               lines: row + rows, complete: false, partial: false, segmentIndex, transmissionId: '1',
@@ -836,9 +871,10 @@ describe('native decoded stream boundaries', () => {
       expect(page.lines).toBe(11586);
       expect(page.segments.reduce((bytes, segment) => bytes + segment.picture.gray.length, 0)).toBe(20_970_660);
       expect(store.radiofaxStatus().evicted).toBe(0);
-    } finally { vi.unstubAllGlobals(); }
+    } finally { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); }
   }, 20_000);
   it('drains every queued decoded event in FIFO batches without waiting one round trip per event', async () => {
+    vi.useFakeTimers();
     const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
       postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message) };
@@ -860,6 +896,8 @@ describe('native decoded stream boundaries', () => {
         (receive! as (event: { data: ArrayBuffer }) => void)({ data: frame({ seq, event: { type: 'cw', text: String(seq) } }) });
       }
       host.onmessage!({ data: { type: 'ack' } });
+      expect(messages).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(100);
       expect(messages.map((message) => message.envelopes?.map((event) => event.seq))).toEqual([[0], Array.from({ length: 20 }, (_, index) => index + 1)]);
       expect(messages[1].envelopes?.map((event) => event.event.text)).toEqual(Array.from({ length: 20 }, (_, index) => String(index + 1)));
       // The twenty unacknowledged events plus twelve queued events fill the
@@ -870,6 +908,6 @@ describe('native decoded stream boundaries', () => {
       expect(messages).toHaveLength(2);
       (receive! as (event: { data: ArrayBuffer }) => void)({ data: frame({ seq: 33, event: { type: 'cw', text: '33' } }) });
       expect(messages[2]).toEqual({ type: 'error', message: 'Slow decoded-output consumer: queue exceeded' });
-    } finally { vi.unstubAllGlobals(); }
+    } finally { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); }
   });
 });

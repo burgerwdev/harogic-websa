@@ -294,6 +294,7 @@ fn run(
     output: SyncSender<Output>,
     shared: Arc<Shared>,
 ) -> Execution {
+    websa_channelizer::capture_scheduling::normal();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         'batches: while let Ok(batch) = input.recv() {
             for mut work in batch {
@@ -607,7 +608,7 @@ impl FineWorker {
         }
         Ok(())
     }
-    pub fn submit(&mut self, packet: PfbOutput, frames: &mut IqFrames) -> Result<(), String> {
+    pub fn submit(&mut self, packet: &PfbOutput, frames: &mut IqFrames) -> Result<(), String> {
         self.state
             .bank
             .accept_shared(&packet)
@@ -961,9 +962,9 @@ mod tests {
         let mut worker = FineWorker::start(b.fine.take().unwrap()).unwrap();
         let (mut expected, mut actual) = (Vec::new(), Vec::new());
         for seq in 0..40 {
-            expected.extend(serial.deliver(packet(&serial, seq)).unwrap());
+            expected.extend(serial.deliver(&packet(&serial, seq)).unwrap());
             worker
-                .submit(packet(&worker.state, seq), &mut actual)
+                .submit(&packet(&worker.state, seq), &mut actual)
                 .unwrap();
             // Pace by completion, not a guessed machine-specific sleep.
             for slot in 1..=MAX_CHANNELS as u32 {
@@ -1061,7 +1062,7 @@ mod tests {
         let release = Release(gate.clone());
         let mut frames = Vec::new();
         worker
-            .submit(packet(&worker.state, 0), &mut frames)
+            .submit(&packet(&worker.state, 0), &mut frames)
             .unwrap();
         for lane in worker.lanes.values_mut() {
             flush_lane(lane);
@@ -1088,7 +1089,7 @@ mod tests {
         assert!(worker.lanes[&2].shared.stats.lock().fault.is_none());
         drop(release);
         wait_count(&mut worker, 2, 1, &mut frames);
-        worker.submit(packet(&worker.state, 1), &mut frames).unwrap();
+        worker.submit(&packet(&worker.state, 1), &mut frames).unwrap();
         for lane in worker.lanes.values_mut() { flush_lane(lane); }
         wait_count(&mut worker, 2, 2, &mut frames);
         assert!(worker.lanes[&2].shared.stats.lock().fault.is_none());
@@ -1102,7 +1103,7 @@ mod tests {
         let gate = Gate::new();
         *worker.lanes[&1].shared.gate.lock() = Some(gate.clone());
         let mut frames = Vec::new();
-        worker.submit(packet(&worker.state, 0), &mut frames).unwrap();
+        worker.submit(&packet(&worker.state, 0), &mut frames).unwrap();
         flush_lane(worker.lanes.get_mut(&1).unwrap());
         gate.entered();
         let shared = worker.lanes[&1].shared.clone();
@@ -1119,7 +1120,7 @@ mod tests {
         assert!(stats.fault.is_none());
         drop(stats);
         worker.sync_lanes().unwrap();
-        worker.submit(packet(&worker.state, 1), &mut frames).unwrap();
+        worker.submit(&packet(&worker.state, 1), &mut frames).unwrap();
         worker.finish(&mut frames).unwrap();
     }
     #[test]
@@ -1278,7 +1279,7 @@ mod tests {
         let release = Release(gate.clone());
         let mut frames = Vec::new();
         worker
-            .submit(packet(&worker.state, 0), &mut frames)
+            .submit(&packet(&worker.state, 0), &mut frames)
             .unwrap();
         for lane in worker.lanes.values_mut() {
             flush_lane(lane);
@@ -1289,7 +1290,7 @@ mod tests {
         let mut rejected = None;
         for seq in 1..=INPUT_JOBS as u64 + 1 {
             worker
-                .submit(packet(&worker.state, seq), &mut frames)
+                .submit(&packet(&worker.state, seq), &mut frames)
                 .unwrap();
             wait_count(&mut worker, 1, seq + 1, &mut frames);
             if worker.state.faults.contains_key(&2) { rejected = Some(seq); break; }

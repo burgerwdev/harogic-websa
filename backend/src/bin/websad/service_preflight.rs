@@ -165,7 +165,7 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
                 }
             }
         }
-        // Live channel changes retain old selected bins and can add one new bin.
+        // Admission also allows a new target bin before the drained selection is replaced.
         let recovery = state.receiver_failure.is_some()
             && channels && ["mode", "demod"].iter().any(|field| data.get(*field).is_some());
         let restart = starting || capture_restart || recovery || data["recover"]==true;
@@ -582,18 +582,19 @@ mod tests {
     }
 
     #[tokio::test(flavor="current_thread")]
-    async fn relevel_after_retained_bins_and_mode_change_uses_fresh_calibrated_geometry() {
+    async fn relevel_after_local_retunes_and_mode_change_uses_fresh_calibrated_geometry() {
         let _guard=hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e|e.into_inner());
         let app=app();
         command(&app,"SET_SDR_CHANNEL",json!({"channel":1,"freq":100e6+4.0*BIN_SPACING})).await.unwrap();
         command(&app,"SET_SDR_CHANNEL",json!({"channel":1,"mode":"nfm","if_bw":12000.0})).await.unwrap();
         let retained=app.state.lock().unwrap().ddc.as_ref().unwrap().0.stream.bins().len();
+        assert_eq!(retained,1,"local tuning must already release unused coarse bins");
         for (cmd,data) in [("SET_REF",json!({"ref":-50.0})),("SET_AMP",json!({"atten":10})),
             ("SET_REFCK",json!({"mode":"external"})),("SET_REFCKOUT",json!({"on":true}))] {
             command(&app,cmd,data).await.unwrap();
             let mut state=app.state.lock().unwrap();
             let ddc=&mut state.ddc.as_mut().unwrap().0;
-            assert!(ddc.stream.bins().len()<retained);
+            assert_eq!(ddc.stream.bins().len(),retained);
             assert_eq!(ddc.service_configs.as_ref().unwrap()[0].mode,"nfm");
             ddc.packet().unwrap();ddc.packet().unwrap();
             assert_eq!(ddc.stamp_gaps,0);

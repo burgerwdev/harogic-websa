@@ -1,4 +1,5 @@
 import { liveStatus, receiverLive } from './receiverLive';
+import { ReceiverDiagnostics } from './receiverDiagnostics';
 import { copyDetails, copyDetailsButton } from './copyDetails';
 import { processingLabel, receiverRuntime } from './receiverRuntime';
 import { analogEnhancementsApplicable } from '../core/receiverControls';
@@ -28,6 +29,8 @@ import { createWorkbenchOverview } from './workbenchOverview';
 import './workbenchOverview.css';
 import { getUiScale } from '../core/uiScale';
 import { matchesCurrentFrequency, workbenchChannels, type WorkbenchCurrent } from './workbenchCurrent';
+import { mountWorkbenchClear } from './workbenchClear';
+import { setDomAttribute, setDomProperty } from './domState';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -86,6 +89,7 @@ interface Draft {
   settings?: Pick<ReceiverConfig, 'purpose' | 'baseband' | 'processors' | 'continuity'>;
 }
 interface Pane {
+  diagnostics?: ReceiverDiagnostics;
   window: FloatingWindow;
   patch?: ReturnType<typeof createWorkbenchPatcher>;
   title(): string;
@@ -122,6 +126,8 @@ interface NativeViews extends ChannelStripReadouts {
   status(uid: string): string; retry(uid: string): void;
 }
 export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, native?: NativeViews, selectedFrequency?: () => number | null, current?: WorkbenchCurrent): { dispose(): void; recall(reset?: boolean): void; showOverview(): void; showChannels(): void } {
+  if (current) session.setCurrentReceiverSource(current.receiverUid);
+  const clearChannels = mountWorkbenchClear(session, () => current?.receiverUid() ?? null);
   const fixture = session.snapshot.transport === 'fixture';
   const captureSummary = (): string => {
     const c = session.snapshot.capture;
@@ -211,6 +217,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     if (pane.disposed) return;
     if (overviewPane === pane) { overview.detach(); overviewPane = undefined; }
     pane.disposed = true; pane.events.abort(); clearTimeout(pane.gestureTimer); clearTimeout(pane.refreshTimer);
+    pane.diagnostics?.dispose();
     pane.unwireFrequency?.(); pane.unwireFormats?.(); pane.unwireGesture?.(); pane.strip?.dispose();
     pane.create?.dispose(); pane.inlineDecode?.view.dispose(); pane.presets?.dispose(); pane.decode?.dispose(); pane.window.dispose();
   };
@@ -244,6 +251,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     available, recording: stripRecording, readouts: native, current,
     selectedFrequency: selectedFrequency ?? (() => receiver(session.selected)?.confirmed.baseband.frequency_hz ?? null),
     detached: uid => [...panes.values()].some(p => p.kind === 'detail' && !p.overviewMode && !p.docked && !p.window.root.hidden && p.binding.type === 'fixed' && p.binding.receiver_uid === uid),
+    clearChannels: doc => clearChannels.open(doc),
     dockAll: () => {
       for (const p of panes.values()) if (p.kind === 'detail' && !p.overviewMode) { rememberDraft(p); p.docked = true; p.window.hide(); }
       overview.update(); saveViews();
@@ -421,7 +429,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     let content = '';
     const expanded = (key: string): string => pane.expanded.has(key) ? 'open' : '';
     if (!fixture && pane.tab === 'recording' && !available('record_start')) pane.tab = 'receive';
-    if (pane.tab === 'receive') content = `<section class="mc-live-section" data-key="reception-${esc(r.receiver_uid)}">${receiverLive(r,session.snapshot.recordings,session.recovering(r.receiver_uid)||!!edit?.pending,pane.expanded.has('live-diagnostics'),session.interruptionCleared(r.receiver_uid))}</section><form id="${esc(formId)}" data-key="config-${ownerKey}-receive" data-config data-revision="${r.revision}">
+    if (pane.tab === 'receive') content = `<section class="mc-live-section" data-key="reception-${esc(r.receiver_uid)}">${receiverLive(r,session.snapshot.recordings,session.recovering(r.receiver_uid)||!!edit?.pending,pane.expanded.has('live-diagnostics'),session.interruptionCleared(r.receiver_uid),pane.diagnostics?.value)}</section><form id="${esc(formId)}" data-key="config-${ownerKey}-receive" data-config data-revision="${r.revision}">
       <div class="mc-tuning-grid"><label class="mc-frequency-field"><span>${l('Receive frequency', '接收频率')}</span>${frequencyInput(c.baseband.frequency_hz)}</label>
       <label class="mc-mode-field"><span>${l('Demodulate / decode', '解调 / 解码')}</span>${fixture ? `<select name="purpose">${Object.entries(labels()).map(([v, label]) => `<option value="${v}" ${c.purpose === v ? 'selected' : ''}>${label}</option>`).join('')}</select>` : `<select name="mode" title="${l('Choose a mode; bandwidth and rate are adjusted automatically', '选择模式后自动匹配带宽与速率')}">${modeOptions(c)}</select>`}</label></div>
       ${!fixture ? audioSettings(c, receiverHasAudio(session.snapshot, c)) + receiverControlFields(c.processors[0], c.processors[0]?.mode) : ''}
@@ -457,7 +465,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     return `<header data-key="channel-heading-${ownerKey}" class="mc-channel-heading" style="--channel:${esc(c.color)}"><div class="mc-channel-title"><span class="mc-channel-avatar">${r.display_number.toString().padStart(2, '0')}</span><div><p class="mc-eyebrow">${l('Channel name', '信道名称')}</p><label class="mc-name-editor"><input data-channel-name name="name" form="${esc(formId)}" value="${esc(channelName(r))}" ${isCurrent(r.receiver_uid) ? 'readonly' : ''} maxlength="128" required aria-label="${l('Channel name', '信道名称')}" title="${l('Edit the channel name; press Enter or Apply settings to save', '修改信道名称，按 Enter 或应用设置保存')}" ${session.retiring(r.receiver_uid) ? 'disabled' : ''}>${icon('edit')}</label></div></div><div data-key="channel-actions" class="mc-channel-actions"><button type="button" data-action="toggle-receiver" role="switch" aria-checked="${c.enabled}" title="${c.enabled ? l('Stop receiving this channel', '停止此信道的接收') : l('Start receiving this channel', '开始此信道的接收')}" ${edit?.pending || session.retiring(r.receiver_uid) ? 'disabled' : ''}><span>${receiverLabel(r.state)}</span><span class="mc-receiver-switch" aria-hidden="true"></span></button>${managementButtons(r.receiver_uid)}</div></header>
       ${pane.tab === 'output' ? `<details data-section="clock" ${expanded('clock')}><summary>${l('Stream details', '数据流详情')}</summary>${copyDetailsButton('copy-stream')}<p class="mc-clock">${l('Revision', '修订')} ${r.revision}<br>${esc(r.stream ? `${r.stream.source_id} / epoch ${r.stream.epoch} / channel ${r.stream.channel_id}` : l('No continuous stream', '当前无连续流'))}<br>${r.clock?.actual_rate_hz ?? '—'} S/s</p></details>` : ''}
       ${r.fault && pane.tab!=='receive' ? `<p data-key="receiver-fault" class="mc-error" role="alert">${esc(r.fault.scope)}: ${esc(r.fault.message)}</p>` : ''}
-      ${pane.tab!=='receive'?receiverRuntime(r,pane.expanded.has('processing-diagnostics')):''}
+      ${pane.tab!=='receive'?receiverRuntime(r,pane.expanded.has('processing-diagnostics'),pane.diagnostics?.value):''}
       ${native?.status(r.receiver_uid) ? `<p data-key="consumer-fault" class="mc-error" role="alert">${esc(native.status(r.receiver_uid))} ${button('retry-stream', l('Retry local consumer', '重试本地消费'))}</p>` : ''}
       ${edit?.pending && pane.tab !== 'receive' ? `<p data-key="pending" role="status">${l('Applying settings…', '正在应用设置…')}</p>` : ''}
       ${edit?.fault ? `<p data-key="edit-fault" class="mc-error" role="alert">${esc(edit.fault.code)}: ${esc(faultText(edit.fault, edit.attempted))} ${button('retry', l('Retry', '重试'))}</p>` : ''}
@@ -470,7 +478,17 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         ${playback?.enabled && (playback.connectionState === 'reconnecting' || playback.contextState === 'suspended') ? `<small role="status" data-playback-state>${playback.connectionState === 'reconnecting' ? l('Reconnecting…', '重连中…') : l('Enable speakers', '启用扬声器')}${playback.contextState === 'suspended' ? button('resume-audio', l('Enable', '启用')) : ''}</small>` : ''}</fieldset>` : ''}
       ${content}`;
   };
+  function syncDiagnostics(pane: Pane): void {
+    if (!session.adapter.diagnostics) return;
+    const active = !disposed && !pane.disposed && !pane.overviewMode && pane.kind !== 'results'
+      && !pane.window.root.hidden && !pane.window.body.hidden && !pane.window.root.ownerDocument.hidden
+      && pane.expanded.has(pane.tab === 'receive' ? 'live-diagnostics' : 'processing-diagnostics');
+    if (!active && !pane.diagnostics) return;
+    pane.diagnostics ??= new ReceiverDiagnostics((uid, signal) => session.adapter.diagnostics!(uid, signal), () => renderPane(pane));
+    pane.diagnostics.update(receiver(session.resolve(pane.binding)), `${session.snapshot.service_id}:${session.lifecycleVersion}`, active);
+  }
   function renderPane(pane: Pane): void {
+    syncDiagnostics(pane);
     if (disposed || pane.disposed || pane.interacting) return;
     const uid = session.resolve(pane.binding), r = receiver(uid), body = pane.window.body;
     if (pane.service !== session.snapshot.service_id || pane.lifecycleVersion !== session.lifecycleVersion) {
@@ -480,10 +498,11 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     if (pane.kind === 'detail' && pane.binding.type === 'fixed') pane.window.setDockHandler(pane.overviewMode ? undefined : () => dockChannel(pane));
     body.classList.toggle('mc-cards-body', !!pane.overviewMode);
     const toggle = pane.window.root.querySelector<HTMLButtonElement>('[data-overview-toggle]')!;
-    toggle.innerHTML = `${icon('channels')}<span>${l('Overview', '概览')}</span>`;
-    toggle.setAttribute('aria-pressed', String(!!pane.overviewMode));
-    toggle.title = pane.overviewMode ? pane.kind === 'overview' ? l('Return to channel workbench', '切换回信道工作台') : l('Return to channel view', '切换回信道视图') : l('Show all channels in this window', '将此窗口变为全部信道概览');
-    toggle.setAttribute('aria-label', toggle.title);
+    const toggleContent = `${icon('channels')}<span>${l('Overview', '概览')}</span>`;
+    if (toggle.dataset.language !== getLang()) { toggle.innerHTML = toggleContent; toggle.dataset.language = getLang(); }
+    setDomAttribute(toggle, 'aria-pressed', String(!!pane.overviewMode));
+    setDomProperty(toggle, 'title', pane.overviewMode ? pane.kind === 'overview' ? l('Return to channel workbench', '切换回信道工作台') : l('Return to channel view', '切换回信道视图') : l('Show all channels in this window', '将此窗口变为全部信道概览'));
+    setDomAttribute(toggle, 'aria-label', toggle.title);
     if (pane.window.root.getAttribute('aria-label') !== pane.title()) pane.window.sync();
     if (pane.overviewMode) {
       pane.renderedUid = uid; pane.renderedTab = 'overview';
@@ -528,7 +547,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       if (channels.showCurrent) rows.unshift(channels.current!);
       const capture = session.snapshot.capture;
 
-      patch(`<header data-key="workspace-head" class="mc-workspace-head"><div><h1>${l('Channel workbench', '信道工作台')}<span class="mc-workspace-count">${channels.current ? `${channels.saved.length} ${l('saved', '已保存')} · ` : ''}${all.length} / ${session.snapshot.capabilities.max_channels}</span></h1></div><div class="mc-workspace-actions">${recordingCapacity()}${fixture || capture.source_kind === 'fixture' ? `<span class="mc-source-badge">${fixture ? l('Demo', '演示模式') : l('Synthetic source', '模拟源')}</span>` : ''}${button('follow-results', l('Results window', '结果窗口'), `class="mc-quiet" aria-label="${l('Results window', '结果窗口')}"`)}${button('recording-files', l('Recording files', '录制文件'), 'class="mc-quiet"', l('Find, play, download, rename or delete recordings', '查找、试听、下载、重命名或删除录制文件'))}${button('create', l('Add channel', '添加信道'), `class="mc-primary" ${all.length >= session.snapshot.capabilities.max_channels || !available('create') ? 'disabled' : ''}`, all.length >= session.snapshot.capabilities.max_channels ? l('Channel limit reached; delete an unused channel to add one', '信道路数已满，可删除不需要的信道后再添加') : workbenchTip('create'))}</div></header>
+      patch(`<header data-key="workspace-head" class="mc-workspace-head"><div><h1>${l('Channel workbench', '信道工作台')}<span class="mc-workspace-count">${channels.current ? `${channels.saved.length} ${l('saved', '已保存')} · ` : ''}${all.length} / ${session.snapshot.capabilities.max_channels}</span></h1></div><div class="mc-workspace-actions">${recordingCapacity()}${fixture || capture.source_kind === 'fixture' ? `<span class="mc-source-badge">${fixture ? l('Demo', '演示模式') : l('Synthetic source', '模拟源')}</span>` : ''}${button('follow-results', l('Results window', '结果窗口'), `class="mc-quiet" aria-label="${l('Results window', '结果窗口')}"`)}${button('recording-files', l('Recording files', '录制文件'), 'class="mc-quiet"', l('Find, play, download, rename or delete recordings', '查找、试听、下载、重命名或删除录制文件'))}${button('clear-channels', l('Clear all channels', '清除所有信道'), `class="mc-quiet" ${!all.length || session.clearingChannels || !available('retire') ? 'disabled' : ''}`, l('Delete saved channels and stop Current; confirmation required', '删除已保存信道并停止 Current，操作前需确认'))}${button('create', l('Add channel', '添加信道'), `class="mc-primary" ${all.length >= session.snapshot.capabilities.max_channels || !available('create') ? 'disabled' : ''}`, all.length >= session.snapshot.capabilities.max_channels ? l('Channel limit reached; delete an unused channel to add one', '信道路数已满，可删除不需要的信道后再添加') : workbenchTip('create'))}</div></header>
       <details data-key="capture-bar" class="mc-capture-bar" data-section="capture" ${pane.expanded.has('capture') ? 'open' : ''}><summary><span><i class="mc-state-dot" data-state="${capture.state}"></i>${l('Shared capture', '共享采集')}<strong>${frequencyLabel(capture.center_hz)}</strong><span class="mc-capture-band">${capture.usable_bandwidth_hz === null ? l('Unknown bandwidth', '带宽未知') : `${capture.usable_bandwidth_hz / 1000} kHz`}</span></span><span>${all.filter(r => r.state === 'running').length} ${l('receiving', '路接收中')}</span></summary><p data-capture-status class="mc-clock">${esc(captureSummary())}</p>${fixture ? `<p class="mc-notice">${l('Simulated data. No actual reception, audio or saved files.', '当前为模拟数据，不进行实际接收、播放或文件写入。')}</p>` : ''}</details>
       ${session.fault ? `<p data-key="session-fault" class="mc-error" role="alert">${esc(session.fault.code)}: ${esc(faultText(session.fault))} ${button('dismiss-fault', l('Dismiss', '关闭'))}</p>` : ''}
       <div data-key="content" class="mc-content"><aside data-key="sidebar" class="mc-sidebar" aria-label="${l('Channels', '信道列表')}"><div class="mc-sidebar-head"><h2>${l('Channels', '我的信道')}</h2><span>${channels.saved.length}</span></div><label data-key="search" class="mc-search">${icon('search')}<input data-search type="search" aria-label="${l('Find channel by name, frequency or mode', '按名称、频率或模式查找信道')}" placeholder="${l('Name, frequency or mode', '名称、频率或模式')}" value="${esc(search)}"></label>
@@ -604,6 +623,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         if (pane.kind === 'detail' && pane.window.root.hidden) pane.docked = true;
         syncOverviewButton();
         overview.update(); saveViews();
+        syncDiagnostics(pane);
       });
     const events = new AbortController();
     const pane: Pane = { kind, binding, window: surface, title, tab: 'receive', expanded: new Set(), drafts: new Map(),
@@ -702,6 +722,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
         pane.create ??= mountWorkbenchCreate(session, surface.root, added => { pane.tab = 'receive'; search = ''; channelFilter = 'all'; session.select(added); });
         pane.create.open();
       }
+      else if (action === 'clear-channels') clearChannels.open(surface.root.ownerDocument);
       else if (action === 'detail') { session.select(uid); open('detail', { type: 'fixed', receiver_uid: uid }); }
       else if (action === 'results') open('results', { type: 'fixed', receiver_uid: uid });
       else if (action === 'follow-results') open('results');
@@ -971,11 +992,12 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       }
     }
     if (removed) saveViews();
+    if (host.ownerDocument.hidden) return;
     for (const [action, text] of Object.entries({ workbench: l('Channel workbench', '信道工作台'), overview: l('All channels overview', '全部信道概览'), recall: l('Recall all windows', '召回全部窗口'), reset: l('Reset layout', '重置布局'), 'quick-listen': l('＋ Listen to frequency', '＋ 监听频点') })) {
       const control = host.querySelector<HTMLElement>(`[data-action="${action}"]`); if (control) { control.textContent = text; control.title = workbenchTip(action); }
     }
-    host.querySelector<HTMLElement>('[data-service-error]')!.textContent = session.fault ? `${session.fault.scope} · ${session.fault.code}: ${session.fault.message}` : '';
-    host.querySelector<HTMLElement>('[data-capture]')!.textContent = captureSummary();
+    setDomProperty(host.querySelector<HTMLElement>('[data-service-error]')!, 'textContent', session.fault ? `${session.fault.scope} · ${session.fault.code}: ${session.fault.message}` : '');
+    setDomProperty(host.querySelector<HTMLElement>('[data-capture]')!, 'textContent', captureSummary());
     const markers = host.querySelector<HTMLElement>('[data-markers]')!;
     patchWorkbench(markers, session.snapshot.receivers.filter(r => r.confirmed.enabled && session.snapshot.capture.usable_bandwidth_hz !== null).map(r =>
       `<button type="button" data-key="${esc(r.receiver_uid)}" title="${l('Select this channel for editing', '选中此信道以编辑设置')}" data-marker-uid="${esc(r.receiver_uid)}" style="left:${50 + (r.confirmed.baseband.frequency_hz - session.snapshot.capture.center_hz) / session.snapshot.capture.usable_bandwidth_hz! * 100}%;top:${r.display_number % 2 * 28 + 8}px;border-color:${esc(r.confirmed.color)}">${esc(`${channelLabel(r)}${session.route(r.receiver_uid).enabled ? ` · ${l('Listen', '监听')}` : ''}`)}</button>`).join(''));
@@ -1068,12 +1090,14 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     }, 50);
   });
   let lastCurrent = `${current?.receiverUid()}:${selectedFrequency?.()}`;
+  const diagnosticsTimer = setInterval(() => panes.forEach(syncDiagnostics), 1000);
   const levelTimer = setInterval(() => {
     const nextCurrent = `${current?.receiverUid()}:${selectedFrequency?.()}`;
     if (nextCurrent !== lastCurrent) { lastCurrent = nextCurrent; render(); }
     overview.paint();
     for (const pane of panes.values()) if (pane.kind !== 'overview' && pane.window.body.hidden && !pane.window.root.hidden && !pane.window.root.ownerDocument.hidden) pane.strip?.updateMeter();
   }, 50);
+  host.ownerDocument.addEventListener('visibilitychange', render, { signal: events.signal });
   const unsubscribe = session.subscribe(render); const stopLang = onLangChange(() => { panes.forEach(p => p.window.sync()); render(); }); render();
   return { recall, showChannels, showOverview: showWorkbench, dispose: () => {
     if (disposed) return;
@@ -1081,8 +1105,8 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     document.removeEventListener('websa:preset-applied', resetDrafts);
     document.removeEventListener('websa:recording-default-reset', resetRecordingDefault);
     document.removeEventListener('websa:sdr-audio-gesture', audioState);
-    unsubscribeResults(); clearTimeout(resultsTimer); clearInterval(levelTimer); unsubscribe(); stopLang();
-    quickListen.dispose(); library.dispose(); archives.dispose(); audioArchives?.dispose();
+    unsubscribeResults(); clearTimeout(resultsTimer); clearInterval(levelTimer); clearInterval(diagnosticsTimer); unsubscribe(); stopLang();
+    clearChannels.dispose(); quickListen.dispose(); library.dispose(); archives.dispose(); audioArchives?.dispose();
     overview.dispose();
     panes.forEach(disposePane); panes.clear();
   } };

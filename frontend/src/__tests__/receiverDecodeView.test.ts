@@ -236,7 +236,9 @@ describe('receiver Decode interaction and live results', () => {
     expect(host.querySelector('tbody')?.textContent).toContain('OTHER CHANNEL'); view.dispose();
   });
   it('keeps the live raster canvas and its actual pixels through row updates, polling, UTC and language changes', () => {
-    const draw = vi.fn(), context = { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: draw };
+    const painted = new Uint8ClampedArray(16);
+    const draw = vi.fn((image: { data: Uint8ClampedArray }, _x: number, y: number) => painted.set(image.data, y * 8));
+    const context = { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: draw };
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
     const view = mountReceiverDecodeView(host);
     const image = (row: number, rgb: number[]) => addDecoderRaster(uid, 'sstv', '1:1', { id: 'picture', label: 'Martin M1', w: 2, h: 2,
@@ -245,7 +247,7 @@ describe('receiver Decode interaction and live results', () => {
     const canvas = host.querySelector('canvas')!; expect(canvas.width).toBe(2);
     image(1, [0, 0, 255, 255, 255, 255]); view.update(decoderLog(uid).entries, uid, 'sstv', 0, '');
     expect(host.querySelector('canvas')).toBe(canvas);
-    expect([...draw.mock.calls.at(-1)![0].data]).toEqual([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]);
+    expect([...painted]).toEqual([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]);
     click('[data-decode-action=utc]'); setLang('zh'); view.update(decoderLog(uid).entries, uid, 'sstv', 0, '');
     expect(host.querySelector('canvas')).toBe(canvas); expect(canvas.isConnected).toBe(true);
     view.dispose(); setLang('en');

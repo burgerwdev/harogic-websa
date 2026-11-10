@@ -1,9 +1,9 @@
-//! Display-only long observations. Original IQ consumers and their clocks are untouched.
+//! Independent display observations. Acquisition never waits for FFT or a display consumer.
 use super::*;
 use std::time::Instant;
 use std::{
     ffi::{c_char, c_int, c_void, CString},
-    sync::mpsc::{self, TrySendError},
+    sync::mpsc,
     thread,
 };
 
@@ -227,13 +227,52 @@ impl Assembler {
     }
 }
 
+/// One pending observation and one completed frame. Replacing display work is
+/// intentional: IQ consumers retain every sample, displays need the newest view.
+#[derive(Default)]
+struct Mailbox {
+    job: Option<Job>,
+    result: Option<Result<(Meta, Pan), String>>,
+    stopped: bool,
+    replaced: u64,
+    skipped_frames: u64,
+}
+#[derive(Default)]
+struct DisplayQueue {
+    state: PLMutex<Mailbox>,
+    ready: parking_lot::Condvar,
+}
+impl DisplayQueue {
+    fn submit(&self, job: Job) -> Result<(), String> {
+        let mut state = self.state.lock();
+        if state.stopped { return Err("display FFT worker stopped".into()); }
+        state.replaced += u64::from(state.job.replace(job).is_some());
+        self.ready.notify_one();
+        Ok(())
+    }
+    fn next(&self) -> Option<Job> {
+        let mut state = self.state.lock();
+        while !state.stopped && state.job.is_none() { self.ready.wait(&mut state); }
+        if state.stopped { None } else { state.job.take() }
+    }
+    fn complete(&self, result: Result<(Meta, Pan), String>) {
+        let mut state = self.state.lock();
+        if result.is_err() { state.stopped = true; state.job = None; }
+        state.skipped_frames += u64::from(state.result.replace(result).is_some());
+    }
+    fn stop(&self) {
+        let mut state = self.state.lock();
+        state.stopped = true;
+        state.job = None;
+        self.ready.notify_one();
+    }
+}
 pub(super) struct Analyzer {
     pub size: usize,
     pub points: usize,
     pub rbw_ratio: f64,
     assembler: Assembler,
-    tx: Option<mpsc::SyncSender<Job>>,
-    rx: mpsc::Receiver<Result<(Meta, Pan), String>>,
+    queue: Arc<DisplayQueue>,
     worker: Option<thread::JoinHandle<()>>,
     pub dropped: u64,
     pub completed: u64,
@@ -241,7 +280,7 @@ pub(super) struct Analyzer {
 }
 impl Drop for Analyzer {
     fn drop(&mut self) {
-        self.tx.take();
+        self.queue.stop();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -249,17 +288,18 @@ impl Drop for Analyzer {
 }
 impl Analyzer {
     pub fn start(path: String, size: usize) -> Result<Self, String> {
-        if ![32768, 65536].contains(&size) {
-            return Err("display FFT size must be 0, 32768 or 65536".into());
+        if ![16240, 32768, 65536].contains(&size) {
+            return Err("display FFT size must be 16240, 32768 or 65536".into());
         }
-        let (tx, jobs) = mpsc::sync_channel::<Job>(1);
-        let (output, rx) = mpsc::sync_channel(1);
+        let queue = Arc::new(DisplayQueue::default());
+        let jobs = queue.clone();
         let (ready, init) = mpsc::sync_channel(1);
         let timing = Arc::new(PLMutex::new(Timing::default()));
         let times = timing.clone();
         let worker = thread::Builder::new()
             .name("sdr-display-fft".into())
             .spawn(move || {
+                websa_channelizer::capture_scheduling::normal();
                 let mut dsp = match Dsp::open(&path, size) {
                     Ok(dsp) => dsp,
                     Err(e) => {
@@ -292,6 +332,7 @@ impl Analyzer {
                     warning: 0,
                 };
                 let started = Instant::now();
+                let cpu_started = receiver_workers::cpu_now();
                 for _ in 0..8 {
                     match dsp.process(&job) {
                         Ok((_, power)) => {
@@ -310,8 +351,11 @@ impl Analyzer {
                         }
                     }
                 }
-                let mean = started.elapsed().as_secs_f64() / 8.0;
-                if mean > 0.010 {
+                let mean = cpu_started.zip(receiver_workers::cpu_now())
+                    .map_or_else(||started.elapsed().as_secs_f64(),|(start,end)|end.saturating_sub(start) as f64/1e9) / 8.0;
+                // Default analysis is always available. Optional tiers retain a
+                // processing-cost gate, excluding host scheduler contention.
+                if size != SDR_PACKET_SAMPLES && mean > 0.010 {
                     let _ = ready.send(Err(format!(
                         "display FFT too slow: {:.2} ms",
                         mean * 1000.0
@@ -321,7 +365,7 @@ impl Analyzer {
                 if ready.send(Ok((dsp.points, dsp.rbw))).is_err() {
                     return;
                 }
-                for job in jobs {
+                while let Some(job) = jobs.next() {
                     let start = Instant::now();
                     let result = dsp.process(&job).map(|(freq, power)| {
                         (
@@ -331,7 +375,7 @@ impl Analyzer {
                     });
                     times.lock().observe(start.elapsed());
                     let failed = result.is_err();
-                    let _ = output.try_send(result);
+                    jobs.complete(result);
                     if failed {
                         return;
                     }
@@ -344,8 +388,7 @@ impl Analyzer {
                 points,
                 rbw_ratio,
                 assembler: Assembler::default(),
-                tx: Some(tx),
-                rx,
+                queue,
                 worker: Some(worker),
                 dropped: 0,
                 completed: 0,
@@ -355,7 +398,10 @@ impl Analyzer {
                 let _ = worker.join();
                 Err(e)
             }
-            Err(_) => Err("display FFT initialization timed out; default retained".into()),
+            Err(_) => {
+                queue.stop();
+                Err("display FFT initialization timed out".into())
+            }
         }
     }
     pub fn push(
@@ -369,41 +415,31 @@ impl Analyzer {
         if !meta.scale.is_finite() || meta.scale <= 0.0 {
             return Err("display FFT calibration scale unavailable; using default".into());
         }
+        let result = self.queue.state.lock().result.take();
         let mut latest = None;
-        loop {
-            match self.rx.try_recv() {
-                Ok(Ok((axis, pan))) => {
-                    if axis == meta {
-                        self.completed += 1;
-                        latest = Some(pan);
-                    }
-                }
-                Ok(Err(e)) => return Err(e),
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err("display FFT worker stopped".into())
-                }
+        if let Some(result) = result {
+            let (axis, pan) = result?;
+            if axis == meta {
+                self.completed += 1;
+                latest = Some(pan);
             }
         }
         if let Some(job) = self
             .assembler
             .push(self.size, meta, seq, stamp, iq, warning)
         {
-            match self.tx.as_ref().unwrap().try_send(job) {
-                Ok(()) => (),
-                Err(TrySendError::Full(_)) => self.dropped += 1,
-                Err(TrySendError::Disconnected(_)) => {
-                    return Err("display FFT worker stopped".into())
-                }
-            }
+            self.queue.submit(job)?;
         }
+        self.dropped = self.queue.state.lock().replaced;
         Ok(latest)
     }
     pub fn status(&self, rate: f64) -> Value {
+        let skipped_frames = self.queue.state.lock().skipped_frames;
         json!({"size":if self.completed>0 {self.size}else{0},"requested_size":self.size,
         "state":if self.completed>0 {"active"}else{"warming"},"output_points":self.points,"window":"FlatTop",
         "bin_spacing_hz":rate/self.size as f64,"enbw_hz":rate*self.rbw_ratio,"observation_ms":self.size as f64/rate*1000.0,
         "max_fps":20.0f64.min(rate/self.size as f64),"completed":self.completed,"dropped":self.dropped,
+        "skipped_frames":skipped_frames,"queue_policy":"latest","independent":true,
         "continuity_resets":self.assembler.resets,
         "continuity":{"stamp":self.assembler.stamp_resets,"sequence":self.assembler.sequence_resets,
             "geometry":self.assembler.geometry_resets,"scale":self.assembler.scale_resets,
@@ -415,6 +451,37 @@ impl Analyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn job(seq: u64) -> Job {
+        Job { iq:vec![seq as i16;2], meta:Meta {epoch:1,generation:2,center:100e6,
+            rate:62_500_000.0,bandwidth:50e6,scale:1e-6},seq,warning:0 }
+    }
+    #[test]
+    fn slow_display_replaces_pending_work_without_waiting_for_processing() {
+        let queue = Arc::new(DisplayQueue::default());
+        let worker_queue = queue.clone();
+        let (started, entered) = mpsc::sync_channel(1);
+        let (release, resume) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let first = worker_queue.next().unwrap();
+            started.send(()).unwrap();
+            resume.recv().unwrap();
+            worker_queue.complete(Ok((first.meta,(vec![],vec![],0,first.meta.generation,first.seq))));
+            let latest = worker_queue.next().unwrap();
+            assert_eq!(latest.seq,100);
+            worker_queue.complete(Ok((latest.meta,(vec![],vec![],0,latest.meta.generation,latest.seq))));
+        });
+        queue.submit(job(1)).unwrap(); entered.recv().unwrap();
+        // This must finish while the DSP is deliberately held, without waiting
+        // for any transform. The producer continues to consume source IQ.
+        for seq in 2..=100 { queue.submit(job(seq)).unwrap(); }
+        assert_eq!(queue.state.lock().replaced,98);
+        release.send(()).unwrap(); worker.join().unwrap();
+        let mut state=queue.state.lock();
+        assert_eq!(state.skipped_frames,1);
+        assert_eq!(state.result.take().unwrap().unwrap().1.4,100);
+        drop(state);queue.stop();
+        assert!(queue.next().is_none());assert!(queue.submit(job(101)).is_err());
+    }
     #[test]
     fn display_sdk_boundary_rejects_geometry_and_releases_failed_open() {
         struct Fixture(std::path::PathBuf, *mut c_void);
@@ -554,7 +621,7 @@ int san90_display_fft_close_v1(void* handle) { if (handle == &marker) --active; 
     #[ignore = "requires the installed vendor DSP library; no radio is opened"]
     fn sdk_tiers_pass_real_processing_and_calibration() {
         let path = std::env::var("WEBSA_TEST_FFT_SHIM").unwrap();
-        for size in [32768, 65536] {
+        for size in [16240, 32768, 65536] {
             let a = Analyzer::start(path.clone(), size).unwrap();
             assert!(a.points > size * 7 / 10);
         }

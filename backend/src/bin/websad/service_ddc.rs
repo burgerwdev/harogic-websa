@@ -57,6 +57,19 @@ pub(super) fn source_plan(fs: f64, config: &ChannelConfig) -> Result<SourcePlan,
     }
 }
 
+/// Only active consumers own coarse columns. Native local tuning can replace
+/// the selection at a drained boundary without changing the capture clock.
+pub(super) fn coarse_bins(center:f64,fs:f64,configs:&[ChannelConfig])->Result<Vec<u32>,String> {
+    let count=PFB_BINS.min((fs/BIN_SPACING).round() as i64).max(2);
+    let mut bins=Vec::new();
+    for config in configs.iter().filter(|config|config.enabled) {
+        if source_plan(fs,config)?.is_direct() {continue;}
+        let bin=signed_bin(config.freq,center).rem_euclid(count) as u32;
+        if !bins.contains(&bin) {bins.push(bin);}
+    }
+    Ok(bins)
+}
+
 pub(super) fn validate_source_frequency(center:f64, bandwidth:f64, fs:f64, taps:usize,
     frequency:f64, source:&SourcePlan)->Result<(),String> {
     if source.is_direct() {
@@ -120,20 +133,11 @@ impl Ddc {
             if !slots.insert(config.channel) {return Err("duplicate service channel".into());}
         }
         let m = PFB_BINS.min((fs / BIN_SPACING).round() as i64).max(2);
-        let mut bins = Vec::new();
+        let bins = coarse_bins(center,fs,configs)?;
         for config in configs.iter().filter(|c| c.enabled) {
             let source = source_plan(fs,config)?;
             validate_source_frequency(center, bandwidth, fs, taps, config.freq, &source)?;
-            if source.is_direct() {continue;}
-            let signed = signed_bin(config.freq, center);
-            for neighbour in signed - PLAN_NEIGHBOURS..=signed + PLAN_NEIGHBOURS {
-                if (-m / 2..m / 2).contains(&neighbour) {
-                    let bin = neighbour.rem_euclid(m) as u32;
-                    if !bins.contains(&bin) { bins.push(bin); }
-                }
-            }
         }
-        if bins.is_empty() { bins.push(0); }
         super::service_cost::admit_service(configs,fs,taps,bins.len())?;
         let epoch = allocate_dsp_epoch()?;
         let packet_capacity = if fs == IQ_FS { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
@@ -179,9 +183,9 @@ impl Ddc {
         let generation = hardware.as_ref().map_or(0, |c| c.geometry.generation);
         #[cfg(test)]
         let cost_profile=None;
-        Ok(Self { stream:Box::new(stream),fine:Some(fine),fine_worker:None,direct,carry:Vec::new(),pan:Vec::new(),display_fft:None,display_fft_error:None,
+        Ok(Self { stream:Box::new(stream),fine:Some(fine),fine_worker:None,direct,carry:Vec::new(),pan:Vec::new(),default_fft:None,display_fft:None,display_fft_error:None,
             capture_center:center,usable_bandwidth:bandwidth,decimate:1,listen:primary.freq,next_seq:0,
-            input_pos:0,stamp_gaps:0,last_stamp:None,generation,device_decimate:if hardware.is_some() {
+            input_pos:0,capture_scratch:Vec::new(),stamp_gaps:0,last_stamp:None,generation,device_decimate:if hardware.is_some() {
                 ((IQ_FS/fs).round() as u64).max(1) } else {1},hardware:hardware.take(),capture_failed:false,
             pipeline_timing:sdr_pipeline::PipelineTiming::new(fs),registry,
             #[cfg(test)]
@@ -226,6 +230,7 @@ impl Ddc {
             Ok(frames)
         })();
         let frames=match drained {Ok(frames)=>frames,Err(error)=>{self.capture_failed=true;return Err(error);}};
+        next.default_fft=self.default_fft.take();
         next.display_fft=self.display_fft.take();
         next.display_fft_error=self.display_fft_error.take();
         next.hardware=self.hardware.take();
@@ -296,8 +301,8 @@ impl Ddc {
             fs,self.stream.taps_per_phase(),config.freq,&source)?; }
         let mut candidate=configs.clone();
         candidate[slot]=config.clone();
-        let bin=signed_bin(config.freq,self.capture_center).rem_euclid(self.stream.bin_count() as i64) as u32;
-        let selected=self.stream.bins().len()+usize::from(config.enabled && !source.is_direct() && !self.stream.bins().contains(&bin));
+        let next_bins=coarse_bins(self.capture_center,fs,&candidate)?;
+        let selected=next_bins.len();
         super::service_cost::admit_service(&candidate,self.stream.input_sample_rate(),self.stream.taps_per_phase(),selected)?;
         let next_id = self.next_id.checked_add(1).filter(|&id|id<=u32::MAX as u64).ok_or("channel ID exhausted")?;
         let next_direct=if config.enabled && source.is_direct() {
@@ -359,6 +364,10 @@ impl Ddc {
         if let Some(mut route)=next_direct {route.framer.settle_startup(config.recovery_settle);self.direct.insert(config.channel,route);}
         self.next_id=next_id;
         configs[slot]=config;
+        if self.stream.bins()!=next_bins.as_slice() {
+            self.stream.replace_bins(next_bins.clone()).map_err(str::to_owned)?;
+            self.bank.remap_bins(&next_bins).map_err(str::to_owned)?;
+        }
         self.service_configs=Some(configs);
         self.refresh_service_registry()?;
         let registry=self.registry.clone();

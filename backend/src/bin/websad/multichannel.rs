@@ -249,7 +249,13 @@ impl DevState {
                 let mut intended=channel.clone();
                 intended.enabled |= self.receivers.band_paused.contains(&channel.channel);
                 let mut previous=receiver.channel.clone();previous.enabled=receiver.config["enabled"].as_bool().unwrap_or(previous.enabled);
-                if previous!=intended {receiver.config=config_value(&intended,Some(&receiver.config));}
+                if previous!=intended {
+                    if !intended.enabled && intended.freq == 0.0 {
+                        // Preset clears execution slots. A saved receiver keeps
+                        // its last valid tuning so it can be restarted or deleted.
+                        receiver.config["enabled"]=json!(false);
+                    } else {receiver.config=config_value(&intended,Some(&receiver.config));}
+                }
                 receiver.channel=channel;
             }
             if let Some(entry)=registry.iter().find(|entry|entry.channel==receiver.channel.channel) {
@@ -270,22 +276,26 @@ impl DevState {
     }
 
     pub(super) fn receiver_snapshot(&mut self) -> Value {
+        self.receiver_snapshot_detail(true, None)
+    }
+
+    fn receiver_snapshot_detail(&mut self,diagnostics:bool,uid:Option<&str>) -> Value {
         self.remember_receiver_streams();
         let registry=self.stream_registry();
         let capture_fault=self.ddc_error.as_deref().or_else(||(!self.link_up).then_some("capture disconnected"));
         let fine_faults=self.fine_faults();
-        let receivers:Vec<_>=self.receivers.receivers.values().map(|receiver| {
+        let receivers:Vec<_>=self.receivers.receivers.values().filter(|receiver|uid.is_none_or(|uid|uid==receiver.uid)).map(|receiver| {
             let entry=registry.iter().find(|entry|entry.channel==receiver.channel.channel);
             let fine_fault=fine_faults.iter().find(|fault|entry.is_some_and(|entry|entry.channel_id==fault.channel_id && entry.epoch==fault.epoch));
-            let runtime=self.receiver_workers.as_ref().map(|w|w.runtime_status(receiver.channel.channel,&receiver.uid));
-            json!({"receiver_uid":receiver.uid,"source_id":SOURCE,"display_number":receiver.channel.channel,
+            let runtime=self.receiver_workers.as_ref().map(|w|if diagnostics {w.runtime_status(receiver.channel.channel,&receiver.uid)}
+                else {w.live_runtime_status(receiver.channel.channel,&receiver.uid)});
+            let mut row=json!({"receiver_uid":receiver.uid,"source_id":SOURCE,"display_number":receiver.channel.channel,
                 "created_at_ms":receiver.created_at_ms,
                 "revision":receiver.revision.to_string(),"confirmed":receiver.config,
                 "coverage":{"state":if self.receivers.band_paused.contains(&receiver.channel.channel) {"out_of_band"} else {"in_band"}},
                 "control_receipts":self.receiver_workers.as_ref().map(|w|w.control_receipts(receiver.channel.channel,&receiver.uid))
                     .unwrap_or_else(||json!(self.receivers.idle_receipts.iter().filter(|r|r["receiver_uid"]==receiver.uid).collect::<Vec<_>>())),
                 "audio_signature":audio_signature(&receiver.channel),
-                "processing_statistics":self.receiver_workers.as_ref().map(|workers|workers.uid_stats(receiver.channel.channel,&receiver.uid)),
                 "processing_state":runtime.as_ref().map(|r|r["state"].clone())
                     .unwrap_or_else(||json!(if !receiver.channel.enabled||!receiver.channel.processing_enabled {"disabled"} else {"waiting"})),
                 "reception":self.reception.snapshot(receiver.channel.channel),
@@ -298,7 +308,10 @@ impl DevState {
                     known.entry.channel_id==e.channel_id&&known.entry.epoch==e.epoch)).and_then(|known|known.clock.clone()),
                 "fault":capture_fault.map(|error|fault("capture","CAPTURE_FAILED",error)).or_else(||fine_fault.map(|error|json!({"scope":"receiver_iq","code":"FINE_FAILED","message":error.error,"detail":error}))).or_else(||
                     receiver.channel.processing_enabled.then_some(self.receiver_failure.as_deref()).flatten()
-                        .map(|error|fault("receiver","PROCESSING_FAILED",error)))})
+                        .map(|error|fault("receiver","PROCESSING_FAILED",error)))});
+            if diagnostics {row["processing_statistics"]=self.receiver_workers.as_ref()
+                .map(|workers|workers.uid_stats(receiver.channel.channel,&receiver.uid)).unwrap_or(Value::Null);}
+            row
         }).collect();
         let mut snapshot=json!({"contract":"multichannel-draft-v1","transport":"native","service_id":self.receivers.boot,
             "revision":self.config_version.to_string(),"action_token":self.receivers.started.elapsed().as_millis().to_string(),
@@ -392,6 +405,16 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
     if kind=="configure" {
         let expected=request["expected_revision"].as_str().and_then(|v|v.parse::<u64>().ok()).ok_or("expected_revision must be a decimal string")?;
         if previous.is_none_or(|r|r.revision!=expected) {return Err("receiver revision changed; refresh before retrying".into());}
+    }
+    // Deletion is an identity/lifecycle operation. It must also work for a
+    // stopped legacy slot whose saved tuning was damaged by an older preset.
+    if kind=="retire" {
+        let mut config=previous.ok_or("receiver absent")?.config.clone();
+        config["enabled"]=json!(false);
+        return Ok(Change {slot,config,
+            data:json!({"cmd":"SET_SDR_CHANNEL","channel":slot,"enabled":false,
+                "request_id":request["request_id"],"defer_receipt":true}),
+            retire:true,band_paused:false,revision:state.config_version,output_bytes:0.0});
     }
     let mut config=if kind=="retire" {previous.ok_or("receiver absent")?.config.clone()}
         else if matches!(kind,"create"|"configure") {request["config"].clone()}
@@ -490,8 +513,9 @@ fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
         output_bytes:if enabled&&!band_paused {plan.plan().output_rate*8.0} else {0.0}})
 }
 
-pub(super) async fn snapshot(State(app):State<Arc<App>>)->Response {
-    match tokio::task::spawn_blocking(move|| app.state.lock().unwrap().receiver_snapshot()).await {
+pub(super) async fn snapshot(State(app):State<Arc<App>>,Query(params):Query<HashMap<String,String>>)->Response {
+    let diagnostics=params.get("detail").is_none_or(|detail|detail!="live");
+    match tokio::task::spawn_blocking(move|| app.state.lock().unwrap().receiver_snapshot_detail(diagnostics,params.get("receiver_uid").map(String::as_str))).await {
         Ok(value)=>Json(value).into_response(),Err(error)=>state_worker_failed(error).into_response(),
     }
 }
@@ -597,7 +621,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
             "fault":failure.map(|message|fault(if state.ddc_error.is_some() {"capture"} else {"request"},"REJECTED",&message))});
         state.receivers.replies.push_back((id,request,reply.clone()));
         if state.receivers.replies.len()>128 {state.receivers.replies.pop_front();}
-        let status=state.status_snapshot();drop(state);drop(completed_admission);
+        let status=state.live_status_snapshot();drop(state);drop(completed_admission);
         worker_app.state.publish_status(status.revision,status.build());
         reply
     }).await {
@@ -948,10 +972,82 @@ mod tests {
         result
     }
 
+    #[tokio::test]
+    async fn live_snapshot_preserves_controls_and_omits_only_diagnostic_history() {
+        let app=app();
+        let full=snapshot(State(app.clone()),Query(HashMap::new())).await;
+        let full:Value=serde_json::from_slice(&axum::body::to_bytes(full.into_body(),usize::MAX).await.unwrap()).unwrap();
+        let live=snapshot(State(app),Query(HashMap::from([("detail".into(),"live".into())]))).await;
+        let live:Value=serde_json::from_slice(&axum::body::to_bytes(live.into_body(),usize::MAX).await.unwrap()).unwrap();
+        assert!(full["receivers"].as_array().unwrap().iter().all(|row|row.get("processing_statistics").is_some()));
+        assert!(live["receivers"].as_array().unwrap().iter().all(|row|row.get("processing_statistics").is_none()));
+        let mut expected=configuration_snapshot(&full);
+        for row in expected["receivers"].as_array_mut().unwrap() {row.as_object_mut().unwrap().remove("processing_statistics");}
+        assert_eq!(configuration_snapshot(&live),expected);
+    }
+
     async fn run(app:&Arc<App>,request:Value)->Value {
         let response=command(State(app.clone()),HeaderMap::new(),request.to_string()).await;
         assert_eq!(response.status(),StatusCode::OK);
         serde_json::from_slice(&axum::body::to_bytes(response.into_body(),2*1024*1024).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn unrelated_mode_preset_preserves_saved_tuning_and_uid() {
+        let app=app();
+        let created=run(&app,json!({"type":"create","request_id":"saved","config":iq_config(100_020_000.0)})).await;
+        assert!(created["fault"].is_null(),"{created}");
+        let uid=created["snapshot"]["receivers"][0]["receiver_uid"].clone();
+        {
+            let mut state=app.state.lock().unwrap();
+            for mode in ["std","rta","std"] {
+                dispatch(&mut state,"SET_MODE",&json!({"mode":mode})).unwrap();
+                state.preset().unwrap();
+                state.remember_receiver_streams();
+                let saved=&state.receivers.receivers[&2];
+                assert_eq!(saved.config["baseband"]["frequency_hz"],100_020_000.0);
+                assert_eq!(saved.uid,uid.as_str().unwrap());
+            }
+            dispatch(&mut state,"SET_MODE",&json!({"mode":"sdr"})).unwrap();
+        }
+        let retired=run(&app,json!({"type":"retire","request_id":"remove-saved","receiver_uid":uid})).await;
+        assert!(retired["fault"].is_null(),"{retired}");
+    }
+
+    #[tokio::test]
+    async fn retire_damaged_stopped_legacy_slot_does_not_validate_tuning() {
+        let app=app();
+        let created=run(&app,json!({"type":"create","request_id":"saved","config":iq_config(100e6)})).await;
+        let uid=created["snapshot"]["receivers"][0]["receiver_uid"].clone();
+        {
+            let mut state=app.state.lock().unwrap();
+            state.sdr_channels[1].enabled=false;
+            state.sdr_channels[1].freq=0.0;
+            state.remember_receiver_streams();
+            // Simulate a slot already damaged by the older service.
+            state.receivers.receivers.get_mut(&2).unwrap().config["baseband"]["frequency_hz"]=json!(0.0);
+        }
+        let retired=run(&app,json!({"type":"retire","request_id":"remove-invalid","receiver_uid":uid})).await;
+        assert!(retired["fault"].is_null(),"{retired}");
+        assert!(retired["snapshot"]["receivers"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sdr_preset_stops_execution_without_destroying_saved_receiver_settings() {
+        let app=app();
+        let created=run(&app,json!({"type":"create","request_id":"saved","config":iq_config(100_020_000.0)})).await;
+        let uid=created["snapshot"]["receivers"][0]["receiver_uid"].clone();
+        {
+            let mut state=app.state.lock().unwrap();
+            state.preset().unwrap();state.remember_receiver_streams();
+            let receiver=&state.receivers.receivers[&2];
+            assert_eq!(receiver.config["baseband"]["frequency_hz"],100_020_000.0);
+            assert_eq!(receiver.config["enabled"],false);
+            assert_eq!(receiver.uid,uid.as_str().unwrap());
+            assert_eq!(state.channel_config(2).unwrap().freq,0.0);
+        }
+        let retired=run(&app,json!({"type":"retire","request_id":"remove-stopped","receiver_uid":uid})).await;
+        assert!(retired["fault"].is_null(),"{retired}");
     }
 
     #[tokio::test]
