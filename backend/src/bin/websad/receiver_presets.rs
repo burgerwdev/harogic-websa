@@ -229,7 +229,7 @@ fn valid_name(name: &str) -> bool {
 }
 
 pub(super) async fn list(State(app): State<Arc<App>>) -> Response {
-    let store = app.state.lock().unwrap().receiver_presets.clone();
+    let store = app.state.lock_async().await.unwrap().receiver_presets.clone();
     match store {
         Some(store) => {
             match tokio::task::spawn_blocking(move || store.lock().unwrap().data.clone()).await {
@@ -257,7 +257,7 @@ pub(super) async fn change(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
     let (store, settings) = {
-        let mut state = app.state.lock().unwrap();
+        let mut state = app.state.lock_async().await.unwrap();
         let Some(store) = state.receiver_presets.clone() else {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         };

@@ -17,8 +17,8 @@ import { autoPeakThr, updatePeakTable, renderPeakMarks, peakListOn } from './pea
 import { updateMarkerTable } from './markerTable';
 import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
-import { renderWaterfall } from './waterfall';
-import { setRenderer } from './redraw';
+import { renderWaterfall, renderWaterfallOverlay } from './waterfall';
+import { setInteractionRenderer, setRenderer } from './redraw';
 import { peakListVisible } from '../ui/measurePrefs';
 import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
@@ -88,7 +88,8 @@ function paintFreqRow(ctx: CanvasRenderingContext2D, lo: number, hi: number, col
   }
 }
 
-function drawMarqueeOverlay() {
+function drawMarqueeOverlay(ctx = S.ctx) {
+  if (ctx === S.ctx && S.rtaMode && spectrumOverlay()) return;
   const m = getMarqueePreview();
   if (!m) return;
   const view = previewFreqWindow() ?? getView();
@@ -414,7 +415,8 @@ function tlY(line: number): number {
  * number format is the format of the marker readouts: fmtReadoutLevel applies the display unit
  * and the external offset. The function draws nothing while the pointer is outside the plot.
  */
-function renderCursorReadout() {
+function renderCursorReadout(ctx = S.ctx) {
+  if (ctx === S.ctx && S.rtaMode && spectrumOverlay()) return;
   const idx = S.plotCursorIdx;
   const powers = getDisplayPowers();
   const usable = idx !== null && !!powers && powers.length > 1;
@@ -424,7 +426,7 @@ function renderCursorReadout() {
     : '';
   // Diagnostic/e2e hook (same pattern as dataset.notice). The readout is canvas text, so the value
   // must be readable from outside the canvas. Written only on change.
-  if (ctx.canvas.dataset.cursor !== text) ctx.canvas.dataset.cursor = text;
+  if (S.canvas.dataset.cursor !== text) S.canvas.dataset.cursor = text;
   if (!usable) return;
   const lines = topLeftLines();
   const col = canvasColors();
@@ -607,6 +609,7 @@ export function renderAll() {
     drawMarqueeOverlay();
     renderSpectrumZoomOverview();
     syncSpectrumZoomUi();
+    renderInteraction(false);
     return;
   }
   renderGrid();
@@ -659,10 +662,12 @@ export function renderAll() {
   renderWaterfallIfOn();
   renderSpectrumZoomOverview();
   syncSpectrumZoomUi();
+  renderInteraction(false);
 }
 
 // Repaint callers depend on redraw.ts; this module owns the renderer.
 setRenderer(renderAll);
+setInteractionRenderer(renderInteraction);
 // The real-time view is part of the hub itself, so it registers locally.
 registerViewRenderer({ mode: 'rta', render: () => renderRtaView() });
 
@@ -845,14 +850,28 @@ function renderRta() {
     ctx.stroke();
     ctx.restore();
   });
+  ctx.restore();
+  drawFreqRow(lo, hi, col, p);
+  if (!spectrumOverlay()) renderRtaOverlays(ctx);
+  // Markers on the active RTA trace (length-guarded)
+  const actDisp = getDisplayPowers();
+  if (actDisp && actDisp.length >= 2) {
+    renderMarkersOnCanvas(actDisp);
+    renderOSD(actDisp);
+  }
+}
+
+function renderRtaOverlays(ctx: CanvasRenderingContext2D): void {
+  const view = sdrSpectrumWindow();
+  if (!view || !S.rtaData) return;
+  const { lo, hi } = view, p = plotRect(), col = canvasColors();
+  ctx.save(); ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   // Preview the dial and passband together while the badge owns the pointer.
   renderSdrChannelBands(ctx, lo, hi, p, true);
-  renderFilterPassband(lo, hi, sdrBadgeDragFrequency());
-  renderSdrLocate(lo, hi);
-  ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
-  renderFilterHandles();
-  // Bottom frequency row (same as SWP grid)
-  drawFreqRow(lo, hi, col, p);
+  renderFilterPassband(lo, hi, sdrBadgeDragFrequency(), ctx);
+  renderSdrLocate(lo, hi, ctx);
+  ctx.restore();
+  renderFilterHandles(ctx);
   const badge = sdrBadgeGeometry();
   if (badge) {
     ctx.save();
@@ -864,7 +883,7 @@ function renderRta() {
     ctx.fillText(badge.label, badge.left + badge.width / 2, badge.top + badge.height / 2, badge.width - 8);
     const box = badge.toggle;
     const toggleGeometry = JSON.stringify(box);
-    if (ctx.canvas.dataset.passbandToggle !== toggleGeometry) ctx.canvas.dataset.passbandToggle = toggleGeometry;
+    if (S.canvas.dataset.passbandToggle !== toggleGeometry) S.canvas.dataset.passbandToggle = toggleGeometry;
     ctx.strokeStyle = col.rta; ctx.lineWidth = 1;
     ctx.strokeRect(box.left + 0.5, box.top + 0.5, box.width - 1, box.height - 1);
     if (sdrPassbandVisible.get()) {
@@ -872,15 +891,39 @@ function renderRta() {
       ctx.fillRect(box.left + 3, box.top + 3, box.width - 6, box.height - 6);
     }
     ctx.restore();
-  } else delete ctx.canvas.dataset.passbandToggle;
+  } else delete S.canvas.dataset.passbandToggle;
   const passbandVisible = String(sdrPassbandVisible.get());
-  if (ctx.canvas.dataset.passbandVisible !== passbandVisible) ctx.canvas.dataset.passbandVisible = passbandVisible;
-  // Markers on the active RTA trace (length-guarded)
-  const actDisp = getDisplayPowers();
-  if (actDisp && actDisp.length >= 2) {
-    renderMarkersOnCanvas(actDisp);
-    renderOSD(actDisp);
+  if (S.canvas.dataset.passbandVisible !== passbandVisible) S.canvas.dataset.passbandVisible = passbandVisible;
+}
+
+function spectrumOverlay(): CanvasRenderingContext2D | null {
+  const canvas = document.getElementById('spectrum-overlay') as HTMLCanvasElement | null;
+  if (!canvas) return null;
+  if (canvas.width !== S.canvas.width) canvas.width = S.canvas.width;
+  if (canvas.height !== S.canvas.height) canvas.height = S.canvas.height;
+  const context = canvas.getContext('2d');
+  context?.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  return context;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  for (const id of ['spectrum-overlay', 'waterfall-overlay']) {
+    const canvas = document.getElementById(id) as HTMLCanvasElement | null;
+    if (canvas) { canvas.width = 0; canvas.height = 0; }
   }
+});
+
+function renderInteraction(waterfall = true): boolean {
+  const overlay = spectrumOverlay();
+  if (!overlay) return false;
+  overlay.clearRect(0, 0, W, H);
+  if (!S.rtaMode) return false;
+  renderRtaOverlays(overlay);
+  renderCursorReadout(overlay);
+  drawMarqueeOverlay(overlay);
+  if (waterfall && waterfallOn.get()) renderWaterfallOverlay();
+  return true;
 }
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)

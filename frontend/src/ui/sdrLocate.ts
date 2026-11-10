@@ -1,6 +1,5 @@
 import { sdrPassbandVisible } from './sdrPassbandState';
 /** Preview and click state only; the canvas owner routes gestures and submits tuning. */
-import { ctx } from '../core/store';
 import * as S from '../core/store';
 import { plotRect } from '../render/plot';
 import { requestRender } from '../render/redraw';
@@ -263,7 +262,7 @@ export function invalidateSdrLocateEvidence(): void {
 }
 
 /** Dashed preview is separate from the receiver's tuned/passband indicator. */
-export function renderSdrLocate(loHz: number, hiHz: number): boolean {
+export function renderSdrLocate(loHz: number, hiHz: number, ctx = S.ctx): boolean {
   if (!sdrPassbandVisible.get()) return false;
 	let shown: LocateTarget | null = null;
 	if (frozen) {
@@ -283,7 +282,7 @@ export function renderSdrLocate(loHz: number, hiHz: number): boolean {
 	if (shown?.mode === 'free' || !S.sdrMode) shown = null;
 	armStaleTimer(shown);
 	const ds = shown ? JSON.stringify({ mode: shown.mode, target: shown.targetHz, carrier: shown.carrierHz }) : '';
-	if (ctx.canvas.dataset.locate !== ds) ctx.canvas.dataset.locate = ds;
+	if (S.canvas.dataset.locate !== ds) S.canvas.dataset.locate = ds;
 	if (!shown) return false;
 	const p = plotRect(), x = p.x + (shown.targetHz - loHz) / ((hiHz - loHz) || 1) * p.w;
 	if (!(x >= p.x) || !(x <= p.x + p.w)) return false;

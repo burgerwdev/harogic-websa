@@ -546,7 +546,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
     }
     if request["type"]=="action" {return action_command(app,request,id,preview).await;}
     let candidate={
-        let mut state=app.state.lock().unwrap();
+        let mut state=app.state.lock_async().await.unwrap();
         if !preview {
             if let Some((_,old,reply))=state.receivers.replies.iter().find(|(known,_,_)|known==&id) {
                 if old==&request {return Json(reply.clone()).into_response();}
@@ -636,7 +636,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
 }
 
 async fn action_command(app:Arc<App>,request:Value,id:String,preview:bool)->Response {
-    let mut state=app.state.lock().unwrap();
+    let mut state=app.state.lock_async().await.unwrap();
     state.remember_receiver_streams();
     let result=(||->Result<(),String> {
         let uid=request["receiver_uid"].as_str().ok_or("receiver_uid required")?;
@@ -878,7 +878,7 @@ pub(super) async fn iq_ws(ws:WebSocketUpgrade,State(app):State<Arc<App>>,
     Query(params):Query<HashMap<String,String>>,headers:HeaderMap)->Response {
     if !browser_access(&headers) {return StatusCode::FORBIDDEN.into_response();}
     let Some(uid)=params.get("receiver_uid").cloned() else {return StatusCode::BAD_REQUEST.into_response();};
-    let mut state=app.state.lock().unwrap();
+    let mut state=app.state.lock_async().await.unwrap();
     let slot=state.receiver_slot(&uid);
     let Some(slot)=slot else {return StatusCode::NOT_FOUND.into_response();};
     if !state.channel_config(slot).is_some_and(|config|config.enabled) {return StatusCode::CONFLICT.into_response();}

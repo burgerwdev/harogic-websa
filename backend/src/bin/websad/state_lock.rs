@@ -462,13 +462,14 @@ pub(super) struct StateMutex {
     state: PLMutex<DevState>,
     status: PLMutex<(u64, Value)>,
     revision: Arc<AtomicU64>,
+    available: Notify,
 }
 impl StateMutex {
     pub fn new(state: DevState) -> Self {
         let snapshot = state.live_status_snapshot();
         let status = (snapshot.revision, snapshot.build());
         let revision = Arc::new(AtomicU64::new(snapshot.revision));
-        Self { state:PLMutex::new(state), status:PLMutex::new(status), revision }
+        Self { state:PLMutex::new(state), status:PLMutex::new(status), revision, available:Notify::new() }
     }
     pub fn status_with_revision(&self) -> (u64, Value) { self.status.lock().clone() }
     pub fn revision(&self) -> Arc<AtomicU64> { self.revision.clone() }
@@ -487,27 +488,68 @@ impl StateMutex {
         let started = Instant::now();
         let mut guard = self.state.lock();
         guard.state_lock_wait.observe(started.elapsed());
-        Ok(StateGuard { guard, started:Instant::now() })
+        Ok(StateGuard { guard:Some(guard), started:Instant::now(), available:&self.available })
+    }
+    pub async fn lock_async(&self) -> Result<StateGuard<'_>, std::convert::Infallible> {
+        let started = Instant::now();
+        loop {
+            let notified = self.available.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(mut guard) = self.state.try_lock() {
+                guard.state_lock_wait.observe(started.elapsed());
+                return Ok(StateGuard { guard:Some(guard), started:Instant::now(), available:&self.available });
+            }
+            notified.await;
+        }
     }
 }
 pub(super) struct StateGuard<'a> {
-    guard: parking_lot::MutexGuard<'a, DevState>,
+    guard: Option<parking_lot::MutexGuard<'a, DevState>>,
     started: Instant,
+    available: &'a Notify,
 }
 impl Deref for StateGuard<'_> {
     type Target = DevState;
-    fn deref(&self) -> &DevState { &self.guard }
+    fn deref(&self) -> &DevState { self.guard.as_deref().unwrap() }
 }
 impl DerefMut for StateGuard<'_> {
-    fn deref_mut(&mut self) -> &mut DevState { &mut self.guard }
+    fn deref_mut(&mut self) -> &mut DevState { self.guard.as_deref_mut().unwrap() }
 }
 impl Drop for StateGuard<'_> {
-    fn drop(&mut self) { self.guard.state_lock_hold.observe(self.started.elapsed()); }
+    fn drop(&mut self) {
+        self.guard.as_mut().unwrap().state_lock_hold.observe(self.started.elapsed());
+        drop(self.guard.take());
+        self.available.notify_waiters();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn contended_device_lock_keeps_the_network_executor_available() {
+        let (golden, schema) = load_golden();
+        let state = Arc::new(StateMutex::new(DevState::new(golden, schema)));
+        let owner = state.clone();
+        let (held, ready) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            let _guard = owner.lock().unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+        });
+        ready.recv().unwrap();
+        let waiting = state.clone();
+        let waiter = tokio::spawn(async move {
+            waiting.lock_async().await.unwrap().sweep_ms = 123.0;
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!waiter.is_finished(), "device contention must yield to network timers");
+        tokio::time::timeout(Duration::from_secs(2), waiter).await.unwrap().unwrap();
+        assert_eq!(state.lock().unwrap().sweep_ms, 123.0);
+        thread.join().unwrap();
+    }
     #[test]
     fn capture_failure_evidence_is_published_without_a_fixture_key_and_survives_recovery() {
         let (golden,schema)=load_golden();

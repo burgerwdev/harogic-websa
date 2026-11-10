@@ -103,6 +103,8 @@ export function exportSpectrumPng(): void {
   c.textBaseline = 'alphabetic';
   lines.forEach((l, i) => c.fillText(l, pad, 8 + (i + 1) * lineH - 5));
   c.drawImage(src, pad, head);
+  const overlay = document.getElementById('spectrum-overlay') as HTMLCanvasElement | null;
+  if (overlay && overlay.width === src.width && overlay.height === src.height) c.drawImage(overlay, pad, head);
   // Timestamp pinned to the bottom-right corner: same 12 px margin as the sides,
   // ~7 px below the plot, so it can never collide with the header or the trace area.
   c.font = 'bold 11px monospace';

@@ -34,7 +34,7 @@ import { resetCarrierEvidence } from '../dsp/carrierSnap';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
-import { requestRender } from '../render/redraw';
+import { batchRender, requestRender } from '../render/redraw';
 import { getDisplayPowers } from '../dsp/peaks';
 
 import { normRefWinUser } from './measurePrefs';
@@ -2417,8 +2417,10 @@ export function bindCanvas() {
     const boxY = Math.max(1, rect.height - 2 * borderY);
     const x = (hoverX - rect.left - borderX) * (S.W / boxX);
     const y = (hoverY - rect.top - borderY) * (S.H / boxY);
-    updateCanvasHover(x, y, hoverCtrl, S.W / boxX);
-    publishCursor(x, y);
+    batchRender(() => {
+      updateCanvasHover(x, y, hoverCtrl, S.W / boxX);
+      publishCursor(x, y);
+    }, true);
   };
   const queueCanvasHover = (e: MouseEvent) => {
     hoverX = e.clientX;
@@ -2520,7 +2522,7 @@ export function bindCanvas() {
   const queueWaterfallHover = (event: MouseEvent) => {
     wfX = event.clientX; wfY = event.clientY;
     if (wfHoverPending) return;
-    wfHoverPending = true; window.requestAnimationFrame(updateWaterfallHover);
+    wfHoverPending = true; window.requestAnimationFrame(() => batchRender(updateWaterfallHover, true));
   };
   const clearWaterfallHover = () => {
     wfHoverPending = false;

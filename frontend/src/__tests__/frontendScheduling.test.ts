@@ -1,7 +1,37 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { requestRender, requestStreamRender, setRenderer } from '../render/redraw';
+import { batchRender, requestRender, requestStreamRender, setInteractionRenderer, setRenderer } from '../render/redraw';
 
-afterEach(() => { setRenderer(null); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { setRenderer(null); setInteractionRenderer(null); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it('keeps incoming spectrum paints scheduled while independently painting pointer overlays', async () => {
+  vi.useFakeTimers(); vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+  const frames = new Map<number, FrameRequestCallback>(); let sequence = 0;
+  vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => { frames.set(++sequence, fn); return sequence; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+  const paint = vi.fn(), overlay = vi.fn(() => true);
+  setRenderer(paint); setInteractionRenderer(overlay);
+  requestStreamRender(); await vi.advanceTimersByTimeAsync(0);
+  for (let i = 0; i < 10; i++) batchRender(requestRender, true);
+  expect(overlay).toHaveBeenCalledTimes(10); expect(paint).not.toHaveBeenCalled();
+  expect(frames.size).toBe(1);
+  [...frames.values()][0](performance.now()); expect(paint).toHaveBeenCalledOnce();
+  overlay.mockReturnValue(false);
+  batchRender(requestRender, true); expect(paint).toHaveBeenCalledTimes(2);
+});
+
+it('paints all pointer state together once, including nested and interrupted updates', () => {
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+  let cursor = 0, passband = 0;
+  const paint = vi.fn(() => [cursor, passband]); setRenderer(paint);
+  batchRender(() => {
+    cursor = 1; requestRender();
+    batchRender(() => { passband = 2; requestRender(); });
+    expect(paint).not.toHaveBeenCalled();
+  });
+  expect(paint).toHaveBeenCalledOnce(); expect(paint).toHaveReturnedWith([1, 2]);
+  expect(() => batchRender(() => { requestRender(); throw Error('cancel'); })).toThrow('cancel');
+  requestRender(); expect(paint).toHaveBeenCalledTimes(3);
+});
 
 it('bounds pending display work, adapts to paint cost and renders the newest ingested state', async () => {
   vi.useFakeTimers(); vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);

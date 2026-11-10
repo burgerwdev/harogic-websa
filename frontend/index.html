@@ -105,6 +105,7 @@
       </div>
       <div class="spectrum-box">
         <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
+        <canvas id="spectrum-overlay" class="plot-overlay" aria-hidden="true"></canvas>
         <span id="status-error" role="alert" aria-atomic="true"
               style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;"></span>
       </div>
@@ -114,6 +115,7 @@
            data-i18n-title="wf_split_tip" data-i18n-attr="title" title="Drag to resize the waterfall"></div>
       <div id="waterfall-container" class="waterfall-container" style="display:none;">
         <canvas id="waterfall" width="800" height="135" tabindex="0"></canvas>
+        <canvas id="waterfall-overlay" class="plot-overlay" aria-hidden="true"></canvas>
         <div id="wf-controls" class="wf-controls">
           <button class="btn wf-btn" id="btn-wf-pause" data-action="wf-pause" data-i18n="tip_waterfall_pause" data-i18n-attr="title" title="Pause/Resume waterfall">⏸</button>
           <button class="btn wf-btn" id="btn-wf-reset" data-action="wf-reset" data-i18n="tip_waterfall_reset" data-i18n-attr="title" title="Restart waterfall from scratch">↻</button>
@@ -355,7 +357,7 @@
               <input type="range" id="input-sdr-nr-atten" data-action="set-sdr-nr-atten" min="0" max="20" step="1" value="6" style="flex:1;" data-i18n-title="nr_atten_tip" data-i18n-attr="title" title="DeepFilterNet3 attenuation limit (dB)">
               <span class="cur-val" id="cur-nr-atten">6 dB</span></div>
             <div class="param-row sdr-hint-row">
-              <button type="button" data-action="sdr-help" data-i18n="sdr_help" data-i18n-title="sdr_help_tip" style="margin-right:auto;">? Help</button>
+              <button type="button" class="sdr-help-button" data-action="sdr-help" data-i18n="sdr_help" data-i18n-title="sdr_help_tip">Help</button>
               <span class="cur-val" id="cur-sdr-level">--- dBFS</span>
             </div>
           </div>

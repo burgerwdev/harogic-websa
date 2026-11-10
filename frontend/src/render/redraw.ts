@@ -8,6 +8,11 @@
 type Renderer = () => void;
 
 let renderer: Renderer | null = null;
+let interactionRenderer: (() => boolean) | null = null;
+let batchDepth = 0;
+let batchPending = false;
+let interactionBatch = false;
+let interactionPaints = 0;
 let requests = 0;
 let hiddenRequest = false;
 let wasHidden = document.hidden;
@@ -31,14 +36,21 @@ function cancelStreamPaint(): void {
   if (streamFrame !== undefined) cancelAnimationFrame(streamFrame);
   streamFrame = undefined;
 }
-function paint(stream = false): void {
+function paint(stream = false, interaction = false): void {
   const started = performance.now();
-  try { renderer?.(); }
+  let handled = false;
+  try {
+    handled = interaction && interactionRenderer?.() === true;
+    if (handled) interactionPaints++;
+    else renderer?.();
+  }
   finally {
     const cost = Math.max(0, performance.now() - started);
     paints++; if (stream) streamPaints++; paintMs += cost;
-    paintCost = paintCost ? paintCost * .8 + cost * .2 : cost;
-    lastPaint = started;
+    if (!handled) {
+      paintCost = paintCost ? paintCost * .8 + cost * .2 : cost;
+      lastPaint = started;
+    }
   }
 }
 
@@ -55,14 +67,33 @@ export function setRenderer(fn: Renderer | null): void {
 	renderer = fn;
 }
 
+export function setInteractionRenderer(fn: (() => boolean) | null): void { interactionRenderer = fn; }
+
 // Render synchronously so state changes are painted before requestRender returns.
 /** Ask for a repaint. Safe before the renderer is registered (no-op). */
 export function requestRender(): void {
 	requests++;
+	if (batchDepth) { batchPending = true; return; }
 	cancelStreamPaint();
 	if (document.hidden) { hiddenRequest = true; return; }
 	hiddenRequest = false; wasHidden = false;
 	paint();
+}
+
+/** Publish a complete pointer update before painting its dependent overlays. */
+export function batchRender(update: () => void, interaction = false): void {
+  if (!batchDepth) interactionBatch = interaction;
+  batchDepth++;
+  try { update(); }
+  finally {
+    batchDepth--;
+    if (!batchDepth && batchPending) {
+      batchPending = false;
+      if (!interactionBatch) cancelStreamPaint();
+      if (document.hidden) hiddenRequest = true;
+      else paint(false, interactionBatch);
+    }
+  }
 }
 
 /** Data arrivals publish state immediately; the next display reads the newest state. */
@@ -88,7 +119,7 @@ export function streamRenderInterval(): number {
 
 /** Read-only diagnostics; no JSON is built during normal painting. */
 export function renderStatus(): Record<string, number | boolean> {
-  return { requests, paints, streamPaints, paintMs, meanPaintMs: paintCost,
+  return { requests, paints, streamPaints, interactionPaints, paintMs, meanPaintMs: paintCost,
     intervalMs: streamRenderInterval(),
     pending: streamTimer !== undefined || streamFrame !== undefined };
 }

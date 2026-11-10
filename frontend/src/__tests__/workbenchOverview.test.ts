@@ -53,12 +53,14 @@ describe('channel overview ownership', () => {
     expect(detail.textContent).toContain('Renamed while docked');
   });
 
-  it('renders the current diagnostic snapshot only while the disclosure is open', () => {
+  it('renders the current diagnostic snapshot only while the disclosure is open', async () => {
+    Object.assign(adapter, { diagnostics: async (uid: string) => clone(session.snapshot.receivers.find(row => row.receiver_uid === uid)) });
     const detail = detach('fixture-c2');
     const section = detail.querySelector<HTMLDetailsElement>('[data-section=live-diagnostics]')!;
     expect(section.querySelector('pre')!.textContent).toBe('');
     session.snapshot.receivers[1].clock!.output_index = '7654321'; session.notify();
     section.open = true; section.dispatchEvent(new Event('toggle'));
+    await vi.advanceTimersByTimeAsync(0);
     expect(section.querySelector('pre')!.textContent).toContain('7654321');
     section.open = false; section.dispatchEvent(new Event('toggle'));
     expect(section.querySelector('pre')!.textContent).toBe('');

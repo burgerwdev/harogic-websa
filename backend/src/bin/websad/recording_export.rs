@@ -292,7 +292,7 @@ pub(super) async fn download<P: Send + 'static>(
 ) -> Response {
     let error = |status, message: String| (status, Json(json!({"error":message}))).into_response();
     let (path, snapshot) = {
-        let state = app.state.lock().unwrap();
+        let state = app.state.lock_async().await.unwrap();
         let Some(manager) = &state.recordings else {
             return StatusCode::NOT_FOUND.into_response();
         };

@@ -1,3 +1,15 @@
+.sdr-help-button {
+  margin-right: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 3px;
+  background: var(--btn-bg);
+  color: var(--label);
+  font: inherit;
+  cursor: pointer;
+}
+.sdr-help-button:hover { background: var(--btn-hover); color: var(--text); }
+.sdr-help-window:focus { outline: none; }
 .sdr-help-window.mc-window {
   background: color-mix(in srgb, var(--panel) 78%, transparent);
   backdrop-filter: blur(12px);

@@ -233,9 +233,44 @@ let sliceScratch: Uint16Array | null = null;
 let wfNewestRow: Uint16Array | null = null;
 let wfCanvas: HTMLCanvasElement | null = null;
 let wfOverlayX: number | null = null;
+let wfHistory: HTMLCanvasElement | null = null;
+let wfHistoryCtx: CanvasRenderingContext2D | null = null;
+let wfHead = 0;
+
+function paintHistory(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  const tail = height - wfHead;
+  ctx.drawImage(wfHistory!, 0, wfHead, width, tail, 0, 0, width, tail);
+  if (wfHead) ctx.drawImage(wfHistory!, 0, 0, width, wfHead, 0, tail, width, wfHead);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  if (wfHistory) { wfHistory.width = 0; wfHistory.height = 0; }
+  wfHistory = null; wfHistoryCtx = null;
+  wfImg = null; wfPixels = null; wfCanvas = null;
+});
 
 /** Paint over the clean history image; never write the indicator into cached pixels. */
+function overlayContext(): CanvasRenderingContext2D | null {
+  const canvas = document.getElementById('waterfall-overlay') as HTMLCanvasElement | null;
+  const base = document.getElementById('waterfall') as HTMLCanvasElement | null;
+  if (!canvas || !base) return null;
+  if (canvas.style.left !== base.style.left) canvas.style.left = base.style.left;
+  if (canvas.style.width !== base.style.width) canvas.style.width = base.style.width;
+  if (canvas.width !== base.width) canvas.width = base.width;
+  if (canvas.height !== base.height) canvas.height = base.height;
+  return canvas.getContext('2d');
+}
+
+export function renderWaterfallOverlay(): void {
+  const ctx = overlayContext();
+  if (!ctx) return;
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  paintBadgeIndicator(ctx, ctx.canvas.width, ctx.canvas.height);
+}
+
 function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  if (ctx.canvas?.id === 'waterfall' && overlayContext()) { renderWaterfallOverlay(); return; }
   const frequency = S.sdrMode && sdrPassbandVisible.get()
     ? sdrBadgeDragFrequency() ?? passbandDragFrequency() ?? sdrListenHz.get() : null;
   const view = sdrSpectrumWindow();
@@ -304,6 +339,12 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const W = canvas.width, H = canvas.height;
+  if (!wfHistory) {
+    wfHistory = document.createElement('canvas');
+    wfHistoryCtx = wfHistory.getContext('2d');
+  }
+  const historyResized = wfHistory.width !== W || wfHistory.height !== H;
+  if (historyResized) { wfHistory.width = W; wfHistory.height = H; }
   // One observation occupies about one CSS pixel on every display. Repeat exact
   // rows on HiDPI; interpolating time would smear CW dots and burst boundaries.
   const rowHeight = Math.max(1, Math.round(rowPixels));
@@ -341,12 +382,14 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   }
   const boundsKey = S.sdrMode ? `${displayOffset.get()}` : '';
   const imageKey = `${W}x${H}:${rowHeight}:${wfRangeMode.get()}:${localWindow?.lo}:${wfLoDbm.get()}:${wfHiDbm.get()}:${wfPalette.get()}:${wfContrast.get()}:${viewKey}:${boundsKey}`;
-  const sameImage = wfCanvas === canvas && wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
+  const sameImage = !historyResized && wfCanvas === canvas && wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
   const pushed = S.waterfallPushes - wfLastPushes;
   if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) {
+    if (overlayContext()) { renderWaterfallOverlay(); return; }
     // Frozen history still has to erase the previous indicator before drawing the next.
     if (S.sdrMode || wfOverlayX !== null) {
-      ctx.putImageData(wfImg!, 0, 0);
+      if (wfHistoryCtx) paintHistory(ctx, W, H);
+      else ctx.putImageData(wfImg!, 0, 0);
       paintBadgeIndicator(ctx, W, H);
     }
     return;
@@ -361,13 +404,14 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   wfImgKey = imageKey;
   wfCanvas = canvas;
   wfNewestRow = rows[n - 1];
-  if (!wfImg || wfImg.width !== W || wfImg.height !== H) {
-    wfImg = ctx.createImageData(W, H);
-    wfPixels = new Uint32Array(wfImg.data.buffer, wfImg.data.byteOffset, W * H);
+  const paintHeight = wfHistoryCtx ? scroll || H : H;
+  if (!wfImg || wfImg.width !== W || wfImg.height !== paintHeight) {
+    wfImg = ctx.createImageData(W, paintHeight);
+    wfPixels = new Uint32Array(wfImg.data.buffer, wfImg.data.byteOffset, W * paintHeight);
   }
   const img = wfImg;
   const pixels = wfPixels!;
-  if (scroll) pixels.copyWithin(scroll * W, 0, (H - scroll) * W);
+  if (scroll && !wfHistoryCtx) pixels.copyWithin(scroll * W, 0, (H - scroll) * W);
   const lut = waterfallLUT(wfPalette.get());
   const fixedBounds = wfRangeMode.get() === 'fixed';
   const fixedBottom = wfLoDbm.get() - (S.sdrMode ? displayOffset.get() : 0);
@@ -411,7 +455,13 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
       pixels[rowStart + x] = level && ds[x] === 0 ? bgPixel : lut[colour];
     }
   }
-  ctx.putImageData(img, 0, 0);
+  if (wfHistoryCtx) {
+    wfHead = scroll ? (wfHead - scroll + H) % H : 0;
+    const first = Math.min(paintHeight, H - wfHead);
+    wfHistoryCtx.putImageData(img, 0, wfHead, 0, 0, W, first);
+    if (first < paintHeight) wfHistoryCtx.putImageData(img, 0, wfHead - H, 0, first, W, paintHeight - first);
+    paintHistory(ctx, W, H);
+  } else ctx.putImageData(img, 0, 0);
   paintBadgeIndicator(ctx, W, H);
 }
 
