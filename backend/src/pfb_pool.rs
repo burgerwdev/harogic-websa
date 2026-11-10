@@ -872,7 +872,9 @@ mod tests {
 
     #[test]
     fn reused_worker_history_matches_serial_bits_at_partial_boundaries() {
-        for fs in [62_500_000.0, 976_562.5] {
+        // Include the intermediate SAN-90 capture clocks used by WFM. These
+        // exercise different PFB hop sizes from the full-rate and narrow cases.
+        for fs in [62_500_000.0, 7_812_500.0, 3_906_250.0, 1_953_125.0, 976_562.5] {
             for taps in [4, 8, 16] {
                 let mut reference = Pfb::with_taps(fs, 2, taps).unwrap();
                 reference.fir_kernel = 1;

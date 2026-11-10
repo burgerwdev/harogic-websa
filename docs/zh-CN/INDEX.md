@@ -23,3 +23,4 @@
 | 维护 DRM 台架与 AAC 夹具 | [DRM](reference/DRM.md) |
 | 安装 provider 和使用专项工具 | [工具](../../tools/README.md) |
 | 本地候选包检查与已知样本 | [验收](ACCEPTANCE.md) |
+| 原生 RF SNR、FT8、MER 与测量有效性 | [SNR](reference/SNR.md) |

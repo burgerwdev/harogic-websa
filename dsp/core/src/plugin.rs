@@ -186,6 +186,12 @@ pub trait AnalogDemodulator: Send {
         0
     }
 
+    /// Additional causal PCM alignment delay, beyond the IF/audio FIRs.
+    /// RF measurement and decoder IQ precede this audio-only delay.
+    fn alignment_delay_seconds(&self) -> f64 {
+        0.0
+    }
+
     /// Whether the stereo pilot is currently detected (the badge's state).
     fn stereo_detected(&self) -> bool {
         false
@@ -211,6 +217,8 @@ pub trait AnalogDemodulator: Send {
     fn stereo_diag(&self) -> [f64; 4] {
         [0.0; 4]
     }
+
+    fn pilot_measurement(&self) -> Option<(f64, f64)> { None }
 
     fn pilot_snr_db(&self) -> f64 {
         0.0
@@ -275,6 +283,13 @@ pub struct DigitalStatus {
     pub mode: Option<String>,
     pub station_label: Option<String>,
     pub carrier_offset_hz: f64,
+    /// Channel-weighted nearest-FAC decision error; includes distortion and
+    /// equalization error. Not an independent noise measurement.
+    pub fac_mer_db: Option<f64>,
+    pub fac_snr_db: Option<f64>,
+    pub measurement_bandwidth_hz: Option<f64>,
+    pub measurement_seconds: Option<f64>,
+    pub measurement_age_seconds: f64,
     pub fac_ok: u64,
     pub fac_errors: u64,
     pub sdc_ok: u64,

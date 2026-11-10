@@ -430,12 +430,12 @@ impl ChanEst {
             self.fac_pow += pow;
             self.fac_cnt += 1;
         }
-        if out_sym == self.mode.symbols_per_frame() - 1 && self.fac_err > 0.0 {
+        if out_sym == self.mode.symbols_per_frame() - 1 {
             let e = self.fac_err / self.fac_pow.max(1e-30);
-            self.stats.fac_mer_db = Some(-10.0 * e.max(1e-12).log10());
-            // Decision-directed SNR in the nominal occupied bandwidth: FAC 4-QAM errors
-            // estimate the noise, while average cell power and the actual carrier span
-            // account for boosted pilots and the useful bandwidth (as in Dream's readout).
+            // Exact/near-exact decisions are a numerical limit, not a measured
+            // 120 dB MER. Nearest decisions underestimate error at low SNR.
+            self.stats.fac_mer_db = (self.fac_pow>0.0 && e.is_finite() && e>1e-10)
+                .then(|| -10.0*e.log10());
             let signal_bw = self.n_car as f64 * self.mode.carrier_spacing_hz();
             let nominal_bw = if self.mode == RobustnessMode::E {
                 f64::from(self.mode.nominal_bandwidth_hz())
@@ -444,16 +444,23 @@ impl ChanEst {
             };
             let correction = map.avg_power_per_symbol / self.n_car as f64
                 * signal_bw / nominal_bw;
-            let snr = correction / e.max(1e-12);
-            self.stats.snr_db = Some(10.0 * snr.max(1.0).log10());
+            // Only the AWGN/flat-channel high-MER regime supports interpreting
+            // FAC errors as noise. Keep negative mathematical results; never
+            // coerce missing/low-reliability estimates to zero dB.
+            self.stats.snr_db = self.stats.fac_mer_db.filter(|mer|*mer>=10.0)
+                .map(|_|10.0*(correction/e).log10());
             // Dream estimates the SNR from the same decisions and feeds it back to the Wiener
             // filters, which is what adapts them to a weak or noisy signal. The raw FAC MER is a
             // channel-limited quantity, so it is IIR-smoothed first (the reference's `bound_snr`
             // over a ~5 s window); feeding the instantaneous value back drives a positive-
             // feedback collapse of the Wiener regularisation on a delay-spread channel.
-            let snr_inst = (1.0 / e.max(1e-12)).max(1.0);
-            let sym_rate = f64::from(self.mode.sample_rate()) / self.mode.symbol_len() as f64;
-            iir1(&mut self.snr_linear, snr_inst, (-1.0 / (30.0 * sym_rate)).exp());
+            if self.fac_err > 0.0 {
+                let snr_inst = (1.0 / e.max(1e-12)).max(1.0);
+                let sym_rate = f64::from(self.mode.sample_rate()) / self.mode.symbol_len() as f64;
+                iir1(&mut self.snr_linear, snr_inst, (-1.0 / (30.0 * sym_rate)).exp());
+            }
+            // Even a numerically exact frame ends this observation. Retaining
+            // its power would dilute the following frame's measured error.
             self.fac_err = 0.0;
             self.fac_pow = 0.0;
             self.fac_cnt = 0;
@@ -1812,5 +1819,53 @@ mod fading_tests {
             mer >= PREVIOUS_EQUALISER_MER_DB,
             "with a 1 ms echo the estimator ({mer:.1} dB) must beat the previous equaliser ({PREVIOUS_EQUALISER_MER_DB:.1} dB)"
         );
+    }
+}
+
+#[cfg(test)]
+mod decision_metric_validation {
+    use super::*;
+    use crate::digital::drm::params::SpectrumOccupancy;
+    #[test]
+    fn an_exact_fac_frame_cannot_dilute_the_next_frames_error() {
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let mut est = ChanEst::new(&map);
+        let last = est.mode.symbols_per_frame() - 1;
+        // Previously accumulated exact FAC cells; the final symbol adds no
+        // usable channel power. This must still close the frame observation.
+        est.fac_pow = 2.0;
+        est.fac_cnt = 1;
+        est.finish(vec![Cplx::zero(); est.num_pil], vec![Cplx::zero(); est.n_car], last, 0, &map, 100.0);
+        assert!(est.stats.fac_mer_db.is_none() && est.stats.snr_db.is_none());
+        assert_eq!(est.fac_cnt, 0);
+        assert_eq!(est.fac_pow, 0.0);
+        est.fac_pow = 1.0;
+        est.fac_err = 0.01;
+        est.fac_cnt = 1;
+        est.finish(vec![Cplx::zero(); est.num_pil], vec![Cplx::zero(); est.n_car], last, 0, &map, 100.0);
+        assert!((est.stats.fac_mer_db.unwrap() - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nearest_fac_decisions_are_biased_at_low_snr_and_unclipped_mer_is_distinct() {
+        let mut seed=42_u64;
+        let mut unit=||{seed^=seed<<13;seed^=seed>>7;seed^=seed<<17;((seed>>11) as f64+0.5)/9007199254740992.0};
+        for expected in [-5.0,0.0,5.0,10.0,20.0] {
+            let sigma=(0.5/10_f64.powf(expected/10.0)).sqrt();
+            let q=2_f64.sqrt().recip();let (mut truth,mut decision)=(0.0,0.0);
+            for _ in 0..100000 {
+                let r=(-2.0*unit().ln()).sqrt();let angle=std::f64::consts::TAU*unit();
+                let (nr,ni)=(sigma*r*angle.cos(),sigma*r*angle.sin());
+                let y=Cplx::new(q+nr,q+ni);
+                let dr=if y.re>=0.0{q}else{-q};let di=if y.im>=0.0{q}else{-q};
+                truth+=nr*nr+ni*ni;decision+=(y.re-dr).powi(2)+(y.im-di).powi(2);
+            }
+            let known_mer=-10.0*(truth/100000.0).log10();
+            let decision_mer=-10.0*(decision/100000.0).log10();
+            println!("DRM FAC AWGN={expected} known MER={known_mer:.3} nearest MER={decision_mer:.3} bias={:.3} dB",decision_mer-known_mer);
+            assert!((known_mer-expected).abs()<0.06);
+            if expected>=10.0 {assert!((decision_mer-known_mer).abs()<0.1);}
+            if expected<=5.0 {assert!(decision_mer-known_mer>0.1);}
+        }
     }
 }

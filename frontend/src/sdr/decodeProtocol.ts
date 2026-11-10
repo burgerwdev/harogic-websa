@@ -1,3 +1,4 @@
+import type { NativeMeasurement } from './measurement';
 // SDE2 is the native receiver's bounded, source-clocked event stream.
 import type { DrmReceiverStatus } from './drmLog';
 import type { RadiofaxClockSource, RadiofaxClockStatus, RadiofaxStage } from './radiofaxLog';
@@ -7,16 +8,18 @@ import { MAX_DECODE_BYTES } from './streamLimits';
 export { MAX_DECODE_BYTES } from './streamLimits';
 const U64_MAX = (1n << 64n) - 1n;
 export interface ReceiverEvent {
+    measurement?: NativeMeasurement;
+    measurements?: NativeMeasurement[];
 	type: string;
 	processing_generation?: string; drained?: boolean; tail_complete?: boolean; processing_complete?: boolean;
 	provider?: string; mode?: string; kind?: DecoderResultKind; data?: unknown;
 	snapshotAck?: boolean;
 	text?: string; endsLine?: boolean; share?: number; rms?: number; keyed?: boolean;
 	centerHz?: number; pitchHz?: number; afcHz?: number; wpm?: number;
-	frequencyHz?: number; timeOffsetS?: number; snrDb?: number; count?: number; windowStart?: string;
+	frequencyHz?: number; timeOffsetS?: number; snrDb?: number | null; count?: number; windowStart?: string;
 	stereo?: boolean; peakDevHz?: number; pilotPct?: number; peakDbFs?: string | number; peakHoldDb?: string;
 	rdsLocked?: boolean; rdsPi?: number; rdsGroups?: number; ps?: string; rt?: string;
-	carrierHz?: number | null; pilotDevHz?: number; pilotSnrDb?: number; scopeL?: number[]; scopeR?: number[];
+	carrierHz?: number | null; pilotDevHz?: number; pilotSnrDb?: number | null; scopeL?: number[]; scopeR?: number[];
 	syncEnabled?: boolean; syncLocked?: boolean; amSyncGeneration?: number;
 	carrierOffsetHz?: number | null; modulationPct?: number | null; inputDbFs?: number | null;
 	rmsDbFs?: number; scope?: number[];
@@ -144,6 +147,21 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 			readDecoderImageStrip(d.data);
 		}
 	}
+    const validateMeasurement = (m: unknown): void => {
+        if (!record(m) || !['conditional', 'valid', 'unavailable'].includes(String(m.state))
+            || typeof m.metric_type !== 'string' || typeof m.unit !== 'string'
+            || typeof m.location !== 'string' || typeof m.method !== 'string'
+            || (m.value !== null && (typeof m.value !== 'number' || !Number.isFinite(m.value)))
+            || (m.state === 'unavailable' && m.value !== null)
+            || (m.reference_bandwidth_hz !== null && (typeof m.reference_bandwidth_hz !== 'number' || !Number.isFinite(m.reference_bandwidth_hz) || m.reference_bandwidth_hz <= 0))
+            || (m.averaging_seconds !== null && (typeof m.averaging_seconds !== 'number' || !Number.isFinite(m.averaging_seconds) || m.averaging_seconds < 0))) throw new Error('Invalid native measurement');
+        validateDecoderData(m, false);
+    };
+    if (d.measurement !== undefined) validateMeasurement(d.measurement);
+    if (d.measurements !== undefined) {
+        if (!Array.isArray(d.measurements) || d.measurements.length > 8) throw new Error('Invalid native measurements');
+        d.measurements.forEach(validateMeasurement);
+    }
 	for (const key of ['share', 'rms', 'centerHz', 'pitchHz', 'afcHz', 'wpm', 'frequencyHz', 'timeOffsetS', 'snrDb', 'count',
 		'peakDevHz', 'pilotPct', 'rdsPi', 'rdsGroups', 'carrierHz', 'pilotDevHz', 'pilotSnrDb', 'width', 'height', 'row', 'rows',
 		'pushes', 'attempts', 'bufferedSamples', 'bufferedSeconds', 'level', 'srcLevel', 'index', 'signalLevel',

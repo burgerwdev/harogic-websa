@@ -911,3 +911,16 @@ describe('native decoded stream boundaries', () => {
     } finally { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); }
   });
 });
+
+it('validates native measurement nulls, negative values and validity metadata', () => {
+  const measurement = { metric_type: 'rf_snr', unit: 'dB', value: -7, state: 'conditional',
+    reference_bandwidth_hz: 3000, averaging_seconds: 1.5, location: 'raw_iq', method: 'welch' };
+  for (const value of [-7, null]) {
+    const stream = new DecodeSequence(); stream.accept(frame());
+    expect(stream.accept(frame({ seq: 1, event: { type: 'rf-measurement', measurement: {
+      ...measurement, value, state: value === null ? 'unavailable' : 'conditional' } } })).event.measurement?.value).toBe(value);
+  }
+  const stream = new DecodeSequence(); stream.accept(frame());
+  expect(() => stream.accept(frame({ seq: 1, event: { type: 'rf-measurement', measurement: {
+    ...measurement, value: 0, state: 'unavailable' } } }))).toThrow('Invalid native measurement');
+});

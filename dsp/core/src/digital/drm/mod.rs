@@ -332,9 +332,13 @@ impl DrmReceiver {
         self.buf.len() / 2
     }
 
-    /// The channel estimator's FAC SNR, dB (None before the first frame).
+    fn metrics_current(&self) -> bool {
+        self.locked() && self.consecutive_fac_failures==0
+            && self.pushed.saturating_sub(self.last_good_fac_sample)<=u64::from(self.sample_rate)
+    }
+    /// The channel estimator's conditional FAC SNR, dB (None without a current FAC).
     pub fn snr_db(&self) -> Option<f64> {
-        self.chanest.as_ref().and_then(|e| e.stats.snr_db)
+        self.metrics_current().then(||self.chanest.as_ref().and_then(|e| e.stats.snr_db)).flatten()
     }
 
     /// The spectrum occupancy this receiver decodes (SO3 for the bench DRM30 signal, SO0 for
@@ -2323,7 +2327,7 @@ impl DigitalDemodulator for DrPlugin {
         if let Some(snr) = self.rx.snr_db() {
             // Whole decibels: a tenth of a decibel changes on every block and the change
             // would post a report per block.
-            lines.push(format!("FAC SNR {snr:.0} dB"));
+            lines.push(format!("FAC SNR {snr:.0} dB (decision estimate, AWGN only)"));
         }
         lines.push(format!(
             "{} MSC frames, {} audio AUs, FAC ok {} err {}",
@@ -2369,7 +2373,7 @@ impl DigitalDemodulator for DrPlugin {
     fn decoded(&self) -> Vec<(String, DigitalReport)> {
         let report = self
             .last_report()
-            .unwrap_or(DigitalReport { frequency_hz: 0.0, time_offset_s: 0.0, snr_db: 0.0 });
+            .unwrap_or(DigitalReport { frequency_hz: 0.0, time_offset_s: 0.0, snr_db: f64::NAN });
         self.lines.iter().cloned().map(|line| (line, report)).collect()
     }
 
@@ -2459,6 +2463,13 @@ impl DigitalDemodulator for DrPlugin {
             }
         }
         Some(DigitalStatus {
+            fac_mer_db: self.rx.metrics_current().then(||self.rx.chanest.as_ref().and_then(|e|e.stats.fac_mer_db)).flatten(),
+            fac_snr_db: self.rx.snr_db(),
+            measurement_bandwidth_hz: self.rx.mode.map(|m|if m==RobustnessMode::E {
+                f64::from(m.nominal_bandwidth_hz())
+            } else {self.rx.occupancy.bandwidth_khz()*1000.0}),
+            measurement_age_seconds: self.rx.pushed.saturating_sub(self.rx.last_good_fac_sample) as f64/f64::from(self.rx.sample_rate),
+            measurement_seconds: self.rx.mode.map(|m|m.symbols_per_frame() as f64*m.symbol_len() as f64/f64::from(m.sample_rate())),
             locked: self.rx.locked(),
             mode: self.rx.mode.map(|mode| format!("{mode:?}")),
             station_label: self.rx.station_label.clone(),

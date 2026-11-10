@@ -14,8 +14,8 @@ export interface Ft8Spot {
 	hz: number;
 	/** The decoded text (`CQ JO1WKO PM95`). */
 	text: string;
-	/** Sync-correlation SNR estimate in dB (a diagnostic, not a calibrated measurement). */
-	snrDb: number;
+	/** Decoded-symbol SNR in dB relative to 2500 Hz; null when unavailable. */
+	snrDb: number | null;
 	/** Audio offset inside the channel, in Hz (the `DF` an FT8 operator reads). */
 	offsetHz: number;
 	/** Where the transmission started relative to the slot, in seconds. */
@@ -89,7 +89,7 @@ export function addFt8Spot(report: Ft8Report, at = Date.now(), channel: number =
 		at,
 		hz: (Number(report.centerHz) || 0) + (Number(report.frequencyHz) || 0),
 		text: String(report.text || ''),
-		snrDb: Number(report.snrDb) || 0,
+		snrDb: typeof report.snrDb === 'number' && Number.isFinite(report.snrDb) ? report.snrDb : null,
 		offsetHz: Number(report.frequencyHz) || 0,
 		timeOffsetS: Number(report.timeOffsetS) || 0,
 		sourceKey: report.sourceKey,

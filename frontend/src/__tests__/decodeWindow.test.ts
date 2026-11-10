@@ -701,7 +701,7 @@ describe('the FT8 decode window', () => {
 		expect(document.getElementById('decode-drm-snr')?.title).toBe('');
 	});
 
-	it('retains the DRM snapshot across empty heartbeats and updates service rows in place', () => {
+	it('retains DRM metadata while invalidating an explicit null SNR and updates service rows in place', () => {
 		setDecodeWindowAvailable('drm');
 		toggleDecodeWindow();
 		const receiver = { locked: true, mode: 'B', stationLabel: 'CNR-1', carrierOffsetHz: 0,
@@ -713,7 +713,7 @@ describe('the FT8 decode window', () => {
 		expect(document.getElementById('decode-drm-msc')?.textContent).toBe('14');
 		expect(document.getElementById('decode-drm-aus')?.textContent).toBe('86');
 		expect(document.getElementById('decode-drm-mer')?.textContent).toBe('18.7');
-		expect(document.getElementById('decode-drm-snr')?.textContent).toBe('16 dB');
+		expect(document.getElementById('decode-drm-snr')?.textContent).toBe('—');
 		expect(document.getElementById('decode-drm-fac-ok')?.textContent).toBe('22');
 		expect(document.getElementById('decode-drm-services')?.children[1]).toBe(service);
 	});

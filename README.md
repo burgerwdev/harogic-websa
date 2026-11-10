@@ -9,6 +9,8 @@
 WebSA combines a native Rust acquisition/DSP service, a C++ adapter for the HAROGIC SDK,
 and a TypeScript browser interface. Python is used for offline tools and tests.
 
+Native measurements now report their bandwidth, method and validity; see [SNR definitions and reproducible validation](docs/en/reference/SNR.md).
+
 ## What it does
 
 - Swept and real-time spectrum, four traces, density/waterfall, markers, channel power,

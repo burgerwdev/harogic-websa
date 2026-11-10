@@ -15,6 +15,7 @@ export interface DrmService {
 }
 
 export interface DrmReceiverStatus {
+	measurements?: import('./measurement').NativeMeasurement[];
 	locked: boolean;
 	mode: string | null;
 	stationLabel: string | null;
@@ -60,7 +61,7 @@ export function setDrmDecode(lines: string[], snrDb: number | null, channel: num
 	// A real acquisition/search snapshot replaces the old lines; mode changes clear them.
 	const previous = contexts[channel];
 	contexts[channel] = { ...previous, lines: lines.length ? lines : previous.lines,
-		snrDb: Number.isFinite(snrDb) ? snrDb : lines.length ? null : previous.snrDb,
+		snrDb: snrDb === null ? null : Number.isFinite(snrDb) ? snrDb : lines.length ? null : previous.snrDb,
 		receiver: receiver ?? previous.receiver };
 	if (channel === selectedChannel) notify();
 }

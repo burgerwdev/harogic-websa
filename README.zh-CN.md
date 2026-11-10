@@ -9,6 +9,8 @@
 WebSA 由原生 Rust 采集／DSP 服务、连接 HAROGIC SDK 的 C++ 适配器及 TypeScript 浏览器界面组成。
 Python 用于离线工具和测试。
 
+原生测量会报告带宽、方法和有效状态，详见[信噪比定义与可重复验证](docs/zh-CN/reference/SNR.md)。
+
 ## 主要功能
 
 - 扫频及实时频谱、四条迹线、密度／瀑布、标记、信道功率、占用带宽、ACPR、谐波和相噪测量。

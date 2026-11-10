@@ -403,7 +403,7 @@ function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowE
 	if (key) row.dataset.qso = key;
 	const cells: Array<{ text: string; className?: string }> = [
 		{ text: clock(spot.at, utcTime) },
-		{ text: spot.snrDb.toFixed(0) },
+		{ text: spot.snrDb?.toFixed(0) ?? '—' },
 		{ text: spot.offsetHz.toFixed(0) },
 		{ text: (spot.hz / 1e6).toFixed(4) },
 		{ text: spot.text, className: 'ft8-message' },
@@ -469,7 +469,7 @@ function renderFt8Rows(): void {
 		const key = (spot: Ft8Spot, geo: { country: string; location: string }): string | number => {
 			switch (col) {
 				case 0: return spot.at;
-				case 1: return spot.snrDb;
+				case 1: return spot.snrDb ?? -Infinity;
 				case 2: return spot.offsetHz;
 				case 3: return spot.hz;
 				case 4: return spot.text;
@@ -1193,7 +1193,8 @@ function renderDrm(): void {
 	const main = element('decode-drm-main');
 	if (main) main.style.display = locked ? 'grid' : 'none';
 	const measuredMer = lines.find((line) => line.startsWith('FAC MER '))?.match(/^FAC MER (-?\d+(?:\.\d+)?) dB/);
-	put('decode-drm-mer', measuredMer?.[1] ?? '—');
+	const nativeMer = receiver?.measurements?.find(m => m.metric_type === 'fac_weighted_mer');
+	put('decode-drm-mer', nativeMer ? nativeMer.value?.toFixed(1) ?? '—' : measuredMer?.[1] ?? '—');
 	const metrics = element('decode-drm-metrics');
 	if (metrics) metrics.style.display = locked ? 'grid' : 'none';
 	put('decode-drm-msc', counts?.[1] ?? '—');
@@ -1204,7 +1205,7 @@ function renderDrm(): void {
 	const snr = element('decode-drm-snr');
 	if (snr) {
 		const measured = lines.find((line) => line.startsWith('FAC SNR '))?.slice(8);
-		snr.textContent = measured ?? (Number.isFinite(snrDb) ? `${snrDb?.toFixed(0)} dB` : '—');
+		snr.textContent = snrDb === null ? '—' : measured ?? (Number.isFinite(snrDb) ? `${snrDb?.toFixed(0)} dB` : '—');
 		snr.title = snr.textContent === '—' ? t('drm_snr_unavailable') : '';
 	}
 	let services = element('decode-drm-services');
@@ -1410,7 +1411,7 @@ function renderWfm(): void {
 	put('wfm-pilot', w ? `${pilotHz >= 1000 ? (pilotHz / 1000).toFixed(1) + ' kHz' : Math.round(pilotHz) + ' Hz'}` : '—');
 	const pilotEl = element('wfm-pilot');
 	if (pilotEl && w) {
-		pilotEl.title = `${w.pilotPct.toFixed(1)}% of 75 kHz broadcast FM deviation, ${w.pilotSnrDb.toFixed(0)} dB above the band beside it`;
+		pilotEl.title = `${w.pilotPct.toFixed(1)}% of 75 kHz broadcast FM deviation, ${Number.isFinite(w.pilotSnrDb) ? w.pilotSnrDb.toFixed(0) + ' dB pilot contrast (SNR estimate)' : 'pilot contrast unavailable'}`;
 	}
 	put('wfm-audio', w ? `${w.peakDbFs} dBFS` : '—');
 	const scope = element('wfm-scope') as HTMLCanvasElement | null;

@@ -37,6 +37,83 @@ fn rms(x: &[f32]) -> f64 {
 }
 
 #[test]
+fn native_wfm_stereo_matrix_preserves_samples_across_iq_partitions() {
+    // The two resamplers see different input clocks (IQ and IQ/2). A one-frame
+    // disagreement must wait for its matching sample, rather than become a zero
+    // or get dropped at the L/R matrix. Include the live SAN-90 clock/packet and
+    // odd packets reached by other acquisition and multichannel geometries.
+    for (fs, rate) in [(325_520.833_333_333_3, 48_000.0),
+        (325_520.833_333_333_3, 44_100.0), (300_480.769_230_769_25, 48_000.0),
+        (488_281.25, 192_000.0)] {
+        let mut phase = 0.0;
+        let input: Vec<f32> = (0..(fs * 0.09) as usize).flat_map(|k| {
+            let t = k as f64 / fs;
+            let composite = 0.16 * (TAU * 1_137.0 * t).sin()
+                + 0.24 * (TAU * 4_321.0 * t).cos() * (TAU * 38_000.0 * t).cos()
+                + 0.09 * (TAU * 19_000.0 * t).sin();
+            phase += TAU * 75_000.0 * composite / fs;
+            [phase.cos() as f32, phase.sin() as f32]
+        }).collect();
+        let replay = |size: usize| {
+            let mut demod = AnalogDemod::new_prechannelized(
+                spec_for("wfm").unwrap(), DemodConfig::new(fs, 180_000.0), rate);
+            demod.set_agc_enabled(false);
+            let mut matrix = Vec::new();
+            let mut pcm = Vec::new();
+            for chunk in input.chunks(2 * size) {
+                let limit = demod.output_length_hint(chunk.len() / 2).unwrap();
+                demod.process_into(chunk, &mut pcm);
+                let side = demod.take_side();
+                assert!(pcm.len() <= limit);
+                assert_eq!(pcm.len(), side.len(), "unmatched stereo frames: fs={fs} rate={rate} block={size}");
+                for (&m, &s) in pcm.iter().zip(&side) { matrix.extend([m + s, m - s]); }
+            }
+            matrix
+        };
+        let expected = replay(input.len() / 2);
+        for size in [1, 17, 9_765, 11_165, 12_180] {
+            let actual = replay(size);
+            assert_eq!(actual.len(), expected.len());
+            let peak = actual.iter().zip(&expected).map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+            assert!(peak < 2e-6, "partition created stereo transient: fs={fs} rate={rate} block={size} peak={peak}");
+        }
+    }
+}
+
+#[test]
+fn native_wfm_retune_discards_unmatched_stereo_history() {
+    let fs = 325_520.833_333_333_3;
+    let new = || {
+        let mut demod = AnalogDemod::new_prechannelized(
+            spec_for("wfm").unwrap(), DemodConfig::new(fs, 180_000.0), 48_000.0);
+        demod.set_agc_enabled(false);
+        demod
+    };
+    let mut demod = new();
+    let mut pcm = Vec::new();
+    let old: Vec<f32> = (0..3001).flat_map(|k| {
+        let phase = TAU * 30_000.0 * k as f64 / fs;
+        [phase.cos() as f32, phase.sin() as f32]
+    }).collect();
+    demod.process_into(&old, &mut pcm);
+    demod.take_side();
+    for _ in 0..32 {
+        if demod.stereo.as_ref().unwrap().pending_mono_samples() > 0 { break; }
+        demod.process_into(&[0.8, 0.6], &mut pcm);
+        demod.take_side();
+    }
+    assert!(demod.stereo.as_ref().unwrap().pending_mono_samples() > 0);
+    demod.reset();
+    let mut fresh = new();
+    let input = vec![0.2; 24_360];
+    let mut expected = Vec::new();
+    fresh.process_into(&input, &mut expected);
+    demod.process_into(&input, &mut pcm);
+    assert_eq!(pcm, expected, "old-station mono tail survived retuning");
+    assert_eq!(demod.take_side(), fresh.take_side(), "old-station side tail survived retuning");
+}
+
+#[test]
 fn native_wfm_agc_measures_both_stereo_channels_without_clipping_or_pumping() {
     let fs = 325_520.833_333_333_3;
     let mut receiver = AnalogDemod::new_prechannelized(

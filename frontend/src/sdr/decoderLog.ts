@@ -205,6 +205,37 @@ export function clearDecoderStatuses(channel: string): void {
   log.bytes = log.entries.reduce((bytes, entry) => bytes + entry.bytes, 0);
   if (count !== log.entries.length) listeners.forEach(fn => fn(channel));
 }
+/** Only native live metrology expires here; provider values and historical
+ * decoded-message reports retain their original numbers, units and provenance. */
+export function expireNativeMeasurements(now = Date.now()): string[] {
+  const changed: string[] = [];
+  for (const [channel, log] of channels) {
+    if (typeof channel !== 'string') continue;
+    for (const entry of [...log.entries]) {
+      if (entry.provider !== 'native' || entry.kind !== 'status' || !entry.data || typeof entry.data !== 'object') continue;
+      const data = entry.data as Record<string, unknown>;
+      const status = data.status && typeof data.status === 'object' ? data.status as Record<string, unknown> : undefined;
+      let expired = false;
+      const expire = (value: unknown): unknown => {
+        if (!value || typeof value !== 'object') return value;
+        const m = value as Record<string, unknown>;
+        if (m.reason === 'stale' || typeof m.max_age_seconds !== 'number' || now - entry.at <= m.max_age_seconds * 1000) return m;
+        expired = true;
+        return { ...m, value: null, state: 'unavailable', reason: 'stale',
+          signal_plus_noise_power: null, background_power: null, signal_power: null };
+      };
+      const measurement = data.measurement === undefined ? undefined : expire(data.measurement);
+      const measurements = Array.isArray(data.measurements) ? data.measurements.map(expire) : undefined;
+      const statusMeasurements = Array.isArray(status?.measurements) ? status.measurements.map(expire) : undefined;
+      if (!expired) continue;
+      addDecoderResult({ provider: entry.provider, mode: entry.mode, kind: entry.kind,
+        data: { ...data, ...(measurement ? { measurement } : {}), ...(measurements ? { measurements, pilotSnrDb: null } : {}),
+          ...(statusMeasurements ? { status: { ...status, measurements: statusMeasurements }, snrDb: null } : {}) } }, entry.source, channel);
+      changed.push(channel);
+    }
+  }
+  return changed;
+}
 export function subscribeDecoderLog(fn: (channel: number | string) => void): () => void {
   listeners.add(fn);
   return () => { listeners.delete(fn); };

@@ -1,0 +1,266 @@
+{
+  "date": "2026-11-10",
+  "rf": {
+    "seed": 42,
+    "target_error_db": 1,
+    "validated_injected_range_db": [
+      -10,
+      35
+    ],
+    "cases": [
+      {
+        "sample_rate_hz": 12000.0,
+        "bandwidth_hz": 3000.0,
+        "injected_db": -10.0,
+        "measured_db": -10.1616,
+        "error_db": 0.1616
+      },
+      {
+        "sample_rate_hz": 12000.0,
+        "bandwidth_hz": 3000.0,
+        "injected_db": -5.0,
+        "measured_db": -5.142,
+        "error_db": 0.142
+      },
+      {
+        "sample_rate_hz": 12000.0,
+        "bandwidth_hz": 3000.0,
+        "injected_db": 0.0,
+        "measured_db": -0.1108,
+        "error_db": 0.1108
+      },
+      {
+        "sample_rate_hz": 12000.0,
+        "bandwidth_hz": 3000.0,
+        "injected_db": 10.0,
+        "measured_db": 9.9214,
+        "error_db": 0.0786
+      },
+      {
+        "sample_rate_hz": 12000.0,
+        "bandwidth_hz": 3000.0,
+        "injected_db": 25.0,
+        "measured_db": 24.9341,
+        "error_db": 0.0659
+      },
+      {
+        "sample_rate_hz": 12000.0,
+        "bandwidth_hz": 3000.0,
+        "injected_db": 35.0,
+        "measured_db": 34.9324,
+        "error_db": 0.0676
+      },
+      {
+        "sample_rate_hz": 48828.125,
+        "bandwidth_hz": 12000.0,
+        "injected_db": -10.0,
+        "measured_db": -10.0057,
+        "error_db": 0.0057
+      },
+      {
+        "sample_rate_hz": 48828.125,
+        "bandwidth_hz": 12000.0,
+        "injected_db": -5.0,
+        "measured_db": -5.024,
+        "error_db": 0.024
+      },
+      {
+        "sample_rate_hz": 48828.125,
+        "bandwidth_hz": 12000.0,
+        "injected_db": 0.0,
+        "measured_db": -0.0184,
+        "error_db": 0.0184
+      },
+      {
+        "sample_rate_hz": 48828.125,
+        "bandwidth_hz": 12000.0,
+        "injected_db": 10.0,
+        "measured_db": 9.9961,
+        "error_db": 0.0039
+      },
+      {
+        "sample_rate_hz": 48828.125,
+        "bandwidth_hz": 12000.0,
+        "injected_db": 25.0,
+        "measured_db": 25.0045,
+        "error_db": 0.0045
+      },
+      {
+        "sample_rate_hz": 48828.125,
+        "bandwidth_hz": 12000.0,
+        "injected_db": 35.0,
+        "measured_db": 35.0063,
+        "error_db": 0.0063
+      },
+      {
+        "sample_rate_hz": 390625.0,
+        "bandwidth_hz": 100000.0,
+        "injected_db": -10.0,
+        "measured_db": -9.9146,
+        "error_db": 0.0854
+      },
+      {
+        "sample_rate_hz": 390625.0,
+        "bandwidth_hz": 100000.0,
+        "injected_db": -5.0,
+        "measured_db": -4.9882,
+        "error_db": 0.0118
+      },
+      {
+        "sample_rate_hz": 390625.0,
+        "bandwidth_hz": 100000.0,
+        "injected_db": 0.0,
+        "measured_db": -0.0238,
+        "error_db": 0.0238
+      },
+      {
+        "sample_rate_hz": 390625.0,
+        "bandwidth_hz": 100000.0,
+        "injected_db": 10.0,
+        "measured_db": 9.9493,
+        "error_db": 0.0507
+      },
+      {
+        "sample_rate_hz": 390625.0,
+        "bandwidth_hz": 100000.0,
+        "injected_db": 25.0,
+        "measured_db": 24.9398,
+        "error_db": 0.0602
+      },
+      {
+        "sample_rate_hz": 390625.0,
+        "bandwidth_hz": 100000.0,
+        "injected_db": 35.0,
+        "measured_db": 34.9421,
+        "error_db": 0.0579
+      },
+      {
+        "sample_rate_hz": 2000.0,
+        "bandwidth_hz": 250.0,
+        "injected_db": -10.0,
+        "measured_db": -10.041,
+        "error_db": 0.041
+      },
+      {
+        "sample_rate_hz": 2000.0,
+        "bandwidth_hz": 250.0,
+        "injected_db": -5.0,
+        "measured_db": -5.0122,
+        "error_db": 0.0122
+      },
+      {
+        "sample_rate_hz": 2000.0,
+        "bandwidth_hz": 250.0,
+        "injected_db": 0.0,
+        "measured_db": 0.0012,
+        "error_db": 0.0012
+      },
+      {
+        "sample_rate_hz": 2000.0,
+        "bandwidth_hz": 250.0,
+        "injected_db": 10.0,
+        "measured_db": 10.015,
+        "error_db": 0.015
+      },
+      {
+        "sample_rate_hz": 2000.0,
+        "bandwidth_hz": 250.0,
+        "injected_db": 25.0,
+        "measured_db": 25.0257,
+        "error_db": 0.0257
+      },
+      {
+        "sample_rate_hz": 2000.0,
+        "bandwidth_hz": 250.0,
+        "injected_db": 35.0,
+        "measured_db": 35.0229,
+        "error_db": 0.0229
+      }
+    ],
+    "maximum_observed_error_db": 0.1616,
+    "real_fir_injected_db": -5,
+    "real_fir_measured_db": -4.963526781490469,
+    "fading_expected_db": 1.7609125905568124,
+    "fading_measured_db": 1.6693291608928664,
+    "benchmark_input_seconds": 2,
+    "benchmark_wall_seconds": 0.013399,
+    "persistent_fft_buffer_bytes": 98304
+  },
+  "ft8": {
+    "reference_package": "Debian wsjtx_2.7.0+repack-1_amd64.deb",
+    "reference_executable_sha256": {
+      "jt9": "1f316b2ba2c8ba5350628ab8389f4fa5bbddb84406f6a410c20ae0c64d602e0c",
+      "ft8sim": "4246f22ad77c9286b93cf44673ecaed8cd4a23ba173551989c38815439985805"
+    },
+    "noise_seed": 20261110,
+    "reference_bandwidth_hz": 2500,
+    "maximum_observed_fading_test_error_db": 2.1264,
+    "fading_targets_db": {
+      "below_minus20": 3,
+      "minus20_and_above": 1.5
+    },
+    "known_symbol_measurement_used_when_native_search_failed_db": [
+      -20
+    ],
+    "no_wsjtx_decode_for_this_realization_db": [
+      -24
+    ],
+    "cases": [
+      {
+        "injected_db": -20.0,
+        "native_db": -20.472864,
+        "wsjtx_db": -20.0,
+        "error_db": 0.472864
+      },
+      {
+        "injected_db": -16.0,
+        "native_db": -16.396049,
+        "wsjtx_db": -16.0,
+        "error_db": 0.396049
+      },
+      {
+        "injected_db": -10.0,
+        "native_db": -10.353639,
+        "wsjtx_db": -10.0,
+        "error_db": 0.353639
+      },
+      {
+        "injected_db": 0.0,
+        "native_db": -0.336261,
+        "wsjtx_db": 0.0,
+        "error_db": 0.336261
+      },
+      {
+        "injected_db": 8.0,
+        "native_db": 7.667291,
+        "wsjtx_db": 8.0,
+        "error_db": 0.332709
+      }
+    ],
+    "identical_iq_sha256": {
+      "-24": "c06c05aadd6dc2db8ee20dc52a1627549660504d281ea65bfe72611c8bae5775",
+      "-20": "e1ae9ea5006a22a59281b77b3ec252f98783016df4cfeb9fd93137ff173370cb",
+      "-16": "a2b52add1b2b0f3848a8fa098a7c2ace4c4825b6834f547d463e949bca8409bf",
+      "-10": "ffedf49e89f8399c66a955e07abc5f3a42e38332b3ce7c1720fb4dd2053ec5a5",
+      "0": "41a39ec3fc7712019a7fbb7a1fe5bc5f4f3f9951d63f91111cd029d6c8af2fe8",
+      "8": "5fd3ac5a42aa71d707e17786dc879b0cc057743238679c6350e44ebd2f4fae25"
+    },
+    "isolated_slot_decode_wall_seconds": 3.044,
+    "concurrent_test_load_slot_decode_wall_seconds": 5.69
+  },
+  "drm": {
+    "fac_nearest_decision_bias_db_at_injected_db": {
+      "-5": 2.251,
+      "0": 1.754,
+      "5": 0.489,
+      "10": 0.014,
+      "20": 0.0
+    }
+  },
+  "limits": [
+    "Sparse flat background assumption; not an absolute hardware noise calibration",
+    "RF full-passband occupancy can be unavailable",
+    "FT8 sensitivity and known-symbol measurement accuracy are separate",
+    "Timing varies with host load; persistent buffers exclude FFT plans and temporary statistics"
+  ]
+}

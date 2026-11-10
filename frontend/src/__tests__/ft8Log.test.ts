@@ -85,3 +85,9 @@ describe('the FT8 decode log', () => {
 		}
 	});
 });
+
+it('keeps unavailable FT8 SNR null and preserves negative 2500 Hz reports', () => {
+  clearFt8Spots();
+  expect(addFt8Spot(report({ snrDb: null })).snrDb).toBeNull();
+  expect(addFt8Spot(report({ snrDb: -21 })).snrDb).toBe(-21);
+});

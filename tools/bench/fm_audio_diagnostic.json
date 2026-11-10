@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-10",
+  "release": "1.12.18",
+  "scope": "WFM-specific stereo auxiliary anti-alias and PCM alignment fixes. Shared RF measurements are independent and apply to all receive channels.",
+  "operator_confirmation": {
+    "same_antenna_other_radio_good": true,
+    "longwire_noisy_youloop_clean": true,
+    "after_fix": "Reported greatly improved; original noise is barely audible. Qualitative reception check, not measured audio SNR improvement."
+  },
+  "capture": {
+    "if_bandwidth_hz": 180000,
+    "capture_rate_hz": 3906250,
+    "channel_rate_hz": 325520.8333333333,
+    "audio_rate_hz": 48000,
+    "audio_channels": 2,
+    "agc": true,
+    "nr": false,
+    "deemphasis_us": 50
+  },
+  "confirmed_defects": {
+    "auxiliary_alias": {
+      "cause": "Decimating the discriminator composite by 2 without an anti-alias filter folds out-of-band components onto the pilot/stereo carrier and then into audible tones.",
+      "fix": "33-tap half-band FIR before auxiliary decimation. Integer mono delay and centred 33-tap fractional side alignment preserve stereo phase and audio-band gain. Input IQ and the mono waveform are preserved; delay is reported in audio clock metadata.",
+      "regression": "analog::fm_stereo::tests::composite_decimation_rejects_out_of_band_audio_aliases",
+      "iq_rates_hz": [
+        300480.76923076925,
+        325520.8333333333,
+        488281.25
+      ],
+      "audio_rates_hz": [
+        44100,
+        48000
+      ],
+      "required_rejection_db": 50
+    },
+    "stereo_frame_alignment": {
+      "cause": "Mono and IQ/2 side resamplers can differ by a frame at a block boundary; zero padding/discard creates transients.",
+      "fix": "Bounded unmatched tails before linked AGC and matrixing; reset on retune.",
+      "regression_iq_blocks": [
+        1,
+        17,
+        9765,
+        11165,
+        12180
+      ],
+      "before_mismatched_blocks": 50,
+      "after_mismatched_blocks": 0
+    }
+  },
+  "same_iq_final_replay": {
+    "mono_alignment_delay_frames": 19,
+    "mono_alignment_delay_seconds": 0.0003958333333333333,
+    "mono_peak_error_after_alignment": 0.0,
+    "paired_frame_mismatches": 0,
+    "side_rms_before": 0.06142550706863403,
+    "side_rms_after": 0.05179738253355026,
+    "side_difference_rms": 0.03461810573935509,
+    "method": "Identical saved IQ, AGC and NR off, same fixed PCM gain 0.2, compensate declared delay. Neither output is clean truth; no audio SNR improvement claim.",
+    "input_sha256": "91eb5332a4ad9b8700993abaf32ed4dc5c03b51e0596ff611238dc7e65521a47",
+    "wav_sha256": {
+      "longline-before-anti-alias-final.wav": "816287d021941ca7b5bfb3419f45b0b8312a724f668256bc456b33004865b2cd",
+      "longline-after-anti-alias-final.wav": "94af3828289053408101436311468b77de1904b76e12fcf28a9a33170b8b50f6"
+    }
+  },
+  "independent_discriminator_reference": {
+    "reference": "HAROGIC HTRA API 0.55.100 ADM_FMDemod",
+    "comparison": {
+      "current": {
+        "vendor_output_to_hz_scale": 0.9999999943024228,
+        "correlation": 1.0,
+        "residual_rms_hz": 0.0014212162085161938,
+        "residual_peak_hz": 0.014826326834736392,
+        "vendor_phase_above140k_fraction": 0.0011642141083065885,
+        "native_phase_above140k_fraction": 0.0011642141083065885
+      },
+      "youloop_matched": {
+        "vendor_output_to_hz_scale": 0.9999999943096998,
+        "correlation": 0.9999999999999919,
+        "residual_rms_hz": 0.0014280923000610036,
+        "residual_peak_hz": 0.008581119851442054,
+        "vendor_phase_above140k_fraction": 0.0,
+        "native_phase_above140k_fraction": 0.0
+      },
+      "longline_ref_m40": {
+        "vendor_output_to_hz_scale": 0.9999999942454884,
+        "correlation": 1.0,
+        "residual_rms_hz": 0.001436420374375867,
+        "residual_peak_hz": 0.014133592660073191,
+        "vendor_phase_above140k_fraction": 0.0002943401857136676,
+        "native_phase_above140k_fraction": 0.0002943401857136676
+      }
+    }
+  },
+  "browser_transport_check": {
+    "method": "Simultaneously retain AUD2 websocket float PCM and continuous stereo AudioWorklet taps at source, local gain/pan, and compressor output. Align source index and the reported piecewise drift interpolation; final graph comparison fits one constant gain and one integer delay. Muted headless Chromium, flat EQ, one audible route.",
+    "48k_peak_residual": 3.725290298461914e-09,
+    "44k1_peak_residual": 1.4901161193847656e-08,
+    "limitations": "Controlled Chromium; physical sound-card output was not captured."
+  },
+  "gain_trials": {
+    "reference_levels_dbm": [
+      0,
+      -20,
+      -40,
+      -50
+    ],
+    "preamplifier_policies": [
+      "auto",
+      "forced_off"
+    ],
+    "if_grades": [
+      0,
+      2,
+      3
+    ],
+    "strategies": [
+      "low_noise",
+      "high_linearity"
+    ],
+    "attenuation_settings_db": [
+      -1,
+      0,
+      15,
+      30
+    ],
+    "interpretation": "No lower-gain setting consistently removed the observed IQ envelope dips and discriminator outliers. Higher sensitivity improved some observations, but changing programme content prevents an exact quality improvement claim. Analog overload and antenna fault are not established.",
+    "programme_warning": "Antenna and live gain captures are different broadcasts. No cross-record waveform subtraction, audio SNR or exact quality improvement is inferred.",
+    "manufacturer_references": {
+      "gain_mapping": "https://www.harogic.com/wp-content/uploads/2026/08/HAROGIC-HTRA-API-Programming-Guide-V0.55.100.pdf",
+      "auto_preamplifier_threshold": "https://www.harogic.com/wp-content/uploads/2026/08/HAROGIC-SAStudio4-User-Guide-V4.55.64.pdf"
+    }
+  },
+  "input_sweep": {
+    "strongest_observed_peak_hz": 13604709.1,
+    "strongest_peak_dbm": -53.210716247558594,
+    "rbw_hz": 10000,
+    "interpretation": "A swept peak is not total input power and does not by itself establish analog overload."
+  },
+  "performance": {
+    "input_seconds": 12.04826112,
+    "replays_per_case": 7,
+    "block_12180_before_median_seconds": 0.693066351,
+    "block_12180_after_median_seconds": 0.737889169,
+    "block_11165_before_median_seconds": 0.618758908,
+    "block_11165_after_median_seconds": 0.697765597,
+    "added_state": "33-tap composite FIR and one reusable f64 block scratch; 33 alignment coefficients and fixed delay rings; no extra IQ queue. Native path reuses the existing f64 detector input.",
+    "caution": "Same saved IQ and 7 replays per block size; wall time on a live host, not a real-time worst-case guarantee."
+  },
+  "pre_release_validation": {
+    "analog_tests_passed": 54,
+    "backend_library_tests_passed": 154,
+    "backend_library_tests_ignored": 5,
+    "service_tests_passed": 400,
+    "service_tests_ignored": 6,
+    "frontend_tests_passed": 2122,
+    "wasm_artifact_check": "passed: 2873366 bytes, 53 exports",
+    "frontend_related_tests_passed": 86,
+    "demod_reference_tests_passed": 3,
+    "stereo_response_tests_passed": 1
+  },
+  "hardware_smoke": {
+    "same_running_executable": true,
+    "exact_receiver_and_capture_config_restored": true,
+    "iq_sequence_gaps": 0,
+    "audio_sequence_gaps": 0,
+    "browser_underruns": 0,
+    "browser_extra_resets": 0,
+    "browser_page_errors": []
+  },
+  "limitations": [
+    "Broadcast recordings across antennas/gain settings contain different programmes; they are not clean references for waveform subtraction or audio SNR.",
+    "Analog overload and the physical origin of IQ envelope dips remain unproven.",
+    "The validated audio fix is WFM-specific; it is not a claim to fix an identical defect in every demodulator."
+  ]
+}
