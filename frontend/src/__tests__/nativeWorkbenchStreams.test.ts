@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { consumeReceiverResult } from '../ui/nativeWorkbenchStreams';
-import { decoderTextLine, decoderLog, forgetDecoderLog } from '../sdr/decoderLog';
+import { decoderTextLine, decoderLog, expireNativeMeasurements, forgetDecoderLog } from '../sdr/decoderLog';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 const envelope = (event: DecodeEnvelope['event'], mode = 'ft8', epoch = 8): DecodeEnvelope => ({ version: 1, channel: 1,
   channel_id: 8, epoch, seq: 1, input_index: '9007199254740999', input_fraction_num: '1', input_fraction_den: '3',
@@ -101,4 +101,41 @@ describe('UID receiver result histories', () => {
     expect(() => consumeReceiverResult('uid-a', envelope({ type: 'sstv-image', width: 1, height: 1, row: 0, rows: 1, rgb: [255], meta: { serial: '1' } }, 'sstv'))).toThrow('Invalid native image rows');
     expect([...(decoderLog('uid-a').entries[0].data as { rgb: Uint8Array }).rgb]).toEqual([1, 2, 3]);
   });
+});
+
+describe('native metrology validity', () => {
+  it('keeps negative RF measurements isolated by UID and retires them at retune', () => {
+    const measurement = { metric_type: 'rf_snr', unit: 'dB', value: -7.2, state: 'conditional',
+      reference_bandwidth_hz: 3000, averaging_seconds: 2, location: 'raw_iq', method: 'welch', max_age_seconds: 3 };
+    consumeReceiverResult('uid-a', envelope({ type: 'rf-measurement', measurement }, 'usb'));
+    consumeReceiverResult('uid-b', envelope({ type: 'rf-measurement', measurement: { ...measurement, value: 12 } }, 'usb'));
+    expect(decoderLog('uid-a').entries[0].data).toMatchObject({ measurement: { value: -7.2 } });
+    expect(decoderLog('uid-b').entries[0].data).toMatchObject({ measurement: { value: 12 } });
+    consumeReceiverResult('uid-a', envelope({ type: 'start' }, 'usb', 9));
+    expect(decoderLog('uid-a').entries).toHaveLength(0);
+  });
+  it('honors explicit null DRM readings even when no new presentation lines arrive', () => {
+    consumeReceiverResult('uid-a', envelope({ type: 'drm', snrDb: 18, lines: ['FAC MER 20 dB'] }, 'drm'));
+    consumeReceiverResult('uid-a', envelope({ type: 'drm', snrDb: null, lines: [] }, 'drm'));
+    expect(decoderLog('uid-a').entries[0].data).toMatchObject({ snrDb: null });
+  });
+});
+
+it('expires live RF data after a sample stall without changing historical FT8 reports', () => {
+  const measurement = { metric_type: 'rf_snr', unit: 'dB', value: -4, state: 'conditional',
+    reference_bandwidth_hz: 6000, averaging_seconds: 2, location: 'raw_iq', method: 'welch', max_age_seconds: 1 };
+  consumeReceiverResult('uid-a', envelope({ type: 'rf-measurement', measurement }, 'am'));
+  consumeReceiverResult('uid-a', envelope({ type: 'ft8', text: 'CQ TEST', snrDb: -12 }, 'ft8'));
+  expect(expireNativeMeasurements(Date.now()+2000)).toContain('uid-a');
+  expect(decoderLog('uid-a').entries.find(e => e.mode === 'am')?.data).toMatchObject({ measurement: { value: null, reason: 'stale' } });
+  expect(decoderLog('uid-a').entries.find(e => e.mode === 'ft8')?.data).toMatchObject({ decodes: [{ snr_db: -12 }] });
+});
+
+it('expires native FAC measurements without reviving values from old diagnostic lines', () => {
+  const m = { metric_type: 'fac_decision_snr', unit: 'dB', value: 18, state: 'conditional',
+    reference_bandwidth_hz: 10000, averaging_seconds: .4, location: 'fac', method: 'decisions', max_age_seconds: 1 };
+  consumeReceiverResult('uid-a', envelope({ type: 'drm', snrDb: 18, lines: ['FAC SNR 18 dB'], status: {
+    locked: true, mode: 'B', stationLabel: null, carrierOffsetHz: 0, facOk: 1, facErrors: 0, sdcOk: 0, services: [], measurements: [m] } }, 'drm'));
+  expireNativeMeasurements(Date.now()+2000);
+  expect(decoderLog('uid-a').entries[0].data).toMatchObject({ snrDb: null, status: { measurements: [{ value: null, reason: 'stale' }] } });
 });

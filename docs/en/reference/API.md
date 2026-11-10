@@ -10,6 +10,8 @@ Native backend (`backend/`) external interfaces: **HTTP REST** + **WebSocket** (
   do not require authentication. WebSockets require same-origin access or an origin
   listed in `WEBSA_ALLOWED_ORIGINS`.
 
+Native `rf-measurement`, FT8 and DRM telemetry include typed validity and measurement definitions; see [SNR metrics and validation](SNR.md). Existing numeric fields remain compatible; an explicitly unavailable value is null and supersedes an older reading.
+
 ## HTTP endpoints
 
 ### Native multichannel receivers

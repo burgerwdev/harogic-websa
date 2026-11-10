@@ -9,6 +9,8 @@
 - 默认仅监听本机回环地址；设置 `WEBSA_HOST=0.0.0.0` 可供局域网访问，产品接口无需认证。
   WebSocket 仅允许同源请求或 `WEBSA_ALLOWED_ORIGINS` 白名单中的来源。
 
+原生 `rf-measurement`、FT8 与 DRM 遥测携带指标类型、有效状态和测量定义，详见[SNR 指标与验证](SNR.md)。保留现有数值字段；明确不可用的值为 null，并替代旧读数。
+
 ## HTTP 接口
 
 ### 原生多信道接收

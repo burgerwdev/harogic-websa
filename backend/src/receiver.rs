@@ -29,6 +29,8 @@ pub struct ReceiverConfig {
     pub input_rate: f64,
     pub audio_rate: u32,
     pub if_bw: f64,
+    /// Certified full flat upstream FIR passband; None means offline unfiltered IQ.
+    pub measurement_passband_hz: Option<f64>,
     pub pitch: f64,
     pub agc: bool,
     pub am_sync: bool,
@@ -55,7 +57,7 @@ pub struct ReceiverConfig {
 impl Default for ReceiverConfig {
     fn default() -> Self {
         Self { mode: "am".into(), center_hz: 0, input_rate: 48_000.0, audio_rate: 48_000,
-            if_bw: 6_000.0, pitch: 700.0, agc: true, am_sync: false, am_sync_generation: 0, gain: 1.0,
+            if_bw: 6_000.0, measurement_passband_hz: None, pitch: 700.0, agc: true, am_sync: false, am_sync_generation: 0, gain: 1.0,
             squelch_dbm: audio::SQUELCH_OPEN_DBM, nr: false, nr_strength: 0.6,
             nr_algorithm: "wiener".into(), nr_atten_db: 10.0, deemph_us: -1.0,
             stereo: true, sstv_mode: None,
@@ -74,6 +76,7 @@ impl ReceiverConfig {
         if clock_ratio(self.input_rate).is_none() || !(8_000..=192_000).contains(&self.audio_rate)
             || !self.if_bw.is_finite() || self.if_bw <= 0.0 || !self.pitch.is_finite()
             || self.pitch <= 0.0 || !self.gain.is_finite() || self.gain < 0.0
+            || self.measurement_passband_hz.is_some_and(|bw|!bw.is_finite() || bw<=0.0 || bw>self.input_rate)
             || !self.squelch_dbm.is_finite() || !self.nr_strength.is_finite()
             || !(0.0..=1.0).contains(&self.nr_strength) || !self.nr_atten_db.is_finite()
             || !(0.0..=100.0).contains(&self.nr_atten_db) || !self.deemph_us.is_finite() {
@@ -296,6 +299,8 @@ impl PreparedDecoder {
 }
 
 pub struct Receiver {
+    rf_meter: crate::rf_measure::RfMeter,
+    rf_clock: Option<(InputClock, usize)>,
     config: ReceiverConfig,
     epoch: u64,
     analog: Option<AnalogDemod>,
@@ -342,6 +347,7 @@ impl Receiver {
             "protocol_window_samples":self.ft8.as_ref().map(|window|window.samples.len()/2),
             "protocol_window_bytes":self.ft8.as_ref().map(|window|window.samples.len()*4),
             "protocol_waiting":self.ft8.as_ref().is_some_and(|window|window.samples.len()<FT8_RATE as usize*30),
+            "rf_measurement":self.rf_meter.snapshot(),
             "external":self.external.as_ref().map(|decoder|decoder.buffer_status())})
     }
     pub fn new(config: ReceiverConfig) -> Result<Self, String> {
@@ -413,7 +419,15 @@ impl Receiver {
         let ft8 = if mode == "ft8" { Some(Ft8Window::new()) } else { None };
         let audio_format = analog.as_ref().map(|_|(config.audio_rate,
             if config.mode == "wfm" && config.stereo {2} else {1}));
-        Ok(Self { config, epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed), analog, digital, external,
+        let (low, high) = match descriptor.sideband.as_str() {
+            "upper" => (0.0, config.if_bw),
+            "lower" => (-config.if_bw, 0.0),
+            _ if mode == "cw" => (config.pitch-config.if_bw/2.0, config.pitch+config.if_bw/2.0),
+            _ => (-config.if_bw/2.0, config.if_bw/2.0),
+        };
+        let rf_meter = crate::rf_measure::RfMeter::new(config.input_rate, low, high,
+            config.measurement_passband_hz.unwrap_or(config.input_rate*0.9));
+        Ok(Self { rf_meter, rf_clock: None, config, epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed), analog, digital, external,
             adapter, converted: Vec::new(), listener, side_listener, side_pcm:AnalogPcm::default(), pcm: AnalogPcm::default(),
             side: Vec::new(), nr, nr_right, nr_scratch: Vec::new(), cw, ft8, pushes: 0,
             nr_left_output: Vec::new(), nr_right_output: Vec::new(),
@@ -429,6 +443,7 @@ impl Receiver {
         if config == self.config && !self.radiofax_new_page { return Ok(()); }
         config.validate()?;
         let geometry_changed = config.mode != self.config.mode || config.input_rate != self.config.input_rate
+            || config.measurement_passband_hz != self.config.measurement_passband_hz
             || config.center_hz != self.config.center_hz
             || config.audio_rate != self.config.audio_rate || config.if_bw != self.config.if_bw
             || config.pitch != self.config.pitch || config.sstv_mode != self.config.sstv_mode
@@ -491,6 +506,9 @@ impl Receiver {
         Ok(events)
     }
     pub fn retune(&mut self) -> Result<(), String> {
+        self.rf_meter.reset();
+        self.rf_clock = None;
+        self.epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
         if let Some(analog) = self.analog.as_mut() { analog.retune(); }
         if self.config.mode == "radiofax" {
             if let Some(fax) = self.digital.as_mut().and_then(|demod| demod.as_radiofax()) {
@@ -517,9 +535,12 @@ impl Receiver {
             return Err("invalid receiver source clock".into());
         }
         if self.input_origin.is_some_and(|origin| origin.input_rate != clock.input_rate) {
+            self.rf_meter.reset();
+            self.rf_clock = None;
             return Err("receiver source clock rate changed without a reset".into());
         }
         if iq.iter().any(|sample| !sample.is_finite()) {
+            self.rf_meter.reset();
             return Err("receiver IQ samples must be finite".into());
         }
         let mut out = ReceiverOutput::default();
@@ -527,6 +548,22 @@ impl Receiver {
         // Validate the actual emitted frame count in audio_block, rather than estimating
         // output from input length (codec bursts and buffered NR have different cadence).
         self.input_origin.get_or_insert(clock);
+        // The owning worker rejects/retires discontinuous streams. This local
+        // check also protects direct/offline Receiver users from stale estimates.
+        let mut rf_restarted = self.rf_clock.is_none();
+        if let Some((previous, count)) = self.rf_clock {
+            let actual = clock.first_sample_index as i128-previous.first_sample_index as i128;
+            let expected = count as f64*clock.input_rate/self.config.input_rate;
+            if previous.input_rate != clock.input_rate || (actual as f64-expected).abs()>2.0 {
+                self.rf_meter.reset();
+                rf_restarted = true;
+            }
+        }
+        self.rf_clock = Some((clock, iq.len()/2));
+        let rf_updated = self.rf_meter.push(iq);
+        if rf_updated || rf_restarted {
+            out.events.push(json!({"type":"rf-measurement","measurement":self.rf_meter.snapshot()}));
+        }
         self.pushes += 1;
         self.elapsed_samples = self.elapsed_samples.saturating_add((iq.len() / 2) as u64);
         let status_due = self.elapsed_samples >= self.next_status;
@@ -575,6 +612,22 @@ impl Receiver {
                     let status = digital.status().map(|s| json!({"locked":s.locked,"mode":s.mode,
                         "stationLabel":s.station_label,"carrierOffsetHz":s.carrier_offset_hz,
                         "facOk":s.fac_ok,"facErrors":s.fac_errors,"sdcOk":s.sdc_ok,
+                        "measurements":[
+                            {"metric_type":"fac_weighted_mer","unit":"dB","value":s.fac_mer_db,
+                                "reference_bandwidth_hz":s.measurement_bandwidth_hz,"location":"equalized_fac_cells",
+                                "age_seconds":s.measurement_age_seconds,"max_age_seconds":(1.0-s.measurement_age_seconds).max(0.0),
+                                "method":"channel_weighted_nearest_qpsk_decisions","averaging_seconds":s.measurement_seconds,
+                                "state":if s.fac_mer_db.is_some(){"conditional"}else{"unavailable"},
+                                "reason":if !s.locked{Some("unlocked")}else if s.fac_mer_db.is_none(){Some("no_resolved_decision_error")}else{None},
+                                "meaning":"includes noise, interference, distortion and channel estimation error; decision bias at low MER"},
+                            {"metric_type":"fac_decision_snr","unit":"dB","value":s.fac_snr_db,
+                                "reference_bandwidth_hz":s.measurement_bandwidth_hz,"location":"fac_equalizer_input_equivalent",
+                                "age_seconds":s.measurement_age_seconds,"max_age_seconds":(1.0-s.measurement_age_seconds).max(0.0),
+                                "method":"fac_mer_times_average_cell_power_and_carrier_spacing_over_nominal_bandwidth",
+                                "averaging_seconds":s.measurement_seconds,
+                                "state":if s.fac_snr_db.is_some(){"conditional"}else{"unavailable"},
+                                "reason":if !s.locked{Some("unlocked")}else if s.fac_snr_db.is_none(){Some("no_current_fac_or_mer_below_10_db_or_unresolved")}else{None},
+                                "meaning":"AWGN and flat channel only; not independent RF SNR"}],
                         "services":s.services.into_iter().map(|s| json!({"serviceId":s.service_id,
                             "label":s.label,"audioCoding":s.audio_coding,"sampleRate":s.sample_rate,
                             "channels":s.channels})).collect::<Vec<_>>() }));
@@ -680,14 +733,24 @@ impl Receiver {
                 self.side_pcm.samples_mut().extend_from_slice(&self.side);
                 self.side_listener.set_squelch_level_dbm(power_dbm.unwrap_or(f64::NAN));
                 self.side_listener.process(&mut self.side_pcm, false);
-                let blend = if analog.stereo_detected() {1.0} else {0.0};
+                let locked = analog.stereo_detected();
+                // Narrow legacy input can carry mono WFM without a stereo side
+                // chain. Its two output channels intentionally duplicate mono.
+                if (locked || !self.side_pcm.samples().is_empty())
+                    && self.pcm.samples().len() != self.side_pcm.samples().len() {
+                    return Err("WFM mono and difference PCM lost sample alignment".into());
+                }
                 self.nr_scratch.clear();
-                self.nr_scratch.extend(self.pcm.samples().iter().enumerate()
-                    .map(|(i,m)|*m + self.side_pcm.samples().get(i).copied().unwrap_or(0.0)*blend));
+                self.nr_scratch.extend_from_slice(self.pcm.samples());
+                if locked {
+                    for (m,s) in self.nr_scratch.iter_mut().zip(self.side_pcm.samples()) { *m += *s; }
+                }
                 self.nr.process(&self.nr_scratch, &mut self.nr_left_output)?;
                 self.nr_scratch.clear();
-                self.nr_scratch.extend(self.pcm.samples().iter().enumerate()
-                    .map(|(i,m)|*m - self.side_pcm.samples().get(i).copied().unwrap_or(0.0)*blend));
+                self.nr_scratch.extend_from_slice(self.pcm.samples());
+                if locked {
+                    for (m,s) in self.nr_scratch.iter_mut().zip(self.side_pcm.samples()) { *m -= *s; }
+                }
                 self.nr_right.process(&self.nr_scratch, &mut self.nr_right_output)?;
                 if self.nr_left_output.len() != self.nr_right_output.len()
                     || self.nr.latency_samples() != self.nr_right.latency_samples() {
@@ -719,7 +782,16 @@ impl Receiver {
                     "ps":rds.as_ref().map(|r|r.ps_str()).unwrap_or_default(),
                     "rt":rds.as_ref().map(|r|r.rt_str()).unwrap_or_default(),
                     "carrierHz":null,"pilotDevHz":analog.pilot_deviation_hz(),
-                    "pilotSnrDb":analog.pilot_snr_db(),"scopeL":scope_l,"scopeR":scope_r}));
+                    "pilotSnrDb":analog.pilot_measurement().map(|m|m.0),
+                    "measurements":[{"metric_type":"pilot_contrast","unit":"dB",
+                        "value":analog.pilot_measurement().map(|m|m.0),
+                        "state":if analog.pilot_measurement().is_some(){"conditional"}else{"unavailable"},
+                        "reason":if analog.pilot_measurement().is_none(){Some("warming_up_or_no_background")}else{None},
+                        "reference_bandwidth_hz":analog.pilot_measurement().map(|m|m.1),
+                        "location":"wfm_discriminator_composite_before_audio_enhancement",
+                        "method":"legacy_smoothed_amplitude_ratio_19khz_vs_21khz_onepole_50hz",
+                        "averaging_seconds":2.0,"max_age_seconds":6.0,"meaning":"pilot contrast diagnostic; not RF or programme audio SNR"}],
+                    "scopeL":scope_l,"scopeR":scope_r}));
             }
             if self.config.mode == "am" && !samples.is_empty() && self.elapsed_samples >= self.next_am_info {
                 let period = (self.config.input_rate / 20.0).max(1.0) as u64;
@@ -739,6 +811,7 @@ impl Receiver {
                 // Only the asymmetric modes retain the IF selection FIR.
                 let if_delay = if matches!(analog.id(), "usb" | "lsb" | "cw") {128.0} else {0.0};
                 audio_clock.delay_input_samples += (if_delay + 64.0) * clock.input_rate / self.config.input_rate;
+                audio_clock.delay_input_samples += analog.alignment_delay_seconds() * clock.input_rate;
                 if let Some(delay) = self.nr.latency_samples() {
                     audio_clock.delay_input_samples += delay as f64 * clock.input_rate / self.config.audio_rate as f64;
                 }
@@ -797,6 +870,12 @@ impl Receiver {
             ft8.decoded += 1;
             events.push(json!({"type":"ft8","text":message.text,"frequencyHz":message.frequency_hz,
                 "timeOffsetS":message.time_offset_s,"snrDb":message.snr_db,"count":ft8.decoded,
+                "measurement":{"metric_type":"ft8_snr","unit":"dB","value":message.snr.value,
+                    "state":if message.snr.value.is_some(){"conditional"}else{"unavailable"},"reason":message.snr.reason,
+                    "reference_bandwidth_hz":2500.0,"location":"original_iq_before_decoder_cancellation",
+                    "method":"decoded_costas_and_data_hann_matched_filters_with_off_tone_background",
+                    "averaging_seconds":message.snr.averaging_seconds,"enbw_hz":message.snr.enbw_hz,
+                    "symbols":message.snr.symbols,"uncertainty_db":message.snr.uncertainty_db,"meaning":"local flat background including unresolved interference; burst measurement"},
                 "centerHz":null,"windowStart":result.clock.first_sample_index.to_string(),
                 "windowFractionNum":result.source_position.fraction_num.to_string(),
                 "windowFractionDen":result.source_position.fraction_den.to_string(),
@@ -1235,7 +1314,11 @@ mod tests {
                         assert_eq!(position.fraction_num as u128*expected.fraction_den as u128,
                             expected.fraction_num as u128*position.fraction_den as u128);
                         let if_delay=if mode=="usb" {192.0} else {64.0};
-                        let expected_delay=8.0+if_delay+nr_delay as f64*input_rate/rate as f64;
+                        // At this test's 240 kS/s WFM geometry, the composite
+                        // anti-alias FIR plus fractional-delay interpolator
+                        // needs 18/19/19 PCM frames of mono alignment.
+                        let alignment=if mode=="wfm" {if rate==12000 {18} else {19}} else {0};
+                        let expected_delay=8.0+if_delay+(nr_delay+alignment) as f64*input_rate/rate as f64;
                         assert!((audio.clock.delay_input_samples-expected_delay).abs()<1e-8);
                         frames+=(audio.samples.len()/channels as usize) as u64;
                     }
@@ -1246,6 +1329,29 @@ mod tests {
             }
         }
         }
+    }
+
+    #[test]
+    fn wfm_impulse_timing_includes_stereo_alignment_delay() {
+        let config = ReceiverConfig { mode:"wfm".into(), input_rate:325_520.833_333_333_3,
+            if_bw:180_000.0, audio_rate:48_000, deemph_us:0.0, agc:false,
+            gain:1.0, ..ReceiverConfig::default() };
+        let mut receiver = Receiver::new(config.clone()).unwrap();
+        let clock = InputClock {first_sample_index:100_000, input_rate:3_906_250.0, delay_input_samples:0.0};
+        let mut phase = 0.0_f64;
+        let input:Vec<f32> = (0..3_000).flat_map(|k| {
+            if k==1_200 {phase += std::f64::consts::TAU*1_000.0/config.input_rate;}
+            [phase.cos() as f32,phase.sin() as f32]
+        }).collect();
+        let block = receiver.process(&input,clock,None).unwrap().audio.remove(0);
+        let peak = block.samples.chunks_exact(block.channels as usize).enumerate()
+            .max_by(|(_,a),(_,b)|a[0].abs().total_cmp(&b[0].abs())).unwrap().0;
+        let measured_input_offset = peak as f64*clock.input_rate/config.audio_rate as f64
+            - block.clock.delay_input_samples;
+        // The phase difference at input sample 1200 is detector sample 1199.
+        let expected_input_offset = 1_199.0*clock.input_rate/config.input_rate;
+        assert!((measured_input_offset-expected_input_offset).abs()<clock.input_rate/config.audio_rate as f64,
+            "reported delay does not locate the known FM impulse: {measured_input_offset} vs {expected_input_offset}");
     }
 
     #[test]
@@ -1569,5 +1675,39 @@ mod tests {
         assert_eq!(state["reason"],"eof");
         receiver.finish_radiofax().unwrap();
         assert!(receiver.take_radiofax_events().unwrap().iter().all(|event|event["type"]!="radiofax-image"));
+    }
+}
+
+#[cfg(test)]
+mod rf_measurement_lifecycle_tests {
+    use super::*;
+    #[test]
+    fn rf_is_isolated_passive_and_independent_of_audio_controls_and_tuning() {
+        let config=ReceiverConfig {input_rate:12000.0,if_bw:3000.0,..ReceiverConfig::default()};
+        let mut a=Receiver::new(config.clone()).unwrap();
+        let mut b=Receiver::new(ReceiverConfig {gain:0.0,agc:false,squelch_dbm:0.0,nr:true,..config.clone()}).unwrap();
+        let mut silent=Receiver::new(config.clone()).unwrap();
+        let mut seed=345_u64;
+        for block in 0..80 {
+            let iq:Vec<f32>=(0..1024).flat_map(|i| {
+                let mut random=||{seed^=seed<<13;seed^=seed>>7;seed^=seed<<17;((seed>>11) as f64/9007199254740992.0-0.5)*0.0007};
+                let phase=std::f64::consts::TAU*417.37*(block*1024+i) as f64/12000.0;
+                [(0.002*phase.cos()+random()) as f32,(0.002*phase.sin()+random()) as f32]
+            }).collect();
+            let unchanged=iq.clone();
+            let clock=InputClock{first_sample_index:(block*1024) as u64,input_rate:12000.0,delay_input_samples:0.0};
+            a.process(&iq,clock,None).unwrap();b.process(&iq,clock,None).unwrap();
+            silent.process(&vec![0.0;iq.len()],clock,None).unwrap();
+            assert_eq!(iq,unchanged,"measurement cannot modify received samples");
+        }
+        let value=a.rf_meter.snapshot().value.expect("signal");
+        assert_eq!(Some(value),b.rf_meter.snapshot().value,"AGC/squelch/NR/volume independence");
+        assert_eq!(silent.rf_meter.snapshot().value,None,"channel isolation");
+        let before=a.epoch();a.retune().unwrap();assert_ne!(a.epoch(),before);
+        assert_eq!(a.rf_meter.snapshot().value,None);
+        b.configure(ReceiverConfig{center_hz:1000,..b.config().clone()}).unwrap();
+        assert_eq!(b.rf_meter.snapshot().value,None);
+        let clock=InputClock{first_sample_index:9999999,input_rate:12000.0,delay_input_samples:0.0};
+        silent.process(&[0.0;2048],clock,None).unwrap();assert_eq!(silent.rf_meter.snapshot().reason,Some("warming_up"));
     }
 }

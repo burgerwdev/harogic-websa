@@ -2,6 +2,8 @@
 
 [Documentation](../INDEX.md)
 
+FAC MER and the conditional decision SNR are separate from RF channel SNR. Definitions, bandwidth corrections, validity limits and calibration are in [Native measurements](SNR.md).
+
 ## Bench workflow
 
 Use a repeatable local signal to capture DRM baseband and compare decoders. Fixture provenance, manifests, formats and regeneration instructions belong in the [DRM fixture README](../../../tests/fixtures/drm/README.md).

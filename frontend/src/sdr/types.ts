@@ -7,8 +7,8 @@ export interface Ft8Report {
 	frequencyHz: number;
 	/** Where the transmission started inside the pushed buffer, in seconds. */
 	timeOffsetS: number;
-	/** Sync-correlation SNR estimate in dB (a diagnostic, not a calibrated measurement). */
-	snrDb: number;
+	/** Decoded-symbol SNR in dB relative to 2500 Hz; null when unavailable. */
+	snrDb: number | null;
 	/** Decodes this session (the readout's counter). */
 	count: number;
 	/** Centre of the channel the transmission was found in, in Hz (the tuned frequency). */

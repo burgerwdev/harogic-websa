@@ -85,6 +85,13 @@ const SIDE_AUDIO_CUT_HZ: f64 = 15_000.0;
 const SIDE_AUDIO_DELAY: f64 = 1.3;
 /// Decimation to the side chain's working rate.
 const AUX_DECIMATE: f64 = 2.0;
+// The discriminator is nonlinear: even band-limited IQ can produce composite
+// noise above the auxiliary Nyquist. Filter BEFORE the factor-of-two reduction.
+const COMPOSITE_AA_TAPS: usize = 33;
+// A two-point fractional delay attenuates upper audio frequencies. Centre a
+// higher-order interpolator so alignment preserves the stereo audio band.
+const ALIGN_TAPS: usize = 33;
+const ALIGN_HALF: usize = (ALIGN_TAPS - 1) / 2;
 
 /// One output-rate low-pass section; three Butterworth sections suppress the 19 kHz pilot
 /// product without the 64-sample delay a steep audio FIR would add to the L−R path.
@@ -174,16 +181,23 @@ pub struct FmStereo {
     peak_slow: f64,
     side_deemph: Option<FirState>,
     side_anti_alias: FirState,
+    composite_anti_alias: FirState,
+    composite_input: Vec<f64>,
+    composite_filtered: Vec<f64>,
     side_lp: [SideBiquad; 3],
     gain_trace: Vec<f32>,
     resample_step: f64,
     resample_t: f64,
-    /// Output delay, in OUTPUT samples, that lines the drained side up with the mono PCM. The
-    /// mono passes an audio low-pass the side chain does not, and that filter's group delay is
-    /// what the consumer's L = M + S matrix would otherwise rotate out of phase: at 2.5 kHz an
-    /// uncompensated 64-sample delay at 300 kSps is nearly an inversion. The delay is fractional,
-    /// so the line interpolates.
+    /// Fractional output delay aligning the drained side with the delayed mono
+    /// PCM. Both FIR paths and the output low-pass contribute to the phase at
+    /// the L=M+S, R=M−S matrix.
     align_out: f64,
+    align_taps: Vec<f64>,
+    // An integer mono delay makes the added FIR causal without advancing the
+    // side or changing mono sample values. A centred FIR supplies the remaining
+    // fractional alignment without rolling off the upper stereo audio band.
+    mono_delay: Vec<f32>,
+    mono_delay_pos: usize,
     /// The last block's decimated sample count, for the bench's stereo diagnostics.
     last_aux: u32,
     /// Ring of the most recent output samples, for `align_out`.
@@ -195,6 +209,10 @@ pub struct FmStereo {
     resample_buf: Vec<f64>,
     side_aux: Vec<f64>,
     side_out: Vec<f32>,
+    // The IQ-rate mono resampler can lead/lag the IQ/2 side resampler by one
+    // frame at a packet edge. Keep unmatched samples before AGC/matrixing.
+    mono_pending: Vec<f32>,
+    side_pending: Vec<f32>,
     /// Per-block scratch: decimated aux samples and the resampled side as f64 for the
     /// consumer-rate de-emphasis FIR. Fields, not locals, so a 20 ms block never allocates.
     aux: Vec<f64>,
@@ -210,15 +228,23 @@ impl FmStereo {
         if aux_fs / 2.0 < SUBCARRIER_HZ + 16_000.0 {
             return None;
         }
-        // The mono path's audio low-pass sits after the detector and delays the PCM by its group
-        // delay; the side chain takes the detector output, so it runs ahead by exactly that much.
-        // The 57-tap anti-alias FIR at `aux_fs` delays by 28 aux samples (56 baseband samples).
-        // The mono audio FIR delays by 64 baseband samples. The output low-pass adds about 1.3
-        // consumer samples; the remaining positive difference is the side's alignment delay.
-        let aa_delay_baseband = (SIDE_AA_TAPS - 1) as f64 * AUX_DECIMATE / 2.0;
-        let align_out = ((align_baseband_samples - aa_delay_baseband) * out_rate / fs
-            - SIDE_AUDIO_DELAY).max(0.0);
-        let align_ring = align_out.floor() as usize + 2;
+        // Account for the composite FIR (16 IQ samples), the post-mixer FIR
+        // (28 aux = 56 IQ samples), and the output low-pass (~1.3 PCM samples).
+        // Delay mono by whole frames until alignment is causal, then apply the
+        // remaining fractional delay to the side. No mono samples are resampled.
+        let aa_delay_baseband = (COMPOSITE_AA_TAPS - 1) as f64 / 2.0
+            + (SIDE_AA_TAPS - 1) as f64 * AUX_DECIMATE / 2.0;
+        let relative = (align_baseband_samples - aa_delay_baseband) * out_rate / fs - SIDE_AUDIO_DELAY;
+        let mono_delay_frames = (-relative).ceil().max(0.0) as usize + ALIGN_HALF;
+        let align_out = relative + mono_delay_frames as f64;
+        let whole = align_out.floor() as usize - ALIGN_HALF;
+        let fractional = align_out - align_out.floor();
+        let target = ALIGN_HALF as f64 + fractional;
+        let align_taps = (0..ALIGN_TAPS).map(|k| {
+            (0..ALIGN_TAPS).filter(|&j| j != k)
+                .map(|j| (target - j as f64) / (k as f64 - j as f64)).product()
+        }).collect();
+        let align_ring = whole + ALIGN_TAPS + 1;
         let iir = |bw: f64| 1.0 - (-core::f64::consts::TAU * bw / aux_fs).exp();
         // The side chain reads the detector's output, which trails the baseband by the band
         // filter's group delay (BAND_TAPS/2 samples). Retard both NCOs by that much so their
@@ -266,12 +292,18 @@ impl FmStereo {
             peak_slow: 0.0,
             side_deemph: None,
             side_anti_alias: FirState::new(design_lowpass(aux_fs, SIDE_AA_CUT_HZ, SIDE_AA_TAPS)),
+            composite_anti_alias: FirState::new(design_lowpass(fs, fs / 4.0, COMPOSITE_AA_TAPS)),
+            composite_input: Vec::new(),
+            composite_filtered: Vec::new(),
             side_lp: [0.517_638, 0.707_107, 1.931_852]
                 .map(|q| SideBiquad::new(out_rate, SIDE_AUDIO_CUT_HZ, q)),
             gain_trace: Vec::new(),
             resample_step: aux_fs / out_rate,
             resample_t: 0.0,
             align_out,
+            align_taps,
+            mono_delay: vec![0.0; mono_delay_frames],
+            mono_delay_pos: 0,
             last_aux: 0,
             side_ring: vec![0.0; align_ring],
             side_ring_pos: 0,
@@ -280,6 +312,8 @@ impl FmStereo {
             resample_buf: Vec::new(),
             side_aux: Vec::new(),
             side_out: Vec::new(),
+            mono_pending: Vec::new(),
+            side_pending: Vec::new(),
             aux: Vec::new(),
             shaped: Vec::new(),
         })
@@ -315,6 +349,13 @@ impl FmStereo {
     }
 
     /// The pilot's narrow-band SNR in dB (its band over the neighbouring band).
+    /// Legacy amplitude contrast for stereo diagnostics. No total-channel or
+    /// programme-audio SNR claim. One-pole complex two-sided noise ENBW.
+    pub fn pilot_measurement(&self) -> Option<(f64, f64)> {
+        (self.warmup==0 && self.last_aux>0 && self.pilot_snr_db> -119.0
+            && self.nbr_i*self.nbr_i+self.nbr_q*self.nbr_q>1e-18)
+            .then(||(self.pilot_snr_db,self.aux_fs*self.a_pilot/(2.0-self.a_pilot)))
+    }
     pub fn pilot_snr_db(&self) -> f64 {
         self.pilot_snr_db
     }
@@ -383,6 +424,9 @@ impl FmStereo {
         }
         if let Some(d) = self.side_deemph.as_mut() { d.reset(); }
         self.side_anti_alias.reset();
+        self.composite_anti_alias.reset();
+        self.mono_delay.fill(0.0);
+        self.mono_delay_pos = 0;
         for section in self.side_lp.iter_mut() { section.reset(); }
         self.resample_t = 0.0;
         for v in self.side_ring.iter_mut() { *v = 0.0; }
@@ -390,6 +434,8 @@ impl FmStereo {
         self.resample_prev = None;
         self.side_aux.clear();
         self.side_out.clear();
+        self.mono_pending.clear();
+        self.side_pending.clear();
         self.gain_trace.clear();
         self.warmup = WARMUP_BATCHES;
         self.dev_hist = [0; DEV_BINS];
@@ -410,10 +456,21 @@ impl FmStereo {
     /// resampler walk the whole history again on every block — quadratic, and it starves the audio
     /// and the message loop within seconds on a real device.
     pub fn process(&mut self, det: &[f32]) {
-        if !self.capable() || det.is_empty() { return; }
+        let mut input = core::mem::take(&mut self.composite_input);
+        input.clear();
+        input.extend(det.iter().map(|&v| v as f64));
+        self.process_f64(&input);
+        self.composite_input = input;
+    }
+
+    // Native analog already has this f64 discriminator buffer for its mono FIR.
+    pub(super) fn process_f64(&mut self, det: &[f64]) {
         // One output block only: a caller that does not drain the side must not make this path
         // filter its whole history on the next call.
         self.side_out.clear();
+        if !self.capable() || det.is_empty() { return; }
+        let mut filtered = core::mem::take(&mut self.composite_filtered);
+        self.composite_anti_alias.process_into(det, &mut filtered);
         let n = det.len();
         let mut aux = core::mem::take(&mut self.aux);
         aux.clear();
@@ -421,10 +478,11 @@ impl FmStereo {
         while (pos as usize) < n {
             let i0 = (pos as usize).min(n - 1);
             let frac = pos - i0 as f64;
-            aux.push(det[i0] as f64 * (1.0 - frac) + det[(i0 + 1).min(n - 1)] as f64 * frac);
+            aux.push(filtered[i0] * (1.0 - frac) + filtered[(i0 + 1).min(n - 1)] * frac);
             pos += self.decimate;
         }
         self.decim_phase = pos - n as f64;
+        self.composite_filtered = filtered;
         self.last_aux = aux.len() as u32;
         if aux.is_empty() {
             self.aux = aux;
@@ -686,10 +744,9 @@ impl FmStereo {
         if delay <= 0.0 || self.side_out.is_empty() {
             return;
         }
-        let whole = delay.floor() as usize;
-        let frac = delay - whole as f64;
+        let whole = delay.floor() as usize - ALIGN_HALF;
         let ring_len = self.side_ring.len();
-        if ring_len < whole + 2 {
+        if ring_len < whole + ALIGN_TAPS {
             return;
         }
         let mut out = core::mem::take(&mut self.side_delayed);
@@ -698,9 +755,9 @@ impl FmStereo {
         let mut pos = self.side_ring_pos;
         for &v in self.side_out.iter() {
             self.side_ring[pos] = v;
-            let a = self.side_ring[(pos + ring_len - whole) % ring_len];
-            let b = self.side_ring[(pos + ring_len - whole - 1) % ring_len];
-            out.push((a as f64 * (1.0 - frac) + b as f64 * frac) as f32);
+            let value: f64 = self.align_taps.iter().enumerate().map(|(k,tap)|
+                tap * self.side_ring[(pos + ring_len - whole - k) % ring_len] as f64).sum();
+            out.push(value as f32);
             pos = (pos + 1) % ring_len;
         }
         self.side_ring_pos = pos;
@@ -711,6 +768,55 @@ impl FmStereo {
     /// Samples waiting for the next drain, before applying the mono gain trace.
     pub fn pending_side_samples(&self) -> usize {
         self.side_out.len()
+    }
+
+    pub(super) fn pending_mono_samples(&self) -> usize {
+        self.mono_pending.len()
+    }
+
+    pub(super) fn mono_delay_samples(&self) -> usize {
+        self.mono_delay.len()
+    }
+
+    pub(super) fn input_filter_support_samples(&self) -> usize {
+        COMPOSITE_AA_TAPS - 1 + (SIDE_AA_TAPS - 1) * AUX_DECIMATE as usize
+    }
+
+    pub(super) fn output_alignment_support_samples(&self) -> usize {
+        self.align_out.floor() as usize - ALIGN_HALF + ALIGN_TAPS - 1
+    }
+
+    /// Pair the two continuous PCM clocks before the linked AGC and L/R matrix.
+    /// They interpolate the same output instants, but the decimated side can
+    /// need one more IQ sample to produce the last instant of a packet. Padding
+    /// that instant with zero or discarding an extra side frame makes clicks
+    /// and shifts subsequent stereo samples. Only the unmatched tail waits;
+    /// the PCM waveform and its sample clock are preserved.
+    pub(super) fn match_audio_clock(&mut self, mono: &mut Vec<f32>) {
+        fn prepend(pending: &mut Vec<f32>, samples: &mut Vec<f32>) {
+            if pending.is_empty() { return; }
+            let old = samples.len();
+            samples.resize(old + pending.len(), 0.0);
+            samples.copy_within(0..old, pending.len());
+            samples[..pending.len()].copy_from_slice(pending);
+            pending.clear();
+        }
+        prepend(&mut self.mono_pending, mono);
+        prepend(&mut self.side_pending, &mut self.side_out);
+        let matched = mono.len().min(self.side_out.len());
+        self.mono_pending.extend_from_slice(&mono[matched..]);
+        self.side_pending.extend_from_slice(&self.side_out[matched..]);
+        mono.truncate(matched);
+        self.side_out.truncate(matched);
+        if !self.mono_delay.is_empty() {
+            for sample in mono {
+                core::mem::swap(sample, &mut self.mono_delay[self.mono_delay_pos]);
+                self.mono_delay_pos = (self.mono_delay_pos + 1) % self.mono_delay.len();
+            }
+        }
+        // At most one aux input interval plus floating-point endpoint rounding.
+        let bound = (1.0 / self.resample_step).ceil() as usize + 2;
+        debug_assert!(self.mono_pending.len() <= bound && self.side_pending.len() <= bound);
     }
 
     pub(super) fn pending_side(&self) -> &[f32] {
@@ -760,6 +866,69 @@ fn i1_safe(i0: usize, n: usize) -> usize { (i0 + 1).min(n - 1) }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_alignment_preserves_stereo_audio_band() {
+        for rate in [44_100.0, 48_000.0] {
+            for hz in [1_000.0, 5_000.0, 12_000.0, 15_000.0] {
+                let mut side = FmStereo::new(325_520.833_333_333_3, rate, 64.0).unwrap();
+                side.side_out = (0..(rate * 0.2) as usize).map(|k|
+                    (core::f64::consts::TAU * hz * k as f64 / rate).cos() as f32).collect();
+                side.align_side();
+                let steady = &side.side_out[64..];
+                let (mut re, mut im, mut weight) = (0.0, 0.0, 0.0);
+                for (k,&v) in steady.iter().enumerate() {
+                    let phase = core::f64::consts::TAU * hz * (k+64) as f64 / rate;
+                    let w = 0.5 - 0.5 * (core::f64::consts::TAU * k as f64 / steady.len() as f64).cos();
+                    re += v as f64 * w * phase.cos();
+                    im -= v as f64 * w * phase.sin();
+                    weight += w;
+                }
+                let gain = 2.0 * re.hypot(im) / weight;
+                let expected = -core::f64::consts::TAU * hz / rate * side.align_out;
+                let error = im.atan2(re) - expected;
+                let error = error.sin().atan2(error.cos());
+                assert!((0.994..1.001).contains(&gain), "alignment gain at {hz}/{rate}: {gain}");
+                assert!(error.abs()<0.01, "alignment phase error at {hz}/{rate}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn composite_decimation_rejects_out_of_band_audio_aliases() {
+        // A component above the auxiliary Nyquist must not turn into an
+        // audible difference tone after decimation and the 38 kHz mixer.
+        // The original unfiltered pick-every-second-sample path produced
+        // nearly full amplitude at 1 kHz from this otherwise inaudible input.
+        for fs in [300_480.769_230_769_25, 325_520.833_333_333_3, 488_281.25] {
+            for rate in [44_100.0, 48_000.0] {
+                let mut stereo = FmStereo::new(fs, rate, 64.0).unwrap();
+                let alias = fs / 2.0 - SUBCARRIER_HZ + 1_000.0;
+                let input: Vec<f32> = (0..(fs * 0.8) as usize).map(|k| {
+                    let t = k as f64 / fs;
+                    (6_750.0 * (core::f64::consts::TAU * PILOT_HZ * t).sin()
+                        + 5_000.0 * (core::f64::consts::TAU * alias * t).cos()) as f32
+                }).collect();
+                let mut side = Vec::new();
+                for chunk in input.chunks(4_097) {
+                    stereo.process(chunk);
+                    side.extend(stereo.take_side());
+                }
+                let steady = &side[(rate * 0.4) as usize..];
+                let mut sum = (0.0, 0.0, 0.0);
+                for (k, &v) in steady.iter().enumerate() {
+                    let phase = core::f64::consts::TAU * 1_000.0 * k as f64 / rate;
+                    let window = 0.5 - 0.5 * (core::f64::consts::TAU * k as f64 / steady.len() as f64).cos();
+                    sum.0 += v as f64 * window * phase.cos();
+                    sum.1 += v as f64 * window * phase.sin();
+                    sum.2 += window;
+                }
+                let amplitude = 2.0 * sum.0.hypot(sum.1) / sum.2;
+                assert!(amplitude < 5_000.0 * 10.0_f64.powf(-50.0 / 20.0),
+                    "aux decimation aliased a false audio tone: fs={fs} out={rate} amplitude={amplitude}");
+            }
+        }
+    }
 
     #[test]
     fn nearly_cancelling_mono_keeps_difference_channel_gain() {

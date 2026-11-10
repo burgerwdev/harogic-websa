@@ -2,6 +2,8 @@
 
 [文档目录](../INDEX.md)
 
+FAC MER、有条件的判决 SNR 与 RF 信道 SNR 分别报告，定义、带宽修正、有效范围和校验见[原生测量](SNR.md)。
+
 ## 台架流程
 
 使用可重复生成的本地信号采集 DRM 基带，并对比解码器结果。夹具来源、清单、格式与重新生成方法见 [DRM 夹具 README](../../../tests/fixtures/drm/README.md)。

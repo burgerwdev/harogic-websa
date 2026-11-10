@@ -153,6 +153,22 @@ function fillResultBody(body: HTMLElement, entry: DecoderLogEntry, utc: boolean)
     }
   };
   const data = entry.data;
+  if (entry.kind === 'status' && record(data) && data.type === 'rf-measurement' && record(data.measurement)) {
+    const m = data.measurement;
+    const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
+    const heading = doc.createElement('strong'); heading.textContent = 'RF SNR'; body.append(heading);
+    const stale = typeof m.max_age_seconds === 'number' && Date.now() - entry.at > m.max_age_seconds * 1000;
+    const value = !stale && m.state !== 'unavailable' && typeof m.value === 'number' ? `${m.value.toFixed(1)} dB` : '—';
+    fields(body, { value, bandwidth: `${Number(m.reference_bandwidth_hz).toFixed(0)} Hz`,
+      state: stale ? l('Unavailable: stale', '不可用：数据过期') : m.state,
+      reason: stale ? 'stale' : m.reason,
+      method: l('Hann/Welch; sparse occupancy, flat background assumed', 'Hann/Welch；假定稀疏占用、平坦背景'),
+      background: l('Includes unresolved interference; occupied power includes all signals in band', '背景包括无法区分的干扰；带内功率包括所有信号'),
+      averaging: `${Number(m.averaging_seconds).toFixed(2)} s`,
+      observation: `${Number(m.observation_seconds).toFixed(2)} s`,
+      location: l('IQ before demodulation, AGC, squelch, NR and EQ', '解调、AGC、静噪、降噪和 EQ 前的 IQ') });
+    commit(); return;
+  }
   if (entry.kind === 'status' && record(data)
     && (typeof data.type === 'string' ? ['am-info', 'wfm-info', 'drm', 'ft8-state', 'sstv-state', 'radiofax-state', 'cw-level', 'rtty-state'].includes(data.type)
       : 'carrierHz' in data || 'rdsLocked' in data || record(data.status))
@@ -185,7 +201,11 @@ function fillResultBody(body: HTMLElement, entry: DecoderLogEntry, utc: boolean)
       metric('PI', data.rdsLocked && typeof data.rdsPi === 'number' ? data.rdsPi.toString(16).toUpperCase().padStart(4, '0') : undefined);
       metric(l('Peak deviation', '峰值频偏'), typeof data.peakDevHz === 'number' ? data.peakDevHz / 1000 : undefined, 'kHz');
       metric(l('Pilot', '导频'), data.pilotPct, '%');
-      metric(l('Pilot SNR', '导频信噪比'), data.pilotSnrDb, 'dB');
+      metric(l('Pilot contrast (SNR estimate)', '导频对比度（SNR 估计）'), data.pilotSnrDb, 'dB');
+      if (Array.isArray(data.measurements)) {
+        const pilot = data.measurements.find(m => record(m) && m.metric_type === 'pilot_contrast');
+        if (record(pilot)) metric(l('Pilot reference ENBW', '导频参考 ENBW'), pilot.reference_bandwidth_hz, 'Hz');
+      }
       metric(l('Pilot deviation', '导频频偏'), data.pilotDevHz, 'Hz');
       metric(l('Carrier', '载波'), typeof data.carrierHz === 'number' ? data.carrierHz / 1e6 : undefined, 'MHz', 6);
       metric(l('Audio peak', '音频峰值'), data.peakDbFs, 'dBFS');
@@ -206,8 +226,15 @@ function fillResultBody(body: HTMLElement, entry: DecoderLogEntry, utc: boolean)
       heading.textContent = String(status.stationLabel || lines.find(line => line.startsWith('station: '))?.slice(9) || t('drm_station_waiting'));
       metric(l('Status', '状态'), t(locked ? 'drm_locked' : 'drm_searching'));
       metric(l('Mode', '模式'), status.mode || lockedLine?.slice(8) || lines.find(line => line.startsWith('DRM searching: '))?.match(/,\s*([A-E]\s+[\d.]+\s*kHz)/)?.[1]);
-      metric('FAC SNR', locked ? measured('SNR') ?? data.snrDb : undefined, 'dB');
-      metric('FAC MER', locked ? measured('MER') : undefined, 'dB');
+      const measurements = Array.isArray(status.measurements) ? status.measurements.filter(record) : [];
+      const facSnr = measurements.find(m => m.metric_type === 'fac_decision_snr');
+      metric(l('FAC SNR (AWGN estimate)', 'FAC SNR（白噪声估计）'), locked ? (facSnr ? facSnr.value : measured('SNR') ?? data.snrDb) : undefined, 'dB');
+      if (facSnr) {
+        metric(l('Reference bandwidth', '参考带宽'), facSnr.reference_bandwidth_hz, 'Hz', 0);
+        metric(l('Method', '方法'), l('FAC decisions; MER ≥10 dB, flat AWGN channel only', 'FAC 判决；仅限 MER ≥10 dB 的平坦白噪声信道'));
+      }
+      const facMer = measurements.find(m => m.metric_type === 'fac_weighted_mer');
+      metric('FAC MER', locked ? (facMer ? facMer.value : measured('MER')) : undefined, 'dB');
       metric(l('Carrier offset', '载波偏移'), status.carrierOffsetHz, 'Hz');
       metric(l('FAC valid', 'FAC 正确'), status.facOk ?? counts?.[3], '', 0);
       metric(l('FAC errors', 'FAC 错误'), status.facErrors ?? counts?.[4], '', 0);

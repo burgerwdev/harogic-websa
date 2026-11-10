@@ -290,6 +290,11 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
       if (!d.provider || d.mode !== envelope.mode || !d.kind || d.data === undefined) throw new Error('Invalid decoder result');
       addDecoderResult({ provider: d.provider, mode: d.mode, kind: d.kind, data: d.data }, identity, channel);
       break;
+    case 'rf-measurement':
+      // The UID consumer renders RF telemetry in its own measurement card.
+      // Accept it in the main-panel projection so subsequent decoder events
+      // in the same batch still reach their mode-specific views.
+      break;
     case 'am-info': {
       const info: AmInfo = {
         syncEnabled: d.syncEnabled === true, syncLocked: d.syncLocked === true, syncGeneration: d.amSyncGeneration!,
@@ -307,18 +312,18 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
     case 'ft8':
       if (typeof d.centerHz !== 'number' || !Number.isFinite(d.centerHz)) throw new Error('FT8 report missing tuned RF frequency');
       renderFt8Message({ ...d, text: String(d.text ?? ''), frequencyHz: finite(d.frequencyHz),
-        timeOffsetS: finite(d.timeOffsetS), snrDb: finite(d.snrDb), centerHz: d.centerHz,
+        timeOffsetS: finite(d.timeOffsetS), snrDb: typeof d.snrDb === 'number' && Number.isFinite(d.snrDb) ? d.snrDb : null, centerHz: d.centerHz,
         count: finite(d.count), sourceKey: identity, windowStart: String(d.windowStart ?? envelope.input_index) }, channel);
       break;
     case 'wfm-info':
       setWfmInfo({ ...d, stereo: d.stereo === true, peakDevHz: finite(d.peakDevHz), pilotPct: finite(d.pilotPct),
         peakDbFs: String(d.peakDbFs ?? ''), peakHoldDb: String(d.peakHoldDb ?? ''), rdsLocked: d.rdsLocked === true,
         rdsPi: finite(d.rdsPi), rdsGroups: finite(d.rdsGroups), ps: String(d.ps ?? ''), rt: String(d.rt ?? ''),
-        carrierHz: finite(d.carrierHz), pilotDevHz: finite(d.pilotDevHz), pilotSnrDb: finite(d.pilotSnrDb),
+        carrierHz: finite(d.carrierHz), pilotDevHz: finite(d.pilotDevHz), pilotSnrDb: finite(d.pilotSnrDb, Number.NaN),
         scopeL: samples(d.scopeL), scopeR: samples(d.scopeR) }, channel);
       break;
     case 'drm':
-      setDrmDecode(Array.isArray(d.lines) ? d.lines.map(String) : [], finite(d.snrDb, Number.NaN), channel, d.status ?? undefined);
+      setDrmDecode(Array.isArray(d.lines) ? d.lines.map(String) : [], d.snrDb === null ? null : finite(d.snrDb, Number.NaN), channel, d.status ?? undefined);
       break;
     case 'drm-constellation':
       if (!Array.isArray(d.points) || d.points.length > 4096 || d.points.some((p) => !Number.isFinite(p.re) || !Number.isFinite(p.im))) {
@@ -437,7 +442,7 @@ export function renderFt8Message(report: Ft8Report, channel: number = 1): void {
   addFt8Spot(report, Date.now(), channel);
   ft8Text = String(report.text || '');
   ft8Count = Number(report.count) || ft8Count + 1;
-  ft8Detail = `${ft8Text}  @ ${(Number(report.frequencyHz) || 0).toFixed(0)} Hz, +${(Number(report.timeOffsetS) || 0).toFixed(2)} s, ${(Number(report.snrDb) || 0).toFixed(0)} dB`;
+  ft8Detail = `${ft8Text}  @ ${(Number(report.frequencyHz) || 0).toFixed(0)} Hz, +${(Number(report.timeOffsetS) || 0).toFixed(2)} s, ${report.snrDb === null ? '—' : report.snrDb.toFixed(0)} dB`;
   publishIqDebug();
 }
 export function lastFt8Message(): { text: string; count: number; detail: string } {

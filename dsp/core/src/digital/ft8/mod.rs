@@ -83,8 +83,103 @@ pub struct Ft8Message {
     pub frequency_hz: f64,
     /// Where the transmission's first symbol sits in the slot buffer, in seconds (waterfall time).
     pub time_offset_s: f64,
-    /// Rough SNR from the sync correlation (dB); a diagnostic, not a calibrated measurement.
+    /// S/(N0 * 2500 Hz), estimated on original IQ after CRC success. NaN when
+    /// unavailable (legacy numeric ABI); native JSON serializes this as null.
     pub snr_db: f64,
+    pub snr: SnrEstimate,
+}
+
+/// Decoded-symbol measurement, including the known Costas symbols. No mapping
+/// from synchronization score, no dB floor and no decision-selected noise bins.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnrEstimate {
+    pub value: Option<f64>,
+    pub reason: Option<&'static str>,
+    pub averaging_seconds: f64,
+    pub enbw_hz: f64,
+    pub symbols: usize,
+    pub uncertainty_db: Option<f64>,
+}
+impl Default for SnrEstimate {
+    fn default() -> Self {
+        Self {value:None,reason:Some("no_reliable_symbol_fit"),averaging_seconds:0.0,enbw_hz:0.0,symbols:0,uncertainty_db:None}
+    }
+}
+
+/// Measure a CRC-validated codeword at an independently supplied symbol time
+/// and frequency. Useful for reproducible reference comparisons, including
+/// weak signals our search has not decoded. SNR measurement and sensitivity
+/// are separate contracts. `start_seconds` is the first symbol's sample time.
+pub fn measure_decoded_snr(samples: &[f32], rate: f64, codeword: &[u8;174],
+    frequency_hz: f64, start_seconds: f64) -> SnrEstimate {
+    if !rate.is_finite() || !(6000.0..=192000.0).contains(&rate) || !frequency_hz.is_finite()
+        || !start_seconds.is_finite() || samples.len()%2!=0
+        || codeword.iter().any(|b|*b>1) || !crc_ok(codeword)
+        || samples.iter().any(|x|!x.is_finite()) {return SnrEstimate::default();}
+    let model=CancellationModel {frequency:frequency_hz,start:(start_seconds*rate).round() as i64,
+        gains:[(0.0,0.0);NUM_SYMBOLS]};
+    estimate_snr(samples,rate,&tones_from_codeword(codeword),&model)
+}
+
+/// Central 75% of each decoded symbol avoids GFSK transitions. The periodic
+/// Hann matched filter has ENBW Fs*sum(w²)/sum(w)². Six disjoint off-tone
+/// filters (+/-5,7,9 window bins) supply a local N0 in the SAME receive passband.
+/// Signal power is the ON-filter power less that filter's background, averaged
+/// in linear units across all observed symbols. Compare WSJT-X ft8b.f90's
+/// decoded-tone/off-tone power ratio; 2500/ENBW replaces its fixed -27 dB.
+fn estimate_snr(samples: &[f32], rate: f64, tones: &[u8; NUM_SYMBOLS], model: &CancellationModel) -> SnrEstimate {
+    let sym=symbol_samples_at(rate);
+    let n=sym*3/4;
+    let mut result=SnrEstimate::default();
+    if n<16 {return result;}
+    let window:Vec<_>=(0..n).map(|i|0.5-0.5*(2.0*PI*i as f64/n as f64).cos()).collect();
+    let sum=window.iter().sum::<f64>();
+    let enbw=rate*window.iter().map(|w|w*w).sum::<f64>()/(sum*sum);
+    result.enbw_hz=enbw;
+    let offsets=[0.0,-9.0,-7.0,-5.0,5.0,7.0,9.0];
+    let mut powers=[0.0;7];
+    let mut sync_power=0.0;let mut sync_count=0;
+    for (k,&tone) in tones.iter().enumerate() {
+        let start=model.start+(k*sym+sym/8) as i64;
+        if start<0 || start as usize+n>samples.len()/2 {continue;}
+        let frequency=model.frequency+f64::from(tone)*TONE_SPACING_HZ;
+        // Never use the suppressed stopband or a truncated receive edge as N0.
+        if frequency-9.0*rate/(n as f64)<F_MIN_HZ || frequency+9.0*rate/(n as f64)>F_MAX_HZ {continue;}
+        for (j,offset) in offsets.iter().enumerate() {
+            let step=2.0*PI*(frequency+offset*rate/n as f64)/rate;
+            let (ds,dc)=step.sin_cos();let (mut wr,mut wi)=(1.0,0.0);
+            let (mut re,mut im)=(0.0,0.0);
+            for (i,&w) in window.iter().enumerate() {
+                let index=(start as usize+i)*2;
+                let (yr,yi)=(f64::from(samples[index]),f64::from(samples[index+1]));
+                if j==0 && (yr.abs()>=0.999 || yi.abs()>=0.999 || !yr.is_finite() || !yi.is_finite()) {
+                    result.reason=Some("overload_or_nonfinite_iq");return result;
+                }
+                re+=w*(yr*wr+yi*wi);im+=w*(yi*wr-yr*wi);
+                let next=wr*dc-wi*ds;wi=wr*ds+wi*dc;wr=next;
+            }
+            let p=(re*re+im*im)/(sum*sum);
+            powers[j]+=p;
+            if j==0 && is_sync_symbol(k) {sync_power+=p;sync_count+=1;}
+        }
+        result.symbols+=1;
+    }
+    result.averaging_seconds=result.symbols as f64*n as f64/rate;
+    if result.symbols<40 || sync_count<7 {result.reason=Some("insufficient_complete_symbols");return result;}
+    let background=powers[1..].iter().sum::<f64>()/6.0;
+    let min=powers[1..].iter().copied().fold(f64::INFINITY,f64::min);
+    let max=powers[1..].iter().copied().fold(0.0,f64::max);
+    if min<=0.0 || max/min>4.0 {result.reason=Some("off_tone_interference_or_nonflat_background");return result;}
+    let signal=powers[0]-background;
+    if signal<=0.0 || background<=0.0 {result.reason=Some("signal_not_resolved");return result;}
+    let sync_signal=sync_power-sync_count as f64*background/result.symbols as f64;
+    if sync_signal<=0.0 {result.reason=Some("sync_power_not_resolved");return result;}
+    let db=10.0*((signal/background)*enbw/2500.0).log10();
+    if !(-25.0..=10.0).contains(&db) {result.reason=Some("outside_validated_range_minus25_to10_db");return result;}
+    let ratio=signal/background;
+    result.uncertainty_db=Some(10.0/core::f64::consts::LN_10
+        *((1.0+2.0*ratio+1.0/6.0)/result.symbols as f64).sqrt()/ratio);
+    result.value=Some(db);result.reason=None;result
 }
 
 /// The waterfall: one Hann-windowed FFT magnitude per (symbol, sub-time, sub-frequency, tone bin),
@@ -427,7 +522,7 @@ impl Ft8Decoder {
         for _pass in 0..MAX_PASSES {
             let waterfall = Waterfall::build(&scratch, self.rate);
             let mut found_this_pass = 0;
-            for (score, to, ts, fsb, fo) in waterfall.find_candidates() {
+            for (_score, to, ts, fsb, fo) in waterfall.find_candidates() {
                 let Some(codeword) = waterfall.decode_candidate(to, ts, fsb, fo) else {
                     continue;
                 };
@@ -442,14 +537,19 @@ impl Ft8Decoder {
                 // would re-run the whole fit for nothing -- the fit-amplitude gate neutralizes
                 // them, but skipping known texts saves real time on a busy band.
                 if !out.iter().any(|m: &Ft8Message| m.text == text) {
-                    subtract_transmission(&mut scratch, self.rate, &codeword, to, ts, fsb, fo);
+                    let model = subtract_transmission(&mut scratch, self.rate, &codeword, to, ts, fsb, fo);
+                    // Cancellation is only a search aid. Always measure the
+                    // original received IQ, never the noise-carved residual.
+                    let snr = model.as_ref().map(|m| estimate_snr(&self.samples, self.rate,
+                        &tones_from_codeword(&codeword), m)).unwrap_or_default();
                     found_this_pass += 1;
                     out.push(Ft8Message {
                         text,
                         frequency_hz: F_MIN_HZ
                             + (fo as f64 + fsb as f64 / FREQ_OSR as f64) * TONE_SPACING_HZ,
                         time_offset_s: (to as f64 + ts as f64 / TIME_OSR as f64) * SYMBOL_PERIOD_S,
-                        snr_db: score * 0.5,
+                        snr_db: snr.value.unwrap_or(f64::NAN),
+                        snr,
                     });
                 }
             }
@@ -747,7 +847,7 @@ fn subtract_transmission(
     ts: usize,
     fsb: usize,
     fo: usize,
-) {
+) -> Option<CancellationModel> {
     let tones = tones_from_codeword(codeword);
     let freq = F_MIN_HZ + (fo as f64 + fsb as f64 / FREQ_OSR as f64) * TONE_SPACING_HZ;
     let sym = symbol_samples_at(rate);
@@ -808,17 +908,18 @@ fn subtract_transmission(
     let (power, gains) = fit_model(samples, &tones, best_freq, rate, best_t0);
     let fitted = gains.iter().filter(|g| *g != &(0.0, 0.0)).count();
     if fitted == 0 {
-        return;
+        return None;
     }
     // Mean fitted amplitude of the unit-envelope model. A real transmission lands near its true
     // amplitude; a stale candidate (already subtracted, or an alias whose window holds nothing)
     // lands near zero and must not be "subtracted".
     let amplitude = (power / fitted as f64).sqrt() / sym as f64;
-    if amplitude < MIN_FIT_AMPLITUDE {
-        return;
-    }
-    let CancellationModel { frequency: best_freq, start: best_t0, gains } = select_cancellation_model(
-        samples, rate, &tones, CancellationModel { frequency: best_freq, start: best_t0, gains });
+    let model = select_cancellation_model(samples, rate, &tones,
+        CancellationModel { frequency:best_freq, start:best_t0, gains });
+    // The search's absolute cancellation-amplitude gate is not a metrology
+    // gate: a perfectly valid SNR must survive a common IQ scale change.
+    if amplitude < MIN_FIT_AMPLITUDE { return Some(model); }
+    let CancellationModel { frequency: best_freq, start: best_t0, gains } = model;
     let n_complex = samples.len() / 2;
     for (k, tone) in tones.iter().enumerate() {
         let (gr, gi) = gains[k];
@@ -843,6 +944,7 @@ fn subtract_transmission(
             wr = nwr;
         }
     }
+    Some(CancellationModel {frequency:best_freq,start:best_t0,gains})
 }
 
 // ---------------------------------------------------------------- LDPC (sum-product)
@@ -1922,6 +2024,7 @@ mod plugin_tests {
             frequency_hz: 1_000.0,
             time_offset_s: 0.5,
             snr_db: 12.0,
+            snr: SnrEstimate::default(),
         }]);
         assert_eq!(plugin.decoded()[0].0, "CQ JO1WKO PM95");
     }
@@ -2129,5 +2232,53 @@ mod plugin_tests {
             "the early decode must be reported exactly once"
         );
         assert_eq!(plugin.decoded_messages(), 1);
+    }
+}
+
+#[cfg(test)]
+mod snr_measurement_tests {
+    use super::*;
+    struct Noise(u64);
+    impl Noise {
+        fn unit(&mut self)->f64 {self.0^=self.0<<13;self.0^=self.0>>7;self.0^=self.0<<17;((self.0>>11) as f64+0.5)/9007199254740992.0}
+        fn normal(&mut self)->f64 {(-2.0*self.unit().ln()).sqrt()*(2.0*PI*self.unit()).cos()}
+    }
+    #[test]
+    fn matched_filter_snr_calibration_in_2500hz_with_fading_and_frequency_offsets() {
+        let tones=tones_from_codeword(&[0;174]);let mut worst=0.0_f64;
+        for rate in [8000.0,12_000.0,48_000.0] {
+            let sym=symbol_samples_at(rate);
+            for expected in [-24.0,-20.0,-10.0,0.0,9.0] {
+                let mut noise=Noise(5678);let mut iq=vec![0.0_f32;2*sym*NUM_SYMBOLS];
+                let phases=symbol_phases(&tones,1234.57,rate);
+                let sigma=(0.002_f64.powi(2)/10_f64.powf(expected/10.0)*rate/2500.0/2.0).sqrt();
+                // Fading keeps mean signal power exactly A²; not a constant-gain
+                // assumption and not a denoised-output reference.
+                let fades:Vec<_>=(0..NUM_SYMBOLS).map(|k|0.6+0.4*(k as f64*0.4).cos()).collect();
+                let norm=(fades.iter().map(|x|x*x).sum::<f64>()/NUM_SYMBOLS as f64).sqrt();
+                for (k,&tone) in tones.iter().enumerate() {
+                    for i in 0..sym {
+                        let phase=phases[k]+2.0*PI*(1234.57+tone as f64*TONE_SPACING_HZ)*i as f64/rate;
+                        let a=0.002*fades[k]/norm;
+                        iq[2*(k*sym+i)]=(a*phase.cos()+sigma*noise.normal()) as f32;
+                        iq[2*(k*sym+i)+1]=(a*phase.sin()+sigma*noise.normal()) as f32;
+                    }
+                }
+                let model=CancellationModel{frequency:1234.57,start:0,gains:[(0.0,0.0);NUM_SYMBOLS]};
+                let measured=estimate_snr(&iq,rate,&tones,&model);
+                let value=measured.value.unwrap_or_else(||panic!("{rate}/{expected}: {measured:?}"));
+                let error=(value-expected).abs();worst=worst.max(error);
+                println!("FT8 Fs={rate} B=2500 expected={expected} measured={value:.3} error={error:.3} dB");
+                assert!(error<if expected< -20.0 {3.0}else{1.5},"{measured:?}");
+            }
+        }
+        println!("FT8 worst error: {worst:.4} dB");
+    }
+    #[test]
+    fn unresolved_or_truncated_symbols_do_not_report_zero_db() {
+        let tones=tones_from_codeword(&[0;174]);let model=CancellationModel{frequency:1000.0,start:0,gains:[(0.0,0.0);NUM_SYMBOLS]};
+        assert_eq!(estimate_snr(&vec![0.0;24000],12000.0,&tones,&model).value,None);
+        assert_eq!(estimate_snr(&vec![0.0;320000],12000.0,&tones,&model).value,None);
+        assert_eq!(estimate_snr(&vec![1.0;320000],12000.0,&tones,&model).reason,Some("overload_or_nonfinite_iq"));
     }
 }

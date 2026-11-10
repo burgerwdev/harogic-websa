@@ -9,6 +9,7 @@ mod pfb_pool;
 mod rational;
 pub mod rate_plan;
 pub mod receiver;
+pub mod rf_measure;
 pub mod cw;
 pub mod nr;
 mod nr_neural;

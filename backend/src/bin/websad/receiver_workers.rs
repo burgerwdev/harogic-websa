@@ -139,6 +139,15 @@ impl ChannelConfig {
 
     fn receiver_config(&self, input_rate: f64) -> ReceiverConfig {
         ReceiverConfig {
+            measurement_passband_hz: Some(self.baseband.as_ref().map(|b|b.passband_hz).unwrap_or_else(||
+                match self.mode.as_str() {
+                    "usb" | "lsb" => self.if_bw*2.0,
+                    "ft8" => self.if_bw.max(3_200.0)*2.0,
+                    "sstv" | "radiofax" => self.if_bw.max(3_000.0)*2.0,
+                    "cw" => self.if_bw+self.pitch*2.0,
+                    mode if websa_channelizer::catalog::mode(mode).is_some_and(|d|d.sideband=="upper") => self.if_bw*2.0,
+                    _ => self.if_bw,
+                })),
             mode: self.mode.clone(), input_rate, audio_rate: self.audio_rate, if_bw: self.if_bw,
             center_hz: self.freq.max(0.0).round() as u64,
             am_sync: self.am_sync,

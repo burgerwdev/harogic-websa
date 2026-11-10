@@ -295,8 +295,14 @@ impl AnalogDemod {
     /// AGC's initial RMS measurement. Include one input sample for interpolation/detection.
     fn agc_settling_samples(&self) -> usize {
         let band = if self.prechannelized { 0 } else { BAND_TAPS - 1 };
-        let input = band + self.audio_lp.taps().len().saturating_sub(1) + 1;
-        (input as f64 * self.out_rate / self.fs).ceil() as usize
+        let mono = ((band + self.audio_lp.taps().len().saturating_sub(1) + 1) as f64
+            * self.out_rate / self.fs).ceil() as usize
+            + self.stereo.as_ref().map_or(0, |s| s.mono_delay_samples());
+        let side = self.stereo.as_ref().map_or(0, |s| {
+            ((band + s.input_filter_support_samples() + 1) as f64 * self.out_rate / self.fs).ceil() as usize
+                + s.output_alignment_support_samples()
+        });
+        mono.max(side)
             + self.deemph.as_ref().map_or(0, |filter| filter.taps().len().saturating_sub(1))
     }
 
@@ -501,7 +507,8 @@ impl AnalogDemodulator for AnalogDemod {
         // The FM discriminator needs a preceding IQ sample. Every subsequent
         // stage preserves length except the resampler, which owns its phase.
         let skipped = usize::from(self.spec.detector == Detector::Fm && self.prev_z.is_none());
-        Some(self.resampler.output_length_hint(complex_samples.saturating_sub(skipped)))
+        self.resampler.output_length_hint(complex_samples.saturating_sub(skipped))
+            .checked_add(self.stereo.as_ref().map_or(0, |s| s.pending_mono_samples()))
     }
 
     fn process_into(&mut self, iq: &[f32], out: &mut Vec<f32>) {
@@ -558,7 +565,8 @@ impl AnalogDemodulator for AnalogDemod {
         // Decode the difference first so native listening can measure actual
         // stereo power and peaks, including programmes whose L+R nearly cancels.
         if let Some(stereo) = self.stereo.as_mut() {
-            stereo.process(&det);
+            stereo.process_f64(&det_f64);
+            stereo.match_audio_clock(&mut rs);
         }
         let mut levelled = core::mem::take(&mut self.levelled);
         if self.agc_enabled {
@@ -614,6 +622,10 @@ impl AnalogDemodulator for AnalogDemod {
         self.stereo.as_ref().map_or(0, |stereo| stereo.pending_side_samples())
     }
 
+    fn alignment_delay_seconds(&self) -> f64 {
+        self.stereo.as_ref().map_or(0, |s| s.mono_delay_samples()) as f64 / self.out_rate
+    }
+
     fn stereo_detected(&self) -> bool {
         self.stereo.as_ref().is_some_and(|stereo| stereo.stereo())
     }
@@ -651,6 +663,10 @@ impl AnalogDemodulator for AnalogDemod {
 
     }
 
+
+    fn pilot_measurement(&self) -> Option<(f64, f64)> {
+        self.stereo.as_ref().and_then(|s|s.pilot_measurement())
+    }
 
     fn pilot_snr_db(&self) -> f64 {
         self.stereo.as_ref().map(|s| s.pilot_snr_db()).unwrap_or(0.0)

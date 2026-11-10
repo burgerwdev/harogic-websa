@@ -2,7 +2,7 @@ import { decodeIngressClient, type DecodeIngressClient } from '../sdr/decodeIngr
 import { receiverHasAudio } from '../core/multichannel';
 import { onCommandReply, onCommandSent } from '../core/wsSend';
 import { claimNativeAudio, forgetNativeAudio, getNativeAudioStatus, sampleNativeAudioWaveform, setNativeAudioRoute, setNativeMaster } from '../audio/sdrAudio';
-import { acknowledgeDecoderLog, addDecoderRaster, addDecoderResult, annotateDecoderResult, clearDecoderStatuses, clearGpsSnapshots, decoderLog, endDecoderRasters, forgetDecoderLog } from '../sdr/decoderLog';
+import { acknowledgeDecoderLog, addDecoderRaster, addDecoderResult, annotateDecoderResult, clearDecoderStatuses, clearGpsSnapshots, decoderLog, endDecoderRasters, expireNativeMeasurements, forgetDecoderLog } from '../sdr/decoderLog';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import { claimNativeDecode, publishNativeDecode } from '../sdr/decodeOwnership';
 import type { WorkbenchSession } from './workbenchSession';
@@ -118,7 +118,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
       }
       setNativeAudioRoute(uid, config.processors[0]?.mode ?? '', session.playbackActive(uid), session.route(uid).gain, session.route(uid).pan, restart);
       audioKeys.set(uid, key);
-      if (receiver.processing_state === 'failed' || receiver.reception && receiver.reception.state!=='receiving') {stopDecoder(uid);continue;}
+      if (receiver.processing_state === 'failed' || receiver.reception && receiver.reception.state!=='receiving') {clearDecoderStatuses(uid);stopDecoder(uid);continue;}
       if (receiver.state !== 'running' || !config.processors.length || receiver.fault) {
         // STATUS can precede the socket's accepted FIFO tail. Only an ended
         // owner is ready to release on this observation.
@@ -128,7 +128,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
       if (decoders.has(uid) || errors.has(uid)) continue;
       const worker = decodeIngressClient();
       const owner = { worker, service: snapshot.service_id, ended: false }; decoders.set(uid, owner);
-      const fail = (message: string): void => { if (decoders.get(uid) !== owner || owner.ended) return; endDecoderRasters(uid); errors.set(uid, message); stopDecoder(uid); session.notify(); };
+      const fail = (message: string): void => { if (decoders.get(uid) !== owner || owner.ended) return; clearDecoderStatuses(uid); endDecoderRasters(uid); errors.set(uid, message); stopDecoder(uid); session.notify(); };
       worker.onmessage = event => {
         if (decoders.get(uid) !== owner || owner.ended || session.snapshot.service_id !== owner.service) return;
         const message = event.data;
@@ -173,6 +173,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
       url.searchParams.set('receiver_uid', uid); worker.postMessage({ type: 'start', url: url.href });
     }
   };
+  const expiry = setInterval(() => { for (const uid of expireNativeMeasurements()) session.notifyResults(uid); }, 500);
   const unsubscribe = session.subscribe(sync); sync();
   return {
     results: (uid: string) => ({ ...(session.snapshot.receivers.some(r => r.receiver_uid === uid) ? decoderLog(uid) : { entries: [], evicted: 0 }), source: processingSources.get(uid) ?? null }),
@@ -181,7 +182,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
     status: (uid: string): string => errors.get(uid) ?? String(getNativeAudioStatus(playbackOwner(uid))?.error ?? ''),
     retry(uid: string): void { errors.delete(uid); stopDecoder(uid); audioKeys.delete(uid); forgetNativeAudio(uid); sync(); session.notify(); },
     hasAudio: (uid: string) => { const r = session.snapshot.receivers.find(r => r.receiver_uid === uid); return !!r && receiverHasAudio(session.snapshot, r.confirmed); },
-    dispose(): void { if (disposed) return; disposed = true; stopMainCommands(); stopMainReplies(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of waveformConsumers.keys()) releaseWaveform(uid); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); releaseDecode(); release(); },
+    dispose(): void { if (disposed) return; disposed = true; clearInterval(expiry); stopMainCommands(); stopMainReplies(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of waveformConsumers.keys()) releaseWaveform(uid); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); releaseDecode(); release(); },
   };
 }
 
@@ -218,6 +219,7 @@ export function consumeReceiverResult(uid: string, envelope: DecodeEnvelope): vo
   }
   if (event.type === 'ft8') result('table', { decodes: [{ snr_db: event.snrDb, dt_s: event.timeOffsetS, audio_hz: event.frequencyHz,
     msg: event.text, center_hz: event.centerHz, window_start: event.windowStart ?? envelope.input_index }] });
+  else if (event.type === 'rf-measurement') result('status', event);
   else if (event.type === 'cw') {
     result('status', { ...event, type: 'cw-level', text: undefined });
     annotateDecoderResult(uid, { input_index: envelope.input_index, input_rate: envelope.input_rate, fraction_num: envelope.input_fraction_num,
@@ -231,7 +233,7 @@ export function consumeReceiverResult(uid: string, envelope: DecodeEnvelope): vo
       && entry.kind === 'status' && (entry.data as { type?: string })?.type === 'drm')?.data as Record<string, unknown> | undefined;
     const lines = Array.isArray(event.lines) && event.lines.length ? event.lines : previous?.lines ?? [];
     result('status', { ...previous, ...event, type: 'drm', lines,
-      snrDb: Number.isFinite(event.snrDb) ? event.snrDb : Array.isArray(event.lines) && event.lines.length ? null : previous?.snrDb,
+      snrDb: event.snrDb === null ? null : Number.isFinite(event.snrDb) ? event.snrDb : Array.isArray(event.lines) && event.lines.length ? null : previous?.snrDb,
       points: event.status?.locked === false ? [] : event.points ?? previous?.points ?? [], input_index: envelope.input_index });
   }
   else if (event.type === 'wfm-info' || event.type === 'am-info') result('status', event);
