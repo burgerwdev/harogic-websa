@@ -223,14 +223,19 @@ def browser_gate(origin, snapshot, artifacts):
         assert healthy_before['enabled'] and healthy_before['playing'] and healthy_before['rms'] > 0, healthy_before
         stale_directory = api(origin)
         worker_count = len(workers)
+        directory_url = re.compile(r'/api/sdr/receivers(?:\?.*)?$')
+        held_directory_requests = []
         def hold_directory(route):
             if route.request.method == 'GET':
+                held_directory_requests.append(route.request.url)
                 route.fulfill(json=stale_directory)
             else:
                 route.continue_()
         # End the active UID externally while its control view is deliberately
         # stale. A normal socket end must release playback without retry/error.
-        page.route('**/api/sdr/receivers', hold_directory)
+        # Include the live polling query so the directory stays stale throughout
+        # the socket-end assertion, independently of the 500 ms refresh cadence.
+        page.route(directory_url, hold_directory)
         try:
             cleared = api(origin, payload={'type': 'retire', 'request_id': 'strip-probe-cleanup',
                 'receiver_uid': probe_uid})
@@ -239,6 +244,7 @@ def browser_gate(origin, snapshot, artifacts):
                 && r.connectionState === 'stopped' && !r.error && !r.playing
                 && r.rms === 0 && r.peak === 0 && r.meterAt === 0 && r.bufferedFrames === 0)''', arg=probe_uid)
             page.wait_for_timeout(650)
+            assert held_directory_requests, 'receiver directory polling was not held'
             assert len(workers) == worker_count, (worker_count, workers)
             ended = page.evaluate('uid => window.websaAudioStatus().find(r => r.channel === uid)', probe_uid)
             assert ended['connectionState'] == 'stopped' and not ended['error'], ended
@@ -252,7 +258,7 @@ def browser_gate(origin, snapshot, artifacts):
                 'ended': ended, 'healthy_before': healthy_before, 'healthy_after': healthy_after,
                 'worker_count_before': worker_count, 'worker_count_after': len(workers)}, indent=2) + '\n')
         finally:
-            page.unroute('**/api/sdr/receivers', hold_directory)
+            page.unroute(directory_url, hold_directory)
         expect(overview.locator(f'.mc-row[data-uid="{probe_uid}"]')).to_have_count(0)
         overview.locator(f'[data-uid="{uid}"] [data-action=select]').click()
         name = overview.locator('[data-channel-name]')

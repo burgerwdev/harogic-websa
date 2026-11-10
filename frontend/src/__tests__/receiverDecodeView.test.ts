@@ -3,6 +3,7 @@ import { addDecoderRaster, addDecoderResult, decoderLog, forgetDecoderLog, type 
 import { mountReceiverDecodeView } from '../ui/receiverDecodeView';
 import { renderDecoderEntries } from '../ui/decoderResults';
 import { setLang } from '../core/i18n';
+import * as geography from '../ui/ft8GeoText';
 
 let host: HTMLElement;
 const uid = 'decode-ui';
@@ -13,6 +14,23 @@ beforeEach(() => { setLang('en'); host = document.createElement('div'); document
 afterEach(() => { vi.restoreAllMocks(); forgetDecoderLog(uid); document.body.replaceChildren(); });
 
 describe('receiver Decode interaction and live results', () => {
+  it('does not rebuild retained FT8 rows or measure an empty transcript for live status updates', () => {
+    const view = mountReceiverDecodeView(host), geo = vi.spyOn(geography, 'ft8GeoTexts');
+    const entries = [message(1, 'CQ W1ABC FN42'), message(2, 'CQ JA1ABC PM95')];
+    view.update(entries, uid, 'ft8', 0, '');
+    const row = host.querySelector('tr[data-key="1:0"]');
+    expect(geo).toHaveBeenCalledTimes(2);
+    geo.mockClear();
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get');
+    try {
+      for (let i = 0; i < 5; i++) view.update([{ ...message(10 + i, ''), kind: 'status', data: { type: 'ft8-state', attempts: i } }, ...entries], uid, 'ft8', 0, '');
+      expect(host.querySelector('tr[data-key="1:0"]')).toBe(row);
+      expect(geo).not.toHaveBeenCalled(); expect(scroll).not.toHaveBeenCalled();
+      setLang('zh'); view.update(entries, uid, 'ft8', 0, '');
+      expect(geo).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('.mc-message-country')!.textContent).toMatch(/美国|日本/);
+    } finally { view.dispose(); }
+  });
   it('renders a retained long CW transmission without exceeding function argument limits', () => {
     const view = mountReceiverDecodeView(host);
     try {
@@ -218,7 +236,9 @@ describe('receiver Decode interaction and live results', () => {
     expect(host.querySelector('tbody')?.textContent).toContain('OTHER CHANNEL'); view.dispose();
   });
   it('keeps the live raster canvas and its actual pixels through row updates, polling, UTC and language changes', () => {
-    const draw = vi.fn(), context = { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: draw };
+    const painted = new Uint8ClampedArray(16);
+    const draw = vi.fn((image: { data: Uint8ClampedArray }, _x: number, y: number) => painted.set(image.data, y * 8));
+    const context = { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: draw };
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
     const view = mountReceiverDecodeView(host);
     const image = (row: number, rgb: number[]) => addDecoderRaster(uid, 'sstv', '1:1', { id: 'picture', label: 'Martin M1', w: 2, h: 2,
@@ -227,7 +247,7 @@ describe('receiver Decode interaction and live results', () => {
     const canvas = host.querySelector('canvas')!; expect(canvas.width).toBe(2);
     image(1, [0, 0, 255, 255, 255, 255]); view.update(decoderLog(uid).entries, uid, 'sstv', 0, '');
     expect(host.querySelector('canvas')).toBe(canvas);
-    expect([...draw.mock.calls.at(-1)![0].data]).toEqual([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]);
+    expect([...painted]).toEqual([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]);
     click('[data-decode-action=utc]'); setLang('zh'); view.update(decoderLog(uid).entries, uid, 'sstv', 0, '');
     expect(host.querySelector('canvas')).toBe(canvas); expect(canvas.isConnected).toBe(true);
     view.dispose(); setLang('en');

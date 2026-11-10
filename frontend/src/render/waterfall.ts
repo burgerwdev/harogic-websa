@@ -5,7 +5,7 @@ import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 import * as S from '../core/store';
 import { canvasColors, getTheme } from '../core/theme';
 import { percentileApprox } from '../dsp/stats';
-import { wfContrast, wfFloorSource, wfHiDbm, wfLoDbm, wfPalette, wfPaused, wfRangeMode } from '../ui/waterfallState';
+import { waterfallOn, wfContrast, wfFloorSource, wfHiDbm, wfLoDbm, wfPalette, wfPaused, wfRangeMode } from '../ui/waterfallState';
 import { getCapture, getView, isZoomed, viewportVersion } from '../ui/spectrumViewport';
 import { previewFreqWindow } from '../ui/axisDrag';
 import { lowerBound, projectSpectrum, sameFrequencyGrid } from '../dsp/grid';
@@ -17,7 +17,6 @@ import { sdrPassbandVisible } from '../ui/sdrPassbandState';
 import { displayOffset } from '../ui/displayState';
 import { waterfallHeadroom, waterfallLUT } from './waterfallPalette';
 import { chooseViewFloor, observedFloor, waterfallDisplayBounds, WaterfallAutoLevels } from '../dsp/waterfallLevels';
-import { requestRender } from './redraw';
 
 const MAX_HISTORY_COLUMNS = 16384;
 const MAX_SDR_COLUMNS = 65536;
@@ -71,7 +70,7 @@ export function retainedViewFloor(lo: number, hi: number): number {
   return NaN;
 }
 
-function currentViewWindow(lo: number, hi: number) {
+function currentViewWindow(lo: number, hi: number, repaint: () => void) {
   const row = S.waterfallRows.at(-1);
   const key = `${lo}:${hi}:${wfPaused.get()}`;
   const now = performance.now();
@@ -96,8 +95,10 @@ function currentViewWindow(lo: number, hi: number) {
     viewWindow = { lo: bottom, hi: bottom + 55, offset: false };
   }
   viewFloorAt = now;
-  if (viewScaleMoving && !levelFrame && typeof requestAnimationFrame === 'function') {
-    levelFrame = requestAnimationFrame(() => { levelFrame = 0; requestRender(); });
+  if (viewScaleMoving && !levelFrame && !document.hidden && waterfallOn.get()) {
+    // Colour-limit easing belongs to this canvas. It must not drive the entire
+    // spectrum, marker tables and controls at the display's refresh rate.
+    levelFrame = window.setTimeout(() => { levelFrame = 0; if (!document.hidden && waterfallOn.get()) repaint(); }, 100);
   }
   return viewWindow;
 }
@@ -331,7 +332,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   }
   const viewKey = `${view?.lo}:${view?.hi}:${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
   const localWindow = S.sdrMode && wfRangeMode.get() === 'auto' && wfFloorSource.get() === 'view' && view
-    ? currentViewWindow(view.lo, view.hi) : null;
+    ? currentViewWindow(view.lo, view.hi, () => { if (canvas.isConnected) renderWaterfall(canvas, maxDensity, rowPixels); }) : null;
   if (canvas.dataset) {
     const diagnostic = JSON.stringify({ lo: view?.lo, hi: view?.hi, rows: n, bytes: S.waterfallBytes,
       source: wfFloorSource.get(), floor: localWindow ? localWindow.lo + 6 : null,

@@ -23,23 +23,24 @@ type Processor = {
 		prime: number;
 		target: number;
 		maxFill: number;
-		port: { onmessage: (event: { data: unknown }) => void; messages: Array<{ type: string; playing?: boolean; rms?: number; peak?: number; generation?: number }> };
+		port: { onmessage: (event: { data: unknown }) => void; messages: Feedback[] };
 		playing: boolean;
 		push(samples: Float32Array): void;
-		process(inputs: unknown, outputs: Float32Array[][]): boolean;
+		process(inputs: unknown, outputs: Float32Array[][], parameters?: Record<string, Float32Array>): boolean;
 		reset(): void;
 	};
 };
 
 const RATE = 48_000;
+interface Feedback { type: string; playing?: boolean; rms?: number; peak?: number; generation?: number; delivery?: number; messages?: Feedback[] }
 let ProcessorClass: Processor | null = null;
 
 beforeAll(async () => {
 	(globalThis as unknown as { sampleRate: number }).sampleRate = RATE;
 	class FakePort {
 		onmessage: ((event: { data: unknown }) => void) | null = null;
-		messages: Array<{ type: string; playing?: boolean; rms?: number; peak?: number; generation?: number }> = [];
-		postMessage(message: { type: string; playing?: boolean; rms?: number; peak?: number; generation?: number }): void { this.messages.push(message); }
+		messages: Feedback[] = [];
+		postMessage(message: Feedback): void { this.messages.push(message); }
 		start(): void {}
 	}
 	(globalThis as unknown as { AudioWorkletProcessor: unknown }).AudioWorkletProcessor = class {
@@ -97,6 +98,13 @@ function run(producerSps: number, seconds = 6, block = 960): Outcome {
 }
 
 describe('the SDR playback buffer', () => {
+  it('permanently ends a retired source even after its data port was transferred', () => {
+    const proc = new ProcessorClass!();
+    proc.enabled = true; proc.push(new Float32Array(RATE).fill(.5));
+    const played = proc.playedFrames;
+    expect(proc.process(null, [[new Float32Array(128)]], { active: new Float32Array([0]) })).toBe(false);
+    expect(proc.playedFrames).toBe(played);
+  });
 	it('counts played and missing audio-clock frames even without an underrun', () => {
 		const proc = new ProcessorClass!();
 		proc.enabled = true;
@@ -407,7 +415,7 @@ it('meters rendered stereo PCM, not incoming samples waiting in the playback buf
   proc.port.onmessage({ data: { type: 'reset', generation: 7, stereo: true } });
   proc.enabled = true;
   const outputs = [[new Float32Array(128), new Float32Array(128)]];
-  const meter = () => proc.port.messages.filter(message => message.type === 'meter').at(-1)!;
+  const meter = () => proc.port.messages.flatMap(message => message.messages ?? [message]).filter(message => message.type === 'meter').at(-1)!;
   proc.push(new Float32Array(100).fill(.9));
   for (let i = 0; i < 20; i++) proc.process(null, outputs);
   expect(meter()).toMatchObject({ rms: 0, peak: 0, playing: false, generation: 7 });
@@ -421,4 +429,25 @@ it('meters rendered stereo PCM, not incoming samples waiting in the playback buf
   proc.port.onmessage({ data: { type: 'enabled', value: false } });
   for (let i = 0; i < 60; i++) proc.process(null, outputs);
   expect(meter()).toMatchObject({ rms: 0, peak: 0, playing: false });
+});
+
+it('acknowledges a PCM burst once at the meter cadence and discards old-generation feedback', () => {
+  const proc = new ProcessorClass!();
+  proc.port.onmessage({ data: { type: 'reset', generation: 7 } }); proc.enabled = true;
+  for (let delivery = 0; delivery < 100; delivery++) {
+    proc.port.onmessage({ data: { type: 'samples', samples: new Float32Array(48), delivery, generation: 7 } });
+  }
+  expect(proc.available).toBe(4800);
+  expect(proc.port.messages.some(message => ['accepted', 'accepted-through', 'feedback'].includes(message.type))).toBe(false);
+  for (let i = 0; i < 20; i++) proc.process(null, [[new Float32Array(128)]]);
+  const reports = proc.port.messages.filter(message => message.type === 'feedback');
+  expect(reports).toHaveLength(1);
+  expect(reports[0].messages).toContainEqual({ type: 'accepted-through', delivery: 99, generation: 7 });
+  proc.port.onmessage({ data: { type: 'samples', samples: new Float32Array(48), delivery: 100, generation: 7 } });
+  proc.port.onmessage({ data: { type: 'reset', generation: 8 } });
+  proc.port.onmessage({ data: { type: 'samples', samples: new Float32Array(48), delivery: 101, generation: 8 } });
+  for (let i = 0; i < 20; i++) proc.process(null, [[new Float32Array(128)]]);
+  const latest = proc.port.messages.filter(message => message.type === 'feedback').at(-1)!;
+  expect(latest.messages).toContainEqual({ type: 'accepted-through', delivery: 101, generation: 8 });
+  expect(latest.messages?.some(message => message.generation === 7)).toBe(false);
 });

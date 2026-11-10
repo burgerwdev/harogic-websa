@@ -672,7 +672,7 @@ impl FineBank {
     /// Updates only column selection after a drained shared-PFB bin replacement.
     /// All active bins must remain selected; phases, histories and clocks are untouched.
     pub fn remap_bins(&mut self, bins: &[u32]) -> Result<(), &'static str> {
-        if bins.is_empty() || bins.iter().enumerate().any(|(at, &bin)|
+        if bins.iter().enumerate().any(|(at, &bin)|
             bin as usize >= self.bin_count || bins[..at].contains(&bin)) {
             return Err("invalid coarse bin selection");
         }

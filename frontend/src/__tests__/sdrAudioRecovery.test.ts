@@ -328,3 +328,8 @@ describe('receiver audio recovery', () => {
     expect(audio.getSdrChannelAudioError(1)).toBe('');
   });
 });
+// These tests exercise AudioChain and worklet recovery with an isolated ingress.
+// Pool ownership and per-port isolation are covered by audioIngressPool.test.ts.
+vi.mock('../audio/audioIngressPool', () => ({
+  audioIngressClient: () => new Worker(new URL('../audio/sdrAudioWorker.ts', import.meta.url), { type: 'module' }),
+}));

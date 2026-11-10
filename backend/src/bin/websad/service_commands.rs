@@ -37,7 +37,7 @@ pub(super) async fn execute(
             app.display_version
                 .store(state.freq_version, Ordering::Release);
             state.publish_identities(&app.identities);
-            Some(state.status_snapshot())
+            Some(state.live_status_snapshot())
         } else {
             None
         };
@@ -137,7 +137,7 @@ mod tests {
         {
             let mut state = app.state.lock().unwrap();
             crate::dispatch(&mut state, "SET_POINTS", &json!({"points":3000})).unwrap();
-            let snapshot = state.status_snapshot();
+            let snapshot = state.live_status_snapshot();
             app.state
                 .publish_status(snapshot.revision, snapshot.build());
         }

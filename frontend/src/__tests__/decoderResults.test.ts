@@ -1,9 +1,30 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { addDecoderResult, clearDecoderLog, decoderLog, DECODER_LOG_ENTRIES } from '../sdr/decoderLog';
-import { renderDecoderResults } from '../ui/decoderResults';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { addDecoderRaster, addDecoderResult, clearDecoderLog, decoderLog, DECODER_LOG_ENTRIES, endDecoderRasters, forgetDecoderLog } from '../sdr/decoderLog';
+import { renderDecoderEntries, renderDecoderResults } from '../ui/decoderResults';
 
 beforeEach(() => { clearDecoderLog(1); document.body.replaceChildren(); });
 describe('provider result history', () => {
+  it('paints only changed raster rows, including coalesced and corrected earlier rows', () => {
+    const host = document.createElement('div'), uid = 'raster-performance';
+    const context = { createImageData: vi.fn((w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h })), putImageData: vi.fn() };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const put = (row: number, value: number) => addDecoderRaster(uid, 'sstv', '1:1', { id: 'picture', label: 'SSTV', w: 2, h: 100, row, rows: 1, rgb: new Uint8Array(6).fill(value), final: false, partial: false });
+    const paint = () => renderDecoderEntries(host, decoderLog(uid).entries, uid, false);
+    try {
+      put(0, 1); paint(); expect(context.createImageData).toHaveBeenLastCalledWith(2, 100);
+      put(1, 2); put(2, 3); paint();
+      expect(context.createImageData).toHaveBeenLastCalledWith(2, 2);
+      expect(context.putImageData.mock.calls.at(-1)![2]).toBe(1);
+      expect([...context.putImageData.mock.calls.at(-1)![0].data]).toEqual([2, 2, 2, 255, 2, 2, 2, 255, 3, 3, 3, 255, 3, 3, 3, 255]);
+      put(0, 4); paint(); expect(context.createImageData).toHaveBeenLastCalledWith(2, 1);
+      expect(context.putImageData.mock.calls.at(-1)![2]).toBe(0);
+      const painted = context.putImageData.mock.calls.length;
+      endDecoderRasters(uid); paint(); expect(context.putImageData).toHaveBeenCalledTimes(painted);
+      // A hidden view can miss more changes than the bounded journal retains.
+      for (let row = 3; row < 24; row++) put(row, row);
+      paint(); expect(context.createImageData).toHaveBeenLastCalledWith(2, 100);
+    } finally { forgetDecoderLog(uid); vi.restoreAllMocks(); }
+  });
   it('retains a live table page and its focused next button when a new snapshot arrives', () => {
     const host = document.createElement('section'); document.body.append(host);
     const snapshot = (prefix: string): void => {

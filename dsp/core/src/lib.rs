@@ -12,8 +12,9 @@
 //!   * `fft`      — the transform those stages share
 //!
 //! The crate builds natively (`cargo test` runs the kernels) and for
-//! `wasm32-unknown-unknown` (the artifact the browser loads), with no Rust crate
-//! dependencies. Native DRM audio links FDK AAC; WASM links the codec archives.
+//! `wasm32-unknown-unknown` (the artifact the browser loads). The default/WASM
+//! build has no Rust crate dependencies; native-fft enables rustfft for complex
+//! FIRs in native receivers. Native DRM audio links FDK AAC; WASM links the codec archives.
 
 pub mod abi;
 pub mod analog;

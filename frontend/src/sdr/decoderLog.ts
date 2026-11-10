@@ -49,7 +49,7 @@ export const DECODER_LOG_ENTRIES = 200;
 export const DECODER_LOG_BYTES = 8 * 1024 * 1024;
 export const DECODER_HISTORY_BYTES = 128 * 1024 * 1024;
 const channels = new Map<number | string, { entries: DecoderLogEntry[]; bytes: number; evicted: number }>();
-const listeners = new Set<() => void>();
+const listeners = new Set<(channel: number | string) => void>();
 let serial = 0;
 function channelLog(channel: number | string) {
   let log = channels.get(channel);
@@ -108,7 +108,7 @@ export function clearGpsSnapshots(channel: number | string, provider?: string, s
     log.bytes -= entry.bytes;
     return false;
   });
-  if (log.entries.length !== count) listeners.forEach(fn => fn());
+  if (log.entries.length !== count) listeners.forEach(fn => fn(channel));
 }
 export function addDecoderResult(result: DecoderResult, source: string, channel: number | string): void {
   const log = channelLog(channel);
@@ -131,7 +131,7 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
       const picture = entry.data as DecoderImage;
       if (Number(data.rows) > picture.h) throw new Error('Invalid decoder image completion rows');
       log.entries[index] = { ...entry, data: { ...picture, final: true }, acknowledged: typeof channel === 'number' };
-      listeners.forEach(fn => fn());
+      listeners.forEach(fn => fn(channel));
       return;
     }
   }
@@ -183,19 +183,19 @@ export function addDecoderResult(result: DecoderResult, source: string, channel:
   }
   const old = previous >= 0 ? log.entries[previous] : null;
   const limit = typeof channel === 'string' ? 24 * 1024 * 1024 : DECODER_LOG_BYTES;
-  if (bytes > limit && result.kind !== 'image') { log.evicted++; listeners.forEach(fn => fn()); return; }
+  if (bytes > limit && result.kind !== 'image') { log.evicted++; listeners.forEach(fn => fn(channel)); return; }
   reserveHistory(channel, bytes, old);
   if (old) { log.bytes -= old.bytes; id = old.id; log.entries.splice(log.entries.indexOf(old), 1); }
   log.entries.unshift({ ...result, id, at: decoderTextLine(result) && old ? old.at : Date.now(), source, bytes, ...(decoderTextLine(result) && old?.timing ? { timing: old.timing } : {}), acknowledged: typeof channel === 'number' });
   log.bytes += bytes;
-  listeners.forEach(fn => fn());
+  listeners.forEach(fn => fn(channel));
 }
 export function clearDecoderLog(channel: number | string, mode?: string): void {
   const log = channelLog(channel);
   log.entries = mode ? log.entries.filter(entry => entry.mode !== mode) : [];
   log.bytes = log.entries.reduce((bytes, entry) => bytes + entry.bytes, 0);
   log.evicted = 0;
-  listeners.forEach(fn => fn());
+  listeners.forEach(fn => fn(channel));
 }
 /** Live readings belong to one processing stream; messages and pictures remain history. */
 export function clearDecoderStatuses(channel: string): void {
@@ -203,9 +203,9 @@ export function clearDecoderStatuses(channel: string): void {
   const count = log.entries.length;
   log.entries = log.entries.filter(entry => entry.kind !== 'status');
   log.bytes = log.entries.reduce((bytes, entry) => bytes + entry.bytes, 0);
-  if (count !== log.entries.length) listeners.forEach(fn => fn());
+  if (count !== log.entries.length) listeners.forEach(fn => fn(channel));
 }
-export function subscribeDecoderLog(fn: () => void): () => void {
+export function subscribeDecoderLog(fn: (channel: number | string) => void): () => void {
   listeners.add(fn);
   return () => { listeners.delete(fn); };
 }
@@ -214,6 +214,17 @@ export function subscribeDecoderLog(fn: () => void): () => void {
 export interface DecoderRaster {
   raster: true; id: string; label: string; w: number; h: number; rgb: Uint8Array;
   rows: number; final: boolean; partial: boolean; missingRows: number[];
+}
+const rasterChanges = new WeakMap<Uint8Array, { version: number; rows: { version: number; row: number; rows: number }[] }>();
+/** Each view tracks its own paint version. A bounded journal also covers coalesced deliveries. */
+export function decoderRasterChanges(picture: DecoderRaster, painted?: { rgb: Uint8Array; version: number }): { row: number; rows: number; version: number } {
+  const changes = rasterChanges.get(picture.rgb), version = changes?.version ?? 0;
+  if (!changes || !painted || painted.rgb !== picture.rgb || painted.version < changes.rows[0].version - 1)
+    return { row: 0, rows: picture.h, version };
+  const pending = changes.rows.filter(change => change.version > painted.version);
+  if (!pending.length) return { row: 0, rows: 0, version };
+  const row = Math.min(...pending.map(change => change.row)), end = Math.max(...pending.map(change => change.row + change.rows));
+  return { row, rows: end - row, version };
 }
 export function addDecoderRaster(channel: string, mode: string, source: string, image: {
   id: string; label: string; w: number; h: number; row: number; rows: number; rgb: Uint8Array;
@@ -233,13 +244,17 @@ export function addDecoderRaster(channel: string, mode: string, source: string, 
   const rgb = old?.h === height ? old.rgb : new Uint8Array(w * height * 3);
   if (old && rgb !== old.rgb) rgb.set(old.rgb);
   rgb.set(image.rgb, row * w * 3);
+  let changes = rasterChanges.get(rgb);
+  if (!changes) { changes = { version: 0, rows: [] }; rasterChanges.set(rgb, changes); }
+  changes.rows.push({ version: ++changes.version, row, rows });
+  if (changes.rows.length > 16) changes.rows.shift();
   const picture: DecoderRaster = { raster: true, id: image.id, label: image.label, w, h: height, rgb,
     rows: Math.max(old?.rows ?? 0, row + rows), final: image.final && !(old?.partial || image.partial), partial: old?.partial === true || image.partial,
     missingRows: image.missingRows ?? [] };
   if (previous) { log.bytes -= previous.bytes; log.entries.splice(log.entries.indexOf(previous), 1); }
   log.entries.unshift({ id: previous?.id ?? ++serial, at: previous?.at ?? Date.now(), source,
     provider: 'native', mode, kind: 'image', data: picture, bytes, acknowledged: false }); log.bytes += bytes;
-  listeners.forEach(fn => fn());
+  listeners.forEach(fn => fn(channel));
 }
 export function annotateDecoderResult(channel: string, timing: NonNullable<DecoderLogEntry['timing']>): void {
   const entry = channelLog(channel).entries[0];

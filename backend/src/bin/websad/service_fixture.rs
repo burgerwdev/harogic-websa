@@ -5,6 +5,24 @@ use std::f64::consts::TAU;
 use std::sync::LazyLock;
 use websa_channelizer::BasebandMagic;
 
+pub(super) const PERIOD: Duration = Duration::from_millis(85);
+
+/// A fixture is a sample-clock source. Scheduler lateness must not change its
+/// long-term sample rate: retain every due block and catch up without skipping.
+#[derive(Default)]
+pub(super) struct Cadence {
+    next: Option<(u64, tokio::time::Instant)>,
+}
+impl Cadence {
+    pub(super) fn deadline(&mut self, epoch: u64, started: tokio::time::Instant) -> tokio::time::Instant {
+        let next = self.next.filter(|(previous, _)| *previous == epoch)
+            .map_or(started, |(_, deadline)| deadline) + PERIOD;
+        self.next = Some((epoch, next));
+        next
+    }
+    pub(super) fn reset(&mut self) { self.next = None; }
+}
+
 /// Independent native-receiver inputs for the fake device. These signals are
 /// already in normalized ADC units, so IQv2 encoding must not scale them again.
 #[derive(Clone)]
@@ -192,7 +210,7 @@ impl FixtureSlot {
             }
         }
         let epoch = allocate_dsp_epoch().map_err(str::to_owned)?;
-        let count = (rate * 0.085) as usize;
+        let count = (rate * PERIOD.as_secs_f64()) as usize;
         Ok(Self {
             entry: ChannelRegistryEntry { channel: config.channel, channel_id: epoch, epoch,
                 frequency_hz: config.freq, output_rate: rate, input_rate: rate,
@@ -204,7 +222,7 @@ impl FixtureSlot {
     fn step(&mut self, frames: &mut IqFrames) -> Result<(), String> {
         let entry = &self.entry;
         let magic = if entry.channel == 1 { BasebandMagic::Primary } else { BasebandMagic::Aux };
-        let count = (entry.output_rate * 0.085) as usize;
+        let count = (entry.output_rate * PERIOD.as_secs_f64()) as usize;
         let next_index = self.input_index.checked_add(count as u64)
             .ok_or("fixture source sample clock exhausted")?;
         let sequence = self.sequence.checked_add(1).ok_or("fixture frame sequence exhausted")?;
@@ -311,6 +329,24 @@ impl FixtureSources {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fixture_deadlines_do_not_accumulate_lateness_or_cross_epochs() {
+        let mut cadence = Cadence::default();
+        let start = tokio::time::Instant::now();
+        let mut actual = start;
+        // Relative 85 ms sleeps would turn this into 87 ms/sample block.
+        for block in 1..=1000 {
+            let deadline = cadence.deadline(1, actual);
+            assert_eq!(deadline, start + PERIOD * block);
+            actual = deadline + Duration::from_millis(2);
+        }
+        actual += Duration::from_secs(3);
+        assert_eq!(cadence.deadline(1, actual), start + PERIOD * 1001);
+        assert_eq!(cadence.deadline(2, actual), actual + PERIOD);
+        cadence.reset();
+        actual += Duration::from_secs(1);
+        assert_eq!(cadence.deadline(2, actual), actual + PERIOD);
+    }
     #[test]
     fn failed_fixture_staging_preserves_live_identity_and_samples() {
         let mut source = FixtureSources::new();

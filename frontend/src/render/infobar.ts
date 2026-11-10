@@ -6,6 +6,7 @@ import { rbwMode, vbwMode, currentRBW, currentVBW } from '../ui/swpState';
 import { getDisplayRef } from '../ui/displayRef';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { effectiveRefLevel } from '../ui/refState';
+import { setDomProperty } from '../ui/domState';
 
 // SWT prefers the device's estimated minimum sweep time. Some SDK profiles report zero;
 // in that case show the publisher's measured step duration.
@@ -34,10 +35,10 @@ function setSwt() {
 }
 
 export function updateInfoBar() {
-  const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) setDomProperty(el, 'textContent', v); };
   // RTA mode: the SWT field shows the RTA analysis bandwidth -> label becomes "BW:"
   const swtLabel = document.querySelector('[data-i18n="swt"]');
-  if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
+  if (swtLabel) setDomProperty(swtLabel, 'textContent', S.rtaMode ? t('bw_label') : t('swt'));
   // Ref retains the compensated reference setting while zoom has independent display bounds.
   const ref = getDisplayRef();
   set('info-ref', ref.toFixed(1) + (displayUnit.get() === 'dB' ? ' dB' : ' dBm'));
@@ -48,7 +49,7 @@ export function updateInfoBar() {
     });
     for (const id of ['info-ref', 'input-ref']) {
       const element = document.getElementById(id);
-      if (element) element.title = detail;
+      if (element) setDomProperty(element, 'title', detail);
     }
   }
   set('info-scale', `${Number(S.dbPerDiv.toFixed(2))} ${t('db_per_div')}`);
@@ -56,10 +57,10 @@ export function updateInfoBar() {
   set('info-vbw', vbwMode.get() === 'bypass' ? 'Bypass' : formatBWHz(currentVBW.get()));
   setSwt();
   const dot = document.getElementById('connDot');
-  if (dot) dot.className = 'dot ' + (S.deviceConnected ? 'on' : 'off');
+  if (dot) setDomProperty(dot, 'className', 'dot ' + (S.deviceConnected ? 'on' : 'off'));
   const bc = document.getElementById('btn-connect');
   if (bc) {
-    bc.textContent = S.deviceConnected ? t('status_connected') : t('connect');
+    setDomProperty(bc, 'textContent', S.deviceConnected ? t('status_connected') : t('connect'));
     bc.classList.toggle('active', !!S.deviceConnected);
   }
 }

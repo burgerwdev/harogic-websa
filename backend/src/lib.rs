@@ -3,6 +3,7 @@
 //! Native IQ channelization, fine DDC, and ordered baseband framing.
 mod fine;
 mod narrow;
+mod fir_fft;
 mod pfb;
 mod pfb_pool;
 mod rational;
@@ -24,6 +25,7 @@ pub mod filter_plans;
 pub mod host_resources;
 pub mod model_preparation;
 pub mod timing;
+pub mod capture_scheduling;
 #[cfg(feature="bench-instrument")]
 pub mod execution_probe;
 

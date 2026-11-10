@@ -232,7 +232,8 @@ export function mountRecordingLibrary(session: WorkbenchSession, actions: Librar
     }, { signal: events.signal });
     render(); surface.show();
   };
-  const unsubscribe = session.subscribe(render), stopLang = onLangChange(render);
+  const refresh = (): void => { if (surface && !surface.root.hidden && !surface.root.ownerDocument.hidden) render(); };
+  const unsubscribe = session.subscribe(refresh), stopLang = onLangChange(refresh);
   return { open, confirmDelete: task => {
     if (disposed || batchDeleting || pending.has(task.task_id) || deleteUnavailable(task)) return;
     selectionService = session.snapshot.service_id; selectionLifecycle = session.lifecycleVersion; clearSelection(); editing = null; deleting = task.task_id;

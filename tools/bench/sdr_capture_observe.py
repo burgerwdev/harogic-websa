@@ -45,7 +45,8 @@ def sample(origin, expected):
             'ddc_error_count', 'ddc_error_last', 'channel_clocks', 'channel_registry']},
         'iqs': {key: capture.get(key) for key in [
             'packets', 'skips', 'fail_calls', 'last_skip_status', 'queue_full',
-            'recovery_stall_ms', 'queue_wait_max_ms', 'device_seconds', 'host_seconds']},
+            'recovery_stall_ms', 'queue_wait_max_ms', 'device_seconds', 'host_seconds',
+            'spectrum_frames']},
         'receivers': [{key: receiver.get(key) for key in [
             'receiver_uid', 'display_number', 'revision', 'confirmed', 'state', 'stream', 'clock', 'fault']}
             for receiver in snapshot.get('receivers', [])],

@@ -117,7 +117,9 @@ export function clampView(w: FreqWindow, capture: FreqWindow, minSpan: number): 
 /** Zoom by `factor` (<1 = zoom in, >1 = out) keeping `anchorHz` fixed under the pointer. */
 export function zoomAround(view: FreqWindow, factor: number, anchorHz: number,
 	capture: FreqWindow, minSpan: number): FreqWindow {
-	const span = (view.hi - view.lo) * factor;
+	// Clamp the span before locating the anchor. Widening it afterwards moves
+	// frequencies sideways on every wheel event once maximum zoom is reached.
+	const span = Math.min(capture.hi - capture.lo, Math.max(minSpan, (view.hi - view.lo) * factor));
 	// Keep the anchor at its fractional place inside the new window.
 	const frac = (anchorHz - view.lo) / (view.hi - view.lo);
 	const lo = anchorHz - frac * span;

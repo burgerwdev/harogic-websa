@@ -713,6 +713,15 @@ impl FmStereo {
         self.side_out.len()
     }
 
+    pub(super) fn pending_side(&self) -> &[f32] {
+        &self.side_out
+    }
+
+    pub(super) fn set_output_envelope(&mut self, envelope: &[f32], pcm_scale: f32) {
+        self.gain_trace.clear();
+        self.gain_trace.extend(envelope.iter().map(|gain| gain * pcm_scale));
+    }
+
     pub fn take_side(&mut self) -> Vec<f32> {
         let last_gain = self.gain_trace.last().copied().unwrap_or(1.0);
         for (k, v) in self.side_out.iter_mut().enumerate() {

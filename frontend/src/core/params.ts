@@ -52,6 +52,7 @@ export class Param<T> {
 	#desired: T | null = null;
 	#desiredAt = 0;
 	#epoch = 0;
+	#persisted: string | null = null;
 
 	constructor(name: string, opts: ParamOptions<T>) {
 		this.name = name;
@@ -73,6 +74,7 @@ export class Param<T> {
 		if (!this.#opts.persistKey) return null;
 		try {
 			const raw = localStorage.getItem(this.#opts.persistKey);
+			this.#persisted = raw;
 			if (raw === null) return null;
 			return this.#opts.parse ? this.#opts.parse(raw) : (raw as unknown as T);
 		} catch {
@@ -83,7 +85,10 @@ export class Param<T> {
 	private persist(v: T): void {
 		if (!this.#opts.persistKey) return;
 		try {
-			localStorage.setItem(this.#opts.persistKey, this.#opts.serialize ? this.#opts.serialize(v) : String(v));
+			const raw = this.#opts.serialize ? this.#opts.serialize(v) : String(v);
+			if (raw === this.#persisted) return;
+			localStorage.setItem(this.#opts.persistKey, raw);
+			this.#persisted = raw;
 		} catch {
 			/* storage disabled: persistence is best effort */
 		}
@@ -168,6 +173,7 @@ export class Param<T> {
 	reset(): void {
 		this.#desired = null;
 		this.#desiredAt = 0;
+		this.#persisted = null;
 	}
 }
 

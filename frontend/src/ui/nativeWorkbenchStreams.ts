@@ -1,13 +1,16 @@
+import { decodeIngressClient, type DecodeIngressClient } from '../sdr/decodeIngressPool';
 import { receiverHasAudio } from '../core/multichannel';
 import { onCommandReply, onCommandSent } from '../core/wsSend';
-import { claimNativeAudio, forgetNativeAudio, getSdrAudioStatus, sampleNativeAudioWaveform, setNativeAudioRoute, setNativeMaster } from '../audio/sdrAudio';
+import { claimNativeAudio, forgetNativeAudio, getNativeAudioStatus, sampleNativeAudioWaveform, setNativeAudioRoute, setNativeMaster } from '../audio/sdrAudio';
 import { acknowledgeDecoderLog, addDecoderRaster, addDecoderResult, annotateDecoderResult, clearDecoderStatuses, clearGpsSnapshots, decoderLog, endDecoderRasters, forgetDecoderLog } from '../sdr/decoderLog';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
+import { claimNativeDecode, publishNativeDecode } from '../sdr/decodeOwnership';
 import type { WorkbenchSession } from './workbenchSession';
 
 /** One browser consumer per logical source. Views never own workers, sockets or the speaker graph. */
 export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   const release = claimNativeAudio(session.snapshot);
+  const releaseDecode = claimNativeDecode();
   const toggleMute = (): void => { session.masterMuted = !session.masterMuted; session.notify(); };
   const playbackStatus = (): void => session.notify();
   const waveformConsumers = new Map<string, string>();
@@ -65,16 +68,18 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
     session.monitorMode = 'manual';
     session.monitor(receiver.receiver_uid, { enabled: true });
   });
-  const decoders = new Map<string, { worker: Worker; service: string | undefined; ended: boolean }>();
+  const decoders = new Map<string, { worker: DecodeIngressClient; service: string | undefined; ended: boolean }>();
   const processingSources = new Map<string, string>();
   const errors = new Map<string, string>();
   const audioKeys = new Map<string, string>();
+  let disposed = false;
   let service = session.snapshot.service_id;
   const stopDecoder = (uid: string): void => {
     const owner = decoders.get(uid); if (owner && !owner.ended) owner.worker.terminate();
     decoders.delete(uid); processingSources.delete(uid);
   };
   const sync = (): void => {
+    if (disposed) return;
     const snapshot = session.snapshot;
     for (const [uid, owner] of waveformConsumers) if (service !== snapshot.service_id || !session.playbackActive(owner) || playbackOwner(uid) !== owner) releaseWaveform(uid);
     if (pendingMainMonitor) {
@@ -121,7 +126,7 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
         continue;
       }
       if (decoders.has(uid) || errors.has(uid)) continue;
-      const worker = new Worker(new URL('../sdr/decodeWorker.ts', import.meta.url), { type: 'module' });
+      const worker = decodeIngressClient();
       const owner = { worker, service: snapshot.service_id, ended: false }; decoders.set(uid, owner);
       const fail = (message: string): void => { if (decoders.get(uid) !== owner || owner.ended) return; endDecoderRasters(uid); errors.set(uid, message); stopDecoder(uid); session.notify(); };
       worker.onmessage = event => {
@@ -140,7 +145,8 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
             }
             // Decoding updates the retained log immediately. Views can coalesce paint
             // without re-running every receiver's controls and speaker routing.
-            acknowledgeDecoderLog(uid); worker.postMessage({ type: 'ack' }); session.notifyResults(uid);
+            acknowledgeDecoderLog(uid); worker.postMessage({ type: 'ack' });
+            publishNativeDecode(message.envelopes as DecodeEnvelope[]); session.notifyResults(uid);
             // A fresh validated delivery confirms this subscription recovered.
             if (errors.delete(uid)) session.notify();
           } catch (error) { fail(String(error)); }
@@ -170,12 +176,12 @@ export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
   const unsubscribe = session.subscribe(sync); sync();
   return {
     results: (uid: string) => ({ ...(session.snapshot.receivers.some(r => r.receiver_uid === uid) ? decoderLog(uid) : { entries: [], evicted: 0 }), source: processingSources.get(uid) ?? null }),
-    playback: (uid: string) => getSdrAudioStatus().find(row => row.channel === playbackOwner(uid)),
+    playback: (uid: string) => getNativeAudioStatus(playbackOwner(uid)),
     waveform,
-    status: (uid: string): string => errors.get(uid) ?? String(getSdrAudioStatus().find(row => row.channel === playbackOwner(uid))?.error ?? ''),
+    status: (uid: string): string => errors.get(uid) ?? String(getNativeAudioStatus(playbackOwner(uid))?.error ?? ''),
     retry(uid: string): void { errors.delete(uid); stopDecoder(uid); audioKeys.delete(uid); forgetNativeAudio(uid); sync(); session.notify(); },
     hasAudio: (uid: string) => { const r = session.snapshot.receivers.find(r => r.receiver_uid === uid); return !!r && receiverHasAudio(session.snapshot, r.confirmed); },
-    dispose(): void { stopMainCommands(); stopMainReplies(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of waveformConsumers.keys()) releaseWaveform(uid); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); release(); },
+    dispose(): void { if (disposed) return; disposed = true; stopMainCommands(); stopMainReplies(); document.removeEventListener('websa:monitor-toggle-mute', toggleMute); document.removeEventListener('websa:monitor-status', playbackStatus); unsubscribe(); for (const uid of waveformConsumers.keys()) releaseWaveform(uid); for (const uid of decoders.keys()) stopDecoder(uid); for (const uid of audioKeys.keys()) forgetDecoderLog(uid); releaseDecode(); release(); },
   };
 }
 

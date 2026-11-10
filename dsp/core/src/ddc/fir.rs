@@ -271,6 +271,8 @@ impl IqFilter {
 /// possible.
 #[derive(Debug, Clone)]
 pub struct ComplexBandFilter {
+    #[cfg(feature = "native-fft")]
+    fft: Option<super::fir_fft::ComplexFir>,
     re_i: FirState,
     im_q: FirState,
     im_i: FirState,
@@ -287,6 +289,9 @@ impl ComplexBandFilter {
     pub fn new(re: Vec<f64>, im: Vec<f64>) -> Self {
         let im_zero = im.iter().all(|&tap| tap == 0.0);
         Self {
+            #[cfg(feature = "native-fft")]
+            fft: (!im_zero && re.len() >= 192 && re.len() == im.len())
+                .then(|| super::fir_fft::ComplexFir::new(&re,&im)),
             re_i: FirState::new(re.clone()),
             im_q: FirState::new(im.clone()),
             im_i: FirState::new(im),
@@ -300,6 +305,8 @@ impl ComplexBandFilter {
     }
 
     pub fn reset(&mut self) {
+        #[cfg(feature = "native-fft")]
+        if let Some(fft) = &mut self.fft { fft.reset(); }
         self.re_i.reset();
         self.im_q.reset();
         self.im_i.reset();
@@ -308,6 +315,8 @@ impl ComplexBandFilter {
 
     /// Clear the filter history only (a retune drops the old channel's tail).
     pub fn clear_tail(&mut self) {
+        #[cfg(feature = "native-fft")]
+        if let Some(fft) = &mut self.fft { fft.reset(); }
         self.re_i.clear_tail();
         self.im_q.clear_tail();
         self.im_i.clear_tail();
@@ -316,6 +325,8 @@ impl ComplexBandFilter {
 
     /// Filter interleaved complex `iq` into interleaved complex `out`.
     pub fn process_complex_into(&mut self, iq: &[f64], out: &mut Vec<f64>) {
+        #[cfg(feature = "native-fft")]
+        if let Some(fft) = &mut self.fft { fft.process(iq,out); return; }
         let n = iq.len() / 2;
         self.scratch_a.clear();
         self.scratch_a.extend((0..n).map(|k| iq[2 * k]));
@@ -494,3 +505,45 @@ mod tests {
         // (I+jQ)(1/2+j/4) = (I/2-Q/4) + j(I/4+Q/2).
         assert_eq!(output, [2.0, -1.5, -5.0, 0.0]);
     }
+
+#[cfg(all(test,feature="native-fft"))]
+mod native_fft_tests {
+    use super::*;
+    #[test]
+    fn complex_fft_preserves_coefficients_boundaries_tail_and_reset() {
+        let re:Vec<_>=(0..257).map(|n|(n as f64*0.031).cos()/257.0).collect();
+        let im:Vec<_>=(0..257).map(|n|(n as f64*0.079).sin()/257.0).collect();
+        let input:Vec<_>=(0..24000).map(|n|(n as f64*0.071).sin()+(n as f64*0.411).cos()).collect();
+        let mut reference=ComplexBandFilter::new(re.clone(),im.clone());reference.fft=None;
+        let mut expected=Vec::new();reference.process_complex_into(&input,&mut expected);
+        for sizes in [&[12000][..],&[0,1,7,169,257,509,3,2048][..]] {
+            let mut filter=ComplexBandFilter::new(re.clone(),im.clone());
+            assert!(filter.fft.is_some());
+            for _ in 0..2 {
+                let (mut at,mut turn)=(0,0);let mut actual=Vec::new();let mut block=Vec::new();
+                while at<input.len() {
+                    let end=(at+2*sizes[turn%sizes.len()]).min(input.len());
+                    filter.process_complex_into(&input[at..end],&mut block);
+                    assert_eq!(block.len(),end-at);actual.extend_from_slice(&block);at=end;turn+=1;
+                }
+                let error=actual.iter().zip(&expected).map(|(a,b)|(a-b).abs()).fold(0.0f64,f64::max);
+                assert!(error<2e-12,"complex FIR max error {error}");
+                filter.process_complex_into(&vec![0.0;1028],&mut block);
+                assert!(block[514..].iter().all(|s|s.abs()<2e-12));
+                filter.clear_tail();
+            }
+        }
+    }
+    #[test]
+    #[ignore = "quiet native DSP microbenchmark"]
+    fn complex_fft_benchmark() {
+        let (re,im)=design_complex_bandpass(325_520.8333333333,0.0,6000.0,257);
+        let mut fft=ComplexBandFilter::new(re,im);let mut direct=fft.clone();direct.fft=None;
+        let input:Vec<_>=(0..22000).map(|n|(n as f64*0.071).sin()).collect();let mut output=Vec::new();
+        for (name,filter) in [("direct",&mut direct),("fft",&mut fft)] {
+            let start=std::time::Instant::now();
+            for _ in 0..100 {filter.process_complex_into(std::hint::black_box(&input),&mut output);std::hint::black_box(&output);}
+            eprintln!("complex 257 tap / 11000 samples {name}: {:.3} ms/block",start.elapsed().as_secs_f64()*10.0);
+        }
+    }
+}

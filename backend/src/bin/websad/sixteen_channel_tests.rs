@@ -12,6 +12,31 @@ fn configs() -> Vec<ChannelConfig> {
         }).collect()
 }
 
+#[test]
+fn retuning_and_retiring_release_unused_coarse_columns_without_replacing_other_sources() {
+    let mut configs=configs();
+    let mut ddc=Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap();
+    let epoch=ddc.stream.epoch();let primary=ddc.registry[0].clone();
+    assert!(ddc.stream.bins().len()<=MAX_CHANNELS);
+    for step in 0..60 {
+        configs[15].freq=100e6+(step%25-12) as f64*4.0*BIN_SPACING;
+        ddc.configure_service_channel(configs[15].clone()).unwrap();
+        assert!(ddc.stream.bins().len()<=MAX_CHANNELS,"retunes retained unused coarse columns");
+        assert_eq!(ddc.stream.epoch(),epoch);
+        assert_eq!(ddc.registry[0].channel_id,primary.channel_id);
+    }
+    for config in configs.iter_mut().skip(1) {
+        config.enabled=false;ddc.configure_service_channel(config.clone()).unwrap();
+    }
+    assert_eq!(ddc.stream.bins().len(),1);
+    assert_eq!(ddc.registry.len(),1);
+    assert_eq!(ddc.registry[0].channel_id,primary.channel_id);
+    assert_eq!(ddc.stream.epoch(),epoch);
+    configs[0].enabled=false;ddc.configure_service_channel(configs[0].clone()).unwrap();
+    assert!(ddc.stream.bins().is_empty());
+    assert!(ddc.registry.is_empty());
+}
+
 fn payload(frames:&[IqFrame], id:u32) -> Vec<[f64;2]> {
     let mut expected_seq=0;
     let mut next_index=None;

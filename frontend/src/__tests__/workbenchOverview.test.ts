@@ -22,6 +22,8 @@ const detach = (uid: string): HTMLElement => {
 };
 beforeEach(() => {
   vi.useFakeTimers(); localStorage.clear(); setLang('en'); setTheme('dark');
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value(this: HTMLDialogElement) { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value(this: HTMLDialogElement) { this.open = false; } });
   adapter = new FixtureReceiverAdapter(16, 10); session = new WorkbenchSession(adapter);
   const host = document.createElement('div'); document.body.append(host); ui = mountWorkbench(session, host); ui.showChannels();
 });
@@ -29,6 +31,28 @@ afterEach(() => {
   ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); setLang('en'); setTheme('dark'); vi.restoreAllMocks(); vi.useRealTimers();
 });
 describe('channel overview ownership', () => {
+  it('defers hidden channel windows and refreshes them when reopened', () => {
+    const detail = detach('fixture-c2');
+    detail.querySelector<HTMLButtonElement>('[data-dock]')!.click();
+    expect(detail.hidden).toBe(true);
+    const hidden = detail.textContent;
+    session.snapshot.receivers[1].confirmed.name = 'Renamed while docked'; session.notify();
+    expect(detail.textContent).toBe(hidden);
+    expect(detach('fixture-c2')).toBe(detail);
+    expect(detail.textContent).toContain('Renamed while docked');
+  });
+
+  it('renders the current diagnostic snapshot only while the disclosure is open', () => {
+    const detail = detach('fixture-c2');
+    const section = detail.querySelector<HTMLDetailsElement>('[data-section=live-diagnostics]')!;
+    expect(section.querySelector('pre')!.textContent).toBe('');
+    session.snapshot.receivers[1].clock!.output_index = '7654321'; session.notify();
+    section.open = true; section.dispatchEvent(new Event('toggle'));
+    expect(section.querySelector('pre')!.textContent).toContain('7654321');
+    section.open = false; section.dispatchEvent(new Event('toggle'));
+    expect(section.querySelector('pre')!.textContent).toBe('');
+  });
+
   it('shows creation times and accessible icon-only monitoring without sending commands', () => {
     const send = vi.spyOn(session, 'send');
     expect(cards()).toHaveLength(3);
@@ -68,25 +92,83 @@ describe('channel overview ownership', () => {
     expect(pan().textContent).toBe('L'); pan().click(); expect(session.route('fixture-c1').pan).toBe(1);
     expect(session.snapshot).toEqual(before); expect(session.selected).toBe(selected); expect(dispatch).not.toHaveBeenCalled();
   });
-  it('mutes all listening channels including detached cards, then restores the mix', () => {
+  it('starts and stops all audio routes including detached and filtered cards, preserving gain and pan', () => {
     session.snapshot.receivers[1].confirmed = fixtureConfig('listen', 2);
     session.monitor('fixture-c1', { enabled: true, gain: .43, pan: -1 });
     session.monitor('fixture-c2', { enabled: true, gain: .6, pan: 1 });
-    const routes = clone([...session.routes]), before = clone(session.snapshot), dispatch = vi.spyOn(adapter, 'dispatch');
+    const before = clone(session.snapshot), dispatch = vi.spyOn(adapter, 'dispatch');
     detach('fixture-c2'); select('data-overview-band', 'in-band');
-    const mute = (): HTMLButtonElement => overview().querySelector('.mc-head [data-overview-mute]')!;
+    const listen = (): HTMLButtonElement => overview().querySelector('.mc-head [data-overview-listen]')!;
+    expect(overview().querySelector('[data-overview-mute]')).toBeNull();
+    expect(listen().textContent).toBe('');
     expect(session.audible('fixture-c1')).toBe(true); expect(session.audible('fixture-c2')).toBe(true);
-    mute().click();
-    expect(mute().getAttribute('aria-pressed')).toBe('true');
+    listen().click();
+    expect(listen().getAttribute('aria-pressed')).toBe('false');
     expect(session.audible('fixture-c1')).toBe(false); expect(session.audible('fixture-c2')).toBe(false);
-    setLang('zh'); expect(mute().textContent).toBe('全部静音');
-    mute().click();
-    expect(mute().getAttribute('aria-pressed')).toBe('false');
+    expect(session.listening('fixture-c1')).toBe(false); expect(session.listening('fixture-c2')).toBe(false);
+    setLang('zh'); expect(listen().getAttribute('aria-label')).toBe('监听全部信道');
+    listen().click();
+    expect(listen().getAttribute('aria-pressed')).toBe('true');
     expect(session.audible('fixture-c1')).toBe(true); expect(session.audible('fixture-c2')).toBe(true);
-    expect([...session.routes]).toEqual(routes); expect(session.snapshot).toEqual(before); expect(dispatch).not.toHaveBeenCalled();
-    session.monitorMode = 'follow'; session.notify();
-    mute().click(); expect(session.masterMuted).toBe(true); expect(session.monitorMode).toBe('follow');
-    mute().click(); expect(session.masterMuted).toBe(false); expect(session.monitorMode).toBe('follow');
+    expect(session.route('fixture-c1')).toMatchObject({ gain: .43, pan: -1 });
+    expect(session.route('fixture-c2')).toMatchObject({ gain: .6, pan: 1 });
+    expect(session.snapshot).toEqual(before); expect(dispatch).not.toHaveBeenCalled();
+    session.masterMuted = true; session.notify();
+    listen().click(); expect(session.masterMuted).toBe(false); expect(session.audible('fixture-c2')).toBe(true);
+    session.monitor('fixture-c1', { enabled: true, solo: true });
+    listen().click(); listen().click();
+    expect(session.audible('fixture-c1')).toBe(true); expect(session.audible('fixture-c2')).toBe(true);
+  });
+  it('toggles audio and IQ independently on each card without recording decoder results', async () => {
+    const first = cards()[0];
+    expect(cards()[1].querySelector('[data-action=rec-audio]')).toBeNull();
+    expect(cards()[2].querySelector('[data-action=rec-audio]')).toBeNull();
+    expect(cards().every(card => card.querySelector('[data-action=rec-iq]'))).toBe(true);
+    first.querySelector<HTMLButtonElement>('[data-action=rec-audio]')!.click();
+    await vi.advanceTimersByTimeAsync(1000);
+    first.querySelector<HTMLButtonElement>('[data-action=rec-iq]')!.click();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.snapshot.recordings.map(task => task.tracks[0].kind)).toEqual(['audio', 'iq']);
+    first.querySelector<HTMLButtonElement>('[data-action=rec-audio]')!.click();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.snapshot.recordings.map(task => task.state)).toEqual(['completed', 'recording']);
+    expect(first.querySelector('[data-action=rec-iq]')!.getAttribute('aria-pressed')).toBe('true');
+    first.querySelector<HTMLButtonElement>('[data-action=rec-iq]')!.click();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.snapshot.recordings.every(task => task.state === 'completed')).toBe(true);
+  });
+  it('toggles all audio separately from all IQ, including detached and filtered cards', async () => {
+    detach('fixture-c2'); select('data-overview-band', 'in-band');
+    const record = (): HTMLButtonElement => overview().querySelector('[data-overview-record]')!;
+    const iq = (): HTMLButtonElement => overview().querySelector('[data-overview-record-iq]')!;
+    expect(record().textContent).toBe(''); record().click();
+    expect(record().disabled).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    const tasks = session.snapshot.recordings;
+    expect(tasks).toHaveLength(1); expect(tasks[0].tracks[0].kind).toBe('audio');
+    iq().click(); await vi.advanceTimersByTimeAsync(1000);
+    const iqTasks = session.snapshot.recordings.filter(task => task.tracks[0].kind === 'iq');
+    expect(iqTasks.map(task => task.receiver_uid)).toEqual(['fixture-c1', 'fixture-c2', 'fixture-c3']);
+    expect(record().getAttribute('aria-pressed')).toBe('true'); expect(iq().getAttribute('aria-pressed')).toBe('true');
+    record().click(); await vi.advanceTimersByTimeAsync(1000);
+    expect(session.snapshot.recordings.filter(task => task.tracks[0].kind === 'audio').every(task => task.state === 'completed')).toBe(true);
+    expect(session.snapshot.recordings.filter(task => task.tracks[0].kind === 'iq').every(task => task.state === 'recording')).toBe(true);
+    const stop = session.send({ type: 'record_stop', request_id: session.requestId(), task_id: iqTasks[0].task_id });
+    await vi.advanceTimersByTimeAsync(1000); await stop;
+    iq().click(); await vi.advanceTimersByTimeAsync(1000);
+    expect(session.snapshot.recordings).toHaveLength(4);
+    expect(session.snapshot.recordings.every(task => task.state === 'completed')).toBe(true);
+    expect(record().getAttribute('aria-pressed')).toBe('false');
+    expect(iq().getAttribute('aria-pressed')).toBe('false');
+  });
+  it('deletes all saved cards through confirmation including detached and filtered cards', async () => {
+    detach('fixture-c2'); select('data-overview-band', 'in-band');
+    const remove = overview().querySelector<HTMLButtonElement>('[data-overview-clear]')!;
+    expect(remove.textContent).toBe(''); expect(remove.getAttribute('aria-label')).toBe('Delete all channels');
+    remove.click(); expect(session.snapshot.receivers).toHaveLength(3);
+    document.querySelector<HTMLButtonElement>('[data-clear-confirm]')!.click();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.snapshot.receivers).toHaveLength(0);
   });
   it('returns every detached channel, including a browser popup, to the unique overview', () => {
     const first = detach('fixture-c1'), second = detach('fixture-c2');
@@ -296,6 +378,36 @@ it('releases waveform probes on hidden cards and disposal without creating audio
   surface.hidden = true; vi.advanceTimersByTime(100); manager.paint();
   expect(waveform).toHaveBeenCalledWith('fixture-c1', null);
   manager.dispose();
+});
+
+it('updates only the changed decoder lane and leaves unchanged card controls intact', () => {
+  ui.dispose();
+  const results = vi.fn(() => ({ entries: [], evicted: 0 }));
+  const manager = createWorkbenchOverview(session, { available: () => true, recording: () => undefined, detached: () => false,
+    fit: vi.fn(), dockAll: vi.fn(), readouts: { results } });
+  const surface = document.createElement('section'); surface.className = 'mc-window';
+  surface.innerHTML = '<header class="mc-head"><div class="mc-window-actions"></div></header><div class="mc-body"></div>';
+  document.body.append(surface);
+  manager.attach(surface.querySelector('.mc-body')!, surface.querySelector('.mc-head')!);
+  const actions = surface.querySelector<HTMLElement>('[data-uid="fixture-c2"] .mc-card-actions')!;
+  const observer = new MutationObserver(() => {}); observer.observe(actions, { attributes: true, childList: true, subtree: true });
+  const storage = vi.spyOn(Storage.prototype, 'setItem');
+  results.mockClear();
+  try {
+    manager.updateResults(new Set(['fixture-c2']));
+    expect(results.mock.calls).toEqual([['fixture-c2']]);
+    // Polls advance clocks without changing the card's presentation.
+    session.snapshot.receivers[1].clock!.output_index = '1000';
+    manager.update(); manager.update();
+    expect(observer.takeRecords()).toEqual([]);
+    expect(storage).not.toHaveBeenCalled();
+    surface.hidden = true;
+    const layout = vi.spyOn(Element.prototype, 'getBoundingClientRect');
+    results.mockClear();
+    manager.paint(true); manager.updateResults(new Set(['fixture-c2']));
+    expect(layout).not.toHaveBeenCalled();
+    expect(results).not.toHaveBeenCalled();
+  } finally { observer.disconnect(); manager.dispose(); }
 });
 
 it.each(['adsb', 'ais', 'gps', 'ism', 'meteor'])('%s overview follows reception despite historical decodes and closed audio squelch', mode => {

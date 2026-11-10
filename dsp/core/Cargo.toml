@@ -10,18 +10,20 @@ publish = false
 identifier = "LicenseRef-Harogic-WebSA"
 terms = "AGPL-3.0-only with the HAROGIC SDK and FDK AAC section 7 exception; see ../../LICENSE-EXCEPTION and ../../LICENSING.md. Vendored components retain their own terms."
 
-# No Rust dependencies or binding generator: the browser loads the raw WASM ABI.
+# The default/browser build has no Rust dependencies or binding generator: it loads the raw WASM ABI.
 # Native builds additionally need FDK AAC via pkg-config; WASM builds link the
 # codec archives in fdk/ and xaac/. See build.rs and docs/*/ARCHITECTURE.md.
 #
 # The vendored sstv tree keeps its upstream `#[cfg(feature = "alloc")]` gates. `alloc` is declared
 # here so those gates keep their meaning without editing the vendored source; nothing is added to
-# `[dependencies]`, which stays empty on purpose (see the `lib` note below).
+# the default dependency graph. Native receivers opt into rustfft via native-fft.
 [features]
 default = ["alloc"]
 alloc = []
+native-fft = ["dep:rustfft"]
 
 [dependencies]
+rustfft = { version = "6.4.1", optional = true }
 
 [lib]
 # cdylib for the wasm module; rlib so `cargo test` can link the same kernels natively.

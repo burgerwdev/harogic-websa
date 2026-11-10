@@ -146,14 +146,20 @@ export function rasterDensity(
 		const peakX = Math.min(width - 1, Math.floor((hz - lo) * scale));
 		const resolved = (i === 0 || (hz - freq[i - 1]) * scale >= 1)
 			&& (i === freq.length - 1 || (freq[i + 1] - hz) * scale >= 1);
+		// Below half a pixel on either side, every sampled interpolation is in
+		// peakX and cannot exceed the native peak already max-composited there.
+		// Keep every native frequency/amplitude cell, without repeating the
+		// interpolation arithmetic for each occupied amplitude row.
+		const peakOnly = (hz - left) * scale <= 0.5 && (right - hz) * scale <= 0.5 && hz >= lo && hz <= hi;
 		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
+			const bin = cell % grid.bins;
 			if (bounds) {
-				const bin = cell % grid.bins;
 				bounds.firstBin = Math.min(bounds.firstBin, bin);
 				bounds.endBin = Math.max(bounds.endBin, bin + 1);
 			}
-			const base = (cell % grid.bins) * width;
+			const base = bin * width;
 			const value = grid.values[cell];
+			if (peakOnly) { out[base + peakX] = Math.max(out[base + peakX], value); continue; }
 			for (let x = x0; x < x1; x++) {
 				const sampleHz = lo + (x + 0.5) / scale;
 				if (sampleHz < left || sampleHz > right) continue;

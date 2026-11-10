@@ -15,6 +15,8 @@
 
 pub mod agc;
 pub mod fir;
+#[cfg(feature = "native-fft")]
+mod fir_fft;
 pub mod nco;
 pub mod resampler;
 

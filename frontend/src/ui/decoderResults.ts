@@ -1,6 +1,6 @@
 import { t, getLang } from '../core/i18n';
 import { clock } from '../sdr/ft8Log';
-import { decoderLog, type DecoderRaster, type DecoderImage, type DecoderLogEntry } from '../sdr/decoderLog';
+import { decoderLog, decoderRasterChanges, type DecoderRaster, type DecoderImage, type DecoderLogEntry } from '../sdr/decoderLog';
 import { drawAudioScope } from './audioScope';
 import { copyDetails, copyDetailsButton } from './copyDetails';
 import { patchWorkbench } from './workbenchDom';
@@ -317,21 +317,26 @@ function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLEl
   if (entry.kind === 'image' && (entry.data as DecoderRaster).raster) {
     const title = doc.createElement('strong');
     const canvas = doc.createElement('canvas');
+    let painted: { rgb: Uint8Array; version: number } | undefined;
     canvas.style.width = '100%'; canvas.setAttribute('role', 'img');
     const update: ResultUpdater = next => {
       const picture = next.data as DecoderRaster;
       title.textContent = `${picture.label} · ${picture.w} × ${picture.h} · ${picture.rows}/${picture.h}${picture.final ? ` · ${t('decoder_image_complete')}` : ''}${picture.partial ? ` · ${t('decoder_image_partial')}` : ''}`;
-      if (canvas.width !== picture.w) canvas.width = picture.w;
-      if (canvas.height !== picture.h) canvas.height = picture.h;
+      if (canvas.width !== picture.w || canvas.height !== picture.h) {
+        canvas.width = picture.w; canvas.height = picture.h; painted = undefined;
+      }
       canvas.setAttribute('aria-label', picture.label);
       const context = canvas.getContext('2d');
       if (context) {
-        const pixels = context.createImageData(picture.w, picture.h);
-        for (let i = 0; i < picture.w * picture.h; i++) {
-          pixels.data[i * 4] = picture.rgb[i * 3]; pixels.data[i * 4 + 1] = picture.rgb[i * 3 + 1];
-          pixels.data[i * 4 + 2] = picture.rgb[i * 3 + 2]; pixels.data[i * 4 + 3] = 255;
+        const change = decoderRasterChanges(picture, painted);
+        if (!change.rows) return;
+        const pixels = context.createImageData(picture.w, change.rows), start = change.row * picture.w * 3;
+        for (let i = 0; i < picture.w * change.rows; i++) {
+          pixels.data[i * 4] = picture.rgb[start + i * 3]; pixels.data[i * 4 + 1] = picture.rgb[start + i * 3 + 1];
+          pixels.data[i * 4 + 2] = picture.rgb[start + i * 3 + 2]; pixels.data[i * 4 + 3] = 255;
         }
-        context.putImageData(pixels, 0, 0);
+        context.putImageData(pixels, 0, change.row);
+        painted = { rgb: picture.rgb, version: change.version };
       }
     };
     update(entry, utc); resultUpdaters.set(article, update);

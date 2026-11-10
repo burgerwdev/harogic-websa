@@ -3,12 +3,14 @@ export type Theme = 'dark' | 'light';
 
 let current: Theme = 'dark';
 const listeners = new Set<(th: Theme) => void>();
+let colors: CanvasColors | null = null;
 
 export function getTheme(): Theme { return current; }
 
 export function setTheme(th: Theme) {
   current = th;
   document.documentElement.dataset.theme = th;
+  colors = null;
   listeners.forEach((fn) => fn(th));
 }
 
@@ -29,8 +31,11 @@ export function cssVar(name: string, fallback = ''): string {
   return v || fallback;
 }
 
-// Canvas color set (resolved from CSS variables by theme)
-export function canvasColors() {
+// Share one style snapshot per theme across traces and channel overlays. Reading
+// computed styles for every colour on every draw can flush pending UI layout.
+function readCanvasColors() {
+  const style = getComputedStyle(document.documentElement);
+  const cssVar = (name: string, fallback: string): string => style.getPropertyValue(name).trim() || fallback;
   return {
     bg: cssVar('--sa-bg', '#000'),
     grid: cssVar('--sa-grid', '#003300'),
@@ -74,7 +79,11 @@ export function canvasColors() {
   };
 }
 
-export type CanvasColors = ReturnType<typeof canvasColors>;
+export type CanvasColors = ReturnType<typeof readCanvasColors>;
+
+export function canvasColors(): CanvasColors {
+  return colors ??= readCanvasColors();
+}
 
 // Initialize the saved theme, defaulting to dark.
 export function initTheme(saved?: Theme | null) {

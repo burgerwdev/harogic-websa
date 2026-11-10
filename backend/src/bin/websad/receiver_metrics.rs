@@ -20,6 +20,11 @@ pub(super) struct Lane {
     identity: Identity,
     state: Mutex<State>,
 }
+pub(super) struct Runtime {
+    pub successful_samples: u64,
+    pub oldest_input_wait_ns: u64,
+    pub receiver: Value,
+}
 #[derive(Default)]
 struct Totals {
     accepted: u64, started: u64, succeeded: u64, failed: u64, cancelled: u64,
@@ -70,6 +75,28 @@ impl Directory {
         let lanes:Vec<_>=lock(&self.0).iter().filter(|lane|lane.identity.channel==channel
             && uid.is_none_or(|uid|lane.identity.receiver_uid.as_deref()==Some(uid))).cloned().collect();
         json!(lanes.iter().map(|lane|lane.snapshot()).collect::<Vec<_>>())
+    }
+    /// Live status needs one generation, not the retained diagnostic history.
+    pub fn runtime(&self,channel:u32,uid:&str,generation:u64)->Option<Runtime> {
+        self.runtime_detail(channel,uid,generation,true)
+    }
+    pub fn live_runtime(&self,channel:u32,uid:&str,generation:u64)->Option<Runtime> {
+        self.runtime_detail(channel,uid,generation,false)
+    }
+    fn runtime_detail(&self,channel:u32,uid:&str,generation:u64,diagnostics:bool)->Option<Runtime> {
+        let lane=lock(&self.0).iter().rev().find(|lane|lane.identity.channel==channel
+            && lane.identity.generation==generation && lane.identity.receiver_uid.as_deref()==Some(uid)).cloned()?;
+        let state=lock(&lane.state);
+        Some(Runtime {successful_samples:state.packet.successful_samples,
+            oldest_input_wait_ns:state.held.values().filter(|held|held.stage=="input_queued")
+                .map(|held|ns(held.since)).max().unwrap_or(0),receiver:if diagnostics {state.receiver.clone()} else {
+                    match state.receiver.as_object() {
+                        Some(receiver)=>Value::Object(receiver.iter().filter(|(key,_)|matches!(key.as_str(),
+                            "nr_requested"|"nr_effective"|"nr_state"|"nr_reason"|"protocol_waiting"|"squelch"))
+                            .map(|(key,value)|(key.clone(),value.clone())).collect()),
+                        None=>Value::Null,
+                    }
+                }})
     }
     /// Lifecycle checks run on every publication. Inspect only identity and
     /// live holds; constructing all diagnostic JSON here can stall RF capture.
@@ -255,6 +282,29 @@ mod tests {
         }
         let job=lane.job(false,480,48000.0,json!(0),3840);
         assert!(!directory.retains_output(3,"C3",None));drop(job);
+    }
+    #[test]
+    fn live_runtime_uses_only_the_requested_uid_and_generation() {
+        let directory=Directory::default();let identity=lane().identity.clone();
+        let old=directory.lane(identity.clone());
+        let mut job=old.job(false,480,48000.0,json!(0),3840);job.start();job.finish(Ok(true));
+        let mut next=identity.clone();next.generation=8;
+        let current=directory.lane(next.clone());current.observe_receiver(json!({"mode":"am","level":-40}));
+        next.receiver_uid=Some("replacement-C3".into());directory.lane(next);
+        let mut queued=current.job(false,480,48000.0,json!(480),3840);
+        lock(&current.state).held.values_mut().next().unwrap().since-=std::time::Duration::from_millis(50);
+        let live=directory.runtime(3,"C3",8).unwrap();
+        assert_eq!(live.successful_samples,0);assert!(live.oldest_input_wait_ns>=50_000_000);
+        assert_eq!(live.receiver,json!({"mode":"am","level":-40}));
+        current.observe_receiver(json!({"mode":"am","model_sessions":[{"large":"details"}],
+            "nr_requested":"off","nr_effective":"off","protocol_waiting":true,"squelch":{"open":true,"gain":1.0}}));
+        let health=directory.live_runtime(3,"C3",8).unwrap();
+        assert_eq!(health.receiver,json!({"nr_requested":"off","nr_effective":"off", "protocol_waiting":true,"squelch":{"open":true,"gain":1.0}}));
+        assert!(directory.runtime(3,"C3",8).unwrap().receiver.get("model_sessions").is_some());
+        assert!(directory.runtime(3,"other",8).is_none());assert!(directory.runtime(3,"C3",9).is_none());
+        queued.start();queued.finish(Ok(true));
+        let live=directory.runtime(3,"C3",8).unwrap();
+        assert_eq!(live.successful_samples,480);assert_eq!(live.oldest_input_wait_ns,0);
     }
     #[test]
     fn observations_are_bounded_and_report_their_measured_overhead() {

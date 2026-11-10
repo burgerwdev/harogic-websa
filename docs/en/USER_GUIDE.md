@@ -33,9 +33,14 @@ Cards matching the main spectrum frequency show a crosshair and highlighted bord
 independently of the workbench's editing selection.
 
 An audio card's output button cycles **L/R → L → R** for the local speaker mix.
-**Mute all** in the overview title bar toggles master mute, including channels
-in separate windows; clicking again restores their existing listening routes
-and volumes. These controls do not change reception or recordings.
+Cards have separate audio and IQ recording toggles. The overview title bar has
+headphone, audio recording, IQ recording and delete buttons for all channels,
+including filtered cards and channels in separate windows. Headphones start or stop
+listening while preserving each channel's volume and pan; starting clears solo and master mute.
+Each recording button starts its own type on eligible cards within available recording slots;
+if that type is already recording, it stops those tasks. Audio and IQ can run simultaneously
+and are toggled independently. Decoder-result recording remains in the channel workbench. Delete requires confirmation,
+removes saved channels and stops Current; saved recording files are retained.
 
 Choose an automatic grid, 1–8 columns or free placement. Drag cards to reorder or position
 them; a moving placeholder previews the drop position. Alt+arrow keys also move a focused
@@ -80,6 +85,8 @@ out-of-band state.
 Main tuning always controls Current. Workbench editor selection is local to that view. Monitor volume, pan, mute and Solo
 are local speaker settings. Backend gain, AGC, squelch and noise reduction affect shared PCM
 and therefore published-audio recordings. A stopped or failed receiver cannot be monitored.
+WFM listening AGC measures both stereo channels and applies one shared gain and peak envelope,
+so opposite-channel programme cannot drive the difference signal into clipping.
 
 The **EQ** button beside De-emph opens a movable listening equalizer. Five bands
 (80 Hz, 250 Hz, 1 kHz, 4 kHz and 12 kHz) provide ±12 dB, with output trim, bypass

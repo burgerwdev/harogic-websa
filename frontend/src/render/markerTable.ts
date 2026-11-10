@@ -7,7 +7,7 @@ import { requestRender } from './redraw';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak } from '../dsp/markerTracking';
 import { updateMarkersAllBtn } from '../ui/panels/markers';
-import { setDomProperty } from '../ui/domState';
+import { setDomAttribute, setDomProperty } from '../ui/domState';
 import { syncSelectValue } from '../ui/selectControl';
 
 export function initMarkerTable() {
@@ -80,23 +80,23 @@ export function updateMarkerTable(powers: Float32Array | null) {
   updateMarkersAllBtn();
   const tbody = document.getElementById('marker-tbody');
   if (!tbody) return;
+  const anyOn = S.markers.some(mk => mk.enabled && mk.mode !== 'OFF');
+  document.querySelectorAll('.mkr-btn').forEach(btn => {
+    const id = Number(btn.getAttribute('data-marker-select'));
+    btn.classList.toggle('active', anyOn && id === S.activeMkrId);
+  });
   S.markers.forEach((m, i) => {
     const row = tbody.children[i] as HTMLTableRowElement;
     if (!row) return;
     const cells = row.children;
     const markerToggle = cells[0].querySelector('.marker-toggle') as HTMLButtonElement;
     const activeBtn = cells[0].querySelector('.mk-active') as HTMLButtonElement | null;
-    const anyOn = S.markers.some(mk => mk.enabled && mk.mode !== 'OFF');
     if (activeBtn) activeBtn.classList.toggle('active', anyOn && m.id === S.activeMkrId);
-    document.querySelectorAll('.mkr-btn').forEach((btn) => {
-      const id = Number((btn as HTMLElement).getAttribute('data-marker-select'));
-      btn.classList.toggle('active', anyOn && id === S.activeMkrId);
-    });
     const markerOn = m.enabled && m.mode !== 'OFF';
     markerToggle.classList.toggle('active', markerOn);
     markerToggle.classList.toggle('tracking', markerOn && m.tracking);
-    markerToggle.setAttribute('aria-pressed', String(markerOn));
-    markerToggle.title = markerOn ? t('off') : t('on');
+    setDomAttribute(markerToggle, 'aria-pressed', String(markerOn));
+    setDomProperty(markerToggle, 'title', markerOn ? t('off') : t('on'));
     const selMode = cells[1].querySelector('select') as HTMLSelectElement;
     const showMode = m.mode === 'OFF' ? 'NORMAL' : m.mode;
     syncSelectValue(selMode, showMode);
@@ -126,9 +126,9 @@ export function updateMarkerTable(powers: Float32Array | null) {
   const active = S.markers.find(marker => marker.id === S.activeMkrId);
   const trackingButton = document.getElementById('btn-marker-tracking');
   if (active && trackingButton) {
-    trackingButton.textContent = t('tracking');
+    setDomProperty(trackingButton, 'textContent', t('tracking'));
     trackingButton.classList.toggle('active', active.tracking);
-    trackingButton.setAttribute('aria-pressed', String(active.tracking));
+    setDomAttribute(trackingButton, 'aria-pressed', String(active.tracking));
   }
 }
 

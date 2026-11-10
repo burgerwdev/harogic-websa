@@ -34,7 +34,27 @@ Rust 生产 IQS 路径使用版本化 shim 校验的 `62.5 MHz / capture_decimat
 
 每路 `processing_statistics` 按逻辑 UID、服务身份、处理代次及流身份保存有界历史。`packets`、`searches` 分别报告已接纳、已开始、成功、失败、取消、拒收和在途；只有成功输入累计媒体秒。`occupancy` 包含排队、执行中、待发输出与搜索回传引用的字节／样本和单调年龄。`wall_ns`、可得的 `thread_cpu_ns` 与排队等待独立。水位描述源块；`service_consumed` 指服务已排出，不能当作远端扬声器已播放。`source_watermarks` 串联共享输入／PFB 观测和 fine 信道时钟，各观测不保证同时。模型请求／实际状态、静噪和协议窗口保留另行报告；不可观测的上游解码消费为 null。UTC 跳变、静噪关闭及协议窗口等待不等于源样本缺失。
 
+浏览器轮询 `GET /api/sdr/receivers?detail=live`，只传送控制、时钟、故障、录制信息与精简的当前健康状态，省去 `processing_statistics` 和详细接收机观测。展开诊断面板后，立即请求 `GET /api/sdr/receivers?receiver_uid=<uid>`，并在可见时每两秒刷新；折叠、隐藏、切换身份或关闭窗口会取消请求与定时器。诊断响应不会替换实时控制状态。默认接口和命令回执仍保留完整诊断；当前处理状态只读取匹配 UID 与处理代次的数据。
+
+周期 `STATUS` 消息及 `GET /api/state?detail=live` 省去详细线程统计、事件历史与保留的采集故障证据。`GET /api/state` 按请求生成完整诊断；普通频谱展示不会构造这些历史事件和计时 JSON。
+
+频谱到达时独立更新轨迹累计和瀑布历史；数据显示合并为一个待绘制动画帧，按绘制耗时在 33–200 毫秒间调度，为媒体处理及浏览器栅格化留出时间。控件操作和触发完成仍同步刷新。
+
+浏览器音频、解码入口各共用一个 Worker；每个接收机仍有独立 WebSocket、序列／样本时钟校验和有界队列，音频另有独立重采样器。控制命令和界面事件按逻辑源编号通过批量消息总线交接；界面消息在 40 ms 内合并，PCM 通过各自端口直接送入 AudioWorklet。停止一路只关闭该路订阅与连接，最后一路停止后释放 Worker；播放继续由 AudioWorklet 节点按 AudioContext 时钟驱动。电平表区域隔离样式、布局和绘制更新，由电平模型负责平滑，避免每路额外执行 CSS 裁剪动画。
+
+AudioWorklet 按 50 ms 电平采样节奏合并电平、周期额度、状态和累计投递确认。确认只属于当前播放代次；重置会丢弃待发送的旧反馈，旧代次的确认不能释放新代次保留的 PCM。初始额度、播放状态切换和故障仍立即报告，音频样本、源连续性校验和播放时钟的语义保持不变。
+
+`USB IQ capture handoff queue full: status=-130` 表示本服务采集适配层的有界 USB 交接队列溢出，采集连续性已丢失，恢复时报告 `source_gap`；这个错误码不能用来判断厂商 SDK 的带宽上限。
+
+粗信道输出列按活动接收机频率生成，同一粗频点可由多路共享。局部调谐或删除在排空边界替换选择并释放闲置列，其他信道的连续流保持不变。没有粗信道消费者时，PFB 只维护输入历史与时钟，跳过 FIR／FFT 输出计算；独立频谱显示和原始 IQ 直接路由继续运行。
+
 `sdr.actual.ddc_batch` 回报每个 PFB/fine 作业合并的物理 IQS 包数：每秒六千二百五十万个样本的硬件采集且没有原始 IQ 直接路由时为 4，其余为 1。每个物理包仍检查连续性，合批不改变输出时钟和帧格式。
+
+PFB 输入／历史及输出存储在归还所有权后复用，普通收集也会及时取出完成作业，不必等到下一次准入达到上限。Linux 硬件采集通过 RTKit（`busctl`）为采集控制、采集拥有者、PFB 与 SDK／USB 线程申请公平调度器 nice -5。申请只在启动／重配边界执行；不可用或被拒绝时保留普通优先级并写入服务日志。Rust 显示、fine DSP 和接收线程使用普通优先级；SDK actor 共用 `san90-session` 名称，因此 SDK 选择也包含 DSP actor。这不预留 CPU，也不保证竞争负载下的连续接收。
+
+`WEBSA_DIAGNOSTIC_SCHEDULING=1` 另用 Linux 调度／资源计数器对每 64 个 PFB 作业采样一次。`sdr.actual.pool_timing.scheduling_sample` 将 CPU、墙钟、可运行等待、上下文切换及缺页关联到同一作业／线程。正式 CPU 比较应关闭此采样。原生长复系数带通滤波器使用 f64 overlap-save，保留系数、因果延迟及每次调用的样本数；浏览器／WASM 构建保留直接卷积。
+
+硬件采集只请求原始 IQ。默认 16,240 样本分析及可选 32,768／65,536 样本显示 FFT 在独立 SDK DSP 上下文中运行。每个线程最多保留一个执行中观测、一个最新待处理观测与一个最新完成帧；替换显示工作不会阻塞采集或丢弃 IQ。几何参数、校准比例、配置代次、源代次和样本连续性仍经过校验；默认分析继续提供射频功率和自动增益所需数据。`sdr.actual.display_fft.analysis` 报告默认分析线程状态；`dropped` 为替换的待处理观测数，`skipped_frames` 为替换的显示结果数。
 
 `sdr.actual.fine_owners.channels` 按流身份报告独立 fine／直达执行线程的接纳、开始、成功、失败、取消、拒收数，含执行中引用的保留字节、排队等待、墙钟与可得线程 CPU 时间。`fine_faults` 报告失败源分支及最后完成／最早不可用输入边界。源分支失败会停止该身份的 IQ、处理及录制，其他路继续；获准的显式 `recover:true` 即使配置不变也创建新 IQ 身份；已记录中断时以 `reception.manual_recovery_allowed` 为准，设备或内部错误须先修复来源或配置。局部重配最多等待 100 毫秒，让目标路完成已接纳输入，期间收集各路就绪输出，完成后才关闭目标队列。忙碌拒绝保留原拥有者和可用队列，不产生源故障或创建替身。输入交接最多合并八块或四毫秒，控制／停止边界刷新不足批次；fine 输入限制为每路 1,024 排队块加一执行块。fine 和处理器的字节预算按实际输入率及样本格式计算两秒，限定为每路 4–64 MiB，包含执行中输入；处理器另有两秒媒体时长上限，两种输入队列均独立限制为 1,024 项。fine 诊断逐路报告 `input_bytes_limit`。fine 输出的三十二批／8 MiB 与发布交接的每身份三十二帧／8 MiB 是独立上限，均不等待下游腾空间。显示帧可替换，IQ 缺口明确失败源分支。fine／framer 汇总墙钟是各独立执行者之和，**不是**单线程占用率。
 `processing_resources` 是准入时的几何诊断，策略为 `policy:"observed_runtime"`，不是 CPU 或模型内存预留预算。
@@ -118,6 +138,7 @@ fixture 的 `scene` 携带整个信道集合、共享中心和服务 `expected_r
 | 接口 | 行为 |
 |---|---|
 | `GET /api/sdr/receivers` | 服务确认快照、启动代次 `service_id`、能力、动态信道集合及已有样本的实际时钟 |
+| `GET /api/sdr/receivers?detail=live` | 界面轮询快照，保留当前运行状态，省去按处理代次保存的诊断历史 |
 | `POST /api/sdr/receivers/preflight` | 预检完整 create/configure/retire 候选，不提交 |
 | `POST /api/sdr/receivers` | 提交 create/configure/retire；返回 `{request_id,snapshot,fault}` |
 | `/ws/iq?receiver_uid=...` | 单信道有序 IQBF/IQAX v2，带 JSON 起始与边界元数据 |

@@ -1,0 +1,59 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { requestRender, requestStreamRender, setRenderer } from '../render/redraw';
+
+afterEach(() => { setRenderer(null); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it('bounds pending display work, adapts to paint cost and renders the newest ingested state', async () => {
+  vi.useFakeTimers(); vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+  const frames = new Map<number, FrameRequestCallback>(); let sequence = 0, clock = 0, state = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => { frames.set(++sequence, fn); return sequence; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+  const paint = vi.fn(() => { clock += 30; return state; }); setRenderer(paint);
+  const flushFrame = (): void => { const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn(clock)); };
+  for (state = 0; state < 100; state++) requestStreamRender();
+  expect(paint).not.toHaveBeenCalled(); await vi.advanceTimersByTimeAsync(0);
+  expect(frames.size).toBe(1); flushFrame(); expect(paint).toHaveReturnedWith(100);
+  clock = 31;
+  for (state = 100; state < 200; state++) requestStreamRender();
+  await vi.advanceTimersByTimeAsync(68); expect(frames.size).toBe(0);
+  clock = 100; await vi.advanceTimersByTimeAsync(1); expect(frames.size).toBe(1);
+  flushFrame(); expect(paint).toHaveBeenCalledTimes(2); expect(paint).toHaveLastReturnedWith(200);
+  await vi.advanceTimersByTimeAsync(1000); expect(frames.size).toBe(0);
+});
+
+it('paints user actions synchronously and cancels a redundant queued data repaint', async () => {
+  vi.useFakeTimers(); vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+  const frames = new Map<number, FrameRequestCallback>(); let sequence = 0;
+  vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => { frames.set(++sequence, fn); return sequence; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+  const paint = vi.fn(); setRenderer(paint);
+  requestStreamRender(); await vi.advanceTimersByTimeAsync(0); expect(frames.size).toBe(1);
+  requestRender(); expect(paint).toHaveBeenCalledOnce(); expect(frames.size).toBe(0);
+});
+
+it('coalesces background redraws and paints the latest state once on foregrounding', () => {
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+  let value = 0;
+  const paint = vi.fn(() => value);
+  setRenderer(paint);
+  for (value = 0; value < 100; value++) requestRender();
+  expect(paint).not.toHaveBeenCalled();
+  hidden.mockReturnValue(false); document.dispatchEvent(new Event('visibilitychange'));
+  expect(paint).toHaveBeenCalledOnce(); expect(paint).toHaveReturnedWith(100);
+  document.dispatchEvent(new Event('visibilitychange')); expect(paint).toHaveBeenCalledOnce();
+});
+
+it('keeps normal 5 ms spectrum paints at the 30 Hz display cadence', async () => {
+  vi.useFakeTimers(); vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+  let clock = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => { frames.push(fn); return frames.length; });
+  vi.stubGlobal('cancelAnimationFrame', () => {});
+  const paint = vi.fn(() => { clock += 5; }); setRenderer(paint);
+  requestStreamRender(); await vi.advanceTimersByTimeAsync(0); frames.shift()!(clock);
+  requestStreamRender(); await vi.advanceTimersByTimeAsync(29);
+  expect(frames).toHaveLength(1); clock = 34; frames.shift()!(clock);
+  expect(paint).toHaveBeenCalledTimes(2);
+});

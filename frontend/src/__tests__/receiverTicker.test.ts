@@ -68,6 +68,32 @@ it('scrolls overflowing FT8 text according to available pixels and pauses on hov
   ticker.update([entry(2, 'ft8', { decodes: [{ msg: 'NEW CQ' }] }, 'table'), ...entries], r, 'a');
   await vi.advanceTimersByTimeAsync(3200); expect(displayed().textContent).toBe('NEW CQ');
 });
+
+it('uses resize notifications instead of reading ticker layout on every animation tick', async () => {
+  ticker.dispose();
+  let resized: ResizeObserverCallback | undefined;
+  const disconnect = vi.fn();
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: ResizeObserverCallback) { resized = callback; }
+    observe() {}
+    disconnect = disconnect;
+  });
+  ticker = mountReceiverTicker(host, root);
+  const viewport = host.querySelector<HTMLElement>('.mc-ticker-viewport')!;
+  const dimensions = vi.fn(() => width);
+  Object.defineProperty(viewport, 'clientWidth', { configurable: true, get: dimensions });
+  try {
+    ticker.update([entry(1, 'ft8', { decodes: [{ msg: 'CQ W1ABC FN42 VERY LONG MESSAGE' }] }, 'table')], receiver('ft8'), 'a');
+    resized!([], {} as ResizeObserver); dimensions.mockClear();
+    await vi.advanceTimersByTimeAsync(2200);
+    expect(dimensions).not.toHaveBeenCalled();
+    expect(displayed().style.transform).not.toBe('translateX(0px)');
+    width = 1000; resized!([], {} as ResizeObserver);
+    await vi.advanceTimersByTimeAsync(80);
+    expect(displayed().style.transform).toBe('translateX(0px)');
+    ticker.dispose(); expect(disconnect).toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
 it('types only newly arriving CW text, follows its tail, and clears animation state on rebind', async () => {
   const r = receiver('cw'), first = entry(1, 'cw', 'CQ ');
   ticker.update([first], r, 'a'); await vi.advanceTimersByTimeAsync(80);
@@ -97,7 +123,7 @@ it('retains decoded text during an out-of-band pause and waits for fresh results
   expect(displayed().textContent).toBe('Waiting for decoded text…');
 });
 it('respects reduced motion while retaining waiting states and the latest full message', async () => {
-  vi.mocked(window.matchMedia).mockReturnValue({ matches: true } as MediaQueryList);
+  Object.defineProperty(vi.mocked(window.matchMedia).mock.results.at(-1)!.value, 'matches', { value: true });
   const r = receiver('ft8');
   ticker.update([], r, 'a'); await vi.advanceTimersByTimeAsync(100);
   expect(displayed().textContent).toBe('Waiting for decoded text…');

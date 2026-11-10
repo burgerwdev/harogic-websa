@@ -8,3 +8,7 @@ export function setDomProperty<T, K extends keyof T>(target: T, key: K, value: T
 export function setDomAttribute(target: Element, name: string, value: string): void {
   if (target.getAttribute(name) !== value) target.setAttribute(name, value);
 }
+
+export function setStyleProperty(target: HTMLElement, name: string, value: string): void {
+  if (target.style.getPropertyValue(name) !== value) target.style.setProperty(name, value);
+}

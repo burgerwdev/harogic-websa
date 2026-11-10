@@ -1,9 +1,11 @@
 import { clone, type CommandReply, type ConfigureCommand, type Fault, type Impact,
   type OutputSubscription, type ReceiverAdapter, type SceneCommand, type ServiceCommand,
-  type ServiceSnapshot, type SourceClock, type StreamIdentity } from './multichannel';
+  type ServiceSnapshot, type SourceClock, type StreamIdentity, type ReceiverState } from './multichannel';
 
 export interface ReceivedIq { receiver_uid: string; stream: StreamIdentity; clock: SourceClock; sequence: number; iq: Float32Array }
 const api = '/api/sdr/receivers';
+// Per-generation diagnostic histories remain available from the full API.
+const liveApi = `${api}?detail=live`;
 const fault = (scope: Fault['scope'], code: string, message: string): Fault => ({ scope, code, message, retryable: true });
 
 /** Shared native control/data owner. Views subscribe to this object; closing a view sends no command. */
@@ -15,15 +17,18 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
   private clock = new Map<string, { stream: StreamIdentity; clock: SourceClock }>();
   private timer: ReturnType<typeof setInterval>;
   private refreshing = false;
+  private lastRefreshAt = -Infinity;
+  private readonly visible = (): void => { if (!document.hidden) void this.refresh(); };
   private disposed = false;
   private readonly lifetime = new AbortController();
   private retiredServices = new Set<string | undefined>();
   private client = crypto.randomUUID();
   private constructor(private current: ServiceSnapshot) {
-    this.timer = setInterval(() => { void this.refresh(); }, 500);
+    this.timer = setInterval(() => { if (!document.hidden || Date.now() - this.lastRefreshAt >= 2000) void this.refresh(); }, 500);
+    document.addEventListener('visibilitychange', this.visible);
   }
   static async connect(): Promise<NativeReceiverAdapter> {
-    const response = await fetch(api, { signal: AbortSignal.timeout(8000) });
+    const response = await fetch(liveApi, { signal: AbortSignal.timeout(8000) });
     if (!response.ok) throw new Error(`Receiver service: HTTP ${response.status}`);
     const snapshot = await response.json() as ServiceSnapshot;
     if (snapshot.transport !== 'native' || snapshot.contract !== 'multichannel-draft-v1') throw new Error('Unsupported receiver service');
@@ -53,15 +58,31 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
   async refresh(): Promise<void> {
     if (this.refreshing || this.disposed) return;
     this.refreshing = true;
+    this.lastRefreshAt = Date.now();
     const service = this.current.service_id;
     try {
-      const response = await fetch(api, { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(8000)]) });
+      const response = await fetch(liveApi, { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(8000)]) });
       if (response.ok) {
         const snapshot = await response.json() as ServiceSnapshot;
         if (service === this.current.service_id) this.accept(snapshot);
       }
     } catch { /* Keep the last confirmed device state; never replay configuration after a network failure. */ }
     finally { this.refreshing = false; }
+  }
+  /** Detailed histories are independent of the live state and never notify all views. */
+  async diagnostics(uid: string, signal: AbortSignal): Promise<ReceiverState | undefined> {
+    const service = this.current.service_id;
+    const response = await fetch(`${api}?receiver_uid=${encodeURIComponent(uid)}`, {
+      signal: AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(8000)]),
+    });
+    if (!response.ok) throw new Error(`Receiver diagnostics: HTTP ${response.status}`);
+    const snapshot = await response.json() as ServiceSnapshot;
+    if (this.disposed || service !== this.current.service_id || snapshot.service_id !== service) return;
+    const row = snapshot.receivers.find(row => row.receiver_uid === uid);
+    const current = this.current.receivers.find(row => row.receiver_uid === uid);
+    return row && current && row.revision === current.revision
+      && row.processing_runtime?.processing_generation === current.processing_runtime?.processing_generation
+      && row.stream?.epoch === current.stream?.epoch && row.stream?.channel_id === current.stream?.channel_id ? row : undefined;
   }
   /** Local impact preview; native resource admission is performed again by the service on dispatch. */
   preflight(command: ConfigureCommand | SceneCommand): Impact {
@@ -173,6 +194,7 @@ export class NativeReceiverAdapter implements ReceiverAdapter {
     };
   }
   dispose(): void {
+    document.removeEventListener('visibilitychange', this.visible);
     this.disposed = true; this.lifetime.abort(); clearInterval(this.timer); this.sockets.forEach(socket => socket.close()); this.sockets.clear(); this.listeners.clear(); this.iqListeners.clear();
   }
 }

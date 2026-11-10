@@ -62,6 +62,13 @@ struct NextFailure {
     status: Option<i32>,
     message: String,
 }
+fn packet_error(operation: &str, status: i32, samples: u32) -> String {
+    if status == -130 {
+        format!("USB IQ capture handoff queue full: status={status} samples={samples}; capture continuity lost")
+    } else {
+        format!("SDK IQS {operation} status={status} samples={samples}")
+    }
+}
 
 #[link(name = "dl")]
 unsafe extern "C" {
@@ -758,7 +765,7 @@ impl Device {
         for (slot, iq) in slots.into_iter().zip(buffers).take(attempted as usize) {
             let packet = if slot.status != 0 || slot.info.samples as usize != N {
                 Err(NextFailure {status: (slot.status != 0).then_some(slot.status),
-                    message: format!("SDK IQS batch status={} samples={}",slot.status,slot.info.samples)})
+                    message: packet_error("batch",slot.status,slot.info.samples)})
             } else if !slot.info.scale_to_v.is_finite() {
                 Err(NextFailure {status:None,message:"SDK IQS nonfinite scale".into()})
             } else {
@@ -813,7 +820,7 @@ impl Device {
             }
             return Err(NextFailure {
                 status: (status != 0).then_some(status),
-                message: format!("SDK IQS next/FFT status={status} samples={}", info.samples),
+                message: packet_error("next/FFT",status,info.samples),
             });
         }
         if !info.scale_to_v.is_finite() {
@@ -965,6 +972,21 @@ impl HardwareCapture {
         front_end: FrontEnd,
         device_decimate: c_int,
     ) -> Result<Self, String> {
+        Self::start_inner(path, center, front_end, device_decimate, true)
+    }
+
+    /// Product capture owns only raw IQ. Display DSP uses a separate native
+    /// context and can replace its own observations without losing source IQ.
+    pub fn start_raw(
+        path: String, center: f64, front_end: FrontEnd, device_decimate: c_int,
+    ) -> Result<Self, String> {
+        Self::start_inner(path, center, front_end, device_decimate, false)
+    }
+
+    fn start_inner(
+        path: String, center: f64, front_end: FrontEnd, device_decimate: c_int,
+        inline_spectrum: bool,
+    ) -> Result<Self, String> {
         let (packet_tx, packets) = mpsc::sync_channel(PACKET_QUEUE);
         let (request_tx, request_rx) = mpsc::sync_channel::<Request>(1);
         let (meta_tx, meta_rx) = mpsc::sync_channel(1);
@@ -975,9 +997,12 @@ impl HardwareCapture {
         let owner_error = error.clone();
         let owner_stats = stats.clone();
         let owner_stop = stop.clone();
-        let owner = thread::Builder::new().name("iqs-capture".into()).spawn(move || match Device::open(&path, center, front_end, device_decimate)
+        let owner = thread::Builder::new().name("iqs-capture".into()).spawn(move || {
+        crate::capture_scheduling::capture();
+        match Device::open(&path, center, front_end, device_decimate)
         {
             Ok((mut device, geometry)) => {
+                crate::capture_scheduling::vendor();
                 let info = crate::hardware_swp::read_device_info(device.library, device.handle).ok().flatten();
                 if meta_tx.send(Ok((geometry, info))).is_err() {
                     return;
@@ -1017,6 +1042,8 @@ impl HardwareCapture {
                 // Complex samples in successfully enqueued packets; the failing
                 // packet's host input index is this value.
                 let mut enqueued_samples = 0u64;
+                let mut scheduling_generation = None;
+                let mut scheduling_retry = None;
                 // Configuration and consumer setup are complete. Start the vendor
                 // stream only now, immediately before the first fetch.
                 let started = device.arm();
@@ -1061,15 +1088,28 @@ impl HardwareCapture {
                         }
                         continue;
                     }
-                    let with_spectrum = spectrum_schedule.due();
                     let fetched_at = Instant::now();
+                    let spectrum_due = inline_spectrum && spectrum_schedule.due();
+                    let with_spectrum = spectrum_due;
                     attempt += 1;
                     // Stop the batch before the next display frame; narrow input rates
                     // keep single-packet dispatch and original control latency.
-                    let batch_limit = if settings.device_decimate == 1 && !with_spectrum {
+                    let batch_limit = if !inline_spectrum && settings.device_decimate == 1 { 4 }
+                    else if settings.device_decimate == 1 && !spectrum_due {
                         ((spectrum_schedule.next - spectrum_schedule.ticks).div_ceil(N as u64) as usize).min(4)
                     } else {1};
                     let result = device.next(with_spectrum, batch_limit);
+                    // The SDK creates its USB pump lazily on the first read,
+                    // not when arm returns. Recheck once old owners have retired
+                    // as well: RTKit can reject a transient overlap of threads.
+                    if result.is_ok() && scheduling_generation != Some(settings.generation) {
+                        crate::capture_scheduling::vendor();
+                        scheduling_generation = Some(settings.generation);
+                        scheduling_retry = Some(Instant::now() + Duration::from_millis(100));
+                    } else if result.is_ok() && scheduling_retry.is_some_and(|at| Instant::now() >= at) {
+                        crate::capture_scheduling::vendor();
+                        scheduling_retry = None;
+                    }
                     let fetched = fetched_at.elapsed();
                     let sdk_timing = device.timing();
                     let sdk = sdk_timing.unwrap_or_default();
@@ -1288,7 +1328,7 @@ impl HardwareCapture {
             Err(e) => {
                 let _ = meta_tx.send(Err(e));
             }
-        }).map_err(|error| format!("SDK IQS owner thread: {error}"))?;
+        }}).map_err(|error| format!("SDK IQS owner thread: {error}"))?;
         // An SDK open that hangs must not leave a half-ready service advertising IQS. The
         // stuck owner is parked so that no new session overlaps it.
         let (geometry, device_info) = match meta_rx.recv_timeout(OPEN_TIMEOUT) {
@@ -1832,6 +1872,23 @@ extern "C" int san90_close(void* handle) {
 "#;
 
     #[test]
+    fn raw_owner_never_requests_inline_spectrum_and_preserves_source_clock() {
+        let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        write_open_fail(false);
+        let _ = std::fs::remove_file(FAKE_IQS_FAIL);
+        let mut capture = HardwareCapture::start_raw(compile_fake_iqs_shim(),100e6,FRONT_END,1).unwrap();
+        capture.arm().unwrap();
+        for index in 1..=400 {
+            let packet = capture.next().unwrap();
+            assert!(packet.spectrum.is_none());
+            assert_eq!(packet.stamp,(index-1)*2*N as u64);
+            assert_eq!(packet.seq,index);
+        }
+        assert_eq!(capture.stats().spectrum_frames,0);
+        assert_eq!(capture.stats().sdk_fft.count,0);
+    }
+
+    #[test]
     fn batch_dispatch_preserves_packets_display_boundaries_and_reconfigure() {
         let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::fs::remove_file(FAKE_IQS_FAIL).ok();
@@ -1889,6 +1946,27 @@ extern "C" int san90_next_v3(void* h, short* iq, unsigned cap, PacketInfo* info,
 
     pub(crate) fn compile_fake_iqs_shim() -> String {
         compile_fake_iqs_source("shim", FAKE_IQS_SHIM)
+    }
+
+    pub(crate) fn compile_fake_iqs_display_shim() -> String {
+        // Synthetic display values exercise the independent FFT publication
+        // lifecycle alongside IQ/audio recovery; no RF accuracy is claimed.
+        let display = r#"
+extern "C" int san90_display_fft_open_v1(void** out, uint32_t size, uint32_t* points, double* rbw) {
+    *out = new uint32_t(size); *points = size * 4 / 5; *rbw = 3.77 / size; return 0;
+}
+extern "C" int san90_display_fft_execute_v1(void* handle, const int16_t*, uint32_t n, float,
+    double center, double, double bandwidth, double* frequency, float* power, uint32_t count) {
+    if (!handle || n != *static_cast<uint32_t*>(handle) || count < 2) return -103;
+    for (uint32_t i = 0; i < count; ++i) {
+        frequency[i] = center - bandwidth / 2 + bandwidth * i / (count - 1);
+        power[i] = -26.9897f;
+    }
+    return 0;
+}
+extern "C" int san90_display_fft_close_v1(void* handle) { delete static_cast<uint32_t*>(handle); return 0; }
+"#;
+        compile_fake_iqs_source("display", &format!("{FAKE_IQS_SHIM}\n{display}"))
     }
 
     pub(crate) fn compile_fake_iqs_narrow_bandwidth_shim() -> String {

@@ -267,12 +267,15 @@ def main() -> int:
         froze_offset_trace = not page.locator('#btn-view-freeze').evaluate("e => e.classList.contains('active')")
         if froze_offset_trace:
             js_click(page, '#btn-view-freeze')
-        # Observe canvas calls temporarily so the assertion uses actual trace vertices and
-        # actual axis label positions, without adding work to the production renderer.
+        # Observe trace vertices and text in both the visible canvas and cached
+        # label layers. drawImage maps the layer's painted pixels back to plot coordinates.
         page.evaluate("""() => {
             const c = document.getElementById('spectrum'), ctx = c.getContext('2d');
             const saved = {}, sample = { points: [], labels: [] };
-            for (const name of ['beginPath', 'moveTo', 'lineTo', 'stroke', 'fillText']) saved[name] = ctx[name];
+            for (const name of ['beginPath', 'moveTo', 'lineTo', 'stroke', 'drawImage']) saved[name] = ctx[name];
+            const prototype = CanvasRenderingContext2D.prototype;
+            const fillText = prototype.fillText, clearRect = prototype.clearRect;
+            const layers = new WeakMap();
             let path = [];
             ctx.beginPath = function(...args) { path = []; return saved.beginPath.apply(this, args); };
             for (const name of ['moveTo', 'lineTo']) ctx[name] = function(x, y) {
@@ -282,17 +285,45 @@ def main() -> int:
                 if (this.lineWidth === 1.5 && path.length > 20) sample.points = path.slice();
                 return saved.stroke.apply(this, args);
             };
-            ctx.fillText = function(text, x, y, ...args) {
+            prototype.fillText = function(text, x, y, ...args) {
                 if (this.textAlign === 'right' && /^-?\\d+$/.test(String(text))) {
-                    const old = sample.labels.findIndex(label => label.y === y);
-                    const label = {y, value: Number(text)};
-                    if (old < 0) sample.labels.push(label); else sample.labels[old] = label;
+                    const labels = this === ctx ? sample.labels : layers.get(this.canvas) || [];
+                    const transform = this.getTransform();
+                    const labelY = this === ctx ? y : transform.b*x + transform.d*y + transform.f;
+                    const old = labels.findIndex(label => label.y === labelY);
+                    const label = {y: labelY, value: Number(text)};
+                    if (old < 0) labels.push(label); else labels[old] = label;
+                    if (this !== ctx) layers.set(this.canvas, labels);
                 }
-                return saved.fillText.call(this, text, x, y, ...args);
+                return fillText.call(this, text, x, y, ...args);
+            };
+            prototype.clearRect = function(...args) {
+                if (this !== ctx) layers.delete(this.canvas);
+                return clearRect.apply(this, args);
+            };
+            ctx.drawImage = function(image, ...args) {
+                const labels = layers.get(image);
+                if (labels?.length > 1) {
+                    const [sx, sy, sw, sh, dx, dy, dw, dh] = args.length === 8 ? args
+                        : [0, 0, image.width, image.height, ...args,
+                            ...(args.length === 2 ? [image.width, image.height] : [])];
+                    sample.labels = labels.map(label => ({
+                        y: dy + (label.y-sy)*dh/sh, value: label.value,
+                    }));
+                }
+                return saved.drawImage.call(this, image, ...args);
             };
             window.offsetCanvasSample = sample;
-            window.restoreOffsetCanvas = () => { Object.assign(ctx, saved); delete window.offsetCanvasSample; };
+            window.restoreOffsetCanvas = () => {
+                Object.assign(ctx, saved); prototype.fillText = fillText; prototype.clearRect = clearRect;
+                delete window.offsetCanvasSample;
+            };
         }""")
+        # Repaint cached label layers once after installing the probe. Restore the
+        # original theme; later hover/offset frames can reuse these observed pixels.
+        js_click(page, '#btn-theme')
+        page.wait_for_function('window.offsetCanvasSample.labels.length > 1')
+        js_click(page, '#btn-theme')
         box = page.locator('#spectrum').bounding_box()
         page.mouse.move(box['x'] + box['width'] * 0.5, box['y'] + box['height'] * 0.5)
         page.wait_for_function('window.offsetCanvasSample.points.length > 0')

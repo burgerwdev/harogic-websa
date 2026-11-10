@@ -154,25 +154,39 @@ impl Pfb {
     #[target_feature(enable = "avx2,fma")]
     unsafe fn fir_bank_avx2(&mut self, tmod: usize) {
         match self.taps_per_phase {
-            4 => self.fir_bank_avx2_taps::<4>(tmod),
-            8 => self.fir_bank_avx2_taps::<8>(tmod),
-            16 => self.fir_bank_avx2_taps::<16>(tmod),
+            4 => self.fir_bank_avx2_size::<4>(tmod),
+            8 => self.fir_bank_avx2_size::<8>(tmod),
+            16 => self.fir_bank_avx2_size::<16>(tmod),
             _ => unreachable!("unsupported FIR tap count"),
+        }
+    }
+
+    // The two full-rate geometries have fixed strides. Specializing them avoids
+    // recomputing tap-row addresses and spilling stride registers for every eight
+    // branches. Keep the same taps, FMA pairs and summation order.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2,fma")]
+    unsafe fn fir_bank_avx2_size<const TAPS: usize>(&mut self, tmod: usize) {
+        match self.m {
+            64 => self.fir_bank_avx2_taps::<TAPS, 64>(tmod),
+            128 => self.fir_bank_avx2_taps::<TAPS, 128>(tmod),
+            _ => self.fir_bank_avx2_taps::<TAPS, 0>(tmod),
         }
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2,fma")]
-    unsafe fn fir_bank_avx2_taps<const TAPS: usize>(&mut self, tmod: usize) {
+    unsafe fn fir_bank_avx2_taps<const TAPS: usize, const M: usize>(&mut self, tmod: usize) {
         use std::arch::x86_64::*;
         debug_assert!(self.hop >= 8);
         let taps = TAPS;
-        let row = ((self.input_samples - 1) >> self.m.trailing_zeros()) as usize;
-        for r in (0..self.m).step_by(8) {
-            let branch = (tmod + self.m - r) & (self.m - 1);
+        let m = if M == 0 { self.m } else { M };
+        let row = ((self.input_samples - 1) >> m.trailing_zeros()) as usize;
+        for r in (0..m).step_by(8) {
+            let branch = (tmod + m - r) & (m - 1);
             // Rows hold descending branches; hop boundaries align to eight lanes.
             let oldest = (row + usize::from(r <= tmod)) & (taps - 1);
-            let start = oldest * self.m + self.m - 1 - branch;
+            let start = oldest * m + m - 1 - branch;
             let h = self.tap_group.as_ptr().add(r * taps);
             let real = self.history_re.as_ptr().add(start);
             let imag = self.history_im.as_ptr().add(start);
@@ -181,15 +195,15 @@ impl Pfb {
             // Keep the reference's (j, j + 8) FMA and left-to-right lane sum.
             for j in 0..taps.min(8) {
                 let coeff = _mm256_loadu_ps(h.add(j * 8));
-                let mut re_term = _mm256_mul_ps(coeff, _mm256_loadu_ps(real.add(j * self.m)));
-                let mut im_term = _mm256_mul_ps(coeff, _mm256_loadu_ps(imag.add(j * self.m)));
+                let mut re_term = _mm256_mul_ps(coeff, _mm256_loadu_ps(real.add(j * m)));
+                let mut im_term = _mm256_mul_ps(coeff, _mm256_loadu_ps(imag.add(j * m)));
                 if taps == 16 {
                     let coeff = _mm256_loadu_ps(h.add((j + 8) * 8));
                     re_term = _mm256_fmadd_ps(
-                        coeff, _mm256_loadu_ps(real.add((j + 8) * self.m)), re_term,
+                        coeff, _mm256_loadu_ps(real.add((j + 8) * m)), re_term,
                     );
                     im_term = _mm256_fmadd_ps(
-                        coeff, _mm256_loadu_ps(imag.add((j + 8) * self.m)), im_term,
+                        coeff, _mm256_loadu_ps(imag.add((j + 8) * m)), im_term,
                     );
                 }
                 re = _mm256_add_ps(re, re_term);

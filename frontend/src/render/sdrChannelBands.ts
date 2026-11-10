@@ -20,17 +20,22 @@ export function renderSdrChannelBands(ctx: CanvasRenderingContext2D, lo: number,
     const iqBandwidth = channel.baseband?.passband_hz ?? channel.if_bw;
     const [low, high] = channel.processing_enabled === false ? [-iqBandwidth / 2, iqBandwidth / 2]
       : demodBandHz(channel.mode, channel.if_bw, channel.pitch);
-    if (channel.freq + high < lo || channel.freq + low > hi) continue;
+    const bandVisible = channel.freq + high >= lo && channel.freq + low <= hi;
+    const dialVisible = channel.freq >= lo && channel.freq <= hi;
+    if (!bandVisible && !dialVisible) continue;
     const x0 = xAt(channel.freq + low), x1 = xAt(channel.freq + high), dial = xAt(channel.freq);
     const color = CHANNEL_COLORS[(channel.channel - 1) % CHANNEL_COLORS.length];
-    if (!selected || channel.processing_enabled === false) {
-    ctx.fillStyle = color; ctx.globalAlpha = channel.enabled ? 0.12 : 0.04;
-    ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
-    ctx.globalAlpha = channel.enabled ? 0.8 : 0.4; ctx.strokeStyle = color; ctx.lineWidth = 1;
-    ctx.setLineDash(channel.enabled ? [] : [3, 4]);
-    ctx.beginPath(); ctx.moveTo(dial, p.y); ctx.lineTo(dial, p.y + p.h); ctx.stroke();
+    if (!selected || channel.processing_enabled === false || !bandVisible) {
+      ctx.fillStyle = color; ctx.globalAlpha = channel.enabled ? 0.12 : 0.04;
+      if (bandVisible) ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
+      ctx.globalAlpha = channel.enabled ? 0.8 : 0.4; ctx.strokeStyle = color; ctx.lineWidth = 1;
+      ctx.setLineDash(channel.enabled ? [] : [3, 4]);
+      if (dialVisible) { ctx.beginPath(); ctx.moveTo(dial, p.y); ctx.lineTo(dial, p.y + p.h); ctx.stroke(); }
     }
-    if (labels) {
+    // A passband can intersect the view while its dial is outside it (FT8 is
+    // asymmetric). Clamping that dial's label to an edge invents a frequency
+    // marker there. Conversely, a visible dial must survive a clipped passband.
+    if (labels && dialVisible) {
       ctx.font = `${selected ? 'bold ' : ''}10px monospace`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
       const text = `${channel.channel === 1 ? 'Current' : `C${channel.channel}`} · ${channel.processing_enabled === false ? 'IQ' : channel.mode.toUpperCase()}`;
       const width = ctx.measureText(text).width + 4;

@@ -266,6 +266,16 @@ describe('decoder channel selection', () => {
 		expect(rows()[0].textContent).toContain('CQ JO1WKO PM95');
 	});
 
+	it('retains FT8 rows across progress heartbeats and appends new decodes without replacing old rows', () => {
+		setDecodeChannelMode(1, 'ft8'); addFt8Spot(report(), 1000, 1); toggleDecodeWindow();
+		const row = rows()[0], body = document.getElementById('decode-window-rows')!;
+		const observer = new MutationObserver(() => {}); observer.observe(body, { childList: true, subtree: true });
+		for (let count = 0; count < 20; count++) setFt8DecoderState({ bufferedSamples: count, bufferedSeconds: count / 100, attempts: 0, count: 1, level: .2, epoch: 1 }, 1);
+		expect(rows()[0]).toBe(row); expect(observer.takeRecords()).toHaveLength(0);
+		addFt8Spot(report({ text: 'CQ TEST AA00' }), 2000, 1);
+		expect(rows()[1]).toBe(row); expect(rows()[0].textContent).toContain('CQ TEST AA00'); observer.disconnect();
+	});
+
 	it('renders structured DRM services for either DRM mode', () => {
 		setDecodeChannelMode(2, 'drmplus');
 		setDrmStatus({

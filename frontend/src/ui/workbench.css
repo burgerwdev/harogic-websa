@@ -266,6 +266,8 @@
 .mc-output-links button { flex-shrink:0; font-size:10px; }
 .mc-create-dialog { width:min(460px,calc(100vw - 32px)); max-height:calc(100vh - 32px); overflow:auto; padding:26px; border:1px solid var(--input-border); border-radius:4px; background:var(--panel); color:var(--text); box-shadow:0 8px 22px #0008; font:inherit; }
 .mc-create-dialog::backdrop { background:#0006; }
+.mc-create-dialog button.mc-danger { color:var(--sa-warning, #ff7043); border-color:currentColor; }
+.mc-clear-dialog p { line-height:1.6; }
 .mc-create-dialog form { display:grid; gap:18px; }
 .mc-create-dialog header { display:flex; align-items:center; justify-content:space-between; gap:15px; }
 .mc-create-dialog header strong { font-size:20px; font-weight:600; }
@@ -600,9 +602,11 @@ body:has(#workbench-app) { display:block; }
 .mc-strip-identity [data-strip-name-edit] { min-width:0; width:100%; height:22px; padding:0 3px; font-size:11px; }
 .mc-strip-identity small { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:10px; font-variant-numeric:tabular-nums; }
 .mc-strip-identity small span { color:var(--label); }
-.mc-strip-level { position:absolute; bottom:0; left:0; right:0; height:5px; cursor:help; background:color-mix(in srgb,var(--text) 20%,var(--panel)); border-radius:0 0 3px 3px; overflow:hidden; }
+.mc-strip-level { position:absolute; bottom:0; left:0; right:0; height:5px; cursor:help; background:color-mix(in srgb,var(--text) 20%,var(--panel)); border-radius:0 0 3px 3px; overflow:hidden; contain:layout paint style; }
 .mc-strip-level small { display:none; }
-.mc-strip-level-fill { display:block; width:100%; height:100%; background:linear-gradient(to right,#35b874 0 80%,#edc549 80% 95%,#ed5353 95% 100%); clip-path:inset(0 calc(100% - var(--level,0%)) 0 0); transition:clip-path .05s linear; mask-image:repeating-linear-gradient(to right,#000 0 5px,transparent 5px 6px); }
+/* The meter model already smooths levels. Animating every masked clip update
+   creates extra style/raster frames for every visible receiver. */
+.mc-strip-level-fill { display:block; width:100%; height:100%; background:linear-gradient(to right,#35b874 0 80%,#edc549 80% 95%,#ed5353 95% 100%); clip-path:inset(0 calc(100% - var(--level,0%)) 0 0); mask-image:repeating-linear-gradient(to right,#000 0 5px,transparent 5px 6px); }
 .mc-strip-level-peak { position:absolute; top:0; bottom:0; left:clamp(0px,calc(var(--peak,0%) - 2px),calc(100% - 2px)); width:2px; background:var(--text); }
 .mc-strip-level[data-clipped=true]::after { content:""; position:absolute; right:0; top:0; bottom:0; width:6px; background:#ed5353; }
 .mc-strip-level[data-available=false] .mc-strip-level-peak { display:none; }

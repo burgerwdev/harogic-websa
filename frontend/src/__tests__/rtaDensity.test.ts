@@ -32,6 +32,19 @@ beforeEach(() => {
 });
 
 describe('native density history', () => {
+	it('retains separate amplitude peaks when many native frequencies share each display pixel', () => {
+		const points = 16384, width = 128;
+		const freq = Float64Array.from({ length: points }, (_, i) => i);
+		const spec = new Float32Array(points).fill(-100);
+		spec[8000] = -40; spec[8001] = -60;
+		const grid = advanceDensity(null, spec, BINS, 1, 0, 2)!;
+		const raster = new Float32Array(width * BINS), x = Math.floor(8000 / points * width);
+		rasterDensity(grid, freq, 0, points, width, raster);
+		expect(raster[20 * width + x]).toBeCloseTo(FRAME_HIT, 6);
+		expect(raster[30 * width + x]).toBeCloseTo(FRAME_HIT, 6);
+		expect(raster[25 * width + x]).toBe(0);
+		expect(grid.heads).toHaveLength(points);
+	});
 	it('releases history for Off and does not mutate the previous frame', () => {
 		const grid = advanceDensity(null, specWithPeak(), BINS, 1, -20, 2)!;
 		const before = grid.values.slice();

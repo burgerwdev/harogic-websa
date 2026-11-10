@@ -21,7 +21,7 @@ export function canClearInterruption(r:ReceiverState):boolean {
   return r.reception?.state==='receiving' && r.reception.last_interruption.recovered_at_ms!==null
     && ['healthy','waiting'].includes(liveStatus(r).kind);
 }
-export function receiverLive(r:ReceiverState,tasks:RecordingTask[],pending=false,expanded=false,interruptionCleared=false):string {
+export function receiverLive(r:ReceiverState,tasks:RecordingTask[],pending=false,expanded=false,interruptionCleared=false,detail?:ReceiverState):string {
   const status=liveStatus(r), recovery=r.reception, gap=recovery?.last_interruption;
   const clearable=canClearInterruption(r);
   const interrupted=tasks.filter(t=>t.receiver_uid===r.receiver_uid && t.state==='failed' && ['SOURCE_FAILED','PROCESSING_FAILED'].includes(t.fault?.code??''));
@@ -35,6 +35,6 @@ export function receiverLive(r:ReceiverState,tasks:RecordingTask[],pending=false
     ${last?`<p class="mc-error" data-key="recording-interrupted">${l('Recording ended at the interruption. Its valid prefix is retained; resuming reception does not restart recording.','录制已在中断处结束，有效前缀已保留；恢复接收不会自动重启录制。')} <button type="button" data-action="tab-recording" title="${l('Review the ended recording and its valid prefix','查看已结束录制及有效前缀')}">${l('View recording','查看录制')}</button></p>`:''}
     <label class="mc-reception-policy">${l('Reception policy','接收策略')} <select data-continuity aria-label="${l('Reception policy','接收策略')}" ${pending?'disabled':''}><option value="continuous" ${(r.confirmed.continuity??'continuous')==='continuous'?'selected':''}>${l('Continuous reception','持续接收')}</option><option value="strict" ${r.confirmed.continuity==='strict'?'selected':''}>${l('Strict continuity','严格连续')}</option></select></label>
     <p class="mc-live-hint">${r.confirmed.continuity==='strict'?l('Stop at an unexpected gap. Planned out-of-band pauses resume when covered.','出现异常缺口即停止；计划内的带外暂停在覆盖后恢复。'):l('Attempt reception recovery after unexpected gaps. Recordings end at faults; planned coverage pauses wait and resume a new segment.','异常中断后尝试续收并保留缺口记录。录制遇故障结束；计划内的带外暂停进入等待，覆盖后另起片段。')}</p>
-    <details data-section="live-diagnostics" ${expanded?'open':''}><summary>${l('Diagnostic details','诊断详情')}</summary>${copyDetailsButton()}<pre>${esc(JSON.stringify({stream:r.stream,clock:r.clock,reception:recovery,processing:r.processing_runtime,fault:r.fault,processing_fault:r.processing_fault},null,2))}</pre></details>
+    <details data-section="live-diagnostics" ${expanded?'open':''}><summary>${l('Diagnostic details','诊断详情')}</summary>${copyDetailsButton()}<pre>${expanded?esc(JSON.stringify({stream:r.stream,clock:r.clock,reception:recovery,processing:(detail??r).processing_runtime,statistics:detail?.processing_statistics,fault:r.fault,processing_fault:r.processing_fault},null,2)):""}</pre></details>
   </section>`;
 }
