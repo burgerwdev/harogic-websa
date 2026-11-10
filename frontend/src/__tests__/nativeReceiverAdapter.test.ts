@@ -368,6 +368,7 @@ describe('native receiver control and shared IQ', () => {
     expect(diagnostics.open).toBe(false);
     expect(diagnostics.querySelector('pre')!.textContent).toBe('');
     diagnostics.open = true; diagnostics.dispatchEvent(new Event('toggle'));
+    await vi.advanceTimersByTimeAsync(0);
     expect(diagnostics.textContent).toContain('Input interrupted');
     expect(overview.querySelector('[name=frequency]')).toBe(input); expect(input.value).toBe('7.123456');
     ui.dispose(); session.dispose();

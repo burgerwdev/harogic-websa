@@ -196,7 +196,7 @@ fn valid_settings(settings: &Value) -> bool {
             ]
             .iter()
             .all(|key| processor.get(*key).is_none_or(finite))
-            && ["agc", "nr", "am_sync", "stereo"]
+            && ["agc", "nr", "am_sync", "stereo", "rf_snr"]
                 .iter()
                 .all(|key| processor.get(*key).is_none_or(Value::is_boolean))
             && [
@@ -261,7 +261,7 @@ pub(super) async fn change(
         let Some(store) = state.receiver_presets.clone() else {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         };
-        let snapshot = state.receiver_snapshot();
+        let snapshot = state.receiver_live_snapshot();
         if request["service_id"] != snapshot["service_id"] {
             return (
                 StatusCode::CONFLICT,
@@ -349,7 +349,7 @@ mod tests {
             "processors":[{"id":"primary","kind":"demodulator","mode":"am","minimum_rate_hz":0,
                 "bandwidth_hz":6000,"pcm_gain":1,"agc":true,"squelch_dbm":-100,"nr":false,
                 "nr_algorithm":"wiener","nr_strength":0.5,"nr_atten_db":18,
-                "am_sync":false,"pitch":700,"deemph_us":-1,"stereo":true,"audio_rate":48000,
+                "rf_snr":false,"am_sync":false,"pitch":700,"deemph_us":-1,"stereo":true,"audio_rate":48000,
                 "sstv_mode":null,"radiofax_acquisition":"auto","radiofax_ioc":"auto",
                 "radiofax_lpm":"auto","radiofax_modulation":"fm","radiofax_polarity":"normal",
                 "radiofax_clock_recovery":"auto","radiofax_phase_pixels":0,"radiofax_clock_ppm":0}],
@@ -400,6 +400,7 @@ mod tests {
             "agc",
             "nr",
             "am_sync",
+            "rf_snr",
             "stereo",
             "nr_algorithm",
             "radiofax_acquisition",

@@ -31,6 +31,7 @@ import { getUiScale } from '../core/uiScale';
 import { matchesCurrentFrequency, workbenchChannels, type WorkbenchCurrent } from './workbenchCurrent';
 import { mountWorkbenchClear } from './workbenchClear';
 import { setDomAttribute, setDomProperty } from './domState';
+import { toggleSdrHelp } from './sdrHelp';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -125,7 +126,7 @@ interface Pane {
 interface NativeViews extends ChannelStripReadouts {
   status(uid: string): string; retry(uid: string): void;
 }
-export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, native?: NativeViews, selectedFrequency?: () => number | null, current?: WorkbenchCurrent): { dispose(): void; recall(reset?: boolean): void; showOverview(): void; showChannels(): void } {
+export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, native?: NativeViews, selectedFrequency?: () => number | null, current?: WorkbenchCurrent): { dispose(): void; recall(reset?: boolean): void; showOverview(): void; showChannels(): void; toggleChannels(): void } {
   if (current) session.setCurrentReceiverSource(current.receiverUid);
   const clearChannels = mountWorkbenchClear(session, () => current?.receiverUid() ?? null);
   const fixture = session.snapshot.transport === 'fixture';
@@ -285,6 +286,13 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     if (overviewPane && !overviewPane.disposed) { overviewPane.window.show(); if (overviewPane.window.portal.isPoppedOut()) overviewPane.window.portal.popout(); return; }
     open('overview'); const pane = panes.get('overview-follow'); if (pane) setOverviewMode(pane, true);
   }
+  function toggleChannels(): void {
+    if (overviewPane && !overviewPane.disposed && !overviewPane.window.root.hidden) {
+      overviewPane.window.hide();
+      document.getElementById('spectrum')?.focus?.({ preventScroll: true });
+    }
+    else showChannels();
+  }
   function showWorkbench(): void {
     open('overview'); const pane = panes.get('overview-follow'); if (pane?.overviewMode) setOverviewMode(pane, false);
   }
@@ -417,7 +425,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       provider: 'fixture', mode: 'ft8', kind: 'table', bytes: 128,
       data: { decodes: [{ snr_db: -12, audio_hz: 1099, msg: 'FIXTURE CQ TEST AA00' }] } }] : log?.entries ?? [],
       `${session.snapshot.service_id ?? 'fixture'}:${uid}`, r?.confirmed.processors[0]?.mode ?? '', log?.evicted ?? 0,
-      r ? r.state === 'running' ? '' : l('Receiver stopped · retained results', '接收已停止 · 保留历史结果') : l('Receiver retired. Select another channel above.', '信道已删除，可在上方选择其他信道。'), log?.source);
+      r ? r.state === 'running' ? '' : l('Receiver stopped · retained results', '接收已停止 · 保留历史结果') : l('Receiver retired. Select another channel above.', '信道已删除，可在上方选择其他信道。'), log?.source, r?.confirmed.processors[0]?.rf_snr === true);
   };
   const detail = (r: ReceiverState, pane: Pane): string => {
     const c = r.confirmed, edit = session.edits.get(r.receiver_uid), route = session.route(r.receiver_uid);
@@ -679,6 +687,14 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     // Bind release to the current document so Pop out/Dock and releasing outside work too.
     surface.root.addEventListener('click', () => { clearGesture(); pane.interacting = false; }, { capture: true, signal: events.signal });
     surface.root.addEventListener('keydown', event => {
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing
+        && !(event.target as HTMLElement).closest('input,select,textarea,[contenteditable]:not([contenteditable="false"])')) {
+        if (event.key === '?' || !event.shiftKey && event.key.toLowerCase() === 'v') {
+          event.preventDefault(); event.stopPropagation();
+          if (!event.repeat) { if (event.key === '?') toggleSdrHelp(); else toggleChannels(); }
+          return;
+        }
+      }
       if (event.key === 'Escape') {
         const menu = (event.target as HTMLElement).closest<HTMLDetailsElement>('[data-format-menu]');
         if (menu?.open) { menu.open = false; menu.querySelector('summary')?.focus(); event.preventDefault(); event.stopPropagation(); return; }
@@ -710,6 +726,7 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       else if (action === 'clear-search') { search = ''; channelFilter = 'all'; const input = surface.body.querySelector<HTMLInputElement>('[data-search]'); if (input) input.value = ''; renderPane(pane); }
       else if (action === 'dismiss-fault') { session.fault = null; session.notify(); }
       else if (action === 'clear-interruption') session.clearInterruption(uid);
+      else if (action === 'refresh-diagnostics') pane.diagnostics?.refresh();
       else if (action === 'bandwidth-preset') {
         const field = target.closest('form')?.querySelector<HTMLInputElement>('[name=processor-bandwidth]');
         if (field) { field.value = target.dataset.bandwidth!; field.dispatchEvent(new Event('input', { bubbles: true })); }
@@ -1092,7 +1109,6 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
     }, 50);
   });
   let lastCurrent = `${current?.receiverUid()}:${selectedFrequency?.()}`;
-  const diagnosticsTimer = setInterval(() => panes.forEach(syncDiagnostics), 1000);
   const levelTimer = setInterval(() => {
     const nextCurrent = `${current?.receiverUid()}:${selectedFrequency?.()}`;
     if (nextCurrent !== lastCurrent) { lastCurrent = nextCurrent; render(); }
@@ -1101,13 +1117,13 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   }, 50);
   host.ownerDocument.addEventListener('visibilitychange', render, { signal: events.signal });
   const unsubscribe = session.subscribe(render); const stopLang = onLangChange(() => { panes.forEach(p => p.window.sync()); render(); }); render();
-  return { recall, showChannels, showOverview: showWorkbench, dispose: () => {
+  return { recall, showChannels, toggleChannels, showOverview: showWorkbench, dispose: () => {
     if (disposed) return;
     disposed = true; events.abort();
     document.removeEventListener('websa:preset-applied', resetDrafts);
     document.removeEventListener('websa:recording-default-reset', resetRecordingDefault);
     document.removeEventListener('websa:sdr-audio-gesture', audioState);
-    unsubscribeResults(); clearTimeout(resultsTimer); clearInterval(levelTimer); clearInterval(diagnosticsTimer); unsubscribe(); stopLang();
+    unsubscribeResults(); clearTimeout(resultsTimer); clearInterval(levelTimer); unsubscribe(); stopLang();
     clearChannels.dispose(); quickListen.dispose(); library.dispose(); archives.dispose(); audioArchives?.dispose();
     overview.dispose();
     panes.forEach(disposePane); panes.clear();

@@ -4732,6 +4732,7 @@ fn load_golden() -> (Value, Value) {
     for command in ["SET_SDR_DEMOD","SET_SDR_DDC"] {
         if let Some(params)=schema["commands"][command]["params"].as_array_mut() {
             params.extend([
+                json!({"name":"rf_snr","type":"boolean","required":false,"default":false}),
                 json!({"name":"nr","type":"boolean","required":false,"default":false}),
                 json!({"name":"nr_algorithm","type":"choice","required":false,"default":"wiener",
                     "choices":["wiener","dfn","gtcrn","ul-unas","fastenhancer"]}),

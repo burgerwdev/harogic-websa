@@ -9,7 +9,7 @@ pub(crate) async fn command(app: Arc<App>, request: Value, id: String, preview: 
         let mut state = app.state.lock().unwrap();
         if let Some((_, old, reply)) = state.receivers.replies.iter().find(|(key, _, _)| key == &id) {
             if old == &request { return reply.clone(); }
-            return json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":{
+            return json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),"fault":{
                 "scope":"request","code":"IDENTITY_CONFLICT","message":"request_id reused with different command","retryable":false}});
         }
         drop(state);
@@ -20,7 +20,7 @@ pub(crate) async fn command(app: Arc<App>, request: Value, id: String, preview: 
                 "scope":"recording","code":"RECORDING_MANAGEMENT","message":message,"retryable":true})]).unwrap_or_default(),
                 "capture_change":false,"affected_receivers":[],"affected_tracks":[],"candidate_center_hz":state.capture_center(),"estimated_cf32_bytes_per_second":0});
         }
-        let reply = json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":result.err().map(|message|json!({
+        let reply = json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),"fault":result.err().map(|message|json!({
             "scope":"recording","code":"RECORDING_MANAGEMENT","message":message,"task_id":request["task_id"],"retryable":true}))});
         state.receivers.replies.push_back((id, request, reply.clone()));
         if state.receivers.replies.len() > 128 { state.receivers.replies.pop_front(); }

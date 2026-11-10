@@ -12,7 +12,7 @@ const HISTORY_LIMIT: usize = 256;
 fn audio_signature(channel: &ChannelConfig) -> String {
     let mut value = json!(channel);
     let fields = value.as_object_mut().unwrap();
-    for key in ["channel", "enabled", "baseband", "am_sync_generation"] {
+    for key in ["channel", "enabled", "baseband", "am_sync_generation", "rf_snr"] {
         fields.remove(key);
     }
     value.to_string()
@@ -186,6 +186,7 @@ impl DevState {
 
 /// Shared wire names for both the compatibility panel and logical processors.
 pub(super) const MODE_CONTROLS: &[&str] = &[
+    "rf_snr",
     "am_sync", "pitch", "deemph_us", "stereo", "audio_rate", "sstv_mode",
     "radiofax_acquisition", "radiofax_ioc", "radiofax_lpm", "radiofax_modulation",
     "radiofax_polarity", "radiofax_clock_recovery", "radiofax_phase_pixels", "radiofax_clock_ppm",
@@ -275,8 +276,13 @@ impl DevState {
         self.bind_receiver_identities();
     }
 
+    #[cfg(test)]
     pub(super) fn receiver_snapshot(&mut self) -> Value {
         self.receiver_snapshot_detail(true, None)
+    }
+
+    pub(super) fn receiver_live_snapshot(&mut self) -> Value {
+        self.receiver_snapshot_detail(false, None)
     }
 
     fn receiver_snapshot_detail(&mut self,diagnostics:bool,uid:Option<&str>) -> Value {
@@ -562,7 +568,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
         if !preview {
             if let Some((_,old,reply))=state.receivers.replies.iter().find(|(known,_,_)|known==&id) {
                 let cached=if old==&request {reply.clone()} else {
-                    json!({"request_id":id,"snapshot":state.receiver_snapshot(),
+                    json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),
                         "fault":fault("request","IDENTITY_CONFLICT","request_id reused with a different command")})
                 };
                 drop(state);drop(result);return cached;
@@ -617,7 +623,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
                 "affected_tracks":[],"candidate_center_hz":state.capture_center(),"estimated_cf32_bytes_per_second":estimated_bytes});
             drop(state);drop(completed_admission);return reply;
         }
-        let reply=json!({"request_id":id,"snapshot":state.receiver_snapshot(),
+        let reply=json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),
             "fault":failure.map(|message|fault(if state.ddc_error.is_some() {"capture"} else {"request"},"REJECTED",&message))});
         state.receivers.replies.push_back((id,request,reply.clone()));
         if state.receivers.replies.len()>128 {state.receivers.replies.pop_front();}
@@ -647,7 +653,7 @@ async fn action_command(app:Arc<App>,request:Value,id:String,preview:bool)->Resp
     })();
     if preview {return Json(json!({"accepted":result.is_ok(),"faults":result.err().map(|e|vec![fault("request","REJECTED",&e)]).unwrap_or_default(),
         "capture_change":false,"affected_receivers":[request["receiver_uid"]],"affected_tracks":[],"candidate_center_hz":state.capture_center(),"estimated_cf32_bytes_per_second":0})).into_response();}
-    Json(json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":result.err().map(|e|fault("request","REJECTED",&e))})).into_response()
+    Json(json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),"fault":result.err().map(|e|fault("request","REJECTED",&e))})).into_response()
 }
 
 async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->Response {
@@ -656,7 +662,7 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
         if !preview {
             if let Some((_,old,reply))=state.receivers.replies.iter().find(|(key,_,_)|key==&id) {
                 if old==&request {return reply.clone();}
-                return json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":fault("request","IDENTITY_CONFLICT","request_id reused with different command")});
+                return json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),"fault":fault("request","IDENTITY_CONFLICT","request_id reused with different command")});
             }
         }
         let mut ticket=None;
@@ -721,9 +727,9 @@ async fn recording_command(app:Arc<App>,request:Value,id:String,preview:bool)->R
             }
             state.receivers.recording_requests.remove(&id);
         } else if state.receivers.recording_requests.contains_key(&id) {
-            return json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":fault("request","IDENTITY_CONFLICT","request_id reused with different command")});
+            return json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),"fault":fault("request","IDENTITY_CONFLICT","request_id reused with different command")});
         }
-        let reply=json!({"request_id":id,"snapshot":state.receiver_snapshot(),"fault":result.err().map(|e|fault("recording","RECORDING_REJECTED",&e))});
+        let reply=json!({"request_id":id,"snapshot":state.receiver_live_snapshot(),"fault":result.err().map(|e|fault("recording","RECORDING_REJECTED",&e))});
         state.receivers.replies.push_back((id,request,reply.clone()));
         if state.receivers.replies.len()>128 {state.receivers.replies.pop_front();}
         reply
@@ -938,7 +944,7 @@ mod tests {
     fn audio_equivalence_ignores_identity_and_iq_plans_but_keeps_processing_settings() {
         let first = ChannelConfig { freq: 100e6, ..ChannelConfig::default() };
         let mut copy = first.clone();
-        copy.channel = 2; copy.enabled = false; copy.am_sync_generation = 8;
+        copy.channel = 2; copy.enabled = false; copy.am_sync_generation = 8; copy.rf_snr = true;
         copy.baseband = Some(BasebandConfig { passband_hz: 8000.0, transition_hz: 1000.0, minimum_rate_hz: 12000.0 });
         assert_eq!(audio_signature(&first), audio_signature(&copy));
         for field in ["freq", "if_bw", "pitch", "volume", "squelch", "deemph_us"] {
@@ -969,6 +975,9 @@ mod tests {
     fn configuration_snapshot(value:&Value)->Value {
         let mut result=value.clone();
         for key in ["action_token","host_resources","model_preparation","processing_resources"] {result.as_object_mut().unwrap().remove(key);}
+        for row in result["receivers"].as_array_mut().unwrap() {
+            row.as_object_mut().unwrap().remove("processing_statistics");
+        }
         result
     }
 
@@ -984,6 +993,20 @@ mod tests {
         let mut expected=configuration_snapshot(&full);
         for row in expected["receivers"].as_array_mut().unwrap() {row.as_object_mut().unwrap().remove("processing_statistics");}
         assert_eq!(configuration_snapshot(&live),expected);
+    }
+
+    #[tokio::test]
+    async fn command_replies_and_deduplication_cache_keep_diagnostic_history_out_of_live_control() {
+        let app=app();
+        let request=json!({"type":"create","request_id":"lean-reply","config":listen_config(100e6)});
+        let reply=run(&app,request.clone()).await;
+        assert!(reply["fault"].is_null(),"{reply}");
+        assert!(reply["snapshot"]["receivers"].as_array().unwrap().iter()
+            .all(|row|row.get("processing_statistics").is_none()));
+        assert_eq!(run(&app,request).await,reply);
+        let full=app.state.lock().unwrap().receiver_snapshot();
+        assert!(full["receivers"].as_array().unwrap().iter()
+            .all(|row|row.get("processing_statistics").is_some()));
     }
 
     async fn run(app:&Arc<App>,request:Value)->Value {
@@ -1649,7 +1672,7 @@ mod tests {
             let reply=run(&app,json!({"type":"create","request_id":format!("parity-create-{index}"),"config":listen_config(100e6+index as f64*10000.0)})).await;
             assert!(reply["fault"].is_null(),"{reply}");
         }
-        let fields=json!({"am_sync":true,"pitch":1000.0,"deemph_us":75.0,"stereo":false,"audio_rate":24000,
+        let fields=json!({"rf_snr":true,"am_sync":true,"pitch":1000.0,"deemph_us":75.0,"stereo":false,"audio_rate":24000,
             "sstv_mode":2,"radiofax_acquisition":"manual","radiofax_ioc":"576","radiofax_lpm":"120",
             "radiofax_modulation":"am","radiofax_polarity":"inverted","radiofax_clock_recovery":"off",
             "radiofax_phase_pixels":3.5,"radiofax_clock_ppm":12.5});

@@ -2,6 +2,8 @@
 
 [文档](../INDEX.md) · [English](../../en/reference/SNR.md)
 
+RF SNR 默认关闭。需要时，在信道的模式设置中勾选**测量 RF SNR**并应用设置，才会开始计算并显示实时卡片。关闭后释放分析器并停止 RF 测量事件；解调、协议 SNR 和音频继续运行。处理器 API 字段为 `rf_snr`（布尔值，默认 `false`）；关闭时不提供 `observed_receiver.rf_measurement`。
+
 ## 定义与接口
 
 原生接收器通过 SDE2 发送 `rf-measurement`，同时在 `processing_runtime.observed_receiver` 中提供最新 `rf_measurement`。测量继承事件封装的接收器 UID、服务 ID、细信道 ID、采集 epoch、处理代次和样本时钟。历史 FT8 解码记录描述原来的发射突发，不表示当前信道读数。

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as S from '../core/store';
-import { renderSdrChannelBands } from '../render/sdrChannelBands';
+import { renderSdrChannelBands, sdrChannelLabels } from '../render/sdrChannelBands';
 import { channelControlContext, confirmSdrChannels, confirmSdrReceiverNumbers, setCurrentSdrChannel } from '../ui/sdrChannels';
 import { renderRequestCount } from '../render/redraw';
 import { sdrPassbandVisible } from '../ui/sdrPassbandState';
@@ -12,7 +12,7 @@ const dial = 14_074_000;
 const context = () => ({
   save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(),
   fillRect: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn(),
-  fillText: vi.fn(), measureText: () => ({ width: 50 }),
+  fillText: vi.fn(), measureText: (text: string) => ({ width: text.length * 6 }),
 });
 
 beforeEach(() => {
@@ -24,6 +24,27 @@ beforeEach(() => {
 afterEach(() => { confirmSdrChannels([]); S.setSdrMode(false); setPluginManifest(null); });
 
 describe('absolute channel dial positions', () => {
+  it.each([300, 80])('packs sixteen nearby labels in a %i px plot without overlapping their click targets', height => {
+    confirmSdrChannels(Array.from({ length: 16 }, (_, i) => ({ channel: i + 1, freq: dial + i, mode: 'am', if_bw: 6000, enabled: true })));
+    confirmSdrReceiverNumbers(Array.from({ length: 16 }, (_, i) => i + 1), undefined,
+      Array.from({ length: 16 }, (_, i) => ({ channel: i + 1, listening: true, audioRecording: true, iqRecording: true })));
+    const ctx = context() as unknown as CanvasRenderingContext2D;
+    const boxes = sdrChannelLabels(ctx, dial - 1000, dial + 1000, { ...plot, h: height });
+    expect(boxes).toHaveLength(16);
+    expect(boxes[0].indicators.map(icon => icon.text)).toEqual(['●L', '●R', '●IQ']);
+    for (const box of boxes) {
+      expect(box.y).toBeGreaterThan(plot.y + 18);
+      expect(box.x).toBeGreaterThanOrEqual(plot.x);
+      expect(box.x + box.width).toBeLessThanOrEqual(plot.x + plot.w);
+      for (const other of boxes.filter(other => other !== box))
+        expect(box.x + box.width <= other.x || other.x + other.width <= box.x
+          || box.y + box.height <= other.y || other.y + other.height <= box.y).toBe(true);
+    }
+    const before = renderRequestCount();
+    confirmSdrReceiverNumbers(Array.from({ length: 16 }, (_, i) => i + 1));
+    expect(renderRequestCount()).toBeGreaterThan(before);
+    expect(sdrChannelLabels(ctx, dial - 1000, dial + 1000, plot)[0].indicators).toEqual([]);
+  });
   it('refreshes edit tokens without repainting unchanged channel geometry', () => {
     const mark = { channel: 2, freq: dial, mode: 'ft8', if_bw: 3000, enabled: true,
       control: { service_id: 'service', receiver_uid: 'receiver', revision: '1', action_token: 'first' } };

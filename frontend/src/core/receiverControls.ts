@@ -1,10 +1,12 @@
 /** Persisted mode parameters only. Instant actions never enter this model. */
 export interface ModeControls {
+  rf_snr?: boolean;
   am_sync?: boolean; pitch?: number; deemph_us?: number; stereo?: boolean; audio_rate?: number; sstv_mode?: number | null;
   radiofax_acquisition?: string; radiofax_ioc?: string; radiofax_lpm?: string; radiofax_modulation?: string;
   radiofax_polarity?: string; radiofax_clock_recovery?: string; radiofax_phase_pixels?: number; radiofax_clock_ppm?: number;
 }
 export const modeControlDefaults = {
+  rf_snr: false,
   am_sync: false, pitch: 700, deemph_us: -1, stereo: true, audio_rate: 48000, sstv_mode: null,
   radiofax_acquisition: 'auto', radiofax_ioc: 'auto', radiofax_lpm: 'auto', radiofax_modulation: 'fm',
   radiofax_polarity: 'normal', radiofax_clock_recovery: 'auto', radiofax_phase_pixels: 0, radiofax_clock_ppm: 0,

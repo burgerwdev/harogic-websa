@@ -31,6 +31,17 @@ afterEach(() => {
   ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); setLang('en'); setTheme('dark'); vi.restoreAllMocks(); vi.useRealTimers();
 });
 describe('channel overview ownership', () => {
+  it('toggles the existing overview from its focused controls without changing receivers', () => {
+    const root = overview(), before = clone(session.snapshot);
+    const button = root.querySelector('button')!;
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true, cancelable: true }));
+    expect(root.hidden).toBe(true);
+    ui.toggleChannels(); expect(overview()).toBe(root); expect(root.hidden).toBe(false);
+    const input = root.querySelector('input')!;
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true, cancelable: true }));
+    expect(root.hidden).toBe(false);
+    expect(session.snapshot).toEqual(before);
+  });
   it('defers hidden channel windows and refreshes them when reopened', () => {
     const detail = detach('fixture-c2');
     detail.querySelector<HTMLButtonElement>('[data-dock]')!.click();

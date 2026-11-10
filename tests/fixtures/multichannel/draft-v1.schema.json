@@ -148,6 +148,9 @@
           "minimum": 0,
           "maximum": 100
         },
+        "rf_snr": {
+          "type": "boolean"
+        },
         "am_sync": {
           "type": "boolean"
         },

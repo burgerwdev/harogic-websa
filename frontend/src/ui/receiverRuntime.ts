@@ -1,6 +1,6 @@
 import type { ReceiverState } from '../core/multichannel';
 import { getLang } from '../core/i18n';
-import { copyDetailsButton } from './copyDetails';
+import { receiverDiagnosticDetails } from './receiverDiagnostics';
 const l = (en:string,zh:string) => getLang()==='zh' ? zh : en;
 export function processingLabel(state: string | undefined): string {
   return ({disabled:l('Processing inactive','处理未启用'),waiting:l('Waiting for input','等待输入'),preparing:l('Preparing selected model','正在准备所选模型'),
@@ -18,5 +18,5 @@ export function receiverRuntime(row: Pick<ReceiverState,'processing_state'|'proc
     ${actual?.nr_effective && actual.nr_effective!=='off' ? `<span> · NR ${esc(actual.nr_effective)} (${esc(actual.nr_state)})</span>`:''}
     ${actual?.protocol_waiting ? `<span> · ${l('Collecting protocol window','正在积累协议窗口')}</span>`:''}
     ${fault ? `<p class="mc-error">${esc(fault.error)}${canRecover ? ` <button class="btn" type="button" data-action="recover-processing" title="${l('Retry only this processing branch; IQ continues','仅重试本路处理，IQ继续')}">${l('Retry processing','重试处理')}</button>`:''}</p>`:''}
-    <details data-section="processing-diagnostics" ${expanded?"open":""}><summary>${l('Processing details','处理详情')}</summary>${copyDetailsButton()}<pre style="white-space:pre-wrap;overflow-wrap:anywhere">${expanded?esc(JSON.stringify(detail?{runtime:detail.processing_runtime,statistics:detail.processing_statistics}:runtime,null,2)):""}</pre></details></section>`;
+    <details data-section="processing-diagnostics" ${expanded?"open":""}><summary>${l('Processing details','处理详情')}</summary>${expanded?receiverDiagnosticDetails(detail,true):'<pre></pre>'}</details></section>`;
 }

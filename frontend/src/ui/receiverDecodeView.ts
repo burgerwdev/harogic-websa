@@ -17,7 +17,7 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 const number = (value: unknown, digits = 0): string => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
 interface Message { key: string; time: number; snr: unknown; snrPresentation: ReturnType<typeof ft8SnrPresentation>; dt: unknown; hz: unknown; text: string; qso: string; country: string; location: string }
 export interface ReceiverDecodeView {
-  update(entries: readonly DecoderLogEntry[], identity: string, mode: string, evicted: number, notice: string, source?: string | null): void;
+  update(entries: readonly DecoderLogEntry[], identity: string, mode: string, evicted: number, notice: string, source?: string | null, rfSnr?: boolean): void;
   dispose(): void;
 }
 
@@ -198,7 +198,8 @@ export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
   host.addEventListener('focusin', focusIn); host.addEventListener('focusout', focusOut);
   host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('change', change);
   return {
-    update(next, nextIdentity, nextMode, nextEvicted, nextNotice, nextSource): void {
+    update(next, nextIdentity, nextMode, nextEvicted, nextNotice, nextSource, rfSnr = false): void {
+      if (!rfSnr) next = next.filter(entry => !(entry.kind === 'status' && object(entry.data) && entry.data.type === 'rf-measurement'));
       if (identity === nextIdentity && mode === nextMode && evicted === nextEvicted && notice === nextNotice && activeSource === nextSource && language === getLang()
         && entries.length === next.length && entries.every((entry, index) => entry === next[index])) return;
       if (mode !== nextMode || identity !== nextIdentity) { hovered = focused = null; }

@@ -2,6 +2,9 @@ import { isChannelNumber } from '../core/channelState';
 import { requestRender } from '../render/redraw';
 
 export type SdrChannel = number;
+export interface SdrChannelActivity {
+  channel: number; listening: boolean; audioRecording: boolean; iqRecording: boolean;
+}
 export interface SdrChannelControl {
   service_id: string; receiver_uid: string | null; revision: string; action_token?: string;
 }
@@ -15,11 +18,13 @@ export interface SdrChannelMark {
   processing_enabled?: boolean;
   baseband?: { passband_hz: number } | null;
   control?: SdrChannelControl;
+  activity?: SdrChannelActivity;
 }
 
 let active: SdrChannel = 1;
 let channels: SdrChannelMark[] = [];
 let receiverNumbers: number[] | null = null;
+let activities: readonly SdrChannelActivity[] = [];
 interface ReceiverDirectory {
   service_id?: string;
   action_token?: string;
@@ -28,17 +33,20 @@ interface ReceiverDirectory {
 let receiverDirectory: { service: string; actionToken?: string;
   receivers: Map<number, { uid: string; revision: string }> } | null = null;
 export const currentSdrChannel = (): SdrChannel => active;
-export const sdrChannelMarks = (): readonly SdrChannelMark[] => channels.filter(c => receiverNumbers?.includes(c.channel) ?? c.enabled);
+export const sdrChannelMarks = (): readonly SdrChannelMark[] => channels.filter(c => receiverNumbers?.includes(c.channel) ?? c.enabled)
+  .map(c => ({ ...c, activity: activities.find(a => a.channel === c.channel) }));
 export const knownSdrChannelNumbers = (): SdrChannel[] => [...new Set([...channels.map(c => c.channel), ...(receiverNumbers ?? []), active])];
 export const receivingSdrChannels = (): readonly SdrChannelMark[] => channels.filter(c => c.enabled && c.processing_enabled !== false);
 
 /** The native service distinguishes stopped definitions from unused compatibility slots. */
-export function confirmSdrReceiverNumbers(numbers: number[] | null, directory?: ReceiverDirectory): void {
+export function confirmSdrReceiverNumbers(numbers: number[] | null, directory?: ReceiverDirectory, activity: readonly SdrChannelActivity[] = []): void {
   receiverDirectory = numbers !== null && directory?.service_id ? {
     service: directory.service_id, actionToken: directory.action_token,
     receivers: new Map(directory.receivers.map(r => [r.display_number, { uid: r.receiver_uid, revision: r.revision }])),
   } : null;
-  if (JSON.stringify(numbers) === JSON.stringify(receiverNumbers)) return;
+  const changed = JSON.stringify(numbers) !== JSON.stringify(receiverNumbers) || JSON.stringify(activities) !== JSON.stringify(activity);
+  activities = activity;
+  if (!changed) return;
   receiverNumbers = numbers; requestRender();
 }
 

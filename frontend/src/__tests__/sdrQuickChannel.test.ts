@@ -32,6 +32,60 @@ beforeEach(() => {
 afterEach(() => { ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('main spectrum quick channel', () => {
+  it.each(['add', 'listen', 'audio', 'iq'] as const)('creates a channel with only the requested %s action', async action => {
+    mount(4);
+    const previous = structuredClone(session.snapshot.receivers);
+    const added = ui.add(action); await settle(); await added;
+    const receiver = session.snapshot.receivers[3];
+    expect(session.snapshot.receivers.slice(0, 3)).toEqual(previous);
+    expect(session.listening(receiver.receiver_uid)).toBe(action === 'listen');
+    expect(session.snapshot.recordings.flatMap(task => task.tracks.map(track => track.kind)))
+      .toEqual(action === 'audio' || action === 'iq' ? [action] : []);
+  });
+
+  it('toggles listening, audio and IQ independently by frequency even when tuning settings change', async () => {
+    mount(4);
+    const added = ui.add('add'); await settle(); await added;
+    const saved = structuredClone(session.snapshot.receivers[3]), uid = saved.receiver_uid;
+    sdrNrAtten.confirm(19); sdrIfbw.confirm(3000);
+    const action = async (kind: 'add' | 'listen' | 'audio' | 'iq') => {
+      const pending = ui.add(kind); await settle(); await pending;
+    };
+    await action('listen'); expect(session.listening(uid)).toBe(true);
+    await action('audio'); await action('iq');
+    expect(session.snapshot.recordings.filter(task => task.state === 'recording')).toHaveLength(2);
+    expect(session.listening(uid)).toBe(true);
+    await action('add');
+    expect(session.listening(uid)).toBe(true);
+    expect(session.snapshot.recordings.filter(task => task.state === 'recording')).toHaveLength(2);
+    await action('audio');
+    expect(session.snapshot.recordings.find(task => task.tracks.some(track => track.kind === 'iq'))!.state).toBe('recording');
+    expect(session.listening(uid)).toBe(true);
+    await action('listen'); expect(session.listening(uid)).toBe(false);
+    await action('iq');
+    expect(session.snapshot.recordings.every(task => task.state !== 'recording')).toBe(true);
+    expect(session.snapshot.receivers).toHaveLength(4);
+    expect(session.snapshot.receivers[3]).toEqual(saved);
+    expect(session.selected).toBe('fixture-c1');
+  });
+
+  it('retains the requested recording action through a capacity replacement dialog', async () => {
+    mount(); await ui.add('iq'); choose('fixture-c2'); submit(); await settle();
+    expect(session.listening('fixture-c2')).toBe(false);
+    expect(session.snapshot.recordings).toMatchObject([{ receiver_uid: 'fixture-c2', tracks: [{ kind: 'iq' }] }]);
+  });
+
+  it.each(['listen', 'audio', 'iq'] as const)('re-enables a stopped saved frequency for %s', async action => {
+    mount(4);
+    const added = ui.add('add'); await settle(); await added;
+    const receiver = session.snapshot.receivers[3], config = structuredClone(receiver.confirmed); config.enabled = false;
+    const stopped = session.configure(receiver.receiver_uid, config); await settle(); await stopped;
+    const result = ui.add(action); await settle(); await result;
+    expect(session.snapshot.receivers).toHaveLength(4);
+    expect(session.snapshot.receivers[3].confirmed.enabled).toBe(true);
+    expect(session.listening(receiver.receiver_uid)).toBe(action === 'listen');
+  });
+
   it.each(['Preset', 'service replacement'])('invalidates an open replacement candidate on %s', async change => {
     mount(); await ui.add(); choose('fixture-c2');
     if (change === 'Preset') document.dispatchEvent(new Event('websa:preset-applied'));
