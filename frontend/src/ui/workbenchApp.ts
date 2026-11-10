@@ -240,15 +240,15 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
   const recordingRequests = new Set<string>();
   const recordingRequestKey = (uid: string, kind: TrackKind): string => `${session.snapshot.service_id ?? 'fixture'}:${uid}:${kind}`;
   const recordingPending = (uid: string, kind: TrackKind): boolean => recordingRequests.has(recordingRequestKey(uid, kind));
-  const stripRecording = (uid: string) => {
+  const stripRecording = (uid: string, requested?: TrackKind) => {
     const r = receiver(uid); if (!r) return;
-    const kinds: TrackKind[] = ['audio', 'results', 'iq'];
+    const kinds: TrackKind[] = requested ? [requested] : ['audio', 'results', 'iq'];
     const kind = kinds.find(kind => activeTask(uid, kind)) ?? kinds.find(kind => recordKind(kind)
       && (kind === 'iq' || (kind === 'audio' ? receiverHasAudio(session.snapshot, r.confirmed) : receiverHasResults(session.snapshot, r.confirmed))));
     return kind ? { kind, task: activeTask(uid, kind), pending: recordingPending(uid, kind) } : undefined;
   };
   const overview = createWorkbenchOverview(session, {
-    available, recording: stripRecording, readouts: native, current,
+    available, recording: stripRecording, record: (uid, kind, taskId) => record(uid, kind, taskId), readouts: native, current,
     selectedFrequency: selectedFrequency ?? (() => receiver(session.selected)?.confirmed.baseband.frequency_hz ?? null),
     detached: uid => [...panes.values()].some(p => p.kind === 'detail' && !p.overviewMode && !p.docked && !p.window.root.hidden && p.binding.type === 'fixed' && p.binding.receiver_uid === uid),
     clearChannels: doc => clearChannels.open(doc),
@@ -339,13 +339,15 @@ export function mountWorkbench(session: WorkbenchSession, host: HTMLElement, nat
       ${recording || recordingFailed ? `<small class="mc-row-task">${esc(taskSummary(row))}</small>` : ''}</article>`;
   };
   const paneDraftCount = (uid: string): boolean => [...panes.values()].some(p => p.drafts.has(uid));
-  const record = (uid: string, kind: TrackKind): void => {
-    const task = activeTask(uid, kind);
-    if (task?.state === 'finalizing' || recordingPending(uid, kind) || session.retiring(uid)) return;
+  const record = async (uid: string, kind: TrackKind, taskId?: string): Promise<boolean> => {
+    const task = taskId ? session.snapshot.recordings.find(task => task.task_id === taskId && task.receiver_uid === uid) : activeTask(uid, kind);
+    if (taskId && (!task || !['preparing', 'waiting', 'recording'].includes(task.state))) return false;
+    if (task?.state === 'finalizing' || recordingPending(uid, kind) || session.retiring(uid)) return false;
     const key = recordingRequestKey(uid, kind); recordingRequests.add(key); session.notify();
-    void session.send(task ? { type: 'record_stop', request_id: session.requestId(), task_id: task.task_id }
+    const reply = await session.send(task ? { type: 'record_stop', request_id: session.requestId(), task_id: task.task_id }
       : { type: 'record_start', request_id: session.requestId(), receiver_uid: uid, kinds: [kind], ...(kind === 'audio' ? { audio_format: selectedFormat() } : {}) })
       .finally(() => { recordingRequests.delete(key); if (!disposed) session.notify(); });
+    return !reply.fault;
   };
   const resultLabel = (c: ReceiverConfig): string => ['am', 'dsb', 'usb', 'lsb', 'nfm', 'wfm', 'pm', 'drm', 'drmplus'].includes(c.processors[0]?.mode) ? l('Signal info', '信号信息') : l('Results', '查看结果');
   const modeOptions = (c: ReceiverConfig): string => `<option value="" ${!c.processors.length ? 'selected' : ''}>${l('None · IQ only', '不解调 · 仅接收 IQ')}</option>` + (session.snapshot.capabilities.mode_descriptors ?? []).map(mode =>

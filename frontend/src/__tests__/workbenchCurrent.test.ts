@@ -36,6 +36,15 @@ afterEach(() => {
 });
 
 describe('Current and saved channels', () => {
+  it('records the saved representative once when Current has no overview card', async () => {
+    const uid = await add();
+    expect(cards().some(card => card.dataset.tuningSource === 'true')).toBe(false);
+    overview().querySelector<HTMLButtonElement>('[data-overview-record]')!.click();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.snapshot.recordings).toHaveLength(1);
+    expect(session.snapshot.recordings.some(task => task.receiver_uid === uid)).toBe(true);
+    expect(session.snapshot.recordings.some(task => task.receiver_uid === 'fixture-c1')).toBe(false);
+  });
   it('gives the saved card sole speaker control while Current is hidden, including after deletion', async () => {
     session.monitor('fixture-c1', { enabled: true });
     const uid = await add(); session.monitor(uid, { enabled: true });

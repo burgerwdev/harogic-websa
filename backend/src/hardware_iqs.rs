@@ -1948,6 +1948,27 @@ extern "C" int san90_next_v3(void* h, short* iq, unsigned cap, PacketInfo* info,
         compile_fake_iqs_source("shim", FAKE_IQS_SHIM)
     }
 
+    pub(crate) fn compile_fake_iqs_display_shim() -> String {
+        // Synthetic display values exercise the independent FFT publication
+        // lifecycle alongside IQ/audio recovery; no RF accuracy is claimed.
+        let display = r#"
+extern "C" int san90_display_fft_open_v1(void** out, uint32_t size, uint32_t* points, double* rbw) {
+    *out = new uint32_t(size); *points = size * 4 / 5; *rbw = 3.77 / size; return 0;
+}
+extern "C" int san90_display_fft_execute_v1(void* handle, const int16_t*, uint32_t n, float,
+    double center, double, double bandwidth, double* frequency, float* power, uint32_t count) {
+    if (!handle || n != *static_cast<uint32_t*>(handle) || count < 2) return -103;
+    for (uint32_t i = 0; i < count; ++i) {
+        frequency[i] = center - bandwidth / 2 + bandwidth * i / (count - 1);
+        power[i] = -26.9897f;
+    }
+    return 0;
+}
+extern "C" int san90_display_fft_close_v1(void* handle) { delete static_cast<uint32_t*>(handle); return 0; }
+"#;
+        compile_fake_iqs_source("display", &format!("{FAKE_IQS_SHIM}\n{display}"))
+    }
+
     pub(crate) fn compile_fake_iqs_narrow_bandwidth_shim() -> String {
         // Usable bandwidth is independent of sample clock in the shim ABI.
         // Keep the same requested decimation and stamp cadence, but report a

@@ -10,6 +10,7 @@ const paths: Record<string, string> = {
   muted: '<path d="m11 5-6 4H2v6h3l6 4zM16 9l6 6m0-6-6 6"/>',
   signal: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   record: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  'record-iq': '<rect x="2" y="4" width="20" height="16" rx="3"/><text x="12" y="15.5" text-anchor="middle" font-family="monospace" font-size="10" font-weight="600" fill="currentColor" stroke="none">IQ</text>',
   external: '<path d="M14 3h7v7m0-7-11 11m0-11H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/>',
   play: '<path d="m8 4 12 8-12 8z"/>',
   stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',

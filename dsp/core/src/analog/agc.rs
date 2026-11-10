@@ -48,6 +48,20 @@ impl AnalogAgc {
             Self::Listening(agc) => agc.process_into(input, out),
         }
     }
+
+    pub fn process_stereo_into(&mut self, mono: &[f32], side: &[f32], scale: f32, out: &mut Vec<f32>) {
+        match self {
+            Self::Reference(agc) => agc.process_into(mono, false, out),
+            Self::Listening(agc) => agc.process_linked_into(mono, Some((side, scale)), out),
+        }
+    }
+
+    pub fn envelope(&self) -> Option<&[f32]> {
+        match self {
+            Self::Reference(_) => None,
+            Self::Listening(agc) => Some(&agc.envelope),
+        }
+    }
 }
 
 pub(super) struct ListeningAgc {
@@ -65,6 +79,7 @@ pub(super) struct ListeningAgc {
     limit: f64,
     primed: bool,
     fade: usize,
+    envelope: Vec<f32>,
 }
 
 impl ListeningAgc {
@@ -94,6 +109,7 @@ impl ListeningAgc {
             limit: 1.0,
             primed: false,
             fade: 0,
+            envelope: Vec::new(),
         }
     }
 
@@ -106,22 +122,35 @@ impl ListeningAgc {
         self.limit = 1.0;
         self.primed = false;
         self.fade = 0;
+        self.envelope.clear();
         // Filters continue running with AGC off. Their remaining settling time is independent
         // of this switch; a full demodulator reset explicitly starts that interval again.
     }
 
     fn process_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
+        self.process_linked_into(input, None, out);
+    }
+
+    fn process_linked_into(&mut self, input: &[f32], side: Option<(&[f32], f32)>, out: &mut Vec<f32>) {
         out.clear();
         out.reserve(input.len());
-        for &value in input {
+        self.envelope.clear();
+        self.envelope.reserve(input.len());
+        for (index, &value) in input.iter().enumerate() {
             if self.settling > 0 {
                 self.settling -= 1;
                 out.push(0.0);
+                self.envelope.push(0.0);
                 continue;
             }
             let sample = value as f64;
+            let difference = side.map_or(0.0, |(values, scale)| values.get(index).copied().unwrap_or(0.0) as f64 * scale as f64);
+            // For L=M+S, R=M−S, mean channel power is M²+S² and
+            // max(|L|, |R|) is |M|+|S|. Link both channels to one envelope.
+            let power = sample * sample + difference * difference;
+            let peak = sample.abs() + difference.abs();
             if self.primed {
-                if sample.abs() * self.gain > 1.0 {
+                if peak * self.gain > 1.0 {
                     self.overloaded += 1;
                 }
                 let coefficient = if self.desired < self.gain {
@@ -129,13 +158,14 @@ impl ListeningAgc {
                 } else {
                     self.release
                 };
-                if sample != 0.0 {
+                if power != 0.0 {
                     self.gain += (self.desired - self.gain) * coefficient;
                 }
                 self.fade = (self.fade + 1).min(self.fade_samples);
                 let scaled = sample * self.gain * self.fade as f64 / self.fade_samples as f64;
-                let wanted = if scaled.abs() > Self::CEILING {
-                    Self::CEILING / scaled.abs()
+                let scaled_peak = peak * self.gain * self.fade as f64 / self.fade_samples as f64;
+                let wanted = if scaled_peak > Self::CEILING {
+                    Self::CEILING / scaled_peak
                 } else {
                     1.0
                 };
@@ -146,17 +176,19 @@ impl ListeningAgc {
                         (self.limit + (1.0 - self.limit) * self.limiter_release).min(wanted);
                 }
                 out.push((scaled * self.limit) as f32);
+                self.envelope.push((self.gain * self.fade as f64 / self.fade_samples as f64 * self.limit) as f32);
             } else {
                 // First measure a complete window of settled audio, then fade in. These zeros
                 // occupy their original sample positions; there is no added presentation delay.
                 out.push(0.0);
+                self.envelope.push(0.0);
             }
 
             // Exact silence cannot prime an enormous gain on the very last sample of a window.
-            if !self.primed && self.measured == 0 && sample == 0.0 {
+            if !self.primed && self.measured == 0 && power == 0.0 {
                 continue;
             }
-            self.energy += sample * sample;
+            self.energy += power;
             self.measured += 1;
             if self.measured == self.window {
                 if self.energy > 0.0 {

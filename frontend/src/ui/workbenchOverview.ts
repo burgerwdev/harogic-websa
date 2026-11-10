@@ -21,7 +21,8 @@ const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const textModes = new Set(['ft8', 'ft4', 'wspr', 'cw', 'rtty', 'rtty-reverse', 'navtex', 'dsc']);
 interface Options {
   available(command: string): boolean;
-  recording(uid: string): { kind: TrackKind; task?: RecordingTask; pending: boolean } | undefined;
+  recording(uid: string, kind: TrackKind): { kind: TrackKind; task?: RecordingTask; pending: boolean } | undefined;
+  record?(uid: string, kind: TrackKind, taskId?: string): Promise<boolean>;
   readouts?: ChannelStripReadouts;
   selectedFrequency?(): number | null;
   current?: WorkbenchCurrent;
@@ -56,6 +57,7 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
   const events = new AbortController();
   let volume: string | undefined, stopGesture: (() => void) | undefined, lastPaint = 0, suppressClickUntil = 0, disposed = false;
   let rename: { uid: string; service: string; lifecycle: number; value: string; pending: boolean } | undefined;
+  let recordingAll = false;
   const recording = (uid: string): boolean => session.snapshot.recordings.some(task => task.receiver_uid === uid && ['preparing', 'waiting', 'recording', 'finalizing'].includes(task.state));
   const priority = (uid: string): number => Number(session.listening(uid)) * 4 + Number(recording(uid)) * 2 + Number(session.snapshot.receivers.find(r => r.receiver_uid === uid)?.state === 'running');
   const isCurrent = (uid: string): boolean => !!options.current && options.current.receiverUid() === uid;
@@ -69,8 +71,35 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     return all.filter(r => isCurrent(r.receiver_uid) ? channels.showCurrent : !options.detached(r.receiver_uid)
       && (!state.bandOnly || receiverInCapture(session.snapshot, r.confirmed) !== false));
   };
+  const batchChannels = (kind?: TrackKind): ReceiverState[] => {
+    const all = ordered(), channels = workbenchChannels(all, options.selectedFrequency?.(), options.current?.receiverUid());
+    return all.filter(r => !isCurrent(r.receiver_uid) || channels.showCurrent || kind && !!options.recording(r.receiver_uid, kind)?.task);
+  };
   const glyph = (name: string) => unsafeHTML(icon(name));
+  const monitorChannels = (): ReceiverState[] => batchChannels().filter(r => (session.snapshot.transport === 'fixture' || session.snapshot.capabilities.monitor_mixing) && receiverHasAudio(session.snapshot, r.confirmed)
+    && r.state === 'running' && !r.fault && !session.retiring(r.receiver_uid));
   const cardButton = (action: string, symbol: string, label: string, disabled = false, pressed?: boolean, className = '') => html`<button type="button" data-action=${action} aria-label=${label} title=${label} ?disabled=${disabled} aria-pressed=${pressed === undefined ? nothing : String(pressed)} class=${className}>${glyph(symbol)}</button>`;
+  const recordingButton = (r: ReceiverState, kind: 'audio' | 'iq') => {
+    const record = options.recording(r.receiver_uid, kind), task = record?.task;
+    if (!record || !options.available('record_start')) return nothing;
+    const label = kind === 'iq' ? task ? l('Stop IQ recording', '停止 IQ 录制') : l('Record IQ', '录制 IQ')
+      : task ? l('Stop audio recording', '停止音频录制') : l('Record audio', '录制音频');
+    return cardButton(`rec-${kind}`, kind === 'iq' ? 'record-iq' : 'record', label,
+      record.pending || session.retiring(r.receiver_uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running'), !!task, task ? 'mc-recording-on' : '');
+  };
+  const batchRecording = (kind: 'audio' | 'iq') => {
+    const rows = batchChannels(kind), uids = new Set(rows.map(r => r.receiver_uid));
+    const tasks = session.snapshot.recordings.filter(task => uids.has(task.receiver_uid) && task.tracks.some(track => track.kind === kind)
+      && ['preparing', 'waiting', 'recording', 'finalizing'].includes(task.state));
+    const active = tasks.length > 0;
+    const available = active
+      ? tasks.some(task => task.state !== 'finalizing' && !session.retiring(task.receiver_uid) && !options.recording(task.receiver_uid, kind)?.pending)
+      : rows.some(r => { const record = options.recording(r.receiver_uid, kind); return record && !record.pending && !session.retiring(r.receiver_uid)
+        && r.state === 'running' && session.snapshot.recording_resources?.available_tasks !== 0; });
+    const label = kind === 'iq' ? active ? l('Stop all IQ recordings', '停止全部 IQ 录制') : l('Record IQ on all channels', '录制全部信道 IQ')
+      : active ? l('Stop all audio recordings', '停止全部音频录制') : l('Record audio on all channels', '录制全部信道音频');
+    return { active, available, label };
+  };
   const visible = (): boolean => root.isConnected && !root.closest<HTMLElement>('.mc-window')?.hidden && !root.closest<HTMLElement>('.mc-body')?.hidden && !root.ownerDocument.hidden;
   const releaseProbe = (uid: string, view: CardView): void => { if (view.probe) options.readouts?.waveform?.(uid, null); view.probe = false; };
   const disposeView = (uid: string, view: CardView): void => { cardVisibility?.unobserve(view.root); releaseProbe(uid, view); view.ticker?.dispose(); views.delete(uid); dates.delete(uid); };
@@ -99,7 +128,6 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     const route = session.route(uid), pan = route.pan, panLabel = pan < 0 ? 'L' : pan > 0 ? 'R' : 'L/R';
     const panTitle = l(`Audio output: ${panLabel}; click to cycle L/R → L → R`, `声像：${panLabel}；点击循环切换 L/R → L → R`);
     const monitor = audio && (session.snapshot.transport === 'fixture' || !!session.snapshot.capabilities.monitor_mixing);
-    const record = options.recording(uid), task = record?.task;
     const availableAudio = r.state === 'running' && !r.fault;
     const created = receiverCreatedAt(r), language = getLang();
     let date = dates.get(uid);
@@ -121,7 +149,7 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
       <div class="mc-card-visual" data-card-visual><div data-card-message></div><canvas data-card-wave width="256" height="32" hidden aria-label=${l('Audio waveform before monitor volume; normalized display', '监听音量之前的声音波形；幅度归一化显示')}></canvas><span data-card-placeholder></span></div>
       <div class="mc-card-meter" data-card-meter role="meter" aria-label=${l('Channel level', '信道电平')} aria-valuemin="-60" aria-valuemax="0"><span data-card-source>AF</span><div class="mc-card-meter-track"><i class="mc-strip-level-fill"></i><i class="mc-strip-level-peak"></i></div><small>— dBFS</small></div>
       <div class="mc-card-actions">${monitor ? cardButton('listen', 'headphones', session.listening(uid) ? l('Stop listening', '停止监听') : l('Listen', '监听'), !availableAudio, session.listening(uid)) : nothing}
-      ${record && options.available('record_start') ? cardButton(`rec-${record.kind}`, 'record', task ? l('Stop recording', '停止录制') : l('Record channel', '录制信道'), record.pending || session.retiring(uid) || task?.state === 'finalizing' || !task && (session.snapshot.recording_resources?.available_tasks === 0 || r.state !== 'running'), !!task, task ? 'mc-recording-on' : '') : nothing}
+      ${recordingButton(r, 'audio')}${recordingButton(r, 'iq')}
       ${monitor ? html`<div class="mc-card-volume"><button type="button" data-card-volume=${uid} aria-label=${l('Channel volume', '信道音量')} title=${l('Channel volume', '信道音量')} aria-expanded=${volume === uid}>${glyph(route.gain ? 'volume' : 'muted')}</button><div class="mc-card-volume-panel" ?hidden=${volume !== uid}><label>${l('Volume', '音量')}<input type="range" min="0" max="1" step="0.01" .value=${live(String(route.gain))} data-card-gain=${uid} aria-label=${l('Channel volume', '信道音量')}></label><output>${Math.round(route.gain * 100)}%</output></div></div>` : nothing}<span class="mc-card-spacer"></span>
       ${monitor ? html`<button type="button" class="mc-card-pan" data-card-pan=${uid} aria-label=${panTitle} title=${panTitle} ?disabled=${session.retiring(uid)}>${panLabel}</button>` : nothing}
       ${temporary ? cardButton('save-current', 'plus', l('Save current channel', '保存当前信道')) : options.available('retire') ? cardButton('retire', 'trash', l('Delete channel', '删除信道'), busy, undefined, 'mc-card-delete') : nothing}${cardButton('detail', 'external', temporary ? l('Current settings', 'Current 设置') : l('Take channel out of overview', '从概览取出信道'), false, undefined, 'mc-card-detach')}</div></article>`;
@@ -137,12 +165,17 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     if (channels.showCurrent && state.layout === 'free') state.positions[channels.current!.receiver_uid] = { x: 0, y: 0 };
     positionNewCards(rows);
     const detached = channels.saved.filter(r => options.detached(r.receiver_uid)).length;
+    const monitors = monitorChannels(), listening = monitors.some(r => session.listening(r.receiver_uid));
+    const audioRecord = batchRecording('audio'), iqRecord = batchRecording('iq');
+    const listenLabel = listening ? l('Stop listening to all channels', '停止全部监听') : l('Listen to all channels', '监听全部信道');
     patchControls(`<select data-overview-sort aria-label="${l('Sort channels', '信道排序')}">${([['created', l('Created', '创建时间')], ['frequency', l('Frequency', '频率')], ['name', l('Name', '信道名称')], ['type', l('Type', '信道类型')], ['auto', l('Automatic', '自动排序')], ['manual', l('Manual', '手动排列')]] as const).map(([value, label]) => `<option value="${value}" ${state.sort === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
       <button type="button" data-overview-direction ${['manual', 'auto'].includes(state.sort) ? 'disabled' : ''} title="${state.descending ? l('Sort ascending', '改为升序') : l('Sort descending', '改为降序')}" aria-label="${state.descending ? l('Sort ascending', '改为升序') : l('Sort descending', '改为降序')}">${icon(state.descending ? 'descending' : 'ascending')}</button>
       <select data-overview-layout aria-label="${l('Card layout', '卡片布局')}"><option value="auto" ${state.layout === 'auto' ? 'selected' : ''}>${l('Auto grid', '自动网格')}</option>${Array.from({ length: 8 }, (_, i) => `<option value="${i + 1}" ${state.layout === i + 1 ? 'selected' : ''}>${i + 1} ${l(i ? 'columns' : 'column', '列')}</option>`).join('')}<option value="free" ${state.layout === 'free' ? 'selected' : ''}>${l('Free layout', '自由摆放')}</option></select>
       <select data-overview-band aria-label="${l('Channel coverage', '信道频段筛选')}"><option value="all" ${state.bandOnly ? '' : 'selected'}>${l('All bands', '全部频段')}</option><option value="in-band" ${state.bandOnly ? 'selected' : ''}>${l('Current band only', '仅当前频段')}</option></select>
-      <button type="button" data-overview-mute aria-pressed="${session.masterMuted}" title="${session.masterMuted ? l('Unmute all channels', '取消全部信道静音') : l('Mute all channels', '全部信道静音')}" aria-label="${l('Mute all channels', '全部信道静音')}">${icon(session.masterMuted ? 'muted' : 'volume')}<span>${l('Mute all', '全部静音')}</span></button>
-      <button type="button" data-overview-fit title="${l('Fit window to cards', '按卡片布局适配窗口')}" aria-label="${l('Fit window to cards', '按卡片布局适配窗口')}">${icon('fit')}</button><button type="button" data-overview-collect ${detached ? '' : 'disabled'} title="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}" aria-label="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}">${icon('collect')}</button>${options.clearChannels ? `<button type="button" data-overview-clear class="mc-overview-clear" ${!all.length || session.clearingChannels || !options.available('retire') ? 'disabled' : ''} title="${l('Delete saved channels and stop Current; confirmation required', '删除已保存信道并停止 Current，操作前需确认')}">${icon('trash')}<span>${l('Clear all channels', '清除所有信道')}</span></button>` : ''}`);
+      <button type="button" data-overview-listen aria-pressed="${listening && !session.masterMuted}" ${!monitors.length || session.clearingChannels ? 'disabled' : ''} title="${listenLabel}" aria-label="${listenLabel}">${icon('headphones')}</button>
+      ${options.record && options.available('record_start') ? `<button type="button" data-overview-record aria-pressed="${audioRecord.active}" class="${audioRecord.active ? 'mc-recording-on' : ''}" ${recordingAll || !audioRecord.available || session.clearingChannels ? 'disabled' : ''} title="${audioRecord.label}" aria-label="${audioRecord.label}">${icon('record')}</button><button type="button" data-overview-record-iq aria-pressed="${iqRecord.active}" class="${iqRecord.active ? 'mc-recording-on' : ''}" ${recordingAll || !iqRecord.available || session.clearingChannels ? 'disabled' : ''} title="${iqRecord.label}" aria-label="${iqRecord.label}">${icon('record-iq')}</button>` : ''}
+      ${options.clearChannels ? `<button type="button" data-overview-clear ${!all.length || session.clearingChannels || !options.available('retire') ? 'disabled' : ''} title="${l('Delete all channels; confirmation required', '删除全部信道，操作前需确认')}" aria-label="${l('Delete all channels', '删除全部信道')}">${icon('trash')}</button>` : ''}
+      <button type="button" data-overview-fit title="${l('Fit window to cards', '按卡片布局适配窗口')}" aria-label="${l('Fit window to cards', '按卡片布局适配窗口')}">${icon('fit')}</button><button type="button" data-overview-collect ${detached ? '' : 'disabled'} title="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}" aria-label="${l('Return all channel windows to overview', '将全部独立信道窗口放回概览')}">${icon('collect')}</button>`);
     // Lit compiles the static template once. UID keys retain each card and its
     // independently owned canvas/ticker while bindings update only changed fields.
     renderTemplate(html`<div class="mc-card-summary"><span data-card-capacity title=${l('Defined channels / service capacity', '已建信道数／服务容量')}><i class="mc-state-dot" data-state="running"></i>${channels.current ? `${channels.saved.length} ${l('saved', '已保存')} · ` : ''}${all.length} / ${session.snapshot.capabilities.max_channels} ${l('channels', '信道')}</span><span>${glyph('headphones')}${all.filter(r => session.listening(r.receiver_uid) && receiverHasAudio(session.snapshot, r.confirmed)).length}</span><span class="mc-card-rec-count">${glyph('record')}${all.filter(r => recording(r.receiver_uid)).length}</span><span class="mc-card-summary-spacer"></span>${state.layout === 'free' ? html`<label><input type="checkbox" data-overview-snap .checked=${state.snap}>${l('Snap to grid', '网格吸附')}</label>` : html`<small>${l('Drag to arrange', '拖动卡片排列')}</small>`}</div>
@@ -289,9 +322,15 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     const target = event.target as HTMLElement;
     const name = target.closest<HTMLElement>('[data-card-rename]');
     if (name) { event.preventDefault(); event.stopPropagation(); beginRename(name.dataset.cardRename!); return; }
-    if (target.closest('[data-overview-mute]')) {
-      event.preventDefault(); event.stopPropagation(); session.masterMuted = !session.masterMuted; session.notify(); return;
+    if (target.closest('[data-overview-listen]')) {
+      event.preventDefault(); event.stopPropagation();
+      const rows = monitorChannels(), enabled = session.masterMuted || !rows.some(r => session.listening(r.receiver_uid));
+      if (enabled) session.masterMuted = false;
+      for (const r of rows) session.monitor(r.receiver_uid, { enabled, ...(enabled ? { solo: false } : {}) });
+      return;
     }
+    if (target.closest('[data-overview-record]')) { event.preventDefault(); event.stopPropagation(); void recordAll('audio'); return; }
+    if (target.closest('[data-overview-record-iq]')) { event.preventDefault(); event.stopPropagation(); void recordAll('iq'); return; }
     const pan = target.closest<HTMLButtonElement>('[data-card-pan]');
     if (pan) {
       event.preventDefault(); event.stopPropagation(); const uid = pan.dataset.cardPan!;
@@ -305,6 +344,32 @@ export function createWorkbenchOverview(session: WorkbenchSession, options: Opti
     if (target.closest('[data-overview-direction]')) { state.descending = !state.descending; sortFree(); update(); }
     const button = target.closest<HTMLElement>('[data-card-volume]');
     if (button) { event.stopPropagation(); volume = volume === button.dataset.cardVolume ? undefined : button.dataset.cardVolume; update(); if (volume) root.querySelector<HTMLInputElement>('[data-card-volume-panel], .mc-card-volume-panel:not([hidden]) input')?.focus(); }
+  }
+  async function recordAll(kind: 'audio' | 'iq'): Promise<void> {
+    if (recordingAll || !options.record || session.clearingChannels) return;
+    const lifecycle = session.lifecycleVersion, service = session.snapshot.service_id;
+    const rows = batchChannels(kind), uids = new Set(rows.map(r => r.receiver_uid));
+    const tasks = session.snapshot.recordings.filter(task => uids.has(task.receiver_uid) && task.tracks.some(track => track.kind === kind) && ['preparing', 'waiting', 'recording', 'finalizing'].includes(task.state));
+    const stopping = tasks.length > 0;
+    const candidates = stopping ? tasks.map(task => ({ uid: task.receiver_uid, taskId: task.task_id }))
+      : rows.flatMap(r => options.recording(r.receiver_uid, kind) ? [{ uid: r.receiver_uid, taskId: undefined }] : []);
+    recordingAll = true; update();
+    try {
+      for (const { uid, taskId } of candidates) {
+        if (disposed || session.lifecycleVersion !== lifecycle || session.snapshot.service_id !== service || session.clearingChannels) break;
+        if (session.retiring(uid)) continue;
+        const current = options.recording(uid, kind), row = session.snapshot.receivers.find(r => r.receiver_uid === uid);
+        if (!row || !current || current.pending) continue;
+        if (stopping) {
+          const task = session.snapshot.recordings.find(task => task.task_id === taskId);
+          if (!task || !['preparing', 'waiting', 'recording'].includes(task.state)) continue;
+        } else {
+          if (current.task || current.kind !== kind || row.state !== 'running') continue;
+          if (session.snapshot.recording_resources?.available_tasks === 0) break;
+        }
+        if (!await options.record(uid, kind, taskId)) break;
+      }
+    } finally { recordingAll = false; update(); }
   }
   function sortFree(): void {
     if (state.layout !== 'free' || state.sort === 'manual') return;

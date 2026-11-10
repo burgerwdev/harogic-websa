@@ -37,6 +37,39 @@ fn rms(x: &[f32]) -> f64 {
 }
 
 #[test]
+fn native_wfm_agc_measures_both_stereo_channels_without_clipping_or_pumping() {
+    let fs = 325_520.833_333_333_3;
+    let mut receiver = AnalogDemod::new_prechannelized(
+        spec_for("wfm").unwrap(), DemodConfig::new(fs, 180_000.0), 48_000.0,
+    );
+    let mut phase = 0.0;
+    let mut pcm = Vec::new();
+    let mut rendered = Vec::new();
+    // A stereo programme can have very little L+R and substantial L−R.
+    // Measuring only mono asks the AGC to amplify the difference into clipping.
+    for start in (0..(fs * 1.2) as usize).step_by(4096) {
+        let input: Vec<f32> = (start..(start + 4096).min((fs * 1.2) as usize)).flat_map(|k| {
+            let t = k as f64 / fs;
+            let mono = 0.001 * (TAU * 1_000.0 * t).sin();
+            let side = 0.35 * (TAU * 2_000.0 * t).sin();
+            let composite = mono + side * (TAU * 38_000.0 * t).cos() + 0.09 * (TAU * 19_000.0 * t).sin();
+            phase += TAU * 75_000.0 * composite / fs;
+            [(phase.cos() * 0.1) as f32, (phase.sin() * 0.1) as f32]
+        }).collect();
+        receiver.process_into(&input, &mut pcm);
+        let side = receiver.take_side();
+        if start as f64 > fs * 0.6 {
+            assert!(receiver.stereo_detected());
+            for (&m, &s) in pcm.iter().zip(&side) { rendered.extend([m + s, m - s]); }
+        }
+    }
+    let peak = rendered.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+    let level = rms(&rendered);
+    assert!(peak <= 0.951, "stereo peak exceeds the linked AGC ceiling: {peak}");
+    assert!((0.085..0.115).contains(&level), "stereo RMS misses the listening target: {level}");
+}
+
+#[test]
 fn native_ssb_cold_start_and_reset_do_not_amplify_fir_startup() {
     let input = iq(6782, 0);
     let mut receiver = demod(48000.0);

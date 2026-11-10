@@ -15,6 +15,7 @@ when no SDK adapter is specified. Launcher configuration is in [Getting started]
 | Device open fails or returns `-1` | Close SAStudio4 and other SDK clients; the device requires exclusive ownership. |
 | Service is not running | Read the log path reported by the launcher; check its binary, frontend and SDK prerequisites before running `./run.sh` again. |
 | USB/SDK capture is stalled | Inspect the original error and log; stop the instance before reconnecting USB and starting again. A vendor call that never returns can prevent safe reopen and may require a host restart. |
+| SDR stops after a brief clock/ADC warning (`-14` through `-19`) | Continuous receivers retry shared capture up to three times with fresh stream identities; strict receivers remain stopped. Inspect the retained interruption if recovery does not complete. |
 | A receiver failed but spectra continue | Inspect that receiver's diagnostic and explicitly retry its mode. `receiver_retiring` means old workers/subscriptions have not finished; retry later. |
 | Browser opens but audio is silent | Enable browser audio, then check receiver state, listen/mute/solo, local volume, squelch and decoder lock. DRM also needs a supported audio service. |
 | Configuration is rejected in harmonic/phase-noise mode | Stop that measurement before changing SWP-owned frequency, bandwidth, gain or clock settings. |

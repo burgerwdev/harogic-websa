@@ -27,8 +27,7 @@
 .mc-overview-controls button { display:inline-flex; align-items:center; justify-content:center; width:27px; height:27px; padding:4px; }
 .mc-overview-controls button:disabled { opacity:.35; cursor:default; }
 .mc-overview-controls button:hover:not(:disabled) { background:var(--mc-card-fill); color:var(--mc-card-text); }
-.mc-overview-controls :is([data-overview-mute], [data-overview-clear]) { width:auto; gap:5px; padding:4px 7px; white-space:nowrap; font-size:10px; }
-.mc-overview-controls [data-overview-mute][aria-pressed=true] { background:var(--mc-card-fill); color:var(--sa-warning); border-color:var(--mc-card-active); }
+.mc-overview-controls [data-overview-listen][aria-pressed=true] { background:var(--mc-card-fill); color:var(--mc-card-active); border-color:var(--mc-card-active); }
 .mc-window .mc-body.mc-cards-body { display:flex; flex-direction:column; padding:0; overflow:hidden; }
 .mc-card-overview { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; color:var(--mc-card-text); }
 .mc-card-summary { display:flex; align-items:center; gap:14px; padding:6px 12px; min-height:32px; flex:none; border-bottom:1px solid var(--inner-border); color:var(--mc-card-label); font-size:10px; }
@@ -85,16 +84,16 @@
 .mc-card-meter small { min-width:41px; font-size:8px; text-align:right; font-variant-numeric:tabular-nums; }
 .mc-card-meter[data-available=false] .mc-strip-level-peak { display:none; }
 .mc-card-meter[data-clipped=true] small { color:var(--sa-warning); }
-.mc-card-actions { display:flex; align-items:center; gap:3px; height:26px; flex:none; padding-top:3px; border-top:1px solid var(--mc-card-border); }
-.mc-body .mc-card-actions button { width:25px; min-height:23px; height:23px; padding:3px; border-color:transparent; background:transparent; color:var(--mc-card-label); }
+.mc-card-actions { display:flex; align-items:center; gap:2px; height:26px; flex:none; padding-top:3px; border-top:1px solid var(--mc-card-border); }
+.mc-body .mc-card-actions button { width:24px; min-height:23px; height:23px; padding:3px; border-color:transparent; background:transparent; color:var(--mc-card-label); }
 .mc-body .mc-card-actions button:hover { border-color:var(--mc-card-border); background:var(--mc-card-fill); color:var(--mc-card-text); }
 .mc-card-actions .mc-icon { width:14px; height:14px; }
 .mc-body .mc-card-actions button[aria-pressed=true] { background:var(--mc-card-fill); color:var(--mc-card-text); border-color:var(--mc-card-active); }
 .mc-body .mc-card-actions button.mc-recording-on { color:var(--sa-warning); border-color:color-mix(in srgb,var(--sa-warning) 45%,var(--mc-card-border)); background:color-mix(in srgb,var(--sa-warning) 10%,var(--mc-card-bg)); }
 .mc-card-spacer { flex:1; }
-.mc-body .mc-card-actions .mc-card-pan { width:34px; flex:none; font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
+.mc-body .mc-card-actions .mc-card-pan { width:30px; flex:none; font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
 .mc-body .mc-card-actions .mc-card-delete:hover { color:var(--sa-warning); }
-.mc-body .mc-card-actions .mc-card-detach { margin-left:3px; padding-left:8px; width:30px; border-left-color:var(--mc-card-border); border-radius:0; }
+.mc-body .mc-card-actions .mc-card-detach { margin-left:2px; padding-left:8px; width:28px; border-left-color:var(--mc-card-border); border-radius:0; }
 .mc-card-volume { position:relative; display:flex; }
 .mc-card-volume-panel { position:absolute; bottom:33px; left:-45px; z-index:10; display:flex; align-items:center; gap:9px; width:176px; padding:11px; border:1px solid var(--mc-card-active); background:var(--mc-card-bg); border-radius:4px; box-shadow:0 5px 20px #0003; cursor:default; touch-action:auto; }
 .mc-card-volume-panel>label { flex:1; min-width:0; color:var(--mc-card-label); font-size:10px; }

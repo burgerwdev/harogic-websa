@@ -555,9 +555,18 @@ impl AnalogDemodulator for AnalogDemod {
         for sample in &mut rs {
             *sample *= pcm_scale;
         }
+        // Decode the difference first so native listening can measure actual
+        // stereo power and peaks, including programmes whose L+R nearly cancels.
+        if let Some(stereo) = self.stereo.as_mut() {
+            stereo.process(&det);
+        }
         let mut levelled = core::mem::take(&mut self.levelled);
         if self.agc_enabled {
-            self.agc.process_into(&rs, &mut levelled);
+            if let Some(stereo) = self.stereo.as_ref().filter(|s| s.stereo()) {
+                self.agc.process_stereo_into(&rs, stereo.pending_side(), pcm_scale, &mut levelled);
+            } else {
+                self.agc.process_into(&rs, &mut levelled);
+            }
         } else {
             // AGC off: unity gain. The block still lands in `levelled` so the stereo side
             // chain's gain trace (which reads these two buffers) keeps one consistent scale.
@@ -572,8 +581,11 @@ impl AnalogDemodulator for AnalogDemod {
         // turns them back into amplitude components. The side takes the same per-sample AGC gain
         // and limiter envelope as mono, so the L/R matrix sees both at one scale on speech peaks.
         if let Some(stereo) = self.stereo.as_mut() {
-            stereo.set_output_gain_trace(&rs, &levelled, pcm_scale);
-            stereo.process(&det);
+            if let Some(envelope) = self.agc.envelope().filter(|_| self.agc_enabled) {
+                stereo.set_output_envelope(envelope, pcm_scale);
+            } else {
+                stereo.set_output_gain_trace(&rs, &levelled, pcm_scale);
+            }
         }
 
         self.z = filtered;
