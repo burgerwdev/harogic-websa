@@ -13,10 +13,16 @@ export function resultExport(entries: readonly DecoderLogEntry[], identity: stri
     const safe = typeof value === 'string' ? text.replace(/^[=+@\-\t\r]/, c => `'${c}`) : text;
     return `"${safe.replace(/"/g, '""')}"`;
   };
-  const rows: unknown[][] = [['identity', 'mode', 'source', 'received_at_utc', 'slot_utc', 'snr_db', 'dt_s', 'audio_hz', 'message']];
+  const rows: unknown[][] = [['identity', 'mode', 'source', 'received_at_utc', 'slot_utc', 'snr_db', 'dt_s', 'audio_hz', 'message',
+    'snr_value_kind', 'snr_quality', 'snr_reason', 'snr_quality_reasons', 'snr_reference_bandwidth_hz', 'snr_measurement_json']];
   for (const entry of entries) if (entry.kind === 'table' && record(entry.data) && Array.isArray(entry.data.decodes)) {
-    for (const row of entry.data.decodes) if (record(row)) rows.push([identity, entry.mode, entry.source, new Date(entry.at).toISOString(),
-      row.slot_utc, row.snr_db, row.dt_s, row.audio_hz, row.msg ?? row.message ?? row.text]);
+    for (const row of entry.data.decodes) if (record(row)) {
+      const m = record(row.measurement) ? row.measurement : {};
+      rows.push([identity, entry.mode, entry.source, new Date(entry.at).toISOString(),
+      row.slot_utc, record(row.measurement) ? row.measurement.value : row.snr_db, row.dt_s, row.audio_hz, row.msg ?? row.message ?? row.text,
+      m.value_kind, m.quality, m.reason, Array.isArray(m.quality_reasons) ? m.quality_reasons.join(';') : '',
+      m.reference_bandwidth_hz, row.measurement ? JSON.stringify(row.measurement) : '']);
+    }
   }
   return '\ufeff' + rows.map(row => row.map(csv).join(',')).join('\r\n') + '\r\n';
 }

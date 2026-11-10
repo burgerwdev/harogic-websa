@@ -80,7 +80,7 @@ function table(host: HTMLElement, rows: unknown[], label: string, utc: boolean):
     if (!rows.length) { patchWorkbench(grid, ''); navigation.hidden = true; return; }
     offset = Math.min(offset, Math.max(0, Math.ceil(rows.length / 25) - 1) * 25);
     const visible = rows.slice(offset, offset + 25);
-    const columns = [...new Set(visible.flatMap(row => record(row) ? Object.keys(row).filter(key => !Object.prototype.hasOwnProperty.call(provenanceFields, key) && !/^virtual/i.test(key)) : ['value']))];
+    const columns = [...new Set(visible.flatMap(row => record(row) ? Object.keys(row).filter(key => !(label === 'decodes' && key === 'measurement') && !Object.prototype.hasOwnProperty.call(provenanceFields, key) && !/^virtual/i.test(key)) : ['value']))];
     const preferred = preferredColumns[label] ?? [];
     columns.sort((a, b) => {
       const left = preferred.indexOf(a), right = preferred.indexOf(b);
@@ -106,6 +106,11 @@ function table(host: HTMLElement, rows: unknown[], label: string, utc: boolean):
           const field = record(value) ? value[key] : value;
           cell.textContent = key === 'slot_utc' && typeof field === 'number' && Number.isFinite(field)
             ? clock(field * 1000, utc) : readable(field);
+          if (label === 'decodes' && key === 'snr_db' && record(value) && record(value.measurement)) {
+            const snr = ft8SnrPresentation(field, value.measurement as unknown as Ft8SnrMeasurement);
+            cell.textContent = snr.text; cell.title = snr.title;
+            if (snr.degraded) cell.classList.add('ft8-snr-degraded');
+          }
           if (label === 'pvt' && record(value)) {
             const valid = value.valid === true && value.stale !== true;
             if (key === 'valid') cell.textContent = t(valid ? 'decoder_position_valid' : 'decoder_position_invalid');
@@ -476,3 +481,4 @@ export function renderDecoderEntries(host: HTMLElement, input: readonly DecoderL
   }
   cache.presentation = presentation;
 }
+import { ft8SnrPresentation, type Ft8SnrMeasurement } from '../sdr/ft8Snr';

@@ -1,17 +1,9 @@
-//! The OSD fallback, measured below the plain-LDPC cliff.
+//! Actual weak-signal recovery with BP/OSD at -20 and -22 dB in-band SNR.
+//! Four fixed frequency offsets exercise independent scenarios. Acceptance
+//! requires the transmitted message, the specified recovery counts and zero
+//! unrelated decodes. The decoder receives no prior payload bits.
 //!
-//! The committed `ft8_snr_sweep` baseline records what the pure max-log LDPC path did at low SNR:
-//! 0/4 unique trials at -20 and -22 dB in-band. The scenarios here run the same harness -- same fixture,
-//! same deterministic noise, same offsets -- below that cliff, with the ordered-statistics
-//! fallback enabled behind the LDPC. The contract:
-//!
-//! * the fallback turns a real share of those trials into decodes (the numbers below are floors,
-//!   measured with the fallback in place; the pre-fallback measurement is recorded alongside),
-//! * no false positives: every decode below the cliff that is not the transmitted text counts,
-//!   and the count must stay at zero. The fallback CRC-checks only its single best word, so a
-//!   wrong codeword needs a 14-bit CRC coincidence on top of winning the distance race.
-//!
-//!     cd dsp/core && cargo test --release --test ft8_osd -- --nocapture
+//! cargo test --release --test ft8_osd -- --nocapture
 use websa_dsp::digital::ft8::Ft8Decoder;
 
 mod common;
@@ -25,12 +17,8 @@ const TRIALS_PER_LEVEL: usize = 4;
 const INSERT_S: f64 = 0.64;
 const OFFSETS_HZ: [f64; 4] = [0.0, -3.125, 4.5, -11.25];
 
-/// The assertion floors, one trial of slack under what the bench measured (2026-09-29) for
-/// cross-platform float drift. The original eight trials duplicated four identical scenarios:
-/// measured counts [2,0], floors [1,0]. Removing duplicates gives measured [1,0] and
-/// ceil(old_floor/2)=[1,0], exactly the same acceptance condition. The pure-LDPC counts
-/// were zero at both levels; these historical numbers do not isolate the current OSD path.
-const FLOOR_OSD: [usize; 2] = [1, 0];
+/// Minimum successful recoveries among four trials, ordered by LEVELS_DB.
+const FLOOR_OSD: [usize; 2] = [4, 1];
 
 fn decode_texts(iq: &[f32]) -> Vec<String> {
     let mut decoder = Ft8Decoder::new(RATE);
@@ -82,5 +70,4 @@ fn the_osd_fallback_decodes_below_the_ldpc_cliff() {
         false_positives, 0,
         "the OSD fallback must not add false decodes below the cliff"
     );
-    // The nonzero -20 dB floor above already requires an improvement over the historical zero.
 }

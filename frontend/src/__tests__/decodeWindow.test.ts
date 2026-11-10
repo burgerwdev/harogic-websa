@@ -1,5 +1,5 @@
 /**
- * The decode window: gated on the demodulator, fed by the FT8 and CW logs, and its rows tune.
+ * The decode window: gated on the demodulator, fed by the FT8 and CW logs, and its retained message rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initDecodeWindow, ingestDecodeEvents, decodeChannel, decodeWindowOpen, decodeWindowMode, refreshDecodeWindow, setDecodeActive, setDecodeChannel, setDecodeChannelMode, setDecodeError, setDecodeTiming, setDecodeWindowAvailable, toggleDecodeWindow } from '../ui/decodeWindow';
@@ -151,7 +151,7 @@ describe('decoder channel selection', () => {
 		}
 		shell();
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 	});
 
 	afterEach(() => {
@@ -257,9 +257,9 @@ describe('decoder channel selection', () => {
 		setFt8DecoderState({ bufferedSamples: 24000, bufferedSeconds: 0.5, attempts: 3, count: 7, level: 0.2, epoch: 4 }, 1);
 		setFt8DecoderState({ bufferedSamples: 48000, bufferedSeconds: 1, attempts: 5, count: 9, level: 0.4, epoch: 6 }, 2);
 		toggleDecodeWindow();
-		expect(document.getElementById('decode-ft8-state')?.textContent).toContain('Buffer 0.5 s · Attempts 3 · Decodes 7 · Level 20%');
+		expect(document.getElementById('decode-ft8-state')?.textContent).toBe('Buffer 0.5 s · Attempts 3 · Decodes 7');
 		setDecodeChannel(2);
-		expect(document.getElementById('decode-ft8-state')?.textContent).toContain('Buffer 1.0 s · Attempts 5 · Decodes 9 · Level 40%');
+		expect(document.getElementById('decode-ft8-state')?.textContent).toBe('Buffer 1.0 s · Attempts 5 · Decodes 9');
 		setDecodeChannel(1);
 		setFt8DecoderState(null, 1);
 		expect(document.getElementById('decode-ft8-state')?.style.display).toBe('none');
@@ -319,7 +319,7 @@ describe('the FT8 decode window', () => {
 		clearDrm();
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
 		localStorage.clear();
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 	});
 
 	it('is disabled until FT8 is the demodulator, and hides when it stops being', () => {
@@ -480,14 +480,15 @@ describe('the FT8 decode window', () => {
 		expect(stamp()).toBe(clock(at, true));    // UTC after the toggle
 	});
 
-	it('tunes to the signal a row was clicked on', () => {
-		const onTune = vi.fn();
-		initDecodeWindow({ onTune, onSstvMode: () => {} });
-		setDecodeWindowAvailable('ft8');
-		toggleDecodeWindow();
+	it('keeps FT8 rows for reading without a tuning action', () => {
+		initDecodeWindow({ onSstvMode: () => {} });
+		setDecodeWindowAvailable('ft8'); toggleDecodeWindow();
 		addFt8Spot(report({ frequencyHz: 1450 }), 1_000);
+		const before = rows()[0].textContent;
 		rows()[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-		expect(onTune).toHaveBeenCalledWith(21_075_450);
+		expect(rows()[0].textContent).toBe(before);
+		expect(rows()[0].getAttribute('title')).not.toMatch(/Click|点击/);
+		expect(rows()[0].getAttribute('title')).toContain('21.075450 MHz');
 	});
 
 	it('clears the table from its own button', () => {
@@ -560,7 +561,7 @@ describe('the FT8 decode window', () => {
 
 			// A later init at the same scale restores the same spot: the stored viewport px go back
 			// through the same division, not in as raw style values.
-			initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+			initDecodeWindow({ onSstvMode: () => {} });
 			expect(win.style.left).toBe('100px');
 			expect(win.style.top).toBe('50px');
 		} finally {
@@ -826,7 +827,7 @@ describe('the SSTV pane', () => {
 		setSstvModeFilter(null);
 		localStorage.clear();
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 	});
 
 	afterEach(() => {
@@ -877,7 +878,7 @@ describe('the SSTV pane', () => {
 
 
 	it('waits in the title row and shows the decoder state while nothing has decoded', () => {
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		const hint = document.getElementById('sstv-head-hint') as HTMLElement;
@@ -899,7 +900,7 @@ describe('the SSTV pane', () => {
 	});
 
 	it('hides the waiting line for every other pane', () => {
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		const hint = document.getElementById('sstv-head-hint') as HTMLElement;
@@ -926,7 +927,7 @@ describe('the SSTV pane', () => {
 			downloads.push(this.download);
 		});
 
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		updateSstvPicture(
@@ -962,7 +963,7 @@ describe('SSTV pane interactions', () => {
 		setSstvModeFilter(null);
 		localStorage.clear();
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 	});
@@ -1035,7 +1036,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 
 	it('auto on: mode click views only (hooks not called); auto off: mode click pins', () => {
 		const onSstvMode = vi.fn((mode: number | null) => sdrSstvMode.set(mode ?? -1));
-		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		initDecodeWindow({ onSstvMode });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		updateSstvPicture(picture(1), meta(1));
@@ -1054,7 +1055,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 	});
 
 	it('projects API confirmation and pending pin or Auto requests without changing the history filter', () => {
-		initDecodeWindow({ onTune: () => {}, onSstvMode: (mode) => sdrSstvMode.set(mode ?? -1) });
+		initDecodeWindow({ onSstvMode: (mode) => sdrSstvMode.set(mode ?? -1) });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		findMode('Robot 36').click();
@@ -1082,7 +1083,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 
 	it('Preset immediately projects Auto, removes the persisted pin and waits for confirmation', () => {
 		sdrSstvMode.confirm(17);
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		expect(findMode('PD-290').classList.contains('active')).toBe(true);
@@ -1098,7 +1099,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 
 	it('Auto off without a received or stored pin keeps Auto and never sends mode zero', () => {
 		const onSstvMode = vi.fn();
-		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		initDecodeWindow({ onSstvMode });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		expect(sstvStatus().activeMode).toBeNull();
@@ -1110,7 +1111,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 
 	it('uses the viewed mode only when Auto off is explicitly requested without a received mode', () => {
 		const onSstvMode = vi.fn((mode: number | null) => sdrSstvMode.set(mode ?? -1));
-		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		initDecodeWindow({ onSstvMode });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		findMode('PD-290').click();
@@ -1125,7 +1126,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 
 	it('ignores decoder commands while inactive and retains the requested visibility', () => {
 		const onSstvMode = vi.fn((mode: number | null) => sdrSstvMode.set(mode ?? -1));
-		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		initDecodeWindow({ onSstvMode });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		sdrSstvMode.confirm(5);
@@ -1162,7 +1163,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 			const log = await import('../sdr/sstvLog');
 			registry.setSstvModeTable(table);
 			const onSstvMode = vi.fn();
-			decode.initDecodeWindow({ onTune: () => {}, onSstvMode });
+			decode.initDecodeWindow({ onSstvMode });
 			decode.setDecodeWindowAvailable('sstv');
 			decode.toggleDecodeWindow();
 			expect(decode.decodeWindowOpen()).toBe(false);
@@ -1184,7 +1185,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 	});
 
 	it('tick 2 thumbnails and delete both', () => {
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		updateSstvPicture(picture(1), meta(1, { complete: true, progress: 100 }));
@@ -1201,7 +1202,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 	});
 
 	it('keeps receiving while an inline decision is pending, and Cancel preserves every picture', () => {
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		updateSstvPicture(picture(1), meta(1));
@@ -1240,7 +1241,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 
 	it.each(['close', 'toggle', 'demodulator', 'channel', 'inactive/disconnect', 'SSTV mode', 'Auto', 're-init'])(
 		'discards pending deletion after %s so a stale button cannot delete a later session', (transition) => {
-			initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+			initDecodeWindow({ onSstvMode: () => {} });
 			setDecodeWindowAvailable('sstv');
 			toggleDecodeWindow();
 			updateSstvPicture(picture(1), meta(1));
@@ -1258,7 +1259,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 				case 'inactive/disconnect': setDecodeActive(false); break;
 				case 'SSTV mode': findMode('PD-290').click(); break;
 				case 'Auto': autoButton().click(); break;
-				case 're-init': initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} }); break;
+				case 're-init': initDecodeWindow({ onSstvMode: () => {} }); break;
 			}
 			expect(confirmation.style.display).toBe('none');
 			setDecodeChannel(1);
@@ -1306,7 +1307,7 @@ describe('the AM pane', () => {
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
 			clearRect, lineTo, moveTo: vi.fn(), beginPath: vi.fn(), stroke: vi.fn(),
 		} as unknown as CanvasRenderingContext2D);
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {}, onAmSync });
+		initDecodeWindow({ onSstvMode: () => {}, onAmSync });
 		setDecodeChannelMode(1, 'am');
 		confirmAmSyncGeneration(0);
 		if (!decodeWindowOpen()) toggleDecodeWindow();
@@ -1554,7 +1555,7 @@ describe('the WFM pane', () => {
 		}
 		shell();
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
-		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		initDecodeWindow({ onSstvMode: () => {} });
 		setDecodeWindowAvailable('wfm');
 		if (!decodeWindowOpen()) toggleDecodeWindow();
 	});
@@ -1642,7 +1643,7 @@ describe('the WFM pane', () => {
 			const { DecodeSequence } = await import('../sdr/decodeProtocol');
 			shell();
 			setLang('en');
-			ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+			ui.initDecodeWindow({ onSstvMode: () => {} });
 			ui.setDecodeActive(true);
 			ui.setDecodeWindowAvailable('wfm');
 			if (!ui.decodeWindowOpen()) ui.toggleDecodeWindow();
@@ -1714,7 +1715,7 @@ describe('radiofax logical page browser', () => {
 		const markup = new DOMParser().parseFromString(appHtml, 'text/html');
 		document.getElementById('decode-window-body')!.append(markup.getElementById('decode-window-radiofax')!);
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
-		ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		ui.initDecodeWindow({ onSstvMode: () => {} });
 		ui.setDecodeActive(true);
 		ui.setDecodeWindowAvailable('radiofax');
 		if (!ui.decodeWindowOpen()) ui.toggleDecodeWindow();
@@ -1750,7 +1751,7 @@ describe('radiofax logical page browser', () => {
 			const markup = new DOMParser().parseFromString(appHtml, 'text/html');
 			document.getElementById('decode-window-radiofax')!.replaceWith(markup.getElementById('decode-window-radiofax')!);
 			expect(() => ui.setDecodeWindowAvailable('wfm')).not.toThrow();
-			expect(() => ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} })).not.toThrow();
+			expect(() => ui.initDecodeWindow({ onSstvMode: () => {} })).not.toThrow();
 			expect(document.getElementById('decode-window-wfm')!.style.display).not.toBe('none');
 		} finally {
 			if (descriptor) Object.defineProperty(HTMLElement.prototype, 'hidePopover', descriptor);
@@ -1799,7 +1800,7 @@ describe('radiofax logical page browser', () => {
 	it('keeps one set of Radiofax handlers after reinitialization and applies the selected zoom', () => {
 		const exportPng = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => callback(null));
 		image('paper');
-		ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		ui.initDecodeWindow({ onSstvMode: () => {} });
 		click('radiofax-save');
 		expect(exportPng).toHaveBeenCalledTimes(1);
 		const zoom = document.getElementById('radiofax-zoom') as HTMLSelectElement;
@@ -1948,7 +1949,7 @@ describe('radiofax logical page browser', () => {
 		click('btn-decode-utc');
 		expect(text('radiofax-received')).toContain('2026-10-26 00:00:01 UTC');
 		expect(JSON.parse(localStorage.getItem('websa-decode-window')!).utc).toBe(true);
-		ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		ui.initDecodeWindow({ onSstvMode: () => {} });
 		ui.refreshDecodeWindow();
 		expect(document.getElementById('btn-decode-utc')!.classList.contains('active')).toBe(true);
 		expect(text('radiofax-received')).toContain('2026-10-26 00:00:01 UTC');

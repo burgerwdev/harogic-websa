@@ -575,7 +575,6 @@ select:disabled { color: var(--label); }
 /* The line being keyed right now: the labels' green (the palette's emphasis colour) and a caret. */
 .cw-line.current .cw-text { color: var(--text); }
 .cw-empty, .ft8-empty { color: var(--label); padding: 6px; }
-.decode-window tr.ft8-row { cursor: pointer; }
 .decode-window tr.ft8-row:hover { background: var(--btn-active); }
 /* QSO session marking: the hovered decode plus every decode of the same callsign pair. */
 .decode-window tr.ft8-row.qso-peer { background: var(--btn-active); opacity: 0.85; }

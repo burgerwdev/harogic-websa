@@ -57,3 +57,5 @@
 .mc-message-table tr.ft8-row.qso-peer { background:var(--btn-active); }
 .mc-message-table tr.ft8-row.qso-focus { background:var(--btn-active); box-shadow:inset 2px 0 0 var(--text); }
 .mc-message-table tr.ft8-row:focus-visible { outline:1px solid var(--text); outline-offset:-1px; }
+.ft8-snr-degraded { color: var(--label); color: color-mix(in srgb, var(--text) 85%, var(--panel)); text-decoration: underline dotted; text-underline-offset: 3px; }
+.ft8-row.qso-peer .ft8-snr-degraded, .ft8-row.qso-focus .ft8-snr-degraded { color: var(--text); }

@@ -1,4 +1,5 @@
 // Native receiver decode reports shared by the stream and UI.
+import type { Ft8SnrMeasurement } from './ft8Snr';
 
 /** A decoded FT8 transmission. */
 export interface Ft8Report {
@@ -9,6 +10,7 @@ export interface Ft8Report {
 	timeOffsetS: number;
 	/** Decoded-symbol SNR in dB relative to 2500 Hz; null when unavailable. */
 	snrDb: number | null;
+	measurement?: Ft8SnrMeasurement;
 	/** Decodes this session (the readout's counter). */
 	count: number;
 	/** Centre of the channel the transmission was found in, in Hz (the tuned frequency). */

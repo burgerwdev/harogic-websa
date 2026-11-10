@@ -1,18 +1,16 @@
 /**
- * The FT8 decode log: what the window renders and what the click-to-tune reads.
+ * The FT8 decode log: the retained messages the window renders.
  *
  * The log is the seam between the worker (one decode at a time) and the window (a table), so the
  * properties that matter here are the order (newest first, so a busy band does not need scrolling),
- * the absolute frequency (the channel's centre plus the audio offset - the number a click tunes to),
+ * the absolute frequency (the channel's centre plus the audio offset),
  * and that a long session cannot grow without bound.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-	FT8_TUNE_HZ,
 	MAX_FT8_SPOTS,
 	addFt8Spot,
 	clearFt8Spots,
-	ft8DialFor,
 	ft8Spots,
 	subscribeFt8Spots,
 	clock,
@@ -37,7 +35,7 @@ describe('the FT8 decode log', () => {
 		addFt8Spot(report({ text: 'second', frequencyHz: 1500, centerHz: 21_074_000 }), 2_000);
 		const spots = ft8Spots();
 		expect(spots.map((s) => s.text)).toEqual(['second', 'first']);
-		// 14.074.000 + 1500 Hz: what a click tunes to, and what the table shows in MHz.
+		// The table shows the dial plus audio offset in MHz.
 		expect(spots[0].hz).toBe(21_075_500);
 		expect(spots[0].offsetHz).toBe(1500);
 		expect(spots[1].hz).toBe(21_074_900);
@@ -64,13 +62,6 @@ describe('the FT8 decode log', () => {
 		expect(spots.length).toBe(MAX_FT8_SPOTS);
 		expect(spots[0].text).toBe(`m${MAX_FT8_SPOTS + 24}`);   // the newest survived
 		expect(spots[spots.length - 1].text).toBe('m25');        // the oldest were dropped
-	});
-
-	it('tunes the dial so a clicked decode lands inside the decoder’s band', () => {
-		// 21.075.500 is where the signal is; the decoder searches 200..3000 Hz of audio, so the dial
-		// goes 1 kHz below it (a row clicked at DC would be outside the band entirely).
-		expect(ft8DialFor(21_075_500)).toBe(21_074_500);
-		expect(ft8DialFor(21_075_500) + FT8_TUNE_HZ).toBe(21_075_500);
 	});
 
 	it('formats the clock in UTC or local time', () => {

@@ -15,8 +15,8 @@ Rebuild on older systems or other architectures using [Development](DEVELOPMENT.
 Hardware operation requires a SAN-45/SAN-60/SAN-90 and the separately supplied HAROGIC SDK
 under `/opt/htraapi`, including its shared-library dependencies. The proprietary SDK is not
 included. Fixture mode needs no analyzer or SDK, but uses this checkout's `tests/fixtures/`.
-Bash, coreutils, util-linux (`flock`), `/proc` and curl support the launcher. Rust, Node and
-Python are unnecessary for running the bundle.
+Bash, coreutils, util-linux (`flock`), `/proc`, curl and Python 3 support the launcher and
+its crash monitor. Rust and Node are unnecessary for running the bundle.
 
 ## Launch
 

@@ -11,7 +11,7 @@ it('keeps manual, automatic and 180 LPM transitions valid', () => {
 		<select id="radiofax-ioc"><option>auto</option><option>288</option><option>576</option></select>
 		<select id="radiofax-lpm"><option>auto</option><option>120</option><option>180</option></select>`;
 	const send = vi.fn();
-	initDecodeWindow({ onTune: () => {}, onSstvMode: () => {}, onRadiofaxConfig: send });
+	initDecodeWindow({ onSstvMode: () => {}, onRadiofaxConfig: send });
 	setDecodeActive(true);
 	setDecodeWindowAvailable('radiofax');
 	document.getElementById('radiofax-manual')!.click();

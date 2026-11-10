@@ -14,12 +14,16 @@ done
 [[ -z "${WEBSA_UNIT:-}" ]] || { echo 'WEBSA_UNIT was replaced by WEBSA_INSTANCE' >&2; exit 2; }
 lifecycle_init
 if ! load_state || ! owned_process; then
-  [[ "$QUIET" == 1 ]] || echo "Instance $INSTANCE is not running (missing or stale ownership state)"
+  if [[ "$QUIET" != 1 ]]; then
+    if owned_monitor; then echo "Instance $INSTANCE is recovering (monitor PID $MONITOR_PID); log: $LOG"
+    else echo "Instance $INSTANCE is not running (missing or stale ownership state)"; fi
+  fi
   exit 1
 fi
 health_url
 if [[ "$QUIET" != 1 ]]; then
   echo "Rust websad: $INSTANCE (PID $PID, fixture=$FAKE)"
+  if owned_monitor; then echo "Recovery: monitoring failures (PID $MONITOR_PID)"; fi
   if [[ "$(stat -Lc '%d:%i' "$EXE" 2>/dev/null)" == "$EXE_ID" ]]; then
     echo 'Binary: current (running executable matches disk)'
   else

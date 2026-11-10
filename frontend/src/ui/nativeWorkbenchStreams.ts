@@ -6,6 +6,7 @@ import { acknowledgeDecoderLog, addDecoderRaster, addDecoderResult, annotateDeco
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import { claimNativeDecode, publishNativeDecode } from '../sdr/decodeOwnership';
 import type { WorkbenchSession } from './workbenchSession';
+import { ft8SnrValue } from '../sdr/ft8Snr';
 
 /** One browser consumer per logical source. Views never own workers, sockets or the speaker graph. */
 export function mountNativeWorkbenchStreams(session: WorkbenchSession) {
@@ -217,8 +218,8 @@ export function consumeReceiverResult(uid: string, envelope: DecodeEnvelope): vo
       label: event.meta?.name ?? envelope.mode, w: w!, h: height!, row: row!, rows: rows!, rgb,
       final: event.meta?.complete === true, partial: event.meta?.partial === true, missingRows: event.meta?.missingRows, grow: event.type === 'radiofax-image' }); return;
   }
-  if (event.type === 'ft8') result('table', { decodes: [{ snr_db: event.snrDb, dt_s: event.timeOffsetS, audio_hz: event.frequencyHz,
-    msg: event.text, center_hz: event.centerHz, window_start: event.windowStart ?? envelope.input_index }] });
+  if (event.type === 'ft8') result('table', { decodes: [{ snr_db: ft8SnrValue(event.snrDb, event.measurement), dt_s: event.timeOffsetS, audio_hz: event.frequencyHz,
+    measurement: event.measurement, msg: event.text, center_hz: event.centerHz, window_start: event.windowStart ?? envelope.input_index }] });
   else if (event.type === 'rf-measurement') result('status', event);
   else if (event.type === 'cw') {
     result('status', { ...event, type: 'cw-level', text: undefined });

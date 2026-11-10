@@ -1,8 +1,7 @@
 /**
  * The FT8 ingress record: a decode lands in the log the window renders, and a stream reset clears it.
  *
- * The panel's one-line readout is gone (the decode table replaced it), so what matters is the log and
- * the diagnostic string the status line reads.
+ * The decode table and diagnostic status share the retained protocol result.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { lastFt8Message, renderFt8Message, resetSdrIq } from '../sdr/iqStream';

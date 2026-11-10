@@ -6,6 +6,7 @@ import { channelState } from '../core/channelState';
 // leaf module on purpose: the worker's ingress fills it, the window renders it, and neither needs to
 // know about the other.
 import type { Ft8Report } from './types';
+import { ft8SnrValue, type Ft8SnrMeasurement } from './ft8Snr';
 
 export interface Ft8Spot {
 	/** Wall clock (epoch ms) the decode arrived - the operator's own clock, for the table's order. */
@@ -16,6 +17,7 @@ export interface Ft8Spot {
 	text: string;
 	/** Decoded-symbol SNR in dB relative to 2500 Hz; null when unavailable. */
 	snrDb: number | null;
+	measurement?: Ft8SnrMeasurement;
 	/** Audio offset inside the channel, in Hz (the `DF` an FT8 operator reads). */
 	offsetHz: number;
 	/** Where the transmission started relative to the slot, in seconds. */
@@ -38,16 +40,6 @@ export interface Ft8Spot {
  */
 export const FT8_SEARCH_LOW_HZ = 100;
 export const FT8_SEARCH_HIGH_HZ = 3_000;
-/** The frequency inside that band a clicked decode is parked at (WSJT-X does the same). */
-export const FT8_TUNE_HZ = 1_000;
-
-/**
- * Tune below the decoded signal by `FT8_TUNE_HZ` so it lies inside the decoder search band.
- */
-export function ft8DialFor(signalHz: number): number {
-	return signalHz - FT8_TUNE_HZ;
-}
-
 /** How many decodes are kept (a band's worth of traffic; the window scrolls). */
 export const MAX_FT8_SPOTS = 200;
 
@@ -89,7 +81,8 @@ export function addFt8Spot(report: Ft8Report, at = Date.now(), channel: number =
 		at,
 		hz: (Number(report.centerHz) || 0) + (Number(report.frequencyHz) || 0),
 		text: String(report.text || ''),
-		snrDb: typeof report.snrDb === 'number' && Number.isFinite(report.snrDb) ? report.snrDb : null,
+		snrDb: ft8SnrValue(report.snrDb, report.measurement),
+		measurement: report.measurement,
 		offsetHz: Number(report.frequencyHz) || 0,
 		timeOffsetS: Number(report.timeOffsetS) || 0,
 		sourceKey: report.sourceKey,

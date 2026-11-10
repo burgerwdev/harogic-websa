@@ -20,11 +20,20 @@ when no SDK adapter is specified. Launcher configuration is in [Getting started]
 | Browser opens but audio is silent | Enable browser audio, then check receiver state, listen/mute/solo, local volume, squelch and decoder lock. DRM also needs a supported audio service. |
 | Configuration is rejected in harmonic/phase-noise mode | Stop that measurement before changing SWP-owned frequency, bandwidth, gain or clock settings. |
 
-The launcher does not supervise or automatically restart the process. A failed shared capture
+The launcher monitors abnormal exits and retries after 1, 2, 4, 8, 16, then 30 seconds
+(capped at 30 seconds until resources recover). `./stop.sh` cancels retries and stops the
+owned child. `./status.sh` reports recovery while the child is unavailable. Restarts use
+the original launch environment and fresh service state; unsaved live receiver settings
+are not restored. Directly invoking `websad` bypasses this monitor. A failed shared capture
 affects its dependent receivers; individual processing failures can leave raw IQ and spectra
 available. Successful recovery establishes fresh stream identities rather than joining samples
 across a gap. SDK calls are serialized by the retained device owner; a blocked owner must finish
 before that handle can be closed or reopened. See [state ownership](reference/STATE.md).
+
+The service defaults vendor MKL to one internal thread (`MKL_NUM_THREADS=1`,
+`MKL_DYNAMIC=FALSE`) before loading the SDK, reducing nested parallelism under resource
+pressure. These settings do not restrict Rust multichannel workers; explicit environment
+overrides are respected.
 
 The plot's diagnostic area retains errors until a matching successful operation or explicit
 recovery clears them. A socket reconnect or unrelated successful command does not prove recovery.

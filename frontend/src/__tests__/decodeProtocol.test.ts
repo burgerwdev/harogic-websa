@@ -392,7 +392,7 @@ describe('native decoded stream boundaries', () => {
       setLang('en');
       sdrAmSync.reset();
       sdrAmSync.confirm(true);
-      ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {}, onAmSync: () => {} });
+      ui.initDecodeWindow({ onSstvMode: () => {}, onAmSync: () => {} });
       ui.setDecodeActive(true);
       ui.setDecodeChannelMode(1, 'am');
       ui.confirmAmSyncGeneration(0);

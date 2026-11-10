@@ -187,6 +187,8 @@
     "persistent_fft_buffer_bytes": 98304
   },
   "ft8": {
+    "status": "historical_before_robust_ft8_noise_update",
+    "superseded_by": "ft8_snr_validation_v2.json",
     "reference_package": "Debian wsjtx_2.7.0+repack-1_amd64.deb",
     "reference_executable_sha256": {
       "jt9": "1f316b2ba2c8ba5350628ab8389f4fa5bbddb84406f6a410c20ae0c64d602e0c",
@@ -199,39 +201,42 @@
       "below_minus20": 3,
       "minus20_and_above": 1.5
     },
-    "known_symbol_measurement_used_when_native_search_failed_db": [
-      -20
-    ],
+    "known_symbol_measurement_used_when_native_search_failed_db": [],
     "no_wsjtx_decode_for_this_realization_db": [
       -24
     ],
     "cases": [
       {
         "injected_db": -20.0,
-        "native_db": -20.472864,
+        "native_decoded": true,
+        "native_db": -20.472850,
         "wsjtx_db": -20.0,
-        "error_db": 0.472864
+        "error_db": 0.472850
       },
       {
         "injected_db": -16.0,
+        "native_decoded": true,
         "native_db": -16.396049,
         "wsjtx_db": -16.0,
         "error_db": 0.396049
       },
       {
         "injected_db": -10.0,
+        "native_decoded": true,
         "native_db": -10.353639,
         "wsjtx_db": -10.0,
         "error_db": 0.353639
       },
       {
         "injected_db": 0.0,
+        "native_decoded": true,
         "native_db": -0.336261,
         "wsjtx_db": 0.0,
         "error_db": 0.336261
       },
       {
         "injected_db": 8.0,
+        "native_decoded": true,
         "native_db": 7.667291,
         "wsjtx_db": 8.0,
         "error_db": 0.332709
@@ -245,8 +250,21 @@
       "0": "41a39ec3fc7712019a7fbb7a1fe5bc5f4f3f9951d63f91111cd029d6c8af2fe8",
       "8": "5fd3ac5a42aa71d707e17786dc879b0cc057743238679c6350e44ebd2f4fae25"
     },
-    "isolated_slot_decode_wall_seconds": 3.044,
-    "concurrent_test_load_slot_decode_wall_seconds": 5.69
+    "isolated_slot_decode_wall_seconds": 2.813,
+    "previous_concurrent_test_load_slot_decode_wall_seconds": 5.69,
+    "weak_signal_regressions": {
+      "gfsk_minus20_db_hits": 3,
+      "gfsk_minus20_db_trials": 3,
+      "gfsk_noise_only_false_decodes": 0,
+      "gfsk_decode_wall_seconds_range": [1.193, 1.381],
+      "single_minus22_db_previous_hits": 0,
+      "single_minus22_db_hits": 2,
+      "single_minus22_db_trials": 4,
+      "busy_band_all_four_previous_hits": 3,
+      "busy_band_all_four_hits": 4,
+      "busy_band_trials": 4,
+      "sensitivity_sweep_false_decodes": 0
+    }
   },
   "drm": {
     "fac_nearest_decision_bias_db_at_injected_db": {

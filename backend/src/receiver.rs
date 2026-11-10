@@ -869,13 +869,17 @@ impl Receiver {
             while ft8.seen.len()>128 { ft8.seen.pop_front(); }
             ft8.decoded += 1;
             events.push(json!({"type":"ft8","text":message.text,"frequencyHz":message.frequency_hz,
-                "timeOffsetS":message.time_offset_s,"snrDb":message.snr_db,"count":ft8.decoded,
+                "timeOffsetS":message.time_offset_s,"snrDb":message.snr.value,"count":ft8.decoded,
                 "measurement":{"metric_type":"ft8_snr","unit":"dB","value":message.snr.value,
                     "state":if message.snr.value.is_some(){"conditional"}else{"unavailable"},"reason":message.snr.reason,
+                    "quality":message.snr.quality,"quality_reasons":message.snr.quality_reasons,"value_kind":message.snr.value_kind,
                     "reference_bandwidth_hz":2500.0,"location":"original_iq_before_decoder_cancellation",
-                    "method":"decoded_costas_and_data_hann_matched_filters_with_off_tone_background",
+                    "method":"decoded_hann_matched_filters_with_exponential_tail_corrected_noise",
                     "averaging_seconds":message.snr.averaging_seconds,"enbw_hz":message.snr.enbw_hz,
-                    "symbols":message.snr.symbols,"uncertainty_db":message.snr.uncertainty_db,"meaning":"local flat background including unresolved interference; burst measurement"},
+                    "symbols":message.snr.symbols,"uncertainty_db":message.snr.uncertainty_db,
+                    "reference_samples":message.snr.reference_samples,"reference_spread_db":message.snr.reference_spread_db,
+                    "meaning":"local background including unresolved interference; observed burst estimate",
+                    "limitations":["cochannel_interference_not_separable","majority_reference_contamination_can_bias_noise", "uncertainty_excludes_model_and_interference_bias"]},
                 "centerHz":null,"windowStart":result.clock.first_sample_index.to_string(),
                 "windowFractionNum":result.source_position.fraction_num.to_string(),
                 "windowFractionDen":result.source_position.fraction_den.to_string(),
@@ -1026,6 +1030,29 @@ mod tests {
             input_rate:if mode == "wfm" {240_000.0} else if mode == "drmplus" {96_000.0} else if mode == "radiofax" {12_000.0} else {48_000.0},
             if_bw:if mode == "wfm" {180_000.0} else if mode == "drmplus" {90_000.0} else if mode == "radiofax" {3_000.0} else {6_000.0},
             ..ReceiverConfig::default() }
+    }
+
+    #[test]
+    fn ft8_measurement_quality_and_failure_preserve_decodes_and_numeric_contract() {
+        use websa_dsp::digital::ft8::{Ft8Message,SnrEstimate};
+        let mut receiver=Receiver::new(mode_config("ft8")).unwrap();
+        for (index,snr) in [SnrEstimate::default(),SnrEstimate {
+            value:Some(17.25),reason:None,quality:"degraded",value_kind:"estimate",
+            quality_reasons:vec!["off_tone_interference"],..SnrEstimate::default()
+        }].into_iter().enumerate() {
+            let events=receiver.accept_ft8(Ft8Result {
+                epoch:receiver.epoch,sequence:index as u64+1,
+                clock:InputClock {first_sample_index:0,input_rate:12000.0,delay_input_samples:0.0},
+                source_position:SamplePosition {index:0,fraction_num:0,fraction_den:1},window_start:0,
+                messages:vec![Ft8Message {text:format!("CQ TEST {index}"),frequency_hz:1000.0,
+                    time_offset_s:0.5,snr_db:f64::NAN,snr:snr.clone()}],
+            });
+            assert_eq!(events.len(),1,"SNR failure must not discard text");
+            assert_eq!(events[0]["snrDb"],events[0]["measurement"]["value"]);
+            assert_eq!(events[0]["measurement"]["value"],json!(snr.value));
+            assert_eq!(events[0]["measurement"]["quality"],snr.quality);
+            assert_eq!(events[0]["measurement"]["reference_bandwidth_hz"],2500.0);
+        }
     }
 
     #[test]

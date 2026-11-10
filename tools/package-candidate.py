@@ -81,7 +81,7 @@ def main():
                    cwd=ROOT, check=True)
     legal = json.loads((ROOT / 'frontend/dist/legal/source-manifest.json').read_text())
     files = {name: ROOT / name for name in (
-        'run.sh', 'stop.sh', 'status.sh', 'lifecycle.sh', 'pyproject.toml',
+        'run.sh', 'stop.sh', 'status.sh', 'lifecycle.sh', 'supervise.py', 'pyproject.toml',
         'LICENSE', 'LICENSE-EXCEPTION', 'LICENSE-PACKAGE', 'LICENSING.md', 'THIRD_PARTY_NOTICES.md')}
     files.update({
         'runtime/linux-x86_64/websad': ROOT / 'backend/target/release/websad',

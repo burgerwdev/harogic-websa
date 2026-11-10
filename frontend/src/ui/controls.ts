@@ -65,8 +65,7 @@ import { resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { nativeAudioOwnsSpeakers, nativeAudioIsMuted, prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
 import { initSdrDemodGroup, syncSdrDemodGroup } from './sdrDemodGroup';
-import { ft8DialFor } from '../sdr/ft8Log';
-import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setDecodeChannel, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
+import { canToggleAmSync, confirmAmSyncGeneration, initDecodeWindow, refreshDecodeWindow, setDecodeChannel, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
 import { resetSdrIq, setSdrIqEnabled, setSstvModePin } from '../sdr/iqStream';
 import { clearRadiofax } from '../sdr/radiofaxLog';
 import { sdrModeIds, availableSdrModeIds, isModeAvailable, modeDescriptor, modeStartupTimeoutMs } from '../sdr/registry';
@@ -1841,14 +1840,7 @@ export function bindActions() {
     applySdrDemod();
   });
   // All catalog selections use the same acknowledged receiver edit path.
-  // Decode rows tune the receiver through the existing channel action.
-  // A row tunes the *dial* so the signal lands inside the decoder's band (see `ft8DialFor`).
   initDecodeWindow({
-    onTune: (hz) => {
-      const freq = ft8DialFor(hz);
-      const channel = decodeChannel();
-      if (channel === currentSdrChannel()) listenAtFreq(freq);
-    },
     onSstvMode: (index) => {
       if (deviceMode.get() !== 'sdr') return;
       sdrSstvMode.set(index ?? -1);

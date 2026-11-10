@@ -966,6 +966,7 @@ pub struct HardwareCapture {
 }
 
 impl HardwareCapture {
+    #[cfg(test)] // Production capture uses start_raw; fixtures also exercise inline spectra.
     pub fn start(
         path: String,
         center: f64,

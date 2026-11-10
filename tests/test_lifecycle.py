@@ -11,6 +11,7 @@ import signal
 import socket
 import struct
 import subprocess
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 
@@ -30,7 +31,7 @@ def launcher(tmp_path):
         pytest.skip('build make native or restore runtime executable for lifecycle integration')
     checkout = tmp_path / 'checkout with spaces'
     checkout.mkdir()
-    for name in ('run.sh', 'stop.sh', 'status.sh', 'lifecycle.sh'):
+    for name in ('run.sh', 'stop.sh', 'status.sh', 'lifecycle.sh', 'supervise.py'):
         shutil.copy2(ROOT / name, checkout / name)
     static = tmp_path / 'static'
     (static / 'dist').mkdir(parents=True)
@@ -80,7 +81,7 @@ def test_fixture_lifecycle_uses_saved_endpoint_and_is_idempotent(launcher):
     assert 'Binary: current' in status.stdout
     assert 'Device:' in status.stdout and 'RF: center' in status.stdout
     assert '"actual"' not in status.stdout and '"preset_defaults"' not in status.stdout
-    assert len(status.stdout.splitlines()) <= 10
+    assert len(status.stdout.splitlines()) <= 11
     quiet = invoke('status.sh', '--quiet')
     assert quiet.returncode == 0 and not quiet.stdout and not quiet.stderr
     duplicate = invoke('run.sh')
@@ -598,6 +599,9 @@ def test_mismatched_identity_never_signals_process(launcher, field, value):
     assert invoke('run.sh').returncode == 0
     path = state_file()
     original = path.read_text()
+    monitor = path.with_suffix('.monitor')
+    original_monitor = monitor.read_text()
+    monitor.write_text('invalid monitor identity\n')
     values = original.splitlines()
     pid = int(values[0])
     values[field] = value
@@ -608,6 +612,7 @@ def test_mismatched_identity_never_signals_process(launcher, field, value):
         os.kill(pid, 0)
     finally:
         path.write_text(original)
+        monitor.write_text(original_monitor)
     assert invoke('status.sh', '--quiet').returncode == 0
 
 
@@ -678,16 +683,22 @@ def test_state_home_fallback_and_named_instance(launcher, tmp_path):
         assert invoke('stop.sh', env=fallback).returncode == 0
 
 
-def test_crashed_process_can_be_restarted(launcher):
-    invoke, _, _, state_file, _ = launcher
+def test_crashed_process_recovers_automatically_and_stop_cancels_retry(launcher):
+    invoke, _, _, state_file, runtime = launcher
     assert invoke('run.sh').returncode == 0
     pid = int(state_file().read_text().splitlines()[0])
     os.kill(pid, signal.SIGKILL)
-    # status checks both identity and HTTP; no supervisor silently restarts it.
-    assert invoke('status.sh', '--quiet').returncode != 0
-    restarted = invoke('run.sh')
-    assert restarted.returncode == 0, restarted.stderr
+    deadline = time.monotonic() + 15
+    while invoke('status.sh', '--quiet').returncode != 0:
+        assert time.monotonic() < deadline
+        time.sleep(.1)
     assert int(state_file().read_text().splitlines()[0]) != pid
+    replacement = int(state_file().read_text().splitlines()[0])
+    os.kill(replacement, signal.SIGKILL)
+    assert invoke('stop.sh').returncode == 0
+    time.sleep(1.2)
+    assert invoke('status.sh', '--quiet').returncode != 0
+    assert not list(runtime.glob('harogic-websa/*/websad.monitor'))
 
 
 def test_stop_escalates_only_the_owned_process(launcher):
@@ -698,6 +709,32 @@ def test_stop_escalates_only_the_owned_process(launcher):
     result = invoke('stop.sh')
     assert result.returncode == 0, result.stderr
     assert invoke('status.sh', '--quiet').returncode != 0
+
+
+def test_monitor_retries_exec_failure_until_binary_is_available(launcher, tmp_path):
+    invoke, env, _, state_file, _ = launcher
+    binary = tmp_path / 'recoverable-websad'
+    shutil.copy2(env['WEBSA_BIN'], binary)
+    assert invoke('run.sh', '--bin', str(binary)).returncode == 0
+    pid = int(state_file().read_text().splitlines()[0])
+    hidden = binary.with_suffix('.offline')
+    binary.rename(hidden)
+    try:
+        os.kill(pid, signal.SIGKILL)
+        log = state_file().with_suffix('.log')
+        deadline = time.monotonic() + 10
+        while 'No such file' not in log.read_text():
+            assert time.monotonic() < deadline
+            time.sleep(.1)
+        status = invoke('status.sh')
+        assert status.returncode != 0 and 'recovering' in status.stdout
+    finally:
+        hidden.rename(binary)
+    deadline = time.monotonic() + 15
+    while invoke('status.sh', '--quiet').returncode != 0:
+        assert time.monotonic() < deadline
+        time.sleep(.1)
+    assert int(state_file().read_text().splitlines()[0]) != pid
 
 
 @pytest.mark.parametrize('repair', [

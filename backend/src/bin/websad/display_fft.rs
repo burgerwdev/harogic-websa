@@ -47,7 +47,7 @@ impl Drop for Dsp {
 impl Dsp {
     fn open(path: &str, size: usize) -> Result<Self, String> {
         let path = CString::new(path).map_err(|_| "invalid display FFT shim path")?;
-        let library = unsafe { dlopen(path.as_ptr(), 2) };
+        let library = unsafe { dlopen(path.as_ptr(), hardware_swp::SDK_DLOPEN_FLAGS) };
         if library.is_null() {
             return Err("display FFT shim unavailable".into());
         }

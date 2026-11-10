@@ -9,12 +9,13 @@ import { downloadResult, pictureExport, pictureIsPartial, resultExport } from '.
 import { createWorkbenchPatcher } from './workbenchDom';
 import './decodeResults.css';
 import { setDomProperty } from './domState';
+import { ft8SnrPresentation, type Ft8SnrMeasurement } from '../sdr/ft8Snr';
 
 const l = (en: string, zh: string): string => getLang() === 'zh' ? zh : en;
 const esc = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const number = (value: unknown, digits = 0): string => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
-interface Message { key: string; time: number; snr: unknown; dt: unknown; hz: unknown; text: string; qso: string; country: string; location: string }
+interface Message { key: string; time: number; snr: unknown; snrPresentation: ReturnType<typeof ft8SnrPresentation>; dt: unknown; hz: unknown; text: string; qso: string; country: string; location: string }
 export interface ReceiverDecodeView {
   update(entries: readonly DecoderLogEntry[], identity: string, mode: string, evicted: number, notice: string, source?: string | null): void;
   dispose(): void;
@@ -86,7 +87,8 @@ export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
             if (!object(row)) return [];
             const text = String(row.msg ?? row.message ?? row.text ?? '');
             return [{ key: `${entry.id}:${index}`, time: typeof row.slot_utc === 'number' ? row.slot_utc * 1000 : entry.at,
-              snr: row.snr_db, dt: row.dt_s, hz: row.audio_hz, text, ...(['ft8', 'ft4'].includes(entry.mode) ? ft8GeoTexts(text) : { country: '', location: '' }), qso: ['ft8', 'ft4'].includes(entry.mode) ? ft8SessionKey(text) : '' }];
+              snr: row.snr_db, snrPresentation: ft8SnrPresentation(row.snr_db, object(row.measurement) ? row.measurement as unknown as Ft8SnrMeasurement : undefined),
+              dt: row.dt_s, hz: row.audio_hz, text, ...(['ft8', 'ft4'].includes(entry.mode) ? ft8GeoTexts(text) : { country: '', location: '' }), qso: ['ft8', 'ft4'].includes(entry.mode) ? ft8SessionKey(text) : '' }];
           });
           cached = { language: getLang(), rows }; messageRows.set(entry, cached);
         }
@@ -108,7 +110,7 @@ export function mountReceiverDecodeView(host: HTMLElement): ReceiverDecodeView {
       messageTable = { key: tableKey, rows: [...messages], html: `<section data-key="messages" class="mc-decode-messages" ${messages.length ? '' : 'hidden'}>
       <div data-key="message-pages" class="mc-message-pages"><span>${messages.length} ${l('messages', '条消息')}</span><button type="button" data-key="previous" title="${l('Previous page of messages', '查看上一页消息')}" aria-label="${l('Previous page', '上一页')}" data-decode-action="previous" ${page === 0 ? 'disabled' : ''}>‹</button><span>${page + 1} / ${pages}</span><button type="button" data-key="next" title="${l('Next page of messages', '查看下一页消息')}" aria-label="${l('Next page', '下一页')}" data-decode-action="next" ${page + 1 >= pages ? 'disabled' : ''}>›</button></div>
       <div data-key="message-scroll" class="decoder-table-scroll"><table class="mc-message-table"><thead><tr>${header('time', `${t('ft8_time')} (${utc ? 'UTC' : 'LT'})`)}${header('snr', 'SNR / dB')}${header('dt', 'Δt / s')}${header('hz', l('Audio / Hz', '音频 / Hz'))}${header('text', t('ft8_message'))}${hasGeo ? header('country', t('ft8_country')) + header('location', t('ft8_location')) : ''}</tr></thead>
-      <tbody>${messages.slice(page * 50, page * 50 + 50).map(row => `<tr data-key="${row.key}" ${row.qso ? `class="ft8-row" data-qso="${esc(row.qso)}" tabindex="0"` : ''}><td>${clock(row.time, utc)}</td><td>${number(row.snr)}</td><td>${number(row.dt, 2)}</td><td>${number(row.hz)}</td><td class="decoder-message-cell">${esc(row.text)}</td>${hasGeo ? `<td class="mc-message-country">${esc(row.country || '—')}</td><td class="mc-message-location" title="${l('Transmitted grid cell centre', '消息所含网格的中心坐标')}">${esc(row.location || '—')}</td>` : ''}</tr>`).join('')}</tbody></table></div>
+      <tbody>${messages.slice(page * 50, page * 50 + 50).map(row => `<tr data-key="${row.key}" ${row.qso ? `class="ft8-row" data-qso="${esc(row.qso)}" tabindex="0"` : ''}><td>${clock(row.time, utc)}</td><td class="${row.snrPresentation.degraded ? 'ft8-snr-degraded' : ''}" title="${esc(row.snrPresentation.title)}">${esc(row.snrPresentation.text)}</td><td>${number(row.dt, 2)}</td><td>${number(row.hz)}</td><td class="decoder-message-cell">${esc(row.text)}</td>${hasGeo ? `<td class="mc-message-country">${esc(row.country || '—')}</td><td class="mc-message-location" title="${l('Transmitted grid cell centre', '消息所含网格的中心坐标')}">${esc(row.location || '—')}</td>` : ''}</tr>`).join('')}</tbody></table></div>
     </section>` };
     }
     const changed = patch(`<div data-key="tools" class="mc-decode-tools">

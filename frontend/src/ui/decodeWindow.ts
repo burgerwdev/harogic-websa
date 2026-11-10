@@ -52,10 +52,9 @@ import { sdrAmSync, sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxCloc
 	sdrRadiofaxPolarity, sdrSstvMode } from './sdrState';
 import type { RadiofaxAcquisition, RadiofaxClockRecovery, RadiofaxIoc, RadiofaxLpm,
 	RadiofaxModulation, RadiofaxPolarity } from './sdrState';
+import { ft8SnrPresentation } from '../sdr/ft8Snr';
 
 export interface DecodeWindowHooks {
-	/** Tune the receiver to an absolute frequency (an FT8 row was clicked). */
-	onTune(hz: number): void;
 	/** Pin the SSTV decoder to a mode (index into the Rust table), or null for the VIS header. */
 	onSstvMode(index: number | null): void;
 	/** Select the primary AM detector without changing any other receiver parameter. */
@@ -101,7 +100,7 @@ const MAX_ROWS = 100;
 /** CW lines rendered (the log holds more; a text pane shows what fits and scrolls). */
 const MAX_CW_ROWS = 120;
 
-let hooks: DecodeWindowHooks = { onTune: () => {}, onSstvMode: () => {} };
+let hooks: DecodeWindowHooks = { onSstvMode: () => {} };
 let open = false;
 /** Preserve the operator's window visibility preference across demodulator switches. */
 let wanted = false;
@@ -396,27 +395,28 @@ function wireResize(win: HTMLElement): void {
 function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowElement {
 	const row = surfaceDocument().createElement('tr');
 	row.className = 'ft8-row';
-	row.title = `${t('ft8_tune_tip')}\n${spot.text}\n${clock(spot.at, utcTime)} ${utcTime ? 'UTC' : 'LT'}  ${(spot.hz / 1e6).toFixed(6)} MHz`;
+	row.title = `${spot.text}\n${clock(spot.at, utcTime)} ${utcTime ? 'UTC' : 'LT'}  ${(spot.hz / 1e6).toFixed(6)} MHz`;
 	// The absolute frequency in MHz with 4 decimals is 100 Hz of resolution: enough to place a
 	// signal on the waterfall and to tune to it, without the noise of a full-precision number.
 	const key = ft8SessionKey(spot.text);
 	if (key) row.dataset.qso = key;
-	const cells: Array<{ text: string; className?: string }> = [
+	const snr = ft8SnrPresentation(spot.snrDb, spot.measurement);
+	const cells: Array<{ text: string; className?: string; title?: string }> = [
 		{ text: clock(spot.at, utcTime) },
-		{ text: spot.snrDb?.toFixed(0) ?? '—' },
+		{ text: snr.text, className: snr.degraded ? 'ft8-snr-degraded' : undefined, title: snr.title },
 		{ text: spot.offsetHz.toFixed(0) },
 		{ text: (spot.hz / 1e6).toFixed(4) },
 		{ text: spot.text, className: 'ft8-message' },
 		{ text: country },
 		{ text: location },
 	];
-	for (const { text, className } of cells) {
+	for (const { text, className, title } of cells) {
 		const cell = surfaceDocument().createElement('td');
 		cell.textContent = text;
 		if (className) cell.className = className;
+		if (title) cell.title = title;
 		row.appendChild(cell);
 	}
-	row.addEventListener('click', () => { if (active) hooks.onTune(spot.hz); });
 	return row;
 }
 
@@ -633,8 +633,8 @@ function renderContent(): void {
 	if (ft8State) {
 		const state = ft8DecoderState();
 		ft8State.style.display = showFt8 && state ? '' : 'none';
-		ft8State.textContent = state ? `Buffer ${state.bufferedSeconds.toFixed(1)} s · Attempts ${state.attempts} · Decodes ${state.count} · Level ${(state.level * 100).toFixed(0)}%` : '';
-		ft8State.title = state ? `${state.bufferedSamples} samples · Epoch ${state.epoch}` : '';
+		ft8State.textContent = state ? t('ft8_progress', { s: state.bufferedSeconds.toFixed(1), n: state.attempts, d: state.count }) : '';
+		ft8State.title = state ? t('ft8_progress_tip', { n: state.bufferedSamples, e: state.epoch }) : '';
 	}
 	if (count) {
 		count.style.display = showFt8 ? '' : 'none';

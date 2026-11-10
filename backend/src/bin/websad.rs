@@ -4751,9 +4751,11 @@ fn load_golden() -> (Value, Value) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Configure passive Intel OpenMP waiting before loading the SDK so idle
-    // SDK workers do not starve capture.
-    for (key, value) in [("OMP_WAIT_POLICY", "PASSIVE"), ("KMP_BLOCKTIME", "0")] {
+    // Bound vendor MKL/OpenMP parallelism before the SDK is loaded. The SDK's
+    // nested teams compete with acquisition under load; Rust receiver workers
+    // keep their own independent scheduling and admission limits.
+    for (key, value) in [("OMP_WAIT_POLICY", "PASSIVE"), ("KMP_BLOCKTIME", "0"),
+        ("MKL_NUM_THREADS", "1"), ("MKL_DYNAMIC", "FALSE")] {
         if std::env::var_os(key).is_none() {
             // SAFETY: the process has one thread here; the tokio runtime starts below.
             unsafe { std::env::set_var(key, value) };

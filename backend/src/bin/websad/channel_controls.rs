@@ -155,6 +155,7 @@ impl DevState {
         json!({"mode": mode, "min_hz": minimum, "max_hz": feasible_hz})
     }
 
+    #[cfg(test)]
     pub(super) fn channel_status(&self) -> Value {
         self.channel_status_detail(true)
     }

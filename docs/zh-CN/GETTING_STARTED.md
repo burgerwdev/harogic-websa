@@ -14,7 +14,7 @@ WebSA 运行于 Linux。仓库的 `runtime/` 包含 Linux x86_64/glibc 服务、
 硬件模式需要 SAN-45／SAN-60／SAN-90，以及单独取得、安装于 `/opt/htraapi` 的 HAROGIC SDK
 及其共享库依赖。专有 SDK 不包含在仓库中。模拟模式无需分析仪或 SDK，但需要仓库的
 `tests/fixtures/`。启动脚本依赖 Bash、coreutils、util-linux（`flock`）、`/proc` 和 curl。
-运行捆绑版本不需要 Rust、Node 或 Python。
+启动器及崩溃监护还需要 Python 3；运行捆绑版本不需要 Rust 或 Node。
 
 ## 启动
 

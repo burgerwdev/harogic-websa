@@ -1,6 +1,6 @@
 {
   "name": "web-sa",
-  "version": "1.12.18",
+  "version": "1.12.19",
   "private": true,
   "license": "SEE LICENSE IN ../LICENSE-PACKAGE",
   "type": "module",

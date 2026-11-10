@@ -10,11 +10,15 @@ case "${1:-}" in
 esac
 [[ -z "${WEBSA_UNIT:-}" ]] || { echo 'WEBSA_UNIT was replaced by WEBSA_INSTANCE' >&2; exit 2; }
 lifecycle_init
+WAS_MONITORED=0
+if owned_monitor; then WAS_MONITORED=1; fi
+terminate_monitor
 if ! load_state || ! owned_process; then
-  rm -f "$STATE"
-  echo "Instance $INSTANCE is not running (stale state cleared)"
+  rm -f "$STATE" "$MONITOR"
+  if [[ "$WAS_MONITORED" == 1 ]]; then echo "Stopped monitored Rust service $INSTANCE"
+  else echo "Instance $INSTANCE is not running (stale state cleared)"; fi
   exit 0
 fi
 terminate_owned
-rm -f "$STATE"
+rm -f "$STATE" "$MONITOR"
 echo "Stopped Rust service $INSTANCE (PID $PID)"

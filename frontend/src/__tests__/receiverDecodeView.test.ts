@@ -4,6 +4,9 @@ import { mountReceiverDecodeView } from '../ui/receiverDecodeView';
 import { renderDecoderEntries } from '../ui/decoderResults';
 import { setLang } from '../core/i18n';
 import * as geography from '../ui/ft8GeoText';
+import { consumeReceiverResult } from '../ui/nativeWorkbenchStreams';
+import { resultExport } from '../ui/receiverExport';
+import { ft8SnrPresentation } from '../sdr/ft8Snr';
 
 let host: HTMLElement;
 const uid = 'decode-ui';
@@ -14,6 +17,45 @@ beforeEach(() => { setLang('en'); host = document.createElement('div'); document
 afterEach(() => { vi.restoreAllMocks(); forgetDecoderLog(uid); document.body.replaceChildren(); });
 
 describe('receiver Decode interaction and live results', () => {
+  it('shows near-zero estimates without negative zero and retains the original value in hover and export', () => {
+    const view = mountReceiverDecodeView(host);
+    try {
+      const data = { ...message(1, 'CQ TEST AA00'), data: { decodes: [{ msg: 'CQ TEST AA00', snr_db: -0.2,
+        measurement: { value: -0.2, quality: 'good', value_kind: 'estimate' } }] } };
+      view.update([data], uid, 'ft8', 0, '');
+      expect(host.querySelector('tbody tr')?.children[1].textContent).toBe('0');
+      expect((host.querySelector('tbody tr')?.children[1] as HTMLElement).title).toContain('Estimate -0.20 dB');
+      expect(resultExport([data], uid, 'csv')).toContain('"-0.2"');
+      for (const [value, text] of [[-0, '0'], [-0.001, '0'], [0.2, '0'], [-0.51, '-1'], [0.51, '1']] as const)
+        expect(ft8SnrPresentation(value).text).toBe(text);
+    } finally { view.dispose(); }
+  });
+  it('retains SNR value and quality through native ingress, themes, languages and exports', () => {
+    const view = mountReceiverDecodeView(host);
+    const definition = { metric_type: 'ft8_snr', unit: 'dB', state: 'conditional', location: 'original_iq_before_decoder_cancellation',
+      method: 'decoded_hann_matched_filters_with_exponential_tail_corrected_noise', averaging_seconds: 9.48, reference_bandwidth_hz: 2500 };
+    const measurement = { ...definition, value: 16.25, quality: 'degraded', value_kind: 'estimate', quality_reasons: ['off_tone_interference'] };
+    const envelope = { version: 1 as const, channel: 1, channel_id: 8, epoch: 1, seq: 1, input_index: '100', input_fraction_num: '0', input_fraction_den: '1',
+      input_rate: 12000, delay_seconds: 0, delay_known: true, causal_presentation: false, mode: 'ft8' };
+    try {
+      consumeReceiverResult(uid, { ...envelope, event: { type: 'ft8', text: 'CQ TEST AA00', snrDb: 16.25, measurement } });
+      const log = decoderLog(uid);
+      for (const theme of ['dark', 'light']) for (const lang of ['en', 'zh'] as const) {
+        document.documentElement.dataset.theme = theme; setLang(lang); view.update(log.entries, uid, 'ft8', 0, '');
+        const cell = host.querySelector<HTMLTableCellElement>('.ft8-snr-degraded')!;
+        expect(cell.textContent).toBe('16');
+        expect(cell.title).toContain(lang === 'en' ? 'Noise references contain interference' : '噪声参考受到干扰');
+        expect(cell.title).toContain('2500 Hz');
+      }
+      expect(JSON.parse(resultExport(log.entries, uid, 'jsonl')).data.decodes[0]).toMatchObject({ snr_db: 16.25, measurement });
+      expect(resultExport(log.entries, uid, 'csv')).toContain('"estimate","degraded","","off_tone_interference","2500"');
+      consumeReceiverResult(uid, { ...envelope, seq: 2, event: { type: 'ft8', text: 'CQ OTHER AA00', snrDb: null,
+        measurement: { ...definition, state: 'unavailable', value: null, quality: 'unavailable', value_kind: 'unavailable', reason: 'signal_not_resolved' } } });
+      view.update(decoderLog(uid).entries, uid, 'ft8', 0, '');
+      const unavailable = [...host.querySelectorAll('td')].find(cell => cell.textContent === '—' && cell.title.includes('无法从背景'));
+      expect(unavailable).toBeDefined();
+    } finally { view.dispose(); setLang('en'); delete document.documentElement.dataset.theme; }
+  });
   it('does not rebuild retained FT8 rows or measure an empty transcript for live status updates', () => {
     const view = mountReceiverDecodeView(host), geo = vi.spyOn(geography, 'ft8GeoTexts');
     const entries = [message(1, 'CQ W1ABC FN42'), message(2, 'CQ JA1ABC PM95')];

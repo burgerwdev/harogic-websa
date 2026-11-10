@@ -1,27 +1,14 @@
-//! The decoder's sensitivity floor, measured and committed.
+//! Actual FT8 message recovery with fixed-seed noise and frequency offsets.
+//! Single-signal cases cover -24 through -14 dB. The crowded fixture contains
+//! signals at 800/875/950 Hz and a fourth cochannel signal; its weakest signals
+//! have nominal -20 dB in-band SNR.
 //!
-//! "Better decoding" has to mean something measurable. This test sweeps a real encoded transmission
-//! (`ft8_cq_iq.bin`, the fixture the reference test uses) through additive noise from -24 to -14 dB
-//! and counts decodes per level, then checks the numbers against the baseline committed below. The
-//! same harness stacks the four-signal composite (`ft8_multi3_iq.bin`: three co-slot transmissions
-//! at 800/875/950 Hz -- 25-75 Hz apart, i.e. genuinely crowded -- plus a fourth sharing the strong
-//! signal's *exact* frequency, exercising co-channel subtraction) under a noise
-//! floor that puts the *weakest* signal at
-//! -20 dB -- the busy-band case a single-pass decoder is expected to fail and the case subtraction
-//! and OSD exist to fix.
+//! SNR is active signal power relative to expected AWGN power in 100-3000 Hz,
+//! about 0.645 dB below the 2500 Hz convention. Sensitivity assertions require
+//! decoded payloads and zero unrelated messages. Release-only execution keeps
+//! full-slot searches within the test's computation budget.
 //!
-//! SNR here is **nominal in-band**: active signal power against the expected white-noise share
-//! in the 100-3000 Hz receive band. Total noise power is normalized at 48 kHz; a finite
-//! realization's measured band power can differ slightly. This is within ~0.6 dB of the
-//! convention of referencing SNR to 2500 Hz, so the
-//! levels below can be compared with the literature: the reference decoder is quoted down to about
-//! -21 dB. Everything is deterministic (fixed seeds, fixed frequency offsets), so a run reproduces
-//! bit-for-bit and the baseline is a real floor, not a hope.
-//!
-//! Release-only like `ft8_real_slot`: each 15 s decode costs the better part of a second, which is
-//! no test for a debug build.
-//!
-//!     cd dsp/core && cargo test --release --test ft8_snr_sweep -- --nocapture
+//! cargo test --release --test ft8_snr_sweep -- --nocapture
 use websa_dsp::digital::ft8::Ft8Decoder;
 
 mod common;
@@ -52,20 +39,10 @@ const MULTI_WEAK_SNR_DB: f64 = -20.0;
 /// The weak fixture signal is 16 dB below the strong one.
 const MULTI_WEAK_AMP_DB: f64 = -16.0;
 
-// ---------------------------------------------------------------------------
-// The committed baseline. Measured on the pre-change decoder (single pass, no
-// subtraction, no OSD) on 2026-09-29. Single-signal scenario power is unchanged.
-// The old multi-signal helper rescaled the fixture, so its historical counts do
-// not establish sensitivity at the stated -20 dB. Its existing floors remain
-// required after correcting that helper; failures are sensitivity limitations.
-// ---------------------------------------------------------------------------
-/// Decoded trials (of `TRIALS_PER_LEVEL`) per level, in `LEVELS_DB` order: the
-/// single-pass cliff sits at about -19 dB in-band. The original harness repeated each
-/// of four identical scenarios twice: counts [0,0,0,4,8,8], floors [0,0,0,3,7,7].
-/// With duplicates removed, 2*unique >= old_floor iff unique >= ceil(old_floor/2).
-/// These floors therefore preserve the original acceptance condition exactly.
+/// Single-pass reference recovery counts, ordered by LEVELS_DB.
+/// FLOOR_SINGLE requires four unique decodes at every level from -20 dB upward.
 const PRE_CHANGE_SINGLE: [usize; 6] = [0, 0, 0, 2, 4, 4];
-const FLOOR_SINGLE: [usize; 6] = [0, 0, 0, 2, 4, 4];
+const FLOOR_SINGLE: [usize; 6] = [0, 0, 4, 4, 4, 4];
 /// Decoded trials (of `MULTI_TRIALS`) where all four signals came out at once.
 const PRE_CHANGE_MULTI_ALL: usize = 0;
 /// Decoded trials where at least two signals came out.

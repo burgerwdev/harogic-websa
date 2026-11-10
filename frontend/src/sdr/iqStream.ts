@@ -439,10 +439,10 @@ export function resetSdrIq(): void {
   publishIqDebug();
 }
 export function renderFt8Message(report: Ft8Report, channel: number = 1): void {
-  addFt8Spot(report, Date.now(), channel);
+  const spot = addFt8Spot(report, Date.now(), channel);
   ft8Text = String(report.text || '');
   ft8Count = Number(report.count) || ft8Count + 1;
-  ft8Detail = `${ft8Text}  @ ${(Number(report.frequencyHz) || 0).toFixed(0)} Hz, +${(Number(report.timeOffsetS) || 0).toFixed(2)} s, ${report.snrDb === null ? '—' : report.snrDb.toFixed(0)} dB`;
+  ft8Detail = `${ft8Text}  @ ${(Number(report.frequencyHz) || 0).toFixed(0)} Hz, +${(Number(report.timeOffsetS) || 0).toFixed(2)} s, ${ft8SnrPresentation(spot.snrDb, spot.measurement).text} dB`;
   publishIqDebug();
 }
 export function lastFt8Message(): { text: string; count: number; detail: string } {
@@ -476,3 +476,4 @@ onNativeDecode(envelopes => {
   } catch (error) { reportError(error instanceof Error ? error.message : String(error), 'transport'); }
 });
 export type { Ft8Report };
+import { ft8SnrPresentation } from './ft8Snr';

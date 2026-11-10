@@ -19,7 +19,7 @@ python3 -m pytest tests/ -q
 
 echo
 echo "==== Python static checks (ruff) ===="
-python3 -m ruff check tests tools
+python3 -m ruff check tests tools supervise.py
 
 echo
 echo "==== Frontend tests (vitest) ===="

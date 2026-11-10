@@ -1,0 +1,2124 @@
+{
+  "date": "2026-11-10",
+  "reference_bandwidth_hz": 2500,
+  "baseline": {
+    "git_head": "b27ea7a1",
+    "scope": "Working tree at task start, including existing weak-signal decoder changes",
+    "ft8_source_sha256": "3f5a3000f91a2520d4fc5dbe58699f6b162f904c986f5cb40f0cccec85d52331"
+  },
+  "source_commits": {
+    "wsjtx": "967c85a6119110788b0df3782cf796485b2cee14",
+    "jtdx": "2a0e2bea8c66c9ca94d2ea8034cf83a68cfa40eb"
+  },
+  "method": "Original IQ decoded-tone Hann power minus median-initialized, exponential-upper-tail-corrected pooled local noise; computed ENBW / 2500 Hz",
+  "value_semantics": "Finite values are estimates, never report-clamped or substituted bounds; snrDb equals measurement.value. Good/degraded quality does not guarantee error bounds.",
+  "acceptance_document": "docs/ft8-snr-acceptance.md",
+  "acceptance_passed": true,
+  "calibration": {
+    "known_codeword_is_not_a_sensitivity_test": true,
+    "sample_rates_hz": [
+      8000,
+      12000,
+      48000
+    ],
+    "noise_types": [
+      "real AWGN",
+      "complex AWGN"
+    ],
+    "levels_db": [
+      -30,
+      -27,
+      -24,
+      -20,
+      -10,
+      0,
+      9,
+      15,
+      20
+    ],
+    "common_iq_scaling": [
+      0.01,
+      1,
+      100
+    ],
+    "common_scaling_max_allowed_change_db": 0.01,
+    "awgn_max_error_db_at_or_above_minus20": 0.608457970550571,
+    "awgn_max_error_db_below_minus20": 2.0097600046375064,
+    "before_mean_signed_bias_db": 0.06606183604461369,
+    "after_mean_signed_bias_db": 0.08069916987166825,
+    "bias_seeds": 32,
+    "common_finite_awgn": {
+      "cases": 30,
+      "before_mae_db": 0.22631966978362178,
+      "after_mae_db": 0.24139693183734892
+    },
+    "note": "Robustness increases clean-background variance slightly on the common finite subset; do not compare the historical truncated maximum against the wider new range."
+  },
+  "before": {
+    "total_cases": 69,
+    "estimable_cases": 63,
+    "estimable_nulls": 29,
+    "estimable_null_fraction": 0.4603174603174603,
+    "intentionally_unavailable_cases": 6,
+    "quality_counts": {
+      "not_reported": 69
+    },
+    "awgn_max_error_db": 0.8799840863182311,
+    "cases": [
+      {
+        "name": "awgn-8000-false--30",
+        "expected_db": -30.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-8000-false--27",
+        "expected_db": -27.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-8000-false--24",
+        "expected_db": -24.0,
+        "value_db": -23.912913068546253,
+        "error_db": 0.08708693145374724,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false--20",
+        "expected_db": -20.0,
+        "value_db": -20.115121829269928,
+        "error_db": -0.11512182926992764,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false--10",
+        "expected_db": -10.0,
+        "value_db": -10.293421429445598,
+        "error_db": -0.2934214294455977,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false-0",
+        "expected_db": 0.0,
+        "value_db": -0.33545273103426915,
+        "error_db": -0.33545273103426915,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false-9",
+        "expected_db": 9.0,
+        "value_db": 8.653406340021672,
+        "error_db": -0.34659365997832836,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false-15",
+        "expected_db": 15.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-8000-false-20",
+        "expected_db": 20.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-8000-true--30",
+        "expected_db": -30.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-8000-true--27",
+        "expected_db": -27.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-8000-true--24",
+        "expected_db": -24.0,
+        "value_db": -23.66934323873928,
+        "error_db": 0.33065676126071963,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true--20",
+        "expected_db": -20.0,
+        "value_db": -19.961331208451234,
+        "error_db": 0.03866879154876557,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true--10",
+        "expected_db": -10.0,
+        "value_db": -9.868529379024887,
+        "error_db": 0.1314706209751133,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true-0",
+        "expected_db": 0.0,
+        "value_db": 0.2568059006627193,
+        "error_db": 0.2568059006627193,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true-9",
+        "expected_db": 9.0,
+        "value_db": 9.302286964995607,
+        "error_db": 0.3022869649956075,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true-15",
+        "expected_db": 15.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-8000-true-20",
+        "expected_db": 20.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-false--30",
+        "expected_db": -30.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-false--27",
+        "expected_db": -27.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-false--24",
+        "expected_db": -24.0,
+        "value_db": -23.855449786481717,
+        "error_db": 0.1445502135182828,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false--20",
+        "expected_db": -20.0,
+        "value_db": -19.936641208437734,
+        "error_db": 0.06335879156226554,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false--10",
+        "expected_db": -10.0,
+        "value_db": -10.072582024039086,
+        "error_db": -0.07258202403908598,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false-0",
+        "expected_db": 0.0,
+        "value_db": -0.12536914750307682,
+        "error_db": -0.12536914750307682,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false-9",
+        "expected_db": 9.0,
+        "value_db": 8.85792839961383,
+        "error_db": -0.14207160038617062,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false-15",
+        "expected_db": 15.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-false-20",
+        "expected_db": 20.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-true--30",
+        "expected_db": -30.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-true--27",
+        "expected_db": -27.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-true--24",
+        "expected_db": -24.0,
+        "value_db": -23.99026054388419,
+        "error_db": 0.00973945611580973,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true--20",
+        "expected_db": -20.0,
+        "value_db": -20.155716750176094,
+        "error_db": -0.15571675017609365,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true--10",
+        "expected_db": -10.0,
+        "value_db": -10.189315223030285,
+        "error_db": -0.18931522303028459,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true-0",
+        "expected_db": 0.0,
+        "value_db": -0.16307105238180686,
+        "error_db": -0.16307105238180686,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true-9",
+        "expected_db": 9.0,
+        "value_db": 8.848098169404723,
+        "error_db": -0.15190183059527662,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true-15",
+        "expected_db": 15.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-12000-true-20",
+        "expected_db": 20.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-48000-false--30",
+        "expected_db": -30.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "sync_power_not_resolved"
+      },
+      {
+        "name": "awgn-48000-false--27",
+        "expected_db": -27.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-48000-false--24",
+        "expected_db": -24.0,
+        "value_db": -24.69149187713089,
+        "error_db": -0.6914918771308898,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false--20",
+        "expected_db": -20.0,
+        "value_db": -20.5092091839349,
+        "error_db": -0.5092091839348996,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false--10",
+        "expected_db": -10.0,
+        "value_db": -10.24362255054654,
+        "error_db": -0.24362255054654014,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false-0",
+        "expected_db": 0.0,
+        "value_db": -0.14942364375722353,
+        "error_db": -0.14942364375722353,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false-9",
+        "expected_db": 9.0,
+        "value_db": 8.87954322682592,
+        "error_db": -0.12045677317408021,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false-15",
+        "expected_db": 15.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-48000-false-20",
+        "expected_db": 20.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-48000-true--30",
+        "expected_db": -30.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-48000-true--27",
+        "expected_db": -27.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-48000-true--24",
+        "expected_db": -24.0,
+        "value_db": -23.12001591368177,
+        "error_db": 0.8799840863182311,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true--20",
+        "expected_db": -20.0,
+        "value_db": -19.48320848496096,
+        "error_db": 0.5167915150390385,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true--10",
+        "expected_db": -10.0,
+        "value_db": -9.91140918596677,
+        "error_db": 0.0885908140332301,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true-0",
+        "expected_db": 0.0,
+        "value_db": -0.04713614376482815,
+        "error_db": -0.04713614376482815,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true-9",
+        "expected_db": 9.0,
+        "value_db": 8.912358204123256,
+        "error_db": -0.0876417958767437,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true-15",
+        "expected_db": 15.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "awgn-48000-true-20",
+        "expected_db": 20.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "outside_validated_range_minus25_to10_db"
+      },
+      {
+        "name": "adjacent-cw",
+        "expected_db": -10.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "off_tone_interference_or_nonflat_background"
+      },
+      {
+        "name": "crowded",
+        "expected_db": -10.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "off_tone_interference_or_nonflat_background"
+      },
+      {
+        "name": "slope",
+        "expected_db": -10.0,
+        "value_db": -10.025191890294058,
+        "error_db": -0.02519189029405844,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "fading",
+        "expected_db": -10.0,
+        "value_db": -9.7949367063174,
+        "error_db": 0.20506329368259912,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "frequency-error",
+        "expected_db": -10.0,
+        "value_db": -9.957280351122705,
+        "error_db": 0.04271964887729496,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "low-edge",
+        "expected_db": -10.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "insufficient_complete_symbols"
+      },
+      {
+        "name": "high-edge",
+        "expected_db": -10.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "insufficient_complete_symbols"
+      },
+      {
+        "name": "partial",
+        "expected_db": -10.0,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "insufficient_complete_symbols"
+      },
+      {
+        "name": "clipped",
+        "expected_db": -10.0,
+        "value_db": -10.951993210912239,
+        "error_db": -0.9519932109122387,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "zero",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "off_tone_interference_or_nonflat_background"
+      },
+      {
+        "name": "short",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "insufficient_complete_symbols"
+      },
+      {
+        "name": "nonfinite",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "no_reliable_symbol_fit"
+      },
+      {
+        "name": "invalid-rate",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "no_reliable_symbol_fit"
+      },
+      {
+        "name": "invalid-time",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "no_reliable_symbol_fit"
+      },
+      {
+        "name": "invalid-frequency",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "not_reported",
+        "quality_reasons": [],
+        "unavailable_reason": "no_reliable_symbol_fit"
+      }
+    ]
+  },
+  "after": {
+    "total_cases": 69,
+    "estimable_cases": 63,
+    "estimable_nulls": 0,
+    "estimable_null_fraction": 0.0,
+    "intentionally_unavailable_cases": 6,
+    "quality_counts": {
+      "degraded": 18,
+      "good": 45,
+      "unavailable": 6
+    },
+    "awgn_max_error_db": 2.0097600046375064,
+    "cases": [
+      {
+        "name": "awgn-8000-false--30",
+        "expected_db": -30.0,
+        "value_db": -29.432994283395885,
+        "error_db": 0.5670057166041147,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false--27",
+        "expected_db": -27.0,
+        "value_db": -26.794619183125082,
+        "error_db": 0.20538081687491783,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false--24",
+        "expected_db": -24.0,
+        "value_db": -24.016090346444877,
+        "error_db": -0.016090346444876502,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false--20",
+        "expected_db": -20.0,
+        "value_db": -20.184845108282946,
+        "error_db": -0.1848451082829463,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false--10",
+        "expected_db": -10.0,
+        "value_db": -10.34183671420488,
+        "error_db": -0.3418367142048808,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false-0",
+        "expected_db": 0.0,
+        "value_db": -0.3816452692462557,
+        "error_db": -0.3816452692462557,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false-9",
+        "expected_db": 9.0,
+        "value_db": 8.607433693068147,
+        "error_db": -0.3925663069318528,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false-15",
+        "expected_db": 15.0,
+        "value_db": 14.604513929981147,
+        "error_db": -0.39548607001885294,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-false-20",
+        "expected_db": 20.0,
+        "value_db": 19.603236611718888,
+        "error_db": -0.39676338828111213,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true--30",
+        "expected_db": -30.0,
+        "value_db": -28.825752465543466,
+        "error_db": 1.1742475344565335,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true--27",
+        "expected_db": -27.0,
+        "value_db": -26.795177152040775,
+        "error_db": 0.20482284795922467,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true--24",
+        "expected_db": -24.0,
+        "value_db": -24.217836991004976,
+        "error_db": -0.217836991004976,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true--20",
+        "expected_db": -20.0,
+        "value_db": -20.33291539270271,
+        "error_db": -0.3329153927027093,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true--10",
+        "expected_db": -10.0,
+        "value_db": -10.125669116228899,
+        "error_db": -0.12566911622889876,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true-0",
+        "expected_db": 0.0,
+        "value_db": 0.010718794479368878,
+        "error_db": 0.010718794479368878,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true-9",
+        "expected_db": 9.0,
+        "value_db": 9.057243820465562,
+        "error_db": 0.05724382046556187,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true-15",
+        "expected_db": 15.0,
+        "value_db": 15.070432764453592,
+        "error_db": 0.07043276445359226,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-8000-true-20",
+        "expected_db": 20.0,
+        "value_db": 20.076263838995065,
+        "error_db": 0.0762638389950645,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false--30",
+        "expected_db": -30.0,
+        "value_db": -29.199849816266394,
+        "error_db": 0.8001501837336065,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false--27",
+        "expected_db": -27.0,
+        "value_db": -26.44597206735218,
+        "error_db": 0.5540279326478199,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false--24",
+        "expected_db": -24.0,
+        "value_db": -23.620661486838834,
+        "error_db": 0.37933851316116574,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false--20",
+        "expected_db": -20.0,
+        "value_db": -19.77701170783369,
+        "error_db": 0.22298829216630978,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false--10",
+        "expected_db": -10.0,
+        "value_db": -9.959599569203544,
+        "error_db": 0.04040043079645628,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false-0",
+        "expected_db": 0.0,
+        "value_db": -0.01723508707639448,
+        "error_db": -0.01723508707639448,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false-9",
+        "expected_db": 9.0,
+        "value_db": 8.965595362096575,
+        "error_db": -0.03440463790342463,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false-15",
+        "expected_db": 15.0,
+        "value_db": 14.960907733847941,
+        "error_db": -0.03909226615205874,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-false-20",
+        "expected_db": 20.0,
+        "value_db": 19.958873828924688,
+        "error_db": -0.04112617107531236,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true--30",
+        "expected_db": -30.0,
+        "value_db": -28.88855409452455,
+        "error_db": 1.111445905475449,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true--27",
+        "expected_db": -27.0,
+        "value_db": -26.569838661363075,
+        "error_db": 0.43016133863692474,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true--24",
+        "expected_db": -24.0,
+        "value_db": -23.91973406515139,
+        "error_db": 0.08026593484861166,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true--20",
+        "expected_db": -20.0,
+        "value_db": -20.108067457815437,
+        "error_db": -0.10806745781543725,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true--10",
+        "expected_db": -10.0,
+        "value_db": -10.156236272564428,
+        "error_db": -0.15623627256442774,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true-0",
+        "expected_db": 0.0,
+        "value_db": -0.1314654522921762,
+        "error_db": -0.1314654522921762,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true-9",
+        "expected_db": 9.0,
+        "value_db": 8.879561464331967,
+        "error_db": -0.12043853566803264,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true-15",
+        "expected_db": 15.0,
+        "value_db": 14.882810874452108,
+        "error_db": -0.11718912554789185,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-12000-true-20",
+        "expected_db": 20.0,
+        "value_db": 19.884185023723912,
+        "error_db": -0.11581497627608783,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false--30",
+        "expected_db": -30.0,
+        "value_db": -31.41027156810234,
+        "error_db": -1.4102715681023383,
+        "quality": "degraded",
+        "quality_reasons": [
+          "sync_power_not_resolved",
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false--27",
+        "expected_db": -27.0,
+        "value_db": -28.10004102855768,
+        "error_db": -1.1000410285576798,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false--24",
+        "expected_db": -24.0,
+        "value_db": -24.849651434574085,
+        "error_db": -0.8496514345740849,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false--20",
+        "expected_db": -20.0,
+        "value_db": -20.60845797055057,
+        "error_db": -0.608457970550571,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false--10",
+        "expected_db": -10.0,
+        "value_db": -10.310262569079933,
+        "error_db": -0.3102625690799332,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false-0",
+        "expected_db": 0.0,
+        "value_db": -0.21301751295319055,
+        "error_db": -0.21301751295319055,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false-9",
+        "expected_db": 9.0,
+        "value_db": 8.816249127258889,
+        "error_db": -0.18375087274111124,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false-15",
+        "expected_db": 15.0,
+        "value_db": 14.824317445562755,
+        "error_db": -0.17568255443724468,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-false-20",
+        "expected_db": 20.0,
+        "value_db": 19.8278965620848,
+        "error_db": -0.17210343791520089,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true--30",
+        "expected_db": -30.0,
+        "value_db": -27.990239995362494,
+        "error_db": 2.0097600046375064,
+        "quality": "degraded",
+        "quality_reasons": [
+          "high_statistical_uncertainty"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true--27",
+        "expected_db": -27.0,
+        "value_db": -25.600709979592665,
+        "error_db": 1.399290020407335,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true--24",
+        "expected_db": -24.0,
+        "value_db": -23.035754891000828,
+        "error_db": 0.9642451089991724,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true--20",
+        "expected_db": -20.0,
+        "value_db": -19.422976304728977,
+        "error_db": 0.5770236952710235,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true--10",
+        "expected_db": -10.0,
+        "value_db": -9.867562946369375,
+        "error_db": 0.13243705363062475,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true-0",
+        "expected_db": 0.0,
+        "value_db": -0.005102213731699224,
+        "error_db": -0.005102213731699224,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true-9",
+        "expected_db": 9.0,
+        "value_db": 8.954248950695707,
+        "error_db": -0.04575104930429319,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true-15",
+        "expected_db": 15.0,
+        "value_db": 14.943161301002801,
+        "error_db": -0.05683869899719873,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "awgn-48000-true-20",
+        "expected_db": 20.0,
+        "value_db": 19.938330918747635,
+        "error_db": -0.06166908125236503,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "adjacent-cw",
+        "expected_db": -10.0,
+        "value_db": -10.382407884519022,
+        "error_db": -0.3824078845190222,
+        "quality": "degraded",
+        "quality_reasons": [
+          "nonflat_background",
+          "off_tone_interference"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "crowded",
+        "expected_db": -10.0,
+        "value_db": -9.724580288775455,
+        "error_db": 0.27541971122454534,
+        "quality": "degraded",
+        "quality_reasons": [
+          "nonflat_background",
+          "off_tone_interference"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "slope",
+        "expected_db": -10.0,
+        "value_db": -9.427705266873582,
+        "error_db": 0.5722947331264177,
+        "quality": "degraded",
+        "quality_reasons": [
+          "nonflat_background"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "fading",
+        "expected_db": -10.0,
+        "value_db": -9.455863961726582,
+        "error_db": 0.5441360382734182,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "frequency-error",
+        "expected_db": -10.0,
+        "value_db": -9.701957077294505,
+        "error_db": 0.2980429227054948,
+        "quality": "good",
+        "quality_reasons": [],
+        "unavailable_reason": null
+      },
+      {
+        "name": "low-edge",
+        "expected_db": -10.0,
+        "value_db": -10.32309801541939,
+        "error_db": -0.3230980154193901,
+        "quality": "degraded",
+        "quality_reasons": [
+          "limited_reference_support"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "high-edge",
+        "expected_db": -10.0,
+        "value_db": -10.049596697963207,
+        "error_db": -0.04959669796320654,
+        "quality": "degraded",
+        "quality_reasons": [
+          "limited_reference_support"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "partial",
+        "expected_db": -10.0,
+        "value_db": -9.558078703687235,
+        "error_db": 0.4419212963127652,
+        "quality": "degraded",
+        "quality_reasons": [
+          "partial_burst"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "clipped",
+        "expected_db": -10.0,
+        "value_db": -10.874077768875114,
+        "error_db": -0.8740777688751145,
+        "quality": "degraded",
+        "quality_reasons": [
+          "clipping_detected"
+        ],
+        "unavailable_reason": null
+      },
+      {
+        "name": "zero",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "unavailable",
+        "quality_reasons": [],
+        "unavailable_reason": "noise_not_resolved"
+      },
+      {
+        "name": "short",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "unavailable",
+        "quality_reasons": [],
+        "unavailable_reason": "insufficient_complete_symbols"
+      },
+      {
+        "name": "nonfinite",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "unavailable",
+        "quality_reasons": [],
+        "unavailable_reason": "nonfinite_iq"
+      },
+      {
+        "name": "invalid-rate",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "unavailable",
+        "quality_reasons": [],
+        "unavailable_reason": "invalid_measurement_input"
+      },
+      {
+        "name": "invalid-time",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "unavailable",
+        "quality_reasons": [],
+        "unavailable_reason": "invalid_measurement_input"
+      },
+      {
+        "name": "invalid-frequency",
+        "expected_db": null,
+        "value_db": null,
+        "error_db": null,
+        "quality": "unavailable",
+        "quality_reasons": [],
+        "unavailable_reason": "invalid_measurement_input"
+      }
+    ]
+  },
+  "decoder_before": {
+    "single_signal": [
+      {
+        "nominal_in_band_db": -24,
+        "decoded": 0,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -22,
+        "decoded": 2,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -20,
+        "decoded": 4,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -18,
+        "decoded": 4,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -16,
+        "decoded": 4,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -14,
+        "decoded": 4,
+        "trials": 4
+      }
+    ],
+    "crowded_all_four_decoded_trials": 3,
+    "crowded_trials": 4,
+    "independent_gfsk_minus20_hits": 3,
+    "independent_gfsk_trials": 3,
+    "false_decodes": 0,
+    "real_recording_decoded": true
+  },
+  "decoder_after": {
+    "single_signal": [
+      {
+        "nominal_in_band_db": -24,
+        "decoded": 0,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -22,
+        "decoded": 2,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -20,
+        "decoded": 4,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -18,
+        "decoded": 4,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -16,
+        "decoded": 4,
+        "trials": 4
+      },
+      {
+        "nominal_in_band_db": -14,
+        "decoded": 4,
+        "trials": 4
+      }
+    ],
+    "crowded_all_four_decoded_trials": 3,
+    "crowded_trials": 4,
+    "independent_gfsk_minus20_hits": 3,
+    "independent_gfsk_trials": 3,
+    "false_decodes": 0,
+    "real_recording_decoded": true
+  },
+  "wsjtx_identical_input": {
+    "seed": 20261110,
+    "bandwidth_hz": 2500,
+    "method": "WSJT-X GFSK plus real AWGN; identical quantized input",
+    "executable_sha256": {
+      "jt9": "1f316b2ba2c8ba5350628ab8389f4fa5bbddb84406f6a410c20ae0c64d602e0c",
+      "ft8sim": "4246f22ad77c9286b93cf44673ecaed8cd4a23ba173551989c38815439985805"
+    },
+    "rows": [
+      {
+        "expected_db": -24,
+        "wsjtx_db": null,
+        "reference_output": "<DecodeFinished>   0   0        0\n",
+        "iq_sha256": "c06c05aadd6dc2db8ee20dc52a1627549660504d281ea65bfe72611c8bae5775"
+      },
+      {
+        "expected_db": -20,
+        "wsjtx_db": -20,
+        "reference_output": "000000 -20 -0.0 1001 ~  CQ JO1WKO PM95                          \n<DecodeFinished>   0   1        0\n",
+        "iq_sha256": "e1ae9ea5006a22a59281b77b3ec252f98783016df4cfeb9fd93137ff173370cb"
+      },
+      {
+        "expected_db": -16,
+        "wsjtx_db": -16,
+        "reference_output": "000000 -16 -0.0 1000 ~  CQ JO1WKO PM95                          \n<DecodeFinished>   0   1        0\n",
+        "iq_sha256": "a2b52add1b2b0f3848a8fa098a7c2ace4c4825b6834f547d463e949bca8409bf"
+      },
+      {
+        "expected_db": -10,
+        "wsjtx_db": -10,
+        "reference_output": "000000 -10  0.0 1000 ~  CQ JO1WKO PM95                          \n<DecodeFinished>   0   1        0\n",
+        "iq_sha256": "ffedf49e89f8399c66a955e07abc5f3a42e38332b3ce7c1720fb4dd2053ec5a5"
+      },
+      {
+        "expected_db": 0,
+        "wsjtx_db": 0,
+        "reference_output": "000000   0  0.0 1001 ~  CQ JO1WKO PM95                          \n<DecodeFinished>   0   1        0\n",
+        "iq_sha256": "41a39ec3fc7712019a7fbb7a1fe5bc5f4f3f9951d63f91111cd029d6c8af2fe8"
+      },
+      {
+        "expected_db": 8,
+        "wsjtx_db": 8,
+        "reference_output": "000000   8  0.0 1001 ~  CQ JO1WKO PM95                          \n<DecodeFinished>   0   1        0\n",
+        "iq_sha256": "5fd3ac5a42aa71d707e17786dc879b0cc057743238679c6350e44ebd2f4fae25"
+      }
+    ],
+    "native_comparison": [
+      {
+        "injected_db": -20.0,
+        "native_db": -20.640947,
+        "wsjtx_db": -20.0,
+        "absolute_error_db": 0.640947,
+        "actual_message_recovered": true
+      },
+      {
+        "injected_db": -16.0,
+        "native_db": -16.526988,
+        "wsjtx_db": -16.0,
+        "absolute_error_db": 0.526988,
+        "actual_message_recovered": true
+      },
+      {
+        "injected_db": -10.0,
+        "native_db": -10.46665,
+        "wsjtx_db": -10.0,
+        "absolute_error_db": 0.46665,
+        "actual_message_recovered": true
+      },
+      {
+        "injected_db": 0.0,
+        "native_db": -0.444027,
+        "wsjtx_db": 0.0,
+        "absolute_error_db": 0.444027,
+        "actual_message_recovered": true
+      },
+      {
+        "injected_db": 8.0,
+        "native_db": 7.559856,
+        "wsjtx_db": 8.0,
+        "absolute_error_db": 0.440144,
+        "actual_message_recovered": true
+      }
+    ]
+  },
+  "performance": {
+    "machine": "Linux-7.2.11-arch1-1-x86_64-with-glibc2.44",
+    "executable_sha256": {
+      "before": {
+        "ft8_snr_robust": "a34da4bbd0e0818665739bb81cfb1dfc7aa07a49300f5672352de50be9c15781",
+        "ft8_reference": "0a964f8d1ecc0800daf6175f0d231850e9bb0973e4262eac0a4932fd001472f2"
+      },
+      "after": {
+        "ft8_snr_robust": "1e4029b10145354d434f2a3b8b1a3b89d22a2801236681b713c7ca34ed6a6ea4",
+        "ft8_reference": "66a38031f469bd181a83f1d013b7cedfff5e50a9379d4d56b583466eee26b3e0"
+      }
+    },
+    "compilation_in_timed_region": false,
+    "trials": {
+      "meter": {
+        "before": [
+          {
+            "process_wall_seconds": 0.9534449890052201,
+            "user_seconds": 0.9390919999999999,
+            "system_seconds": 0.0049039999999999995,
+            "wall_seconds_per_call": 0.004085083125,
+            "cpu_seconds_per_call": 0.00412225327510917
+          },
+          {
+            "process_wall_seconds": 0.8789840020035626,
+            "user_seconds": 0.8718530000000002,
+            "system_seconds": 0.0019889999999999994,
+            "wall_seconds_per_call": 0.0037070474375,
+            "cpu_seconds_per_call": 0.0038159039301310055
+          },
+          {
+            "process_wall_seconds": 0.9481172090017935,
+            "user_seconds": 0.9394339999999994,
+            "system_seconds": 0.0019690000000000003,
+            "wall_seconds_per_call": 0.004007410875,
+            "cpu_seconds_per_call": 0.004110930131004364
+          },
+          {
+            "process_wall_seconds": 0.8418065779987955,
+            "user_seconds": 0.8371879999999994,
+            "system_seconds": 0.0009839999999999988,
+            "wall_seconds_per_call": 0.0035770026875,
+            "cpu_seconds_per_call": 0.0036601397379912638
+          },
+          {
+            "process_wall_seconds": 0.8952374499931466,
+            "user_seconds": 0.8890510000000003,
+            "system_seconds": 0.0,
+            "wall_seconds_per_call": 0.003836751875,
+            "cpu_seconds_per_call": 0.0038823187772925776
+          },
+          {
+            "process_wall_seconds": 0.8582378449937096,
+            "user_seconds": 0.8534950000000006,
+            "system_seconds": 0.0009979999999999989,
+            "wall_seconds_per_call": 0.0036859998125,
+            "cpu_seconds_per_call": 0.0037314104803493476
+          },
+          {
+            "process_wall_seconds": 0.8508194329915568,
+            "user_seconds": 0.8459450000000004,
+            "system_seconds": 0.0009930000000000008,
+            "wall_seconds_per_call": 0.00361881440625,
+            "cpu_seconds_per_call": 0.003698419213973801
+          }
+        ],
+        "after": [
+          {
+            "process_wall_seconds": 1.0865823989879573,
+            "user_seconds": 1.071437,
+            "system_seconds": 0.004887,
+            "wall_seconds_per_call": 0.004518839875,
+            "cpu_seconds_per_call": 0.00470010480349345
+          },
+          {
+            "process_wall_seconds": 1.0399444490030874,
+            "user_seconds": 1.0296889999999999,
+            "system_seconds": 0.0029720000000000007,
+            "wall_seconds_per_call": 0.00409940678125,
+            "cpu_seconds_per_call": 0.004509436681222707
+          },
+          {
+            "process_wall_seconds": 0.8680863710033009,
+            "user_seconds": 0.8593100000000007,
+            "system_seconds": 0.003980000000000001,
+            "wall_seconds_per_call": 0.003728400125,
+            "cpu_seconds_per_call": 0.00376982532751092
+          },
+          {
+            "process_wall_seconds": 0.8339007850008784,
+            "user_seconds": 0.828125,
+            "system_seconds": 0.0019629999999999995,
+            "wall_seconds_per_call": 0.00355816928125,
+            "cpu_seconds_per_call": 0.0036248384279475984
+          },
+          {
+            "process_wall_seconds": 0.8986197519989219,
+            "user_seconds": 0.8907030000000002,
+            "system_seconds": 0.002978999999999999,
+            "wall_seconds_per_call": 0.0038690279375,
+            "cpu_seconds_per_call": 0.003902541484716158
+          },
+          {
+            "process_wall_seconds": 0.8404492859990569,
+            "user_seconds": 0.8340549999999993,
+            "system_seconds": 0.001982000000000001,
+            "wall_seconds_per_call": 0.0035859020625,
+            "cpu_seconds_per_call": 0.0036508165938864603
+          },
+          {
+            "process_wall_seconds": 0.8925774019880919,
+            "user_seconds": 0.8820969999999999,
+            "system_seconds": 0.003975000000000003,
+            "wall_seconds_per_call": 0.00386509596875,
+            "cpu_seconds_per_call": 0.0038693100436681216
+          }
+        ]
+      },
+      "decoder": {
+        "before": [
+          {
+            "process_wall_seconds": 2.942338099994231,
+            "user_seconds": 2.9167690000000004,
+            "system_seconds": 0.008887999999999993,
+            "wall_seconds_per_call": 2.937,
+            "cpu_seconds_per_call": 2.925657
+          },
+          {
+            "process_wall_seconds": 3.3980061580077745,
+            "user_seconds": 3.3691069999999996,
+            "system_seconds": 0.007944000000000007,
+            "wall_seconds_per_call": 3.393,
+            "cpu_seconds_per_call": 3.377051
+          },
+          {
+            "process_wall_seconds": 3.709955544996774,
+            "user_seconds": 3.674543,
+            "system_seconds": 0.008934999999999998,
+            "wall_seconds_per_call": 3.705,
+            "cpu_seconds_per_call": 3.683478
+          },
+          {
+            "process_wall_seconds": 3.048860102004255,
+            "user_seconds": 3.0183820000000026,
+            "system_seconds": 0.012905,
+            "wall_seconds_per_call": 3.044,
+            "cpu_seconds_per_call": 3.0312870000000025
+          },
+          {
+            "process_wall_seconds": 3.1427300020004623,
+            "user_seconds": 3.1133369999999942,
+            "system_seconds": 0.013902000000000012,
+            "wall_seconds_per_call": 3.138,
+            "cpu_seconds_per_call": 3.127238999999994
+          },
+          {
+            "process_wall_seconds": 3.203657178004505,
+            "user_seconds": 3.1701090000000036,
+            "system_seconds": 0.012912000000000007,
+            "wall_seconds_per_call": 3.197,
+            "cpu_seconds_per_call": 3.1830210000000037
+          },
+          {
+            "process_wall_seconds": 3.4221070500061614,
+            "user_seconds": 3.3842319999999972,
+            "system_seconds": 0.013853000000000004,
+            "wall_seconds_per_call": 3.413,
+            "cpu_seconds_per_call": 3.3980849999999974
+          }
+        ],
+        "after": [
+          {
+            "process_wall_seconds": 3.1220527650002623,
+            "user_seconds": 3.097218999999999,
+            "system_seconds": 0.006959,
+            "wall_seconds_per_call": 3.117,
+            "cpu_seconds_per_call": 3.104177999999999
+          },
+          {
+            "process_wall_seconds": 3.0132075830042595,
+            "user_seconds": 2.9855300000000007,
+            "system_seconds": 0.010935,
+            "wall_seconds_per_call": 3.008,
+            "cpu_seconds_per_call": 2.9964650000000006
+          },
+          {
+            "process_wall_seconds": 3.1043221760046436,
+            "user_seconds": 3.079291999999999,
+            "system_seconds": 0.008947999999999998,
+            "wall_seconds_per_call": 3.099,
+            "cpu_seconds_per_call": 3.088239999999999
+          },
+          {
+            "process_wall_seconds": 3.000698736999766,
+            "user_seconds": 2.961196000000001,
+            "system_seconds": 0.016676999999999997,
+            "wall_seconds_per_call": 2.996,
+            "cpu_seconds_per_call": 2.977873000000001
+          },
+          {
+            "process_wall_seconds": 3.163331261006533,
+            "user_seconds": 3.1371930000000035,
+            "system_seconds": 0.008946999999999983,
+            "wall_seconds_per_call": 3.157,
+            "cpu_seconds_per_call": 3.1461400000000035
+          },
+          {
+            "process_wall_seconds": 2.930561598011991,
+            "user_seconds": 2.8995409999999993,
+            "system_seconds": 0.013869999999999993,
+            "wall_seconds_per_call": 2.925,
+            "cpu_seconds_per_call": 2.913410999999999
+          },
+          {
+            "process_wall_seconds": 3.138487621996319,
+            "user_seconds": 3.1092689999999976,
+            "system_seconds": 0.01186799999999999,
+            "wall_seconds_per_call": 3.133,
+            "cpu_seconds_per_call": 3.1211369999999974
+          }
+        ]
+      }
+    },
+    "summary": {
+      "meter": {
+        "medians": {
+          "before": {
+            "wall_seconds_per_call": 0.0037070474375,
+            "cpu_seconds_per_call": 0.0038159039301310055
+          },
+          "after": {
+            "wall_seconds_per_call": 0.00386509596875,
+            "cpu_seconds_per_call": 0.0038693100436681216
+          }
+        },
+        "after_over_before": {
+          "wall_seconds_per_call": 1.042634612562872,
+          "cpu_seconds_per_call": 1.0139956651202386
+        },
+        "acceptance_ratio": 1.25,
+        "passed": true
+      },
+      "decoder": {
+        "medians": {
+          "before": {
+            "wall_seconds_per_call": 3.197,
+            "cpu_seconds_per_call": 3.1830210000000037
+          },
+          "after": {
+            "wall_seconds_per_call": 3.099,
+            "cpu_seconds_per_call": 3.088239999999999
+          }
+        },
+        "after_over_before": {
+          "wall_seconds_per_call": 0.9693462621207383,
+          "cpu_seconds_per_call": 0.9702229422928706
+        },
+        "acceptance_ratio": 1.1,
+        "passed": true
+      }
+    },
+    "cpu_scope": "child process user+system CPU, including identical test/input setup"
+  },
+  "checks": [
+    {
+      "name": "ft8-unit",
+      "passed": 30,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "ft8_snr_robust",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 1
+    },
+    {
+      "name": "ft8_gfsk",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "ft8_snr_sweep",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "ft8_reference",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "ft8_real_slot",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "ft8_subtract",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "ft8_osd",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "ft8_resample_probe",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "backend-lib",
+      "passed": 157,
+      "failed": 0,
+      "ignored": 5
+    },
+    {
+      "name": "backend-service",
+      "passed": 416,
+      "failed": 0,
+      "ignored": 6
+    },
+    {
+      "name": "frontend",
+      "passed": 2123,
+      "failed": 0
+    },
+    {
+      "name": "python_doc_paths_and_ft8_fixture_protocol",
+      "passed": 29,
+      "failed": 0
+    },
+    {
+      "name": "final_snr_calibration_and_constant_iq_reason",
+      "passed": 2,
+      "failed": 0
+    }
+  ],
+  "production_build_warnings": 0,
+  "browser": {
+    "rows": [
+      {
+        "theme": "dark",
+        "lang": "en",
+        "text": [
+          "15",
+          "-27",
+          "—"
+        ],
+        "titles": [
+          "Estimate 15.20 dB / 2500 Hz",
+          "Estimate -27.20 dB / 2500 Hz · Limited quality: Noise references contain interference",
+          "SNR unavailable: Noise power cannot be resolved"
+        ],
+        "colour": "color(srgb 0.0152941 0.865294 0.0152941)",
+        "background": "rgb(26, 26, 26)",
+        "contrast_ratio": 9.375457055130628
+      },
+      {
+        "theme": "dark",
+        "lang": "zh",
+        "text": [
+          "15",
+          "-27",
+          "—"
+        ],
+        "titles": [
+          "估计值 15.20 dB / 2500 Hz",
+          "估计值 -27.20 dB / 2500 Hz · 质量受限: 噪声参考受到干扰",
+          "SNR 无法估计: 无法分辨噪声功率"
+        ],
+        "colour": "color(srgb 0.0152941 0.865294 0.0152941)",
+        "background": "rgb(26, 26, 26)",
+        "contrast_ratio": 9.375457055130628
+      },
+      {
+        "theme": "light",
+        "lang": "en",
+        "text": [
+          "15",
+          "-27",
+          "—"
+        ],
+        "titles": [
+          "Estimate 15.20 dB / 2500 Hz",
+          "Estimate -27.20 dB / 2500 Hz · Limited quality: Noise references contain interference",
+          "SNR unavailable: Noise power cannot be resolved"
+        ],
+        "colour": "color(srgb 0.236667 0.45 0.236667)",
+        "background": "rgb(255, 255, 255)",
+        "contrast_ratio": 5.673809759433254
+      },
+      {
+        "theme": "light",
+        "lang": "zh",
+        "text": [
+          "15",
+          "-27",
+          "—"
+        ],
+        "titles": [
+          "估计值 15.20 dB / 2500 Hz",
+          "估计值 -27.20 dB / 2500 Hz · 质量受限: 噪声参考受到干扰",
+          "SNR 无法估计: 无法分辨噪声功率"
+        ],
+        "colour": "color(srgb 0.236667 0.45 0.236667)",
+        "background": "rgb(255, 255, 255)",
+        "contrast_ratio": 5.673809759433254
+      }
+    ],
+    "page_errors": [],
+    "receiver_api_requests": [],
+    "near_zero_display_and_original_export_verified_by_frontend_test": true
+  },
+  "service": {
+    "pid": 612487,
+    "executable": "/home/hui/git/harogic-websa/backend/target/release/websad",
+    "binary_sha256": "a531be08bc99ce694eb95b5e0057363ad94a7d874476c3b1de2b51ebd1708e7a",
+    "proc_matches_disk": true,
+    "service_id": "612487-1794316397167012169",
+    "previous_service_id": "593935-1794312457331969636",
+    "mode": "sdr",
+    "center_hz": 9000000.0,
+    "listen_hz": 9680039.7789577,
+    "demod": "am",
+    "ref_dbm": -8.784810986708514,
+    "iq_rate": 3906250.0,
+    "receiver_count": 1,
+    "confirmed_configs_equal": true,
+    "disabled_channel_configs_equal": true,
+    "amp": {
+      "atten": -1,
+      "atten_actual": -1,
+      "gain_strategy": 0,
+      "ifgain": 2,
+      "ifgain_actual": 2,
+      "preamp": 0,
+      "preamp_actual": 0
+    },
+    "restored_receivers": [
+      {
+        "display_number": 1,
+        "previous_uid": "receiver-593935-1794312457331969636-1",
+        "restored_uid": "receiver-612487-1794316397167012169-1",
+        "confirmed": {
+          "baseband": {
+            "frequency_hz": 9680039.7789577,
+            "minimum_rate_hz": 1.0,
+            "passband_hz": 12000.0,
+            "transition_hz": 1500.0
+          },
+          "color": "#4cc99b",
+          "continuity": "continuous",
+          "enabled": true,
+          "name": "Current",
+          "processors": [
+            {
+              "agc": true,
+              "am_sync": false,
+              "audio_rate": 48000,
+              "bandwidth_hz": 12000.0,
+              "deemph_us": -1.0,
+              "id": "primary",
+              "kind": "demodulator",
+              "minimum_rate_hz": 0,
+              "mode": "am",
+              "nr": false,
+              "nr_algorithm": "wiener",
+              "nr_atten_db": 10.0,
+              "nr_strength": 0.6,
+              "pcm_gain": 1.75,
+              "pitch": 700.0,
+              "radiofax_acquisition": "auto",
+              "radiofax_clock_ppm": 0.0,
+              "radiofax_clock_recovery": "auto",
+              "radiofax_ioc": "auto",
+              "radiofax_lpm": "auto",
+              "radiofax_modulation": "fm",
+              "radiofax_phase_pixels": 0.0,
+              "radiofax_polarity": "normal",
+              "squelch_dbm": -160.0,
+              "sstv_mode": null,
+              "stereo": true
+            }
+          ],
+          "purpose": "listen",
+          "tags": []
+        },
+        "exactly_equal": true
+      }
+    ],
+    "later_runtime_observation": {
+      "mode": "std",
+      "service_id": "612487-1794316397167012169",
+      "note": "Snapshot restoration was verified immediately after restart. Later runtime configuration is reported separately and was not overwritten."
+    },
+    "operator_confirmed_final_mode": "std",
+    "latest_frontend_assets_served": true,
+    "operator_choice": "preserve_subsequent_operator_changes",
+    "final_observation": {
+      "at": "2026-11-10T21:43:36.719372+08:00",
+      "mode": "sdr",
+      "listen_hz": 101683270.89628047,
+      "demod": "wfm",
+      "connected": true
+    },
+    "final_running_process_matches_disk": true,
+    "final_binary_sha256": "a531be08bc99ce694eb95b5e0057363ad94a7d874476c3b1de2b51ebd1708e7a"
+  },
+  "ui": {
+    "level_percent_removed": true,
+    "ft8_click_to_tune_removed": true,
+    "negative_rounded_zero_display": "0",
+    "hover": "Two decimal estimate and quality/reason",
+    "export": "Original unrounded values and measurement metadata",
+    "legacy_numeric_reports_supported": true
+  },
+  "failed_experiments": [
+    {
+      "case": "Strong adjacent CW, first separate-side median prototype",
+      "expected_db": -10,
+      "estimated_db": -20.5001382057,
+      "absolute_error_db": 10.5001382057,
+      "acceptance_error_db": 3,
+      "resolution": "Replaced side-median averaging with statistically tail-corrected pooled fitting; same case retained."
+    },
+    {
+      "case": "Initial real-AWGN generator normalization",
+      "issue": "Complex variance was incorrectly reused for real audio, shifting injected truth by -3.0103 dB.",
+      "resolution": "Corrected one-sided N0 accounting; rebuilt and reran baseline and candidate with identical corrected input. Acceptance levels/tolerances unchanged."
+    }
+  ],
+  "limitations": [
+    "Exact cochannel power is inseparable.",
+    "Persistent majority reference contamination and sharp PSD curvature can bias noise.",
+    "Frequency/model mismatch, filtering and fading can bias local estimates.",
+    "Statistical uncertainty excludes model and interference bias.",
+    "Partial bursts describe observed symbols only.",
+    "Synthetic calibration and finite fixed-seed decode rates are not universal sensitivity guarantees."
+  ],
+  "implementation_bounds": {
+    "new_workers": 0,
+    "new_queues": 0,
+    "new_capture_paths": 0,
+    "maximum_noise_reference_powers": 474,
+    "maximum_noise_fit_iterations": 12,
+    "additional_reference_power_storage_bytes": 7584,
+    "decoder_body_byte_identical_to_task_baseline": true
+  },
+  "cleanup": {
+    "generated_iq_audio_removed": true,
+    "unpacked_reference_package_removed": true,
+    "temporary_test_processes_removed": true,
+    "temporary_validation_directory_removed": true
+  },
+  "documentation": "Technical reference, field semantics, limits and reproduction commands; process evidence is structured validation data.",
+  "evidence_log_sha256": {
+    "frontend-final-suite.log": "2547bbf21031a5ce4b75e49ef5e4fae0beb1918b2b3567d5697db92a237290b7",
+    "after-backend-service-tests.log": "4d8134383de76f1c57485d5b0088625f3b36368ac516410a52d85e68bcf2a91c",
+    "after-backend-lib-tests.log": "b7f1d4d291f076b4286e0a68153be2d3744a2b77ad0a3589b856087eb2f44c04",
+    "after-ft8_resample_probe-tests.log": "f8e9682b6f4ef25e1284a0c0a83b44497d2acc54bb176d5e68e0b413a8ea356e",
+    "after-ft8_osd-tests.log": "db3267a697a65721f210755b006996b49a06a7ead71ea855ecf8308139ad93ed",
+    "after-ft8_subtract-tests.log": "3fc02242ffca459aeb5bc754062ec0e78d03d80fa363772f2c23cc3efa0fafb4",
+    "after-ft8_real_slot-tests.log": "2360fd65fad28aefbd379958747b44e140a859fd93508af218057c6f2b9cf45b",
+    "after-ft8_reference-tests.log": "0022f0e4c3ba4290f5508d1c3884c7b844ea7273445fefa7eaedca42976b48ac",
+    "after-ft8_snr_sweep-tests.log": "b5cd097510b12ce00c231dac8c088ceadcb356a210e4275deef3fc88418cc68a",
+    "after-ft8_gfsk-tests.log": "5870264a9662c9ad6c8051ddff493d5bbd26da6544dc1fec2027960e55b91297",
+    "after-ft8_snr_robust-tests.log": "69857d1f2c2a2fab76d7451d7ddb8370817945a27a4bec2716869d9081ed5b0f",
+    "after-ft8-unit-tests.log": "25dceb580653dc85032c8ed7c041140a6f3d6c72a8a3beacca1771b3bc7eb393",
+    "cost.log": "12d96c4d03a086da0a38ded0f2ca6cc14fda3a96c4e8b61e34bda2f26bcb2982",
+    "reference-check.log": "5654c4b33b20d9aa2a16b86ce60b97e0e9a67905913b382f695a43f017f816a6",
+    "before-ft8_snr_robust-tests.log": "7e5719dbf9c9a639dbe80ef7b5029340dd30839f470db3af2b61518497e6b374",
+    "after-meter-build.log": "6b9c7a2e07093672a4667f0de93140f77d075fc028024958064a6fe5fa7db02b",
+    "before-ft8_real_slot-tests.log": "4c9edb5b97a8d65118ede03d27d6c7cb03f7a6977c39f6d42903f9ace609412e",
+    "before-ft8_snr_sweep-tests.log": "a342f20ec09fc9c1d986eebdbf6ceb1fb87319143505be82d16939933731a484",
+    "before-ft8_gfsk-tests.log": "007487b328a7b35b2c7fdfae7ffd20ec10af0c4939a7983427a4f7e79cdf24ee",
+    "before-ft8_snr_robust-timing.log": "2c71c4441ebe546ece1e8a4b0fb7d8f4c140402af60e2c400dffe50082475f10"
+  },
+  "release_version": "1.12.19",
+  "release_checks": {
+    "version_sync": true,
+    "production_frontend_build_warnings": 0,
+    "ruff": true,
+    "shellcheck": true,
+    "lifecycle_license_docs_and_ft8_protocol_passed": 59
+  }
+}

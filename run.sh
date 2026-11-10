@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start a checkout-scoped native service without a service manager.
+# Start a checkout-scoped native service with a portable failure monitor.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lifecycle.sh"
 cd "$ROOT"
@@ -40,6 +40,7 @@ PORT=$((10#$PORT))
 [[ "$FAKE" == 0 || "$FAKE" == 1 ]] || { echo 'WEBSA_FAKE must be 0 or 1' >&2; exit 2; }
 [[ "$HOST" != *$'\n'* && "$HOST" != *$'\r'* ]] || exit 2
 command -v curl >/dev/null || { echo 'curl is required for HTTP health checks' >&2; exit 1; }
+command -v python3 >/dev/null || { echo 'python3 is required for automatic crash recovery' >&2; exit 1; }
 [[ -x "$BIN" ]] || { echo "Rust service missing at $BIN: run make native or restore runtime/linux-x86_64/websad" >&2; exit 1; }
 BIN="$(realpath "$BIN")"
 [[ "$BIN" != *$'\n'* && "$ROOT" != *$'\n'* ]] || exit 2
@@ -51,11 +52,11 @@ if [[ "$FAKE" != 1 ]]; then
 fi
 lifecycle_init
 # Loading previous metadata must not overwrite the requested launch configuration.
-if (load_state && owned_process); then
+if owned_monitor || (load_state && owned_process); then
   echo "Instance $INSTANCE already running; use ./stop.sh --instance $INSTANCE first" >&2
   exit 1
 fi
-rm -f "$STATE"
+rm -f "$STATE" "$MONITOR"
 if port_listening; then
   echo "TCP port $PORT is already listening; leaving existing services unchanged" >&2
   exit 1
@@ -66,8 +67,12 @@ DETACH=()
 command -v setsid >/dev/null && DETACH=(setsid)
 EXE="$BIN"; EXE_ID="$(stat -Lc '%d:%i' "$BIN")"; WORKDIR="$ROOT"
 BOOT="$(< /proc/sys/kernel/random/boot_id)"
-PID=''; START=''; STARTED=1; RECORDED=0
+PID=''; START=''; STARTED=1
+# Invoked by the EXIT trap below.
+# shellcheck disable=SC2329
 cleanup_failed_start() {
+  [[ "$STARTED" == 1 ]] || return 0
+  terminate_monitor || true
   if [[ "$STARTED" == 1 && -n "$START" ]]; then
     if terminate_owned; then rm -f "$STATE"; fi
   fi
@@ -76,24 +81,25 @@ trap cleanup_failed_start EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 # Close the lifecycle lock in the child; nohup keeps it alive after terminal exit.
-nohup "${DETACH[@]}" "${ENV_ARGS[@]}" "$BIN" >> "$LOG" 2>&1 < /dev/null 9>&- &
-PID=$!
-if process_identity; then START="$CURRENT_START"; fi
+nohup "${DETACH[@]}" "${ENV_ARGS[@]}" python3 "$ROOT/supervise.py" "$STATE" "$BIN" "$HOST" "$PORT" "$FAKE" >> "$LOG" 2>&1 < /dev/null 9>&- &
+# The monitor serializes every child launch against lifecycle commands.
+for _ in {1..100}; do
+  owned_monitor && break
+  sleep 0.02
+done
+owned_monitor || { echo "Monitor failed to start; log: $LOG" >&2; exit 1; }
+flock -u 9
 health_url
 for _ in {1..150}; do
   # A cold native binary and decoder capability probes can outlast 10 seconds.
-  # Re-read identity if the child was not scheduled before the first /proc read.
-  if [[ -z "$START" ]] && process_identity; then START="$CURRENT_START"; fi
-  if [[ -z "$START" ]]; then sleep 0.2; continue; fi
-  if [[ "$RECORDED" == 0 ]] && owned_process; then save_state; RECORDED=1; fi
+  # Follow the current owned child, including a restart during startup.
+  if ! load_state; then sleep 0.2; continue; fi
   if owned_process && owns_listener && curl --noproxy '*' -sf -m 1 "$URL" >/dev/null && owned_process; then
-    save_state
     STARTED=0
     echo "Rust websad healthy at ${URL%/api/state} (instance $INSTANCE, PID $PID)"
     echo "Log: $LOG"
     exit 0
   fi
-  kill -0 "$PID" 2>/dev/null || break
   sleep 0.2
 done
 echo "Rust websad did not become healthy on port $PORT; log: $LOG" >&2

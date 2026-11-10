@@ -1,4 +1,4 @@
-//! FT8: the first digital demodulator plugin.
+//! FT8 digital demodulator.
 //!
 //! FT8 is an 8-FSK mode: 79 symbols of 0.160 s, tones spaced 6.25 Hz, with three 7-symbol Costas
 //! sync blocks at 0, 36 and 72. The 58 data symbols carry 174 bits, which are an LDPC(174,91)
@@ -7,7 +7,9 @@
 //! Decoding is the reverse, and follows the reference decoders (ft8_lib, WSJT-X): build a
 //! *waterfall* (a Hann-windowed FFT per symbol), score candidates by a *local-contrast* sync metric
 //! over the Costas tones, rank them with a heap, and for each run the max-log likelihood -> LDPC ->
-//! CRC -> unpack. Decoding is *multi-pass* the way WSJT-X does it: everything one pass finds is
+//! CRC -> unpack. A bounded weak-signal fallback refines complex Costas timing/frequency and
+//! forms coherent one-, two- and three-symbol metrics with BP-assisted OSD. It assumes no
+//! payload bits. Decoding is *multi-pass* the way WSJT-X does it: everything one pass finds is
 //! synthesized again and subtracted from the samples (frequency, time and per-symbol amplitude and
 //! phase fitted against the actual data), then the search runs on what is left, so a signal that
 //! was buried under a stronger neighbour comes out of the second pass. The search covers the *whole
@@ -29,30 +31,20 @@ use tables::*;
 /// FFT bins per 6.25 Hz tone. Zero padding gives a 1.5625 Hz grid without changing the
 /// analysis window: extending the window itself would mix more adjacent FSK symbols.
 const FREQ_OSR: usize = 4;
-/// Keep the reference's two-symbol Hann window, normalization, and sample-time support.
+/// Two-symbol Hann analysis window with sample-time normalization.
 const WINDOW_SYMBOLS: usize = 2;
 /// Time oversampling: sub-symbol subdivisions per symbol.
 const TIME_OSR: usize = 2;
-/// The audio band FT8 occupies. The tones can be anywhere in here, not just one nominal frequency.
-///
-/// The lower edge is 100 Hz rather than the reference's 200 Hz. A receiver's own clock error moves
-/// the whole audio band, and the error is proportional to the RF: measured at 411 MHz a PlutoSDR
-/// transmits 1.95 ppm low (-809 Hz), which pushes a 1 kHz-baseband signal down to ~191 Hz and right
-/// under a 200 Hz floor, so nothing decodes. That region is usable: measured on the SAN-90 SDR path
-/// every 50 Hz slot from 0 Hz to 3 kHz sits within ~2 dB of the same noise floor, so there is no
-/// LO-leakage wall to stay away from. `F_MIN_HZ` is also the frequency of waterfall bin 0, so this
-/// only widens the search; it does not shift the frequencies that are reported.
+/// Positive-frequency FT8 search band. The 100 Hz lower edge accommodates
+/// receiver/transmitter clock offsets near the band edge. F_MIN_HZ defines
+/// waterfall bin zero and the corresponding reported frequency origin.
 const F_MIN_HZ: f64 = 100.0;
 const F_MAX_HZ: f64 = 3_000.0;
 /// One FT8 transmission: 79 symbols of 160 ms.
 const TRANSMISSION_S: f64 = 12.64;
-/// The window slides by one hop (an FT8 slot, the schedule) after every attempt, so it has to hold
-/// that hop *plus* a whole transmission. That is the rule that guarantees a slot-aligned burst is
-/// entirely inside at least one window, whatever its phase: `window >= hop + burst`.
-///
-/// A window shorter than that only works when its length happens to match the burst period, which is
-/// exactly the fragile case this replaced (measured: a 17 s window on a 15 s hop decoded 3 of 6
-/// slots, while 15 s tiled by luck). The margin keeps the equality off the knife edge.
+/// The analysis window must contain a slot hop plus a complete transmission:
+/// `window >= hop + burst + margin`. This covers every burst phase relative
+/// to the slot schedule without requiring input alignment.
 const WINDOW_MARGIN_S: f64 = 0.4;
 /// Retention past the window, so a block that overshoots the trigger is not trimmed at the head.
 const SLOT_TAIL_S: f64 = 0.6;
@@ -64,15 +56,15 @@ const MIN_SYNC_SCORE: f64 = 10.0;
 /// alongside stronger ones and the Costas periodicity's 36-symbol aliases.
 const MAX_CANDIDATES: usize = 140;
 const MAX_LDPC_ITERATIONS: usize = 40;
-/// Decode passes over one window: find and decode everything, subtract the successes, search what
-/// is left again. WSJT-X's structure. One pass is the old behaviour and still the common case (a
-/// quiet band decodes everything first try and pass two finds nothing); the cap bounds the worst
-/// case on a very busy band, where each pass costs a waterfall rebuild.
+/// Additional matched-filter attempts per pass, after the coarse search. This
+/// budget is per receiver job; it cannot create more jobs or acquisition work.
+const MAX_REFINED_CANDIDATES: usize = 24;
+/// Maximum search/cancellation passes per window. Each pass searches the
+/// residual after successful decodes; an empty pass terminates the search.
 const MAX_PASSES: usize = 4;
-/// A decoded candidate is only worth subtracting if the fit actually found a signal: the fitted
-/// per-symbol amplitude of a unit-envelope transmission is its true amplitude, so anything below
-/// ~-30 dB is a spurious CRC hit (or a stale ±36-symbol alias whose position holds nothing) and
-/// subtracting it would only carve noise out of the window.
+/// Minimum fitted amplitude for subtraction of the unit-envelope model.
+/// This gates cancellation only; the SNR meter can use the fitted timing and
+/// frequency at any IQ amplitude scale.
 const MIN_FIT_AMPLITUDE: f64 = 0.03;
 
 /// One decoded message, with what the decoder measured about the signal.
@@ -89,98 +81,9 @@ pub struct Ft8Message {
     pub snr: SnrEstimate,
 }
 
-/// Decoded-symbol measurement, including the known Costas symbols. No mapping
-/// from synchronization score, no dB floor and no decision-selected noise bins.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SnrEstimate {
-    pub value: Option<f64>,
-    pub reason: Option<&'static str>,
-    pub averaging_seconds: f64,
-    pub enbw_hz: f64,
-    pub symbols: usize,
-    pub uncertainty_db: Option<f64>,
-}
-impl Default for SnrEstimate {
-    fn default() -> Self {
-        Self {value:None,reason:Some("no_reliable_symbol_fit"),averaging_seconds:0.0,enbw_hz:0.0,symbols:0,uncertainty_db:None}
-    }
-}
-
-/// Measure a CRC-validated codeword at an independently supplied symbol time
-/// and frequency. Useful for reproducible reference comparisons, including
-/// weak signals our search has not decoded. SNR measurement and sensitivity
-/// are separate contracts. `start_seconds` is the first symbol's sample time.
-pub fn measure_decoded_snr(samples: &[f32], rate: f64, codeword: &[u8;174],
-    frequency_hz: f64, start_seconds: f64) -> SnrEstimate {
-    if !rate.is_finite() || !(6000.0..=192000.0).contains(&rate) || !frequency_hz.is_finite()
-        || !start_seconds.is_finite() || samples.len()%2!=0
-        || codeword.iter().any(|b|*b>1) || !crc_ok(codeword)
-        || samples.iter().any(|x|!x.is_finite()) {return SnrEstimate::default();}
-    let model=CancellationModel {frequency:frequency_hz,start:(start_seconds*rate).round() as i64,
-        gains:[(0.0,0.0);NUM_SYMBOLS]};
-    estimate_snr(samples,rate,&tones_from_codeword(codeword),&model)
-}
-
-/// Central 75% of each decoded symbol avoids GFSK transitions. The periodic
-/// Hann matched filter has ENBW Fs*sum(w²)/sum(w)². Six disjoint off-tone
-/// filters (+/-5,7,9 window bins) supply a local N0 in the SAME receive passband.
-/// Signal power is the ON-filter power less that filter's background, averaged
-/// in linear units across all observed symbols. Compare WSJT-X ft8b.f90's
-/// decoded-tone/off-tone power ratio; 2500/ENBW replaces its fixed -27 dB.
-fn estimate_snr(samples: &[f32], rate: f64, tones: &[u8; NUM_SYMBOLS], model: &CancellationModel) -> SnrEstimate {
-    let sym=symbol_samples_at(rate);
-    let n=sym*3/4;
-    let mut result=SnrEstimate::default();
-    if n<16 {return result;}
-    let window:Vec<_>=(0..n).map(|i|0.5-0.5*(2.0*PI*i as f64/n as f64).cos()).collect();
-    let sum=window.iter().sum::<f64>();
-    let enbw=rate*window.iter().map(|w|w*w).sum::<f64>()/(sum*sum);
-    result.enbw_hz=enbw;
-    let offsets=[0.0,-9.0,-7.0,-5.0,5.0,7.0,9.0];
-    let mut powers=[0.0;7];
-    let mut sync_power=0.0;let mut sync_count=0;
-    for (k,&tone) in tones.iter().enumerate() {
-        let start=model.start+(k*sym+sym/8) as i64;
-        if start<0 || start as usize+n>samples.len()/2 {continue;}
-        let frequency=model.frequency+f64::from(tone)*TONE_SPACING_HZ;
-        // Never use the suppressed stopband or a truncated receive edge as N0.
-        if frequency-9.0*rate/(n as f64)<F_MIN_HZ || frequency+9.0*rate/(n as f64)>F_MAX_HZ {continue;}
-        for (j,offset) in offsets.iter().enumerate() {
-            let step=2.0*PI*(frequency+offset*rate/n as f64)/rate;
-            let (ds,dc)=step.sin_cos();let (mut wr,mut wi)=(1.0,0.0);
-            let (mut re,mut im)=(0.0,0.0);
-            for (i,&w) in window.iter().enumerate() {
-                let index=(start as usize+i)*2;
-                let (yr,yi)=(f64::from(samples[index]),f64::from(samples[index+1]));
-                if j==0 && (yr.abs()>=0.999 || yi.abs()>=0.999 || !yr.is_finite() || !yi.is_finite()) {
-                    result.reason=Some("overload_or_nonfinite_iq");return result;
-                }
-                re+=w*(yr*wr+yi*wi);im+=w*(yi*wr-yr*wi);
-                let next=wr*dc-wi*ds;wi=wr*ds+wi*dc;wr=next;
-            }
-            let p=(re*re+im*im)/(sum*sum);
-            powers[j]+=p;
-            if j==0 && is_sync_symbol(k) {sync_power+=p;sync_count+=1;}
-        }
-        result.symbols+=1;
-    }
-    result.averaging_seconds=result.symbols as f64*n as f64/rate;
-    if result.symbols<40 || sync_count<7 {result.reason=Some("insufficient_complete_symbols");return result;}
-    let background=powers[1..].iter().sum::<f64>()/6.0;
-    let min=powers[1..].iter().copied().fold(f64::INFINITY,f64::min);
-    let max=powers[1..].iter().copied().fold(0.0,f64::max);
-    if min<=0.0 || max/min>4.0 {result.reason=Some("off_tone_interference_or_nonflat_background");return result;}
-    let signal=powers[0]-background;
-    if signal<=0.0 || background<=0.0 {result.reason=Some("signal_not_resolved");return result;}
-    let sync_signal=sync_power-sync_count as f64*background/result.symbols as f64;
-    if sync_signal<=0.0 {result.reason=Some("sync_power_not_resolved");return result;}
-    let db=10.0*((signal/background)*enbw/2500.0).log10();
-    if !(-25.0..=10.0).contains(&db) {result.reason=Some("outside_validated_range_minus25_to10_db");return result;}
-    let ratio=signal/background;
-    result.uncertainty_db=Some(10.0/core::f64::consts::LN_10
-        *((1.0+2.0*ratio+1.0/6.0)/result.symbols as f64).sqrt()/ratio);
-    result.value=Some(db);result.reason=None;result
-}
+mod snr;
+pub use snr::{measure_decoded_snr, SnrEstimate};
+use snr::estimate_snr;
 
 /// The waterfall: one Hann-windowed FFT magnitude per (symbol, sub-time, sub-frequency, tone bin),
 /// stored as 8-bit dB — the exact representation ft8_lib uses. Everything the search does is an
@@ -413,6 +316,175 @@ impl Waterfall {
     }
 }
 
+/// Mix one coarse candidate to baseband and integrate small sample groups. A
+/// symbol retains at least 64 complex samples; the eight FSK tones are then
+/// resolved by a full-symbol rectangular matched filter instead of the coarse
+/// two-symbol Hann window, which mixes adjacent symbols at low SNR.
+fn refined_decode(samples: &[f32], rate: f64, frequency: f64, coarse_time: f64) -> Option<[u8; 174]> {
+    let decimation = (symbol_samples_at(rate) / 64).max(1);
+    let step = 2.0 * PI * frequency / rate;
+    let (ds, dc) = step.sin_cos();
+    let (mut wr, mut wi) = (1.0, 0.0);
+    let mut baseband = Vec::with_capacity(samples.len() / (2 * decimation));
+    for group in samples.chunks_exact(2 * decimation) {
+        let (mut re, mut im) = (0.0, 0.0);
+        for pair in group.chunks_exact(2) {
+            re += f64::from(pair[0]) * wr + f64::from(pair[1]) * wi;
+            im += f64::from(pair[1]) * wr - f64::from(pair[0]) * wi;
+            let next = wr * dc - wi * ds;
+            wi = wr * ds + wi * dc;
+            wr = next;
+        }
+        baseband.push((re / decimation as f64, im / decimation as f64));
+    }
+    let fs = rate / decimation as f64;
+    let symbol = rate * SYMBOL_PERIOD_S / decimation as f64;
+    let n = symbol.round() as usize;
+    let correlate = |start: i64, frequency: f64| {
+        if start < 0 || start as usize + n > baseband.len() { return (0.0, 0.0); }
+        let (ds, dc) = (2.0 * PI * frequency / fs).sin_cos();
+        let (mut wr, mut wi) = (1.0, 0.0);
+        let (mut re, mut im) = (0.0, 0.0);
+        for &(yr, yi) in &baseband[start as usize..start as usize + n] {
+            re += yr * wr + yi * wi;
+            im += yi * wr - yr * wi;
+            let next = wr * dc - wi * ds;
+            wi = wr * ds + wi * dc;
+            wr = next;
+        }
+        (re, im)
+    };
+    // The streaming Hann frame's center lags its block label by half a
+    // symbol. Converting that center to the symbol's beginning adds another
+    // half symbol. Refine only the known Costas tones, without payload guesses.
+    let mut start = (coarse_time * fs - symbol) as i64;
+    let sync_power = |start: i64, offset: f64| {
+        let mut power = 0.0;
+        for k in 0..NUM_SYMBOLS {
+            if !is_sync_symbol(k) { continue; }
+            let tone = COSTAS[k % SYNC_OFFSET] as f64;
+            let (re, im) = correlate(start + (k as f64 * symbol).round() as i64,
+                                     offset + tone * TONE_SPACING_HZ);
+            power += re * re + im * im;
+        }
+        power
+    };
+    let initial = start;
+    let mut best = -1.0;
+    for dt in -8..=8 {
+        let trial = initial + (f64::from(dt) * symbol / 16.0).round() as i64;
+        let power = sync_power(trial, 0.0);
+        if power > best { best = power; start = trial; }
+    }
+    let mut offset = 0.0;
+    best = -1.0;
+    for df in -4..=4 {
+        let trial = f64::from(df) * TONE_SPACING_HZ / (4 * FREQ_OSR) as f64;
+        let power = sync_power(start, trial);
+        if power > best { best = power; offset = trial; }
+    }
+    let initial = start;
+    best = -1.0;
+    for dt in -3..=3 {
+        let trial = initial + (f64::from(dt) * symbol / 64.0).round() as i64;
+        let power = sync_power(trial, offset);
+        if power > best { best = power; start = trial; }
+    }
+    let mut hard_sync = 0;
+    for k in 0..NUM_SYMBOLS {
+        if !is_sync_symbol(k) { continue; }
+        let time = start + (k as f64 * symbol).round() as i64;
+        let mut powers = [0.0; 8];
+        for tone in 0..8 {
+            let (re, im) = correlate(time, offset + tone as f64 * TONE_SPACING_HZ);
+            powers[tone] = re * re + im * im;
+        }
+        let strongest = (0..8).max_by(|&a, &b| powers[a].total_cmp(&powers[b])).unwrap();
+        hard_sync += usize::from(strongest == COSTAS[k % SYNC_OFFSET] as usize);
+    }
+    if hard_sync < 8 { return None; }
+    // Magnitude-only synchronization can tolerate a 10 ms timing error;
+    // coherent symbol sums cannot (the highest tone rotates almost half a
+    // cycle). Peak the complex Costas correlation within each seven-symbol
+    // block before forming adjacent-symbol likelihoods.
+    let coherent_sync = |start: i64, offset: f64| {
+        let mut power = 0.0;
+        for block in 0..3 {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (j, &tone) in COSTAS.iter().enumerate() {
+                let time = start + ((block * SYNC_OFFSET + j) as f64 * symbol).round() as i64;
+                let (r, i) = correlate(time, offset + f64::from(tone) * TONE_SPACING_HZ);
+                let (s, c) = (-2.0 * PI * offset * time as f64 / fs).sin_cos();
+                re += r * c - i * s;
+                im += r * s + i * c;
+            }
+            power += re * re + im * im;
+        }
+        power
+    };
+    let (initial_start, initial_offset) = (start, offset);
+    best = -1.0;
+    for dt in -8..=8 {
+        let trial_time = initial_start + (f64::from(dt) * symbol / 32.0).round() as i64;
+        for df in -4..=4 {
+            let trial_offset = initial_offset + f64::from(df) * TONE_SPACING_HZ / 64.0;
+            let power = coherent_sync(trial_time, trial_offset);
+            if power > best { best = power; start = trial_time; offset = trial_offset; }
+        }
+    }
+    // Rebuild tone correlations at the coherent alignment.
+    let mut tones = [[(0.0, 0.0); 8]; NUM_SYMBOLS];
+    for k in 0..NUM_SYMBOLS {
+        let time = start + (k as f64 * symbol).round() as i64;
+        let (s, c) = (-2.0 * PI * offset * time as f64 / fs).sin_cos();
+        for tone in 0..8 {
+            let (re, im) = correlate(time, offset + tone as f64 * TONE_SPACING_HZ);
+            tones[k][tone] = (re * c - im * s, re * s + im * c);
+        }
+    }
+    // Coherently combine one, two and three symbols. The maximum over all
+    // tone hypotheses supplies each bit metric; no callsigns or CQ bits are
+    // assumed. CRC is still checked only after BP/OSD chooses a codeword.
+    for group in 1..=3 {
+        let mut llr = [0.0_f64; 174];
+        for half in 0..2 {
+            for first in (0..29).step_by(group) {
+                let count = group.min(29 - first);
+                let mut maxima = [[0.0_f64; 2]; 9];
+                for word in 0..1_usize << (3 * count) {
+                    let (mut re, mut im) = (0.0, 0.0);
+                    for j in 0..count {
+                        let bits = (word >> (3 * (count - 1 - j))) & 7;
+                        let (r, i) = tones[7 + half * 36 + first + j][GRAY[bits] as usize];
+                        re += r; im += i;
+                    }
+                    let metric = (re * re + im * im).sqrt();
+                    for bit in 0..3 * count {
+                        let value = (word >> (3 * count - 1 - bit)) & 1;
+                        maxima[bit][value] = maxima[bit][value].max(metric);
+                    }
+                }
+                for bit in 0..3 * count {
+                    llr[half * 87 + first * 3 + bit] = maxima[bit][1] - maxima[bit][0];
+                }
+            }
+        }
+        let variance = llr.iter().map(|x| x * x).sum::<f64>() / 174.0;
+        if variance <= 0.0 { continue; }
+        // Amplitude-difference metrics use variance 8 (unlike the coarse
+        // log-power metrics' 24). Overconfident messages impede BP convergence.
+        let factor = (8.0 / variance).sqrt();
+        for value in &mut llr { *value *= factor; }
+        let mut posterior = llr;
+        if let Some(bits) = ldpc_decode_with_posterior(&llr, MAX_LDPC_ITERATIONS, &mut posterior).filter(crc_ok) {
+            return Some(bits);
+        }
+        if let Some(bits) = osd_decode(&posterior) { return Some(bits); }
+        if let Some(bits) = osd_decode(&llr) { return Some(bits); }
+    }
+    None
+}
+
 /// One slot's worth of complex baseband, kept as interleaved f32.
 pub struct Ft8Decoder {
     rate: f64,
@@ -522,8 +594,18 @@ impl Ft8Decoder {
         for _pass in 0..MAX_PASSES {
             let waterfall = Waterfall::build(&scratch, self.rate);
             let mut found_this_pass = 0;
+            let mut refined = Vec::<(f64, f64)>::new();
             for (_score, to, ts, fsb, fo) in waterfall.find_candidates() {
-                let Some(codeword) = waterfall.decode_candidate(to, ts, fsb, fo) else {
+                let frequency = F_MIN_HZ + (fo as f64 + fsb as f64 / FREQ_OSR as f64) * TONE_SPACING_HZ;
+                let time = (to as f64 + ts as f64 / TIME_OSR as f64) * SYMBOL_PERIOD_S;
+                let Some(codeword) = waterfall.decode_candidate(to, ts, fsb, fo).or_else(|| {
+                    if refined.len() >= MAX_REFINED_CANDIDATES || refined.iter().any(|&(f,t)|
+                        (f-frequency).abs() < TONE_SPACING_HZ / 2.0 && (t-time).abs() < SYMBOL_PERIOD_S) {
+                        return None;
+                    }
+                    refined.push((frequency, time));
+                    refined_decode(&scratch, self.rate, frequency, time)
+                }) else {
                     continue;
                 };
                 let payload: [u8; 77] = core::array::from_fn(|i| codeword[i]);
@@ -951,15 +1033,25 @@ fn subtract_transmission(
 
 /// Soft-decision LDPC(174,91) decode. `None` when the parity checks never pass.
 fn ldpc_decode(llr: &[f64; 174], max_iterations: usize) -> Option<[u8; 174]> {
+    let mut posterior = *llr;
+    ldpc_decode_with_posterior(llr, max_iterations, &mut posterior)
+}
+
+fn ldpc_decode_with_posterior(llr: &[f64; 174], max_iterations: usize, posterior: &mut [f64; 174]) -> Option<[u8; 174]> {
+    // Retain the most consistent BP iteration for ordered-statistics ranking.
+    // The channel LLRs remain a separate fallback; no payload bits are fixed.
     // tov[n][m]: message from variable node n to its m-th check; toc[m][n]: the reverse.
     let mut tov = [[0.0_f64; 3]; 174];
     let mut toc = [[0.0_f64; 7]; 83];
+    let mut best_errors = usize::MAX;
     for _iteration in 0..max_iterations {
         // Hard decision from the channel value plus the current extrinsic information.
         let mut plain = [0_u8; 174];
         let mut plain_sum = 0;
+        let mut reliability = [0.0; 174];
         for n in 0..174 {
             let total = llr[n] + tov[n][0] + tov[n][1] + tov[n][2];
+            reliability[n] = total;
             plain[n] = u8::from(total > 0.0);
             plain_sum += plain[n] as i32;
         }
@@ -967,7 +1059,12 @@ fn ldpc_decode(llr: &[f64; 174], max_iterations: usize) -> Option<[u8; 174]> {
             // Converged to the all-zero word, which this code forbids.
             return None;
         }
-        if parity_errors(&plain) == 0 {
+        let errors = parity_errors(&plain);
+        if errors < best_errors {
+            best_errors = errors;
+            *posterior = reliability;
+        }
+        if errors == 0 {
             return Some(plain);
         }
         // Variable nodes -> check nodes.
@@ -2279,6 +2376,9 @@ mod snr_measurement_tests {
         let tones=tones_from_codeword(&[0;174]);let model=CancellationModel{frequency:1000.0,start:0,gains:[(0.0,0.0);NUM_SYMBOLS]};
         assert_eq!(estimate_snr(&vec![0.0;24000],12000.0,&tones,&model).value,None);
         assert_eq!(estimate_snr(&vec![0.0;320000],12000.0,&tones,&model).value,None);
-        assert_eq!(estimate_snr(&vec![1.0;320000],12000.0,&tones,&model).reason,Some("overload_or_nonfinite_iq"));
+        let constant=estimate_snr(&vec![1.0;320000],12000.0,&tones,&model);
+        assert_eq!(constant.value,None);
+        assert_eq!(constant.reason,Some("noise_not_resolved"));
+        assert_eq!(constant.quality,"unavailable");
     }
 }
