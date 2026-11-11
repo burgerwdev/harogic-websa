@@ -21,6 +21,8 @@ def checkout(tmp_path):
     (root / 'backend/src/lib.rs').write_text('// original source\n')
     (root / 'run.sh').write_text('#!/bin/sh\nexit 0\n')
     (root / 'run.sh').chmod(0o755)
+    (root / 'setup.sh').write_text('#!/bin/sh\nexit 0\n')
+    (root / 'setup.sh').chmod(0o755)
     subprocess.run(['git', 'init', '-q', str(root)], check=True)
     subprocess.run(['git', '-C', str(root), 'add', '.'], check=True)
     # A throwaway test repository, never the user's index or history.
@@ -51,11 +53,12 @@ def test_archives_modified_and_new_inputs_with_original_notices_and_no_sdk(check
     prefix = f'harogic-websa-{manifest["source_id"]}/'
     with tarfile.open(output / manifest['archive']) as archive:
         names = {name.removeprefix(prefix) for name in archive.getnames()}
-        assert {'backend/src/lib.rs', 'frontend/src/new.ts', 'dsp/core/fdk/NOTICE', 'SOURCE-MANIFEST.json'} <= names
+        assert {'backend/src/lib.rs', 'frontend/src/new.ts', 'dsp/core/fdk/NOTICE', 'setup.sh', 'SOURCE-MANIFEST.json'} <= names
         assert not {'htra_api.py', 'backend/.env', 'runtime/websad', 'frontend/dist/index.html'} & names
         assert not any('/legal/' in name for name in names)
         assert archive.extractfile(prefix + 'backend/src/lib.rs').read() == b'// locally modified source\n'
         assert archive.getmember(prefix + 'run.sh').mode == 0o755
+        assert archive.getmember(prefix + 'setup.sh').mode == 0o755
         embedded = json.load(archive.extractfile(prefix + 'SOURCE-MANIFEST.json'))
         assert embedded['files'] == manifest['files']
     assert notice in (output / 'THIRD-PARTY-NOTICES.txt').read_bytes()

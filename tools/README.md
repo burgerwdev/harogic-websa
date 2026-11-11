@@ -10,6 +10,7 @@ Python dependencies belong to these tools; the service runs through `./run.sh`,
 
 | Task | Section |
 |---|---|
+| Prepare a fresh checkout and all decoders | [External decoder setup](#external-decoder-setup) |
 | Install Soapy handoff | [Soapy driver](#soapy-server-driver-setup) |
 | Verify fixtures or replay IQ | [Checks and references](#checks-fixtures-and-references) |
 | Set up ADS-B, GPS or RTTY | [ADS-B](#ads-b--mode-s-aircraft), [GPS](#gps-l1-ca-from-sdr-iq), [RTTY](#independent-rtty-companion) |
@@ -48,6 +49,30 @@ builds the retained-session shim against SDK 0.55.100; override `SDK_ROOT` and
 `SDK_SHIM` for the local installation. Native hardware helpers take an explicit
 shim or `WEBSA_RUST_IQS_SHIM`. Pluto transmission requires a reachable ADALM-PLUTO,
 libiio, and pyadi-iio; tinySA helpers require pyserial and the selected serial port.
+
+## External decoder setup
+
+```bash
+./setup.sh --check              # prerequisites only
+make setup                     # current frontend/service, NR runtime and all decoder providers
+make run                       # WEBSA_FAKE=1 make run without the vendor SDK/hardware
+make decoders-status           # provider availability and reasons from the running service
+```
+
+The shared default prefix is `${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders`.
+`run.sh` puts its `bin` first on PATH for both source and packaged services. OnAir's
+`bin/onair-server` link resolves into its complete portable bundle, keeping bundled libraries
+and notices together. No provider environment files need sourcing. Explicit provider path
+overrides remain available. Set `WEBSA_DECODERS_PREFIX` consistently during setup and launch
+to use a custom directory.
+
+Setup reuses installed decoders; it rebuilds the frontend/service. For a provider reinstall,
+run `bash tools/setup-sdr-decoders.sh [multimon|rtl433|onair ...]`,
+`bash tools/setup-rtty-decoder.sh`, or `bash tools/setup-gnss-decoder.sh`.
+GPS's native bridge can be rebuilt with `cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websa-gnss`
+and passed to the GNSS installer with `--bridge backend/target/release/websa-gnss`.
+Restart with `make restart` after changes. See [first-time setup](../docs/en/GETTING_STARTED.md#first-time-setup)
+for system dependencies, the separate proprietary SDK, and `./setup.sh --without-gps`.
 
 ## Soapy Server driver setup
 

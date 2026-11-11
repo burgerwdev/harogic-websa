@@ -30,6 +30,19 @@ See [Known limitations](docs/en/OPERATIONS.md).
 
 ## Try it
 
+After cloning, prepare the Linux build prerequisites and run:
+
+```bash
+make setup                     # build frontend/service and install all external decoders
+make run                       # hardware; use WEBSA_FAKE=1 make run without a device
+make decoders-status           # inspect actual decoder availability
+```
+
+Decoders live together in `~/.local/share/websa/decoders` and are discovered automatically;
+no shell files need sourcing. Setup reuses installed decoders; the first GPS source build is
+large. See [First-time setup](docs/en/GETTING_STARTED.md#first-time-setup) for prerequisites,
+SDK setup and updates.
+
 The checkout includes a **Linux x86_64/glibc** runtime. The checked-in bundle is v1.12.5;
 `make build` produces the current service and frontend. It currently requires glibc 2.44,
 GLIBCXX 3.4.30, CXXABI 1.3.15 and `libfdk-aac.so.2`; rebuild if your system cannot run it.

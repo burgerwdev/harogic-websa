@@ -18,6 +18,39 @@ included. Fixture mode needs no analyzer or SDK, but uses this checkout's `tests
 Bash, coreutils, util-linux (`flock`), `/proc`, curl and Python 3 support the launcher and
 its crash monitor. Rust and Node are unnecessary for running the bundle.
 
+## First-time setup
+
+On Linux x86_64, run `make setup` after cloning to build the current frontend/service,
+prepare the native NR runtime, and install multimon-ng, rtl_433, OnAir, RTTY and GPS
+(GNSS-SDR plus its bridge). Builds run sequentially. Decoders share
+`${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders`; installed executables are reused.
+Use the [individual installers](../../tools/README.md#external-decoder-setup) to reinstall a provider.
+
+Install the [source build prerequisites](DEVELOPMENT.md#build-from-source) first. The full
+decoder setup also needs CMake, Git, curl and a C toolchain. GPS needs development files for
+GNU Radio, Boost, VOLK, BLAS/LAPACK, HDF5, OpenSSL, pugixml, matio, protobuf, libpcap and
+FFTW, plus build-time Python with Mako. Run `bash tools/setup-gnss-decoder.sh --help` for
+the full list. The check reports missing prerequisites before downloads/builds; GNSS-SDR's
+CMake configuration also checks its full dependency set. Setup runs no sudo or system package installs.
+
+```bash
+./setup.sh --check              # check only; no downloads or file changes
+make setup                     # initial source builds/downloads may take a while
+make run
+make decoders-status
+```
+
+For hardware, obtain the HAROGIC SDK separately and install it at `/opt/htraapi`
+(or use `make setup SDK_ROOT=/path/to/sdk`). With the SDK present, setup also builds the
+adapter and Soapy driver; this needs SoapySDR development files, SoapyRemote,
+`SoapySDRUtil` and `patch`. Without the SDK, start fixtures with `WEBSA_FAKE=1 make run`.
+
+Daily commands remain `make run` / `make stop` / `make restart`. After setup updates,
+run `make restart` and reload the browser. `make decoders-status` reports availability
+and failure reasons from the running service. Use `./setup.sh --without-gps` to omit
+GPS and its build dependencies when it is not needed. For a custom decoder directory,
+use the same `WEBSA_DECODERS_PREFIX` for setup and launch; per-provider paths are unnecessary.
+
 ## Launch
 
 From the repository root:

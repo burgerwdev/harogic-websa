@@ -27,7 +27,7 @@ ROOT_FILES = {
     'AGENTS.md', '.gitignore', '.gitattributes', 'LICENSE', 'LICENSE-EXCEPTION', 'LICENSE-PACKAGE',
     'LICENSING.md', 'THIRD_PARTY_NOTICES.md', 'README.md', 'README.zh-CN.md',
     'Makefile', 'pyproject.toml', 'requirements.txt', 'requirements-dev.txt',
-    'requirements-lock.txt', 'build.sh', 'run.sh', 'stop.sh', 'status.sh',
+    'requirements-lock.txt', 'build.sh', 'setup.sh', 'run.sh', 'stop.sh', 'status.sh',
     'lifecycle.sh', 'supervise.py', 'clean.sh', 'test.sh',
 }
 EXCLUDED_PARTS = {'target', 'node_modules', 'dist', '__pycache__', 'pkg'}

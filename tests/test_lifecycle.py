@@ -108,6 +108,22 @@ def test_status_identifies_a_replaced_binary_until_restart(launcher, tmp_path):
     assert 'Binary: current' in invoke('status.sh').stdout
 
 
+def test_local_decoders_are_discovered_without_sourcing_shell_files(launcher, tmp_path):
+    invoke, env, _, _, _ = launcher
+    prefix = tmp_path / 'data with spaces/websa/decoders'
+    (prefix / 'bin').mkdir(parents=True)
+    multimon = prefix / 'bin/multimon-ng'
+    multimon.write_text('#!/bin/sh\necho "multimon-ng test"\necho "Available demodulators: DTMF"\nexit 2\n')
+    multimon.chmod(0o755)
+    launch_env = {**env, 'XDG_DATA_HOME': str(prefix.parents[1])}
+    started = invoke('run.sh', env=launch_env)
+    assert started.returncode == 0, started.stderr
+    status = invoke('status.sh', '--decoders', env={**env, 'WEBSA_PORT': '1'})
+    assert status.returncode == 0, status.stderr
+    assert 'multimon: ready | dtmf' in status.stdout
+    assert 'does not advertise POCSAG512' in status.stdout
+
+
 def test_enabled_receivers_process_without_browser_or_output_subscriptions(launcher):
     invoke, env, _, _, _ = launcher
     started = invoke('run.sh')

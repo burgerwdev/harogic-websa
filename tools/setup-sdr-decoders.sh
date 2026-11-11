@@ -46,10 +46,10 @@ under <prefix>/share/websa-decoders. OnAir's matching source release URL and
 checksum are recorded there; its source archive is not needed to run the binary
 and is not downloaded. No separate recordings or sample libraries are fetched.
 
-After installation, source <prefix>/env.sh in bash before launching WebSA.
-It exports WEBSA_MULTIMON_PATH, WEBSA_RTL433_PATH, and/or WEBSA_ONAIR_SERVER
-for installed providers. Restart your own WebSA process with that environment;
-this script does not alter an existing process or its environment.
+WebSA's run.sh automatically searches <prefix>/bin at the default location.
+For a custom prefix, export WEBSA_DECODERS_PREFIX before launching WebSA.
+The generated <prefix>/env.sh remains available for standalone tools.
+Restart WebSA after installation; this script does not alter a running service.
 EOF
 }
 
@@ -70,7 +70,7 @@ done
 ((${#PROVIDERS[@]})) || PROVIDERS=(multimon rtl433 onair)
 [[ "$(uname -s)" == Linux ]] || fail 'this setup supports Linux only'
 
-for required in curl tar sha256sum mktemp mkdir rm mv cp chmod; do
+for required in curl tar sha256sum mktemp mkdir rm mv cp chmod ln; do
   command -v "$required" >/dev/null || fail "$required is required; install prerequisites yourself"
 done
 for provider in "${PROVIDERS[@]}"; do
@@ -161,6 +161,9 @@ for provider in "${PROVIDERS[@]}"; do
       # all bundled dependency licenses remain intact. Run no upstream scripts.
       tar -xzf "$ARCHIVE" -C "$PREFIX"
       [[ -x "$PREFIX/$ONAIR_BUNDLE/bin/onair-server" ]] || fail 'OnAir archive lacks the expected bin/onair-server executable'
+      mkdir -p -- "$PREFIX/bin"
+      # The host canonicalizes this link, preserving OnAir's bundled libraries.
+      ln -sfn "../$ONAIR_BUNDLE/bin/onair-server" "$PREFIX/bin/onair-server"
       mkdir -p -- "$NOTICES/onair"
       cat > "$NOTICES/onair/SOURCE.txt" <<EOF
 Upstream: https://github.com/adswill/OnAir
@@ -193,7 +196,4 @@ done
 } > "$WORK/env.sh"
 mv -- "$WORK/env.sh" "$PREFIX/env.sh"
 printf '\nInstalled optional decoders under %s\n' "$PREFIX"
-printf 'Before launching WebSA from bash:\n  source %q\n' "$PREFIX/env.sh"
-while IFS= read -r line; do
-  [[ "$line" == export\ * ]] && printf '  %s\n' "$line"
-done < "$PREFIX/env.sh"
+printf 'Restart WebSA to discover installed providers. Standalone tool environment: %s/env.sh\n' "$PREFIX"

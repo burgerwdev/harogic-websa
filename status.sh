@@ -3,11 +3,13 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lifecycle.sh"
 QUIET=0
+SHOW_DECODERS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --help|-h) echo 'Usage: ./status.sh [--instance NAME] [--quiet]'; echo 'Shows a concise status summary using the saved host/port; --quiet checks health without output. Default instance: WEBSA_INSTANCE or websad. Exit 0: owned process and HTTP healthy; nonzero: stopped or unhealthy.'; exit 0 ;;
+    --help|-h) echo 'Usage: ./status.sh [--instance NAME] [--quiet] [--decoders]'; echo 'Shows a concise status summary using the saved host/port; --quiet checks health without output; --decoders includes external decoder availability and failure reasons. Default instance: WEBSA_INSTANCE or websad. Exit 0: owned process and HTTP healthy; nonzero: stopped or unhealthy.'; exit 0 ;;
     --instance) [[ $# -ge 2 && -n "$2" ]] || exit 2; INSTANCE="$2"; shift 2 ;;
     --quiet) QUIET=1; shift ;;
+    --decoders) SHOW_DECODERS=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -102,5 +104,24 @@ if mode == "server" and server.get("error"):
   else
     echo 'HTTP: healthy (install python3 for device summary)'
   fi
+fi
+if [[ "$SHOW_DECODERS" == 1 && "$QUIET" != 1 ]]; then
+  curl --noproxy '*' -fsS -m 15 "${URL%/api/state}/api/sdr/plugins" | python3 -c '
+import json
+import sys
+
+groups = {}
+for plugin in json.load(sys.stdin)["plugins"]:
+    provider = plugin.get("provider")
+    if provider in (None, "native"):
+        continue
+    key = (provider, plugin["available"], plugin.get("unavailableReason"))
+    groups.setdefault(key, []).append(plugin["id"])
+print("External decoders (running service):")
+for (provider, available, reason), modes in groups.items():
+    print("  {}: {} | {}".format(provider, "ready" if available else "unavailable", ", ".join(modes)))
+    if reason:
+        print("    " + " ".join(reason.split()))
+'
 fi
 owned_process

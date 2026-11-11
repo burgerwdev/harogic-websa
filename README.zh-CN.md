@@ -25,6 +25,18 @@ Python 用于崩溃监护、离线工具和测试。
 
 ## 试用
 
+首次 clone 后，准备 Linux 构建依赖并执行：
+
+```bash
+make setup                     # 构建前后端、安装全部外部解码器
+make run                       # 启动硬件服务；无硬件用 WEBSA_FAKE=1 make run
+make decoders-status           # 检查实际加载情况
+```
+
+解码器统一安装到 `~/.local/share/websa/decoders`，启动时自动发现，无需手动 `source`。
+`make setup` 复用已安装的解码器；首次 GPS 源码构建较慢。依赖检查、SDK 和更新说明见
+[快速开始](docs/zh-CN/GETTING_STARTED.md#首次安装)。
+
 仓库包含 **Linux x86_64/glibc** 运行包。已提交捆绑版本为 v1.12.5，
 `make build` 构建当前服务和前端。运行包要求 glibc 2.44、GLIBCXX 3.4.30、
 CXXABI 1.3.15 和 `libfdk-aac.so.2`；系统不兼容时请源码构建。

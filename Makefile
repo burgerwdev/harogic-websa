@@ -5,7 +5,7 @@
 # bound their own parallelism (Cargo: one job, Vitest: two workers).
 .NOTPARALLEL:
 
-.PHONY: run stop restart status \
+.PHONY: run stop restart status setup decoders-status \
 	build frontend native sdk-shim soapy-driver package-runtime wasm wasm-dsp wasm-dfn dev clean clean-all \
 	test wasm-test ci wasm-check soapy-check-patch soapy-check-stream \
 	hw-test bench bench-record e2e-fake viewport-baseline viewport-check \
@@ -29,6 +29,12 @@ restart:  ## Restart service (stop + start)
 
 status:   ## Show owned Rust process, log path and HTTP health
 	./status.sh
+
+setup:    ## Prepare frontend, service and all external decoders after cloning
+	./setup.sh
+
+decoders-status: ## Show decoder availability reported by the running service
+	./status.sh --decoders
 
 ##@ Build
 

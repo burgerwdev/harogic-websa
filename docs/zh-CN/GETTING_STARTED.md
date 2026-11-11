@@ -16,6 +16,35 @@ WebSA 运行于 Linux。仓库的 `runtime/` 包含 Linux x86_64/glibc 服务、
 `tests/fixtures/`。启动脚本依赖 Bash、coreutils、util-linux（`flock`）、`/proc` 和 curl。
 启动器及崩溃监护还需要 Python 3；运行捆绑版本不需要 Rust 或 Node。
 
+## 首次安装
+
+Linux x86_64 用户在 clone 后运行 `make setup`，统一构建当前前端／服务，准备原生降噪运行库，
+并安装 multimon-ng、rtl_433、OnAir、RTTY 和 GPS（GNSS-SDR＋桥接程序）。安装顺序执行，
+解码器集中到 `${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders`，已有程序会复用。
+重新安装单个 provider 时使用[原有安装脚本](../../tools/README.md#external-decoder-setup)。
+
+先安装[源码构建依赖](DEVELOPMENT.md#源码构建)。全部解码器还需要 CMake、Git、curl 和 C 工具链；
+GPS 需要 GNU Radio、Boost、VOLK、BLAS/LAPACK、HDF5、OpenSSL、pugixml、matio、protobuf、
+libpcap、FFTW 的开发文件和带 Mako 的构建用 Python。完整清单可执行
+`bash tools/setup-gnss-decoder.sh --help` 查看。检查会在下载／构建前列出缺少的前置依赖；
+GNSS-SDR 的 CMake 配置还会检查它的完整依赖。脚本不执行 sudo 或系统包安装。
+
+```bash
+./setup.sh --check              # 只检查，不下载或修改文件
+make setup                     # 首次源码构建和下载可能较久
+make run
+make decoders-status
+```
+
+硬件需另行取得 HAROGIC SDK，安装至 `/opt/htraapi`（或 `make setup SDK_ROOT=/path/to/sdk`）。
+检测到 SDK 时，setup 还会构建适配器和 Soapy 驱动；此时另需 SoapySDR 开发文件、
+SoapyRemote、`SoapySDRUtil` 和 `patch`。未安装 SDK 时，可用 `WEBSA_FAKE=1 make run` 启动模拟服务。
+
+日常仍用 `make run`／`make stop`／`make restart`；更新安装后执行 `make restart` 并刷新浏览器。
+`make decoders-status` 显示运行中服务的实际可用性和失败原因。若暂不需要 GPS，
+可用 `./setup.sh --without-gps` 跳过其构建与构建依赖。
+自定义解码器目录时，在 setup 和启动命令中使用相同的 `WEBSA_DECODERS_PREFIX`，无需逐个设置路径。
+
 ## 启动
 
 在仓库根目录执行：

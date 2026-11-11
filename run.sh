@@ -3,6 +3,10 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lifecycle.sh"
 cd "$ROOT"
+# All setup helpers install here; the portable runtime needs the same discovery
+# path as a source build, without sourcing provider-specific shell files.
+export WEBSA_DECODERS_PREFIX="${WEBSA_DECODERS_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders}"
+export PATH="$WEBSA_DECODERS_PREFIX/bin:$PATH"
 PORT="${WEBSA_PORT:-8080}"
 HOST="${WEBSA_HOST:-127.0.0.1}"
 LOCAL_SHIM="$HOME/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so"
