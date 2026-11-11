@@ -19,6 +19,20 @@ export class WorkbenchSession {
     if (this.snapshot?.transport === 'native') saveWorkbenchPreferences(this.audioPreferences);
   }
   masterMuted = false;
+  private audition: { owner: symbol; uid: string; exclusive: boolean; muted: boolean; epoch: string } | null = null;
+  /** Temporary local playback overlay; saved routes, Solo and follow mode stay intact. */
+  auditionStart(owner: symbol, uid: string, exclusive: boolean): void {
+    if (this.audition && this.audition.owner !== owner) this.clearAudition();
+    const muted = this.audition?.owner === owner ? this.audition.muted : this.masterMuted;
+    this.audition = { owner, uid: this.monitorTarget(uid), exclusive, muted, epoch: this.snapshot.capture.epoch };
+    this.masterMuted = false; this.notify();
+  }
+  auditionStop(owner: symbol): void {
+    if (this.audition?.owner !== owner) return;
+    if (!this.masterMuted) this.masterMuted = this.audition.muted;
+    this.audition = null; this.notify();
+  }
+  private clearAudition(): void { if (this.audition) this.auditionStop(this.audition.owner); }
   routes = new Map<string, MonitorRoute>();
   edits = new Map<string, { desired: ReceiverConfig; attempted: ReceiverConfig; pending: boolean; request_id: string | null; fault: Fault | null }>();
   fault: Fault | null = null;
@@ -71,6 +85,7 @@ export class WorkbenchSession {
   private retiredServices = new Set<string | undefined>();
   private stop: () => void;
   private readonly resetPreset = (): void => {
+    this.clearAudition();
     this.silencedCurrent = null;
     this.generation++; this.mutationTail = Promise.resolve(); this.recoveries.clear();
     if (this.monitorMode === 'follow' && this.selected) this.routes.set(this.selected, { ...this.route(this.selected), enabled: true });
@@ -101,6 +116,7 @@ export class WorkbenchSession {
     if (snapshot.service_id === this.snapshot.service_id && snapshot.state_revision !== undefined && this.snapshot.state_revision !== undefined
       && BigInt(snapshot.state_revision) < BigInt(this.snapshot.state_revision)) return;
     const serviceChanged = snapshot.service_id !== this.snapshot.service_id;
+    if (this.audition && (serviceChanged || this.audition.epoch !== snapshot.capture.epoch || !snapshot.receivers.some(r => r.receiver_uid === this.audition!.uid))) this.clearAudition();
     if (serviceChanged) {
       this.silencedCurrent = null;
       this.retiredServices.add(this.snapshot.service_id); this.generation++;
@@ -120,8 +136,13 @@ export class WorkbenchSession {
   requestId(): string { return `workbench-${++this.sequence}`; }
   resolve(binding: ViewBinding): string { return binding.type === 'follow' ? this.selected : binding.receiver_uid; }
   select(uid: string): void { this.selected = uid; this.notify(); }
-  route(uid: string): MonitorRoute { return this.routes.get(uid) ?? { enabled: false, gain: 0.7, pan: 0, solo: false }; }
+  route(uid: string): MonitorRoute {
+    const route = this.routes.get(uid) ?? { enabled: false, gain: 0.7, pan: 0, solo: false };
+    return this.audition?.uid === uid ? { ...route, enabled: true, gain: route.gain || 0.7 } : route;
+  }
   listening(uid: string): boolean {
+    if (this.audition?.uid === uid) return true;
+    if (this.audition?.exclusive) return false;
     if (this.monitorTarget(uid) !== uid || this.currentSilenced(uid)) return false;
     return this.monitorMode === 'follow' ? uid === this.monitorTarget(this.selected) : this.route(uid).enabled;
   }
@@ -145,13 +166,15 @@ export class WorkbenchSession {
   }
   private monitorAvailable(r: ReceiverState): boolean {
     return !this.clearingChannels && !this.retiring(r.receiver_uid) && this.monitorTarget(r.receiver_uid) === r.receiver_uid
-      && !this.currentSilenced(r.receiver_uid)
+      && (this.audition?.uid === r.receiver_uid || !this.currentSilenced(r.receiver_uid))
       && r.coverage?.state !== 'out_of_band' && (!r.reception || r.reception.state === 'receiving') && !r.fault
       && r.processing_state !== 'failed' && r.state === 'running' && receiverHasAudio(this.snapshot, r.confirmed);
   }
   private monitorEligible(uid: string): boolean {
     const r = this.snapshot.receivers.find(r => r.receiver_uid === uid);
     if (!r || !this.monitorAvailable(r)) return false;
+    if (this.audition?.uid === uid) return true;
+    if (this.audition?.exclusive) return false;
     const route = this.route(uid);
     if (this.monitorMode === 'follow') return uid === this.monitorTarget(this.selected);
     const solo = this.snapshot.receivers.some(r => this.route(r.receiver_uid).enabled && this.route(r.receiver_uid).solo && this.monitorAvailable(r));
@@ -314,5 +337,5 @@ export class WorkbenchSession {
       this.notify();
     }
   }
-  dispose(): void { this.disposed = true; this.generation++; document.removeEventListener('websa:preset-applied', this.resetPreset); this.stop(); this.listeners.clear(); this.resultListeners.clear(); this.retirements.clear(); }
+  dispose(): void { this.disposed = true; this.clearAudition(); this.generation++; document.removeEventListener('websa:preset-applied', this.resetPreset); this.stop(); this.listeners.clear(); this.resultListeners.clear(); this.retirements.clear(); }
 }

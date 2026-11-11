@@ -117,5 +117,5 @@ export function initIdentifySelection(): void {
   }, true);
 }
 export function selectionHint(): string {
-  return draft?.origin === 'waterfall' ? l('Identify current signal in this band · Drag horizontally · Esc cancels', '识别此频段当前信号 · 横向拖选 · Esc 取消') : l('Drag a frequency band, release to identify · Esc cancels', '横向拖选频段，松手识别 · Esc 取消');
+  return draft?.origin === 'waterfall' ? l('Current IQ · Drag band · Esc cancels', '当前信号 · 横向拖选 · Esc 取消') : l('Drag band · Release to identify · Esc cancels', '横向拖选 · 松手识别 · Esc 取消');
 }

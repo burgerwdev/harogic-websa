@@ -17,8 +17,13 @@ const browser = await chromium.launch({ executablePath: process.env.WEBSA_CHROMI
 const page = await browser.newPage({ viewport: { width: 1440, height: 980 } }); const errors = [], commands = [], gets = [];
 page.on('pageerror', error => errors.push(error.message));
 page.on('request', request => { if (request.method() === 'POST') commands.push({ url: request.url(), body: request.postDataJSON() }); if (new URL(request.url()).pathname === '/api/sdr/scan' && request.method() === 'GET') gets.push(Date.now()); });
-const report = {};
+page.setDefaultTimeout(10000);
+const benchTag='scan-e2e:'+crypto.randomUUID();
+await page.route('**/api/sdr/receivers',async route=>{const request=route.request();if(request.method()!=='POST')return route.continue();const data=request.postDataJSON();if(data.type==='create'||data.type==='configure'&&data.config?.tags?.some(t=>t===benchTag||t.startsWith('scan-audition:'))){data.config.tags=[...new Set([...data.config.tags,benchTag])];return route.continue({postData:JSON.stringify(data)});}return route.continue();});
+const report = {benchTag}, recordings=[];
+const receiverCommand=async(type,fields={})=>{const state=await api('/api/sdr/receivers?detail=live');const result=await api('/api/sdr/receivers',{type,service_id:state.service_id,request_id:crypto.randomUUID(),...fields});assert.equal(result.fault,null,JSON.stringify(result.fault));return result.snapshot;};
 try {
+  for(const kind of ['iq','audio']){const known=new Set((await api('/api/sdr/receivers?detail=live')).recordings.map(r=>r.task_id));const state=await receiverCommand('record_start',{receiver_uid:primary.receiver_uid,kinds:[kind]});const task=state.recordings.find(r=>!known.has(r.task_id)&&r.receiver_uid===primary.receiver_uid);assert(task,'recording task absent');recordings.push({kind,id:task.task_id});}
   await scan('pause'); await scan('cancel_region'); await scan('configure',{range:null,channels:[],auto_identify:false});
   await page.goto(origin); await page.waitForFunction(() => document.querySelector('#sdr-scan-toggle') && document.querySelector('#spectrum')?.dataset.sdrWindow !== '');
   await page.waitForTimeout(1500); await page.locator('#sdr-scan-toggle').click();
@@ -48,21 +53,56 @@ try {
   await root.locator('[data-scan-select]').click(); await page.keyboard.press('Enter');
   await eventually(async () => { const s = await api('/api/sdr/scan'); return s.signals.some(r => r.source === 'region' && r.identify_state === 'complete' && r.activity !== 'stale'); }, 'Keyboard selection did not finish');
   await page.waitForTimeout(600);
+  const selectedId = await root.locator('tr[aria-selected="true"]').getAttribute('data-signal');
+  const row = root.locator(`[data-signal="${selectedId}"]`);
   await root.locator('.sdr-scan-footer select').selectOption('iq');
-  const add = root.locator('.sdr-scan-footer button').last(); await add.click();
-  receivers = await eventually(async () => { const x = await api('/api/sdr/receivers?detail=live'); return x.receivers.some(r => !initial.has(r.receiver_uid)) ? x : false; }, 'Add channel did not create a receiver');
-  const afterAdd = receivers.receivers.length; await page.waitForTimeout(800);
-  await root.locator('.sdr-scan-footer button').last().click(); await page.waitForTimeout(500);
-  assert.equal((await api('/api/sdr/receivers?detail=live')).receivers.length, afterAdd, 'Open existing channel created a duplicate');
-  report.reuse = true;
+  assert.equal(await row.locator('[data-scan-listen]').isDisabled(),true);
+  await row.locator('[data-scan-add]').click();
+  receivers = await eventually(async () => { const x = await api('/api/sdr/receivers?detail=live'); return x.receivers.some(r => !initial.has(r.receiver_uid)) ? x : false; }, 'Add IQ channel did not create a receiver');
+  const afterAdd = receivers.receivers.length; await page.waitForTimeout(500);
+  assert.match(await row.locator('[data-scan-add]').innerText(),/C[0-9]+/);
   await root.locator('.sdr-scan-footer select').selectOption('am');
-  await root.locator('.sdr-scan-footer button').nth(1).click();
-  await eventually(async () => (await api('/api/sdr/receivers?detail=live')).receivers.some(r => !initial.has(r.receiver_uid) && r.confirmed.purpose === 'listen'), 'Listen did not create the explicit audio receiver');
-  report.listen = true;
-  await root.locator('.sdr-scan-evidence button').click(); await page.waitForTimeout(400);
-  await root.locator('.sdr-scan-evidence button').click();
+  const currentAudio = await page.locator('#spectrum').getAttribute('data-sdr-audio') ?? '';
+  await row.locator('[data-scan-listen]').click();
+  const preview = await eventually(async () => (await api('/api/sdr/receivers?detail=live')).receivers.find(r => r.confirmed.tags.some(t=>t.startsWith('scan-audition:'))), 'Preview did not create an owned receiver');
+  await root.locator('[data-scan-stop]').waitFor({state:'visible'});
+  assert.equal(await root.locator('[data-scan-exclusive]').isChecked(),true);
+  await eventually(async()=> /enabled=false/.test(await page.locator('#spectrum').getAttribute('data-sdr-audio')??''),'Exclusive preview did not silence Current');
+  await root.locator('[data-scan-exclusive]').uncheck();
+  if(/enabled=true/.test(currentAudio)) await eventually(async()=> /enabled=true/.test(await page.locator('#spectrum').getAttribute('data-sdr-audio')??''),'Mix was not restored');
+  await root.locator('[data-scan-exclusive]').check();
+  await root.locator('.sdr-scan-footer select').selectOption('usb');
+  await eventually(async()=> (await api('/api/sdr/receivers?detail=live')).receivers.find(r=>r.receiver_uid===preview.receiver_uid&&r.confirmed.processors[0]?.mode==='usb'),'Preview mode did not switch in place');
+  await eventually(async()=>!(await root.locator('.sdr-scan-footer select').isDisabled()),'Preview mode edit still pending');
+  await root.locator('.sdr-scan-footer select').selectOption('am');
+  const previewAgain=await eventually(async()=> (await api('/api/sdr/receivers?detail=live')).receivers.find(r=>r.receiver_uid===preview.receiver_uid&&r.confirmed.processors[0]?.mode==='am'),'Preview AM did not resume');
+  await eventually(async()=>!(await root.locator('.sdr-scan-footer select').isDisabled()),'Preview still pending');report.previewModeSwitch=true;
+  const previewStream=previewAgain.stream;
+  await row.locator('[data-scan-add]').click();
+  await eventually(async()=>{const r=(await api('/api/sdr/receivers?detail=live')).receivers.find(r=>r.receiver_uid===preview.receiver_uid);return r&&!r.confirmed.tags.some(t=>t.startsWith('scan-audition:'))&&r;},'Preview was not promoted');
+  receivers=await api('/api/sdr/receivers?detail=live');assert.equal(receivers.receivers.length,afterAdd+1);assert.deepEqual(receivers.receivers.find(r=>r.receiver_uid===preview.receiver_uid).stream,previewStream);
+  assert.equal(await root.locator('[data-scan-stop]').count(),0);
+  await row.locator('[data-scan-listen]').click();await root.locator('[data-scan-stop]').waitFor({state:'visible'});
+  assert.equal((await api('/api/sdr/receivers?detail=live')).receivers.length,afterAdd+1,'Borrowing a saved channel duplicated it');
+  await root.locator('[data-scan-stop]').click();await page.waitForTimeout(400);
+  assert((await api('/api/sdr/receivers?detail=live')).receivers.some(r=>r.receiver_uid===preview.receiver_uid),'Stopping preview retired a saved receiver');
+  report.reuse=true;report.listen=true;report.auditionMixing=true;report.previewPromotion=true;
+  await root.locator('[data-scan-evidence]').click(); await page.waitForTimeout(300);await root.locator('[data-scan-evidence]').click();
+  await root.locator('[data-scan-search]').fill('no-such-frequency');assert.equal(await root.locator('tr[data-signal]').count(),0);
+  await root.locator('[data-clear-filters]').click();assert((await root.locator('tr[data-signal]').count())>0);
+  await root.locator('[data-sort="power"]').click();assert.equal(await root.locator('th[aria-sort="descending"]').count(),1);
+  report.searchAndSort=true;
+  await root.locator('[data-scan-clear]').click();await eventually(async()=>!(await api('/api/sdr/scan')).signals.length,'Clearing did not remove results');
+  assert.equal((await api('/api/sdr/receivers?detail=live')).receivers.length,afterAdd+1,'Clear retired saved channels');report.clear=true;
+  await root.locator('[data-measurement]').selectOption('table');
+  const hz=primary.confirmed.baseband.frequency_hz;
+  await root.locator('[data-table=start]').fill(String((hz-50000)/1e6));await root.locator('[data-table=stop]').fill(String((hz+50000)/1e6));await root.locator('[data-table=step]').fill('50');await root.locator('[data-table=width]').fill('12');
+  await root.locator('fieldset button').first().click();
+  await eventually(async()=> (await api('/api/sdr/scan')).signals.filter(s=>s.source==='channel').length===3,'Fixed frequency measurement did not produce three windows');
+  assert.equal((await api('/api/sdr/receivers?detail=live')).receivers.length,afterAdd+1);report.fixedFrequencies=true;
+  await root.locator('[data-measurement]').selectOption('discovery');await page.waitForTimeout(500);
   // Hide only changes visibility and must stop the large snapshot polling.
-  await root.locator('[data-scan-run]').click(); await page.waitForTimeout(1100); await root.locator('[data-close]').click();
+  if(!(await api('/api/sdr/scan')).running) await root.locator('[data-scan-run]').click(); await page.waitForTimeout(1100); await root.locator('[data-close]').click();
   const hiddenPolls = gets.length; await page.waitForTimeout(1300); assert(gets.length - hiddenPolls <= 1); assert.equal((await api('/api/sdr/scan')).running, true);
   await page.locator('#sdr-scan-toggle').click(); await root.waitFor({ state: 'visible' });
   const popupPromise = page.waitForEvent('popup'); await root.locator('[data-pop]').click(); const popup = await popupPromise;
@@ -78,20 +118,36 @@ try {
     await page.evaluate(scale => localStorage.setItem('web-sa-ui-scale',String(scale)), scale);
     await page.reload(); await page.waitForTimeout(1200); await page.locator('#sdr-scan-toggle').click(); await page.waitForTimeout(500);
     assert.equal(await page.locator('html').getAttribute('data-ui-scale'),String(scale));
+    await page.locator('#sdr-scan-window tr[data-signal]').first().click();
     await page.screenshot({path:`${artifacts}/扫描-窄窗-${scale}.png`});
     const footer = page.locator('#sdr-scan-window .sdr-scan-footer'); assert.equal(await footer.isVisible(),true); const box = await footer.boundingBox(); assert(box.x >= 0 && box.x + box.width <= 801 && box.y + box.height <= 781,JSON.stringify(box));
   }
   report.finalPrimary = (await api('/api/sdr/receivers?detail=live')).receivers.find(r => r.receiver_uid === primary.receiver_uid);
   assert.equal(report.finalPrimary.reception?.interruptions ?? 0,primary.reception?.interruptions ?? 0,'Scan interrupted formal audio processing');
+  assert.equal(await page.locator('#sdr-scan-toggle svg').count(),1);
   report.browserErrors = errors; report.hiddenPolling = true; assert.deepEqual(errors, []);
+} catch (error) {
+  await page.screenshot({path:`${artifacts}/失败现场.png`});
+  report.failure=String(error); report.actionGeometry=await page.locator('.sdr-scan-row-actions').first().evaluate(e=>({cell:e.getBoundingClientRect().toJSON(),style:getComputedStyle(e).cssText,buttons:[...e.querySelectorAll('button')].map(b=>({box:b.getBoundingClientRect().toJSON(),padding:getComputedStyle(b).padding,display:getComputedStyle(b).display,position:getComputedStyle(b).position}))})).catch(()=>null);
+  throw error;
 } finally {
   report.lastSnapshot = await api('/api/sdr/scan'); report.commands = commands.filter(c => c.url.endsWith('/api/sdr/scan') || c.url.endsWith('/api/config'));
   await browser.close();
+  const continuityErrors=[];
+  for(const {kind,id}of recordings){
+    try{
+      await receiverCommand('record_stop',{task_id:id});const task=await eventually(async()=> (await api('/api/sdr/receivers?detail=live')).recordings.find(r=>r.task_id===id&&['completed','failed'].includes(r.state)),'recording did not finish');
+      assert.equal(task.state,'completed');const segments=task.tracks[0].segments;assert(segments.length);
+      for(let i=1;i<segments.length;i++){assert.deepEqual(segments[i].stream,segments[i-1].stream);if(kind==='audio')assert.equal(segments[i].first_audio_index,segments[i-1].next_audio_index);}
+      let index=null;if(kind==='iq'){index=await api('/api/sdr/recordings/'+id+'/index');for(let i=1;i<index.entries.length;i++){const a=index.entries[i-1].meta.clock,b=index.entries[i].meta.clock;assert.equal(BigInt(b.first_output_index),BigInt(a.first_output_index)+BigInt(a.samples));}}
+      await fs.writeFile(`${artifacts}/试听-${kind}-连续性.json`,JSON.stringify({task,index},null,2));report[kind+'Continuity']=true;
+    }catch(error){continuityErrors.push(String(error));}finally{try{await receiverCommand('record_delete',{task_id:id});}catch(error){continuityErrors.push(String(error));}}
+  }
   const snapshot = await api('/api/sdr/receivers?detail=live');
-  for (const receiver of snapshot.receivers.filter(r => !initial.has(r.receiver_uid))) {
+  for (const receiver of snapshot.receivers.filter(r => r.confirmed.tags.includes(benchTag))) {
     const result = await api('/api/sdr/receivers', {type:'retire',service_id:snapshot.service_id,request_id:crypto.randomUUID(),receiver_uid:receiver.receiver_uid}); assert.equal(result.fault,null);
   }
   await scan('pause'); await scan('cancel_region');
-  await fs.writeFile(`${artifacts}/browser-report.json`,JSON.stringify(report,null,2));
+  report.recordingErrors=continuityErrors;await fs.writeFile(`${artifacts}/browser-report.json`,JSON.stringify(report,null,2));assert.deepEqual(continuityErrors,[]);
 }
 console.log('Signal scan live browser gate passed');

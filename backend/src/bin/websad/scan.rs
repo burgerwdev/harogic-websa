@@ -233,7 +233,7 @@ struct Detection {lo:f64,hi:f64,excess:f64,power:f64,edge:bool}
 fn detect(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f64)->(Vec<Detection>,Vec<f64>,bool){detect_floor(meta,power,range,threshold,None)}
 fn detect_floor(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f64,floor:Option<&[f64]>)->(Vec<Detection>,Vec<f64>,bool){
     let n=power.len();let bin=meta.rate/n as f64;let start=meta.center-meta.rate/2.0;
-    let first=(((meta.center-meta.bandwidth/2.0-start)/bin).ceil() as usize).min(n);
+    let first=((((meta.center-meta.bandwidth/2.0).max(0.0)-start)/bin).ceil() as usize).min(n);
     let end=(((meta.center+meta.bandwidth/2.0-start)/bin).floor() as usize).min(n);
     let capture_edges=(first,end);
     if end<=first {return(vec![],vec![1e-30;n],false);}
@@ -276,7 +276,7 @@ fn detect_floor(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f6
 }
 struct Observation {incoming:Vec<(Detection,&'static str)>,reliable:bool,truncated:usize,origin:Option<String>}
 fn prepare_observation(meta:display_fft::Meta,power:&[f64],running:bool,range:Option<(f64,f64)>,channels:&[(f64,f64)],region:Option<Region>,threshold:f64,floor:Option<&[f64]>)->Observation {
-    let full=(meta.center-meta.bandwidth/2.0,meta.center+meta.bandwidth/2.0);
+    let full=((meta.center-meta.bandwidth/2.0).max(0.0),meta.center+meta.bandwidth/2.0);
     let (regions,background,reliable)=detect_floor(meta,power,range.unwrap_or(full),threshold,floor);
     let mut incoming=Vec::new();let mut truncated=0;let mut origin=None;
     if running {
@@ -327,7 +327,7 @@ impl Data {
             if s.identify_state=="idle" {
                 // A narrow carrier peak is not the whole AM channel. Keep room
                 // for its audio sidebands, bounded by the user's selected band.
-                let scope=if source=="region"{selected_bounds}else{None}.unwrap_or((meta.center-meta.bandwidth/2.0,meta.center+meta.bandwidth/2.0));
+                let scope=if source=="region"{selected_bounds}else{None}.unwrap_or(((meta.center-meta.bandwidth/2.0).max(0.0),meta.center+meta.bandwidth/2.0));
                 s.analysis_bandwidth_hz=if source=="channel"{s.bandwidth_hz}else{s.bandwidth_hz.max(12_000.0).min(2.0*(s.center_hz-scope.0).min(scope.1-s.center_hz)).max(s.bandwidth_hz)};
             }
             // Keep reception advice stable under ordinary bin jitter.
@@ -568,18 +568,29 @@ impl DevState {
         self.scan_tick();
         let kind=request["type"].as_str().ok_or("type required")?;
         let mut d=engine.data.lock();
-        if d.capture["state"]!="running" || d.capture["source_kind"]!="hardware" {return Err("healthy live SDR RF capture required; fixture lanes have no shared RF IQ".into());}
+        if (d.capture["state"]!="running" || d.capture["source_kind"]!="hardware")&&!matches!(kind,"clear"|"pause"|"stop"|"cancel_region") {return Err("healthy live SDR RF capture required; fixture lanes have no shared RF IQ".into());}
         if request["capture_epoch"]!=d.capture["epoch"] {return Err("capture epoch changed; refresh".into());}
         if kind!="identify_region"&&kind!="cancel_region" {
             if request["scan_id"]!=format!("scan-{}",self.receivers.boot)||request["expected_revision"]!=d.revision.to_string(){return Err("scan revision changed; refresh".into());}
         }
-        let full=(d.capture["center_hz"].as_f64().unwrap()-d.capture["usable_bandwidth_hz"].as_f64().unwrap()/2.0,d.capture["center_hz"].as_f64().unwrap()+d.capture["usable_bandwidth_hz"].as_f64().unwrap()/2.0);
+        let full=((d.capture["center_hz"].as_f64().unwrap_or(0.0)-d.capture["usable_bandwidth_hz"].as_f64().unwrap_or(0.0)/2.0).max(0.0),d.capture["center_hz"].as_f64().unwrap_or(0.0)+d.capture["usable_bandwidth_hz"].as_f64().unwrap_or(0.0)/2.0);
         let read_range=|r:&Value|->Result<(f64,f64),String>{let lo=r["low_hz"].as_f64().filter(|v|v.is_finite()).ok_or("finite low_hz required")?;
             let hi=r["high_hz"].as_f64().filter(|v|v.is_finite()).ok_or("finite high_hz required")?;
             if hi<=lo||lo<full.0||hi>full.1{return Err("region exceeds current usable capture; reselect without retuning".into());}Ok((lo,hi))};
         match kind {
             "start"=>{d.cancel();d.running=true;d.state="warming".into();d.reason=None;d.signals.retain(|s|s.source=="region");d.metrics.started.get_or_insert_with(Instant::now);}
             "pause"|"stop"=>{d.cancel();d.running=false;d.state=if kind=="pause"{"paused"}else{"stopped"}.into();for s in &mut d.signals {if s.activity=="active"{s.activity="snapshot".into();}}}
+            "clear"=>{
+                match request["scope"].as_str().unwrap_or("all") {
+                    "all"=>{d.cancel();d.signals.clear();d.truncated=0;d.reason=None;}
+                    "inactive"=>{
+                        let old:Vec<String>=d.signals.iter().filter(|s|matches!(s.activity.as_str(),"stale"|"unseen"|"snapshot"|"not_detected"|"ignored")).map(|s|s.id.clone()).collect();
+                        d.signals.retain(|s|!old.contains(&s.id));d.queue.retain(|id|!old.contains(id));
+                        if d.collector.as_ref().is_some_and(|c|old.contains(&c.id)){d.collector=None;}
+                    }
+                    _=>return Err("clear scope must be all or inactive".into())
+                }
+            }
             "configure"=>{
                 let range=if request.get("range").is_none(){d.range}else if request["range"].is_null(){None}else{Some(read_range(&request["range"])?)};
                 let threshold=request["threshold_db"].as_f64().unwrap_or(d.threshold);if !(5.0..=20.0).contains(&threshold){return Err("threshold must be 5..20 dB".into());}
@@ -697,6 +708,11 @@ mod tests {
     fn psd_integral_preserves_complex_power(){let n=4096;let mut psd=Psd::new(n);let iq:Vec<i16>=(0..n*5/2).flat_map(|i|{let p=std::f64::consts::TAU*100.0*i as f64/n as f64;[(10000.0*p.cos()) as i16,(10000.0*p.sin()) as i16]}).collect();
         let p=psd.compute(&iq,1e6,1e-4);let integral=p.iter().sum::<f64>()*1e6/n as f64;assert!((integral-1.0).abs()<0.001,"{integral}");}
     #[test]
+    fn capture_crossing_zero_never_exposes_negative_rf_candidates(){
+        let m=display_fft::Meta{center:100000.0,..meta()};let mut p=vec![1.0;4096];p[810..830].fill(1000.0);p[2440..2460].fill(1000.0);
+        let (rows,_,_)=detect(m,&p,(-300000.0,500000.0),8.0);assert_eq!(rows.len(),1,"{rows:?}");assert!(rows[0].lo>=0.0);
+    }
+    #[test]
     fn stability_and_one_shot_do_not_change_continuous_range(){let mut d=Data::default();d.running=true;d.range=Some((99_800_000.0,100_200_000.0));let mut p=vec![1.0;FFT];p[26000..26030].fill(100.0);
         let range=d.range;let mut m=meta();m.rate=1e6;
         d.observe(m,&p);assert!(d.snapshot("test",false)["signals"].as_array().unwrap().is_empty());
@@ -716,6 +732,15 @@ mod tests {
         r["low_hz"]=json!(99_999_000);assert!(s.scan_command(r).unwrap_err().contains("conflict"));
         let r=request(&s,"start","start");s.scan_command(r.clone()).unwrap();let mut stale=r;stale["request_id"]=json!("stale");assert!(s.scan_command(stale).is_err());
         let r=request(&s,"pause","pause");s.scan_command(r).unwrap();let d=s.scan.as_ref().unwrap().data.lock();assert!(!d.running);assert!(d.region.is_none());assert!(d.queue.is_empty());assert!(d.signals.iter().all(|s|s.identify_state!="detecting"));
+    }
+    #[test]
+    fn clear_fences_old_work_preserves_scan_configuration_and_works_disconnected(){
+        let mut s=state();let engine=s.scan.as_ref().unwrap().clone();
+        {let mut d=engine.data.lock();d.running=true;d.range=Some((99.9e6,100.1e6));d.channels=vec![(99.99e6,100.01e6)];let mut row=Signal::new(1,99.99e6,100.01e6,"scan");row.activity="active".into();row.identify_state="analyzing".into();d.signals.push(row);d.queue.push_back("s1".into());}
+        let token=engine.data.lock().token;let r=request(&s,"clear","clear");let reply=s.scan_command(r.clone()).unwrap();assert!(engine.data.lock().token>token);assert_eq!(reply["running"],true);assert!(reply["signals"].as_array().unwrap().is_empty());assert_eq!(engine.data.lock().channels.len(),1);assert_eq!(engine.data.lock().range,Some((99.9e6,100.1e6)));assert!(engine.data.lock().queue.is_empty());assert!(s.scan_probe.is_none());assert_eq!(s.scan_command(r).unwrap(),reply);
+        {let mut d=engine.data.lock();for (id,activity)in [(2,"active"),(3,"stale")] {let mut row=Signal::new(id,99.99e6,100.01e6,"region");row.activity=activity.into();d.signals.push(row);}}
+        let mut r=request(&s,"clear","inactive");r["scope"]=json!("inactive");let reply=s.scan_command(r).unwrap();assert_eq!(reply["signals"].as_array().unwrap().len(),1);assert_eq!(reply["signals"][0]["id"],"s2");
+        s.link_up=false;s.scan_tick();let r=request(&s,"clear","offline");assert!(s.scan_command(r).unwrap()["signals"].as_array().unwrap().is_empty());
     }
     #[test]
     fn full_definitions_wait_then_reuse_compatible_iq_and_retire_probe_before_create(){let mut s=state();s.remember_receiver_streams();

@@ -105,6 +105,7 @@ export interface ServiceSnapshot {
 export interface ConfigureCommand {
   type: 'configure'; request_id: string; expected_revision: U64;
   receiver_uid: ReceiverUid; config: ReceiverConfig; recover?:boolean;
+  scan?: { capture_epoch: string; signal_id: string; signal_generation: string };
 }
 /** Viewport zoom and pan never enter the actual RF coverage calculation. */
 export function receiverInCapture(snapshot: ServiceSnapshot, config: ReceiverConfig): boolean | null {
