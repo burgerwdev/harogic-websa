@@ -18,6 +18,7 @@
 |---|---|
 | 对接 HTTP 和 WebSocket | [接口](reference/API.md) |
 | 管理接收机、预设和订阅 | [接收机](reference/RECEIVERS.md) |
+| 带宽内扫描、选区识别和进入接收 | [扫描与识别](reference/SIGNAL_SCAN.md) |
 | 录制、读取和导出 | [录制](reference/RECORDINGS.md) |
 | 修改模式与参数归属 | [状态与所有权](reference/STATE.md) |
 | 维护 DRM 台架与 AAC 夹具 | [DRM](reference/DRM.md) |

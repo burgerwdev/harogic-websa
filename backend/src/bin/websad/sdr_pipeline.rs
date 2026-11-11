@@ -542,6 +542,8 @@ impl Ddc {
             slow_pipeline:self.pipeline_timing.slow }
     }
 }
+impl Pipeline { pub(super) fn scan_pressure(&self)->(bool,u64) {(self.snapshot.fine_lanes.iter().any(|lane|lane.scan_pressure()),self.diagnostics.stats().queue_full)} }
+
 impl Pipeline {
     pub fn presentation(&self) -> PipelinePresentation {
         PipelinePresentation { snapshot:self.snapshot.clone(), diagnostics:self.diagnostics.clone() }

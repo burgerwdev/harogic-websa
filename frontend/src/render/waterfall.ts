@@ -1,4 +1,5 @@
 import { drawPassband } from './passband';
+import { renderIdentifyBand } from './sdrIdentifyBand';
 import { renderSdrChannelBands } from './sdrChannelBands';
 import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 // 瀑布图渲染: ImageData 逐像素密度着色 + 滚动历史
@@ -274,7 +275,10 @@ function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, heigh
   const frequency = S.sdrMode && sdrPassbandVisible.get()
     ? sdrBadgeDragFrequency() ?? passbandDragFrequency() ?? sdrListenHz.get() : null;
   const view = sdrSpectrumWindow();
-  if (view) renderSdrChannelBands(ctx, view.lo, view.hi, { x: 0, y: 0, w: width, h: height });
+  if (view) {
+    renderSdrChannelBands(ctx, view.lo, view.hi, { x: 0, y: 0, w: width, h: height });
+    renderIdentifyBand(ctx, view.lo, view.hi, { x: 0, y: 0, w: width, h: height });
+  }
   const selection = getMarqueePreview();
   if (S.sdrMode && view && selection) {
     const x = (selection.lo - view.lo) / (view.hi - view.lo) * width;

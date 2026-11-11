@@ -340,7 +340,7 @@ impl DevState {
                 "iq_archive_read":self.recordings.is_some(),"iq_range_max_samples":"1048576",
                 "iq_archive_collection":self.recordings.is_some(),"iq_collection_max_samples":super::recording_export::MAX_SAMPLES.to_string(),"iq_collection_max_segments":super::recording_collection::MAX_SEGMENTS,
                 "iq_archive_export":self.recordings.is_some(),"iq_export_max_samples":super::recording_export::MAX_SAMPLES.to_string(),"monitor_mixing":true},
-            "capture":self.capture_snapshot(),"processing_resources":self.receiver_admission,
+            "scan":self.scan_summary(),"capture":self.capture_snapshot(),"processing_resources":self.receiver_admission,
             "host_resources":websa_channelizer::host_resources::snapshot(),"model_preparation":websa_channelizer::model_preparation::snapshot(),
             "receivers":receivers,"outputs":[],"recordings":self.recordings.as_ref().map(|r|r.snapshots()).unwrap_or_default(),
             "recording_resources":self.recordings.as_ref().map(|r|r.resources())});
@@ -393,6 +393,7 @@ fn fault(scope:&str,code:&str,message:&str)->Value {
 struct Change {slot:u32,config:Value,data:Value,retire:bool,band_paused:bool,revision:u64,output_bytes:f64}
 
 fn prepare_change(state:&mut DevState,request:&Value)->Result<Change,String> {
+    scan::validate_receiver_request(state,request)?;
     if request.get("service_id").is_some_and(|id|id!=&state.receivers.boot) {
         return Err("source service restarted; refresh before retrying".into());
     }
@@ -553,6 +554,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
                 return (StatusCode::CONFLICT,Json(error_body("request_id reused with a different command","identity_conflict"))).into_response();
             }
         }
+        if !preview { if let Err(error)=state.retire_scan_probe() {return (StatusCode::SERVICE_UNAVAILABLE,Json(error_body(&error,"probe_retiring"))).into_response();} state.flush_scan_control(&app); }
         prepare_change(&mut state,&request)
     };
     let result=match candidate {
@@ -581,8 +583,10 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
             Ok((change,mut admission))=>{
                 estimated_bytes=change.output_bytes;
                 if state.config_version!=change.revision {failure=Some("configuration changed during admission; refresh before retrying".to_owned());}
+                else if let Err(error)=scan::validate_receiver_request(&state,&request) {failure=Some(error);}
                 else if !preview {
-                    if let Err(error)=admission.dispatch(&mut state,"SET_SDR_CHANNEL",&change.data) {
+                    if let Err(error)=state.retire_scan_probe() {failure=Some(error);}
+                    else if let Err(error)=admission.dispatch(&mut state,"SET_SDR_CHANNEL",&change.data) {
                         let capture_failed=state.ddc.as_ref().is_some_and(|d|d.0.capture_failed)
                             || state.pipeline.as_ref().is_some_and(|p|p.failure_diagnostics().get("error").is_some());
                         if capture_failed {state.hardware_presentation_failed(error.message.clone());}
@@ -603,6 +607,7 @@ async fn execute(app:Arc<App>,headers:HeaderMap,body:String,preview:bool)->Respo
                         let revision=state.config_version;
                         if let Some(receiver)=state.receivers.receivers.get_mut(&change.slot) {receiver.config=change.config;receiver.revision=revision;}
                         if let Err(error)=state.track_receiver_control(change.slot,&change.data) {failure=Some(error);}
+                        scan::receiver_created(&state,&request,change.slot);
                         if change.retire {
                             if let Some(receiver)=state.receivers.receivers.remove(&change.slot) {
                                 if let Some(recordings)=&state.recordings {recordings.source_end(&receiver.uid);}

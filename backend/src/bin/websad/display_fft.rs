@@ -127,17 +127,17 @@ pub(super) struct Meta {
     pub bandwidth: f64,
     pub scale: f32,
 }
-struct Job {
-    iq: Vec<i16>,
-    meta: Meta,
-    seq: u64,
-    warning: i32,
+pub(super) struct Job {
+    pub iq: Vec<i16>,
+    pub meta: Meta,
+    pub seq: u64,
+    pub warning: i32,
 }
 pub(super) type Pan = (Vec<f64>, Vec<f32>, i32, u64, u64);
 
 /// All samples within a job are adjacent. Skipped observations never join partial jobs.
 #[derive(Default)]
-struct Assembler {
+pub(super) struct Assembler {
     iq: Vec<i16>,
     meta: Option<Meta>,
     next_seq: Option<u64>,
@@ -153,7 +153,7 @@ struct Assembler {
     last_stamp_error: u64,
 }
 impl Assembler {
-    fn push(
+    pub(super) fn push(
         &mut self,
         size: usize,
         meta: Meta,
@@ -162,6 +162,9 @@ impl Assembler {
         iq: &[i16],
         warning: i32,
     ) -> Option<Job> {
+        self.push_at(size, meta, seq, stamp, iq, warning, 20.0)
+    }
+    pub(super) fn push_at(&mut self,size:usize,meta:Meta,seq:u64,stamp:u64,iq:&[i16],warning:i32,hz:f64)->Option<Job> {
         let tick = 125_000_000.0 / meta.rate;
         if !tick.is_finite()
             || tick < 1.0
@@ -217,7 +220,7 @@ impl Assembler {
         // Whole-packet start boundaries, no overlap and no zero padding.
         self.next_start = self
             .start
-            .saturating_add(((125_000_000.0f64 / 20.0).max(size as f64 * tick)) as u64);
+            .saturating_add(((125_000_000.0f64 / hz).max(size as f64 * tick)) as u64);
         Some(Job {
             iq: std::mem::take(&mut self.iq),
             meta,

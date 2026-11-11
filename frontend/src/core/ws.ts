@@ -1,3 +1,4 @@
+import { acceptScanStatus } from '../ui/sdrScan';
 import { syncSelectValue } from '../ui/selectControl';
 // WebSocket protocol layer + STATUS handling
 import { requestRender, requestStreamRender, streamRenderInterval } from '../render/redraw';
@@ -277,6 +278,7 @@ export function connectWS() {
   };
   ws.onerror = () => ws?.close();
   ws.onclose = () => {
+    acceptScanStatus({ connected: false });
     nativeSdrDisplayReady = false;
     setServerConnection(false);
     pendingCommands.clear();
@@ -586,6 +588,7 @@ export function updateStatus(s: any) {
   if (typeof s.sdr?.receiver_error === 'string') rejectSdrFilterRequest(undefined, undefined, true);
   if (recoveredReceiver && previousReceiverError
       && S.statusError === localizedError({ msg: previousReceiverError })) S.setStatusError(null);
+  acceptScanStatus(s);
   const nativeSdr = s.mode === 'sdr' && s.sdr?.receiver_api === 'multichannel-draft-v1';
   syncGraphModeStatus(s.mode, nativeSdr);
   // Adopting an existing native receiver set skips the legacy SET_MODE/SET_SDR

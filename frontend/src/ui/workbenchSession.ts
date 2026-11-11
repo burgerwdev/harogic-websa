@@ -194,9 +194,9 @@ export class WorkbenchSession {
     });
   }
   /** Observe identity at dispatch, after earlier local mutations have committed. */
-  create(config: ReceiverConfig): Promise<{ receiver_uid: string | null; fault: Fault | null }> {
+  create(config: ReceiverConfig, scan?: { capture_epoch: string; signal_id: string; signal_generation: string }): Promise<{ receiver_uid: string | null; fault: Fault | null }> {
     if (this.clearingChannels) return Promise.resolve({ receiver_uid: null, fault: this.clearingFault() });
-    const command: ServiceCommand = { type: 'create', request_id: this.requestId(), config: clone(config) };
+    const command: ServiceCommand = { type: 'create', request_id: this.requestId(), config: clone(config), ...(scan ? { scan } : {}) };
     const generation = this.generation;
     return this.serialize(async () => {
       const cancelled = () => ({ receiver_uid: null, fault: this.invalidated(command).fault });

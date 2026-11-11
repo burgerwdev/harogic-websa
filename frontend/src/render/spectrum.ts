@@ -35,6 +35,7 @@ import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 import { renderFilterHandles, renderFilterPassband } from '../ui/sdrFilterGesture';
 import { sdrPassbandVisible } from '../ui/sdrPassbandState';
+import { renderIdentifyBand } from './sdrIdentifyBand';
 import { renderSdrChannelBands } from './sdrChannelBands';
 import { renderSdrLocate } from '../ui/sdrLocate';
 import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
@@ -868,6 +869,7 @@ function renderRtaOverlays(ctx: CanvasRenderingContext2D): void {
   ctx.save(); ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   // Preview the dial and passband together while the badge owns the pointer.
   renderSdrChannelBands(ctx, lo, hi, p, true);
+  renderIdentifyBand(ctx, lo, hi, p, true);
   renderFilterPassband(lo, hi, sdrBadgeDragFrequency(), ctx);
   renderSdrLocate(lo, hi, ctx);
   ctx.restore();

@@ -23,6 +23,7 @@ pub(super) struct StatusSnapshot {
     rta_trigger_actual: Value,
     sdr_center: f64,
     sdr_actual: Value,
+    scan: Value,
     pipeline_diagnostics: Option<sdr_pipeline::PipelinePresentation>,
     sdr_ref: f64,
     receiver_failure: Option<String>,
@@ -148,6 +149,7 @@ impl DevState {
             rta_trigger_actual: self.rta_trigger_actual.clone(),
             sdr_center: self.sdr_center.clone(),
             sdr_actual,
+            scan:self.scan_summary(),
             pipeline_diagnostics:diagnostics.then(||self.pipeline.as_ref().map(|p|p.presentation())).flatten(),
             sdr_ref: self.sdr_ref.clone(),
             receiver_failure: self.receiver_failure.clone(),
@@ -442,6 +444,7 @@ impl StatusSnapshot {
         s["has_premium_ref_clock"] = json!(self.has_premium_ref_clock);
         s["channel_registry"] = registry.clone();
         s["sdr"]["channels"] = self.channels.clone();
+        s["sdr"]["scan"]=self.scan.clone();
         s["sdr"]["receiver_api"] = json!("multichannel-draft-v1");
         s["sdr"]["filter_limits"] = self.sdr_filter_limits.clone();
         s["sdr"]["receiver_error"] = json!(self.receiver_failure);

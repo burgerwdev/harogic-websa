@@ -573,6 +573,11 @@ impl DevState {
             None=>receiver_workers::ReceiverFrames::default(),
         };
         self.decode_snapshots.observe(&output.decode)?;
+        if let Some(scan)=&self.scan {
+            let registry=self.processing_registry();
+            let uids=registry.iter().filter_map(|e|self.receiver_uid_for_slot(e.channel).map(|uid|(e.channel,uid.to_owned()))).collect::<Vec<_>>();
+            scan.decoded(&output.decode,&registry,&uids);
+        }
         Ok(output)
     }
     pub(super) fn process_receiver_frames_with_registry<T:IqInput>(&mut self,frames:&[T],

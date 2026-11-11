@@ -185,6 +185,10 @@ impl DevState {
         if !frames.is_empty() || self.receiver_workers.is_some() {
             let mut retiring = std::mem::take(&mut self.pending_iq);
             retiring.extend(frames);
+            if let Some(scan)=&self.scan {scan.iq(&retiring);}
+            // A temporary lease has no logical receiver or processor. Its
+            // drained tail must stay outside formal decode/audio/record paths.
+            retiring.retain(|frame|!self.scan_probe.as_ref().is_some_and(|probe|probe.matches(frame)));
             match self.process_control_receiver_frames(&retiring, &registry) {
                 Ok(output)=>{
                     self.pending_receiver.append(output);
@@ -222,6 +226,8 @@ impl DevState {
         let mut pending = std::mem::take(&mut self.pending_iq);
         pending.append(&mut output.frames);
         output.frames = pending;
+        if let Some(scan)=&self.scan { scan.iq(&output.frames); }
+        output.frames.retain(|frame| !self.scan_probe.as_ref().is_some_and(|probe| probe.matches(frame)));
         // A command may drain the next IQ batch while spectrum encoding runs
         // without the state lock. Queue this batch first so that command tails
         // cannot overtake it, and retain worker output for the ordered drain.

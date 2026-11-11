@@ -18,6 +18,8 @@ mod fine_workers;
 mod reception_recovery;
 #[path = "websad/display_fft.rs"]
 mod display_fft;
+#[path = "websad/scan.rs"]
+mod scan;
 #[path = "websad/sdr_hardware.rs"]
 mod sdr_hardware;
 #[path = "websad/state_lock.rs"]
@@ -362,6 +364,8 @@ struct DevState {
     fixture_sources: Option<service_fixture::FixtureSources>,
     channel_power: Vec<Option<(std::time::Instant,f64)>>,
     sdr_actual: Value,
+    scan: Option<Arc<scan::Engine>>,
+    scan_probe: Option<scan::Probe>,
     harm_f0: f64,
     harm_count: i64,
     harm_span: f64,
@@ -585,6 +589,8 @@ impl DevState {
             fixture_sources: None,
             channel_power: vec![None;MAX_CHANNELS],
             sdr_actual: json!({}),
+            scan: None,
+            scan_probe: None,
             harm_f0: 1e9,
             harm_count: 5,
             harm_span: 10e6,
@@ -2244,6 +2250,7 @@ struct Ddc {
     direct: BTreeMap<u32, sdr_pipeline::DirectChannel>,
     carry: IqFrames,
     pan: Vec<(Vec<f64>, Vec<f32>, i32, u64, u64, usize)>,
+    scan_tap: Option<scan::Tap>,
     default_fft: Option<display_fft::Analyzer>,
     display_fft: Option<display_fft::Analyzer>,
     display_fft_error: Option<String>,
@@ -2390,6 +2397,7 @@ impl Ddc {
             direct: BTreeMap::new(),
             carry: Vec::new(),
             pan: Vec::new(),
+            scan_tap: None,
             default_fft: None, display_fft: None, display_fft_error: None,
             capture_center: center,
             usable_bandwidth: bandwidth,
@@ -2738,6 +2746,9 @@ impl Ddc {
                     }
                 }
                 self.last_stamp = Some(packet.stamp);
+                if let Some(tap) = &mut self.scan_tap {
+                    tap.push(display_fft::Meta {epoch:self.stream.epoch(),generation:packet.generation,center:self.capture_center,rate:self.stream.input_sample_rate(),bandwidth:self.usable_bandwidth,scale:packet.scale_to_v},packet.seq,packet.stamp,&packet.iq,packet.warning);
+                }
                 if let Some(analyzer) = &mut self.default_fft {
                     let meta = display_fft::Meta {epoch:self.stream.epoch(),generation:packet.generation,
                         center:self.capture_center,rate:self.stream.input_sample_rate(),bandwidth:self.usable_bandwidth,
@@ -3901,6 +3912,8 @@ async fn publisher_loop(
                 }
                 let recording_clients = usize::from(state.recordings.as_ref().is_some_and(|r|r.has_active()));
                 let receiver_clients = usize::from(state.sdr_channels.iter().any(|config|config.enabled));
+                state.scan_tick_due();
+                state.flush_scan_control(&compute);
                 let mode = state.swp.mode.clone();
                 let epoch = compute.epoch.load(Ordering::Acquire);
                 let mut display: Vec<Bytes> = Vec::new();

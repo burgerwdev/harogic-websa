@@ -9,18 +9,22 @@ export interface FloatingWindow {
   root: HTMLElement; body: HTMLElement; portal: SurfacePortal;
   show(): void; hide(): void; recall(reset?: boolean): void; sync(): void; dispose(): void;
   geometry(): Geometry; setGeometry(geometry: Partial<Geometry>): void;
+  setTemporaryCollapsed(collapsed: boolean): void;
   setCollapsed(collapsed: boolean): void; setDockHandler(handler: (() => void) | undefined): void;
 }
 let top = 50;
 /** Decode's viewport-pixel geometry convention, reusable without global DOM queries. */
 export function createFloatingWindow(id: string, title: () => string, initial: Geometry,
-  onChange?: () => void): FloatingWindow {
+  onChange?: () => void, options: { minWidth?: number; minHeight?: number; closeTip?: () => string; escape?: (event: KeyboardEvent) => boolean } = {}): FloatingWindow {
   const doc = document, parent = window;
   const root = doc.createElement('section'); root.className = 'mc-window'; root.dataset.viewId = id;
   root.setAttribute('role', 'dialog'); root.tabIndex = -1;
   root.innerHTML = '<header class="mc-head"><strong></strong><div class="mc-window-actions"><button data-collapse>−</button><button data-pop>Pop out</button><button data-dock hidden>Dock</button><button data-close>×</button></div></header><p data-popup-error role="alert" hidden></p><div class="mc-body"></div>';
   const head = root.querySelector<HTMLElement>('.mc-head')!, body = root.querySelector<HTMLElement>('.mc-body')!;
   const key = `websa-workbench-layout:${id}`;
+  let temporaryCollapsed = false;
+  const minWidth = () => options.minWidth ? Math.min(parent.innerWidth, options.minWidth * getUiScale()) : 300 * getUiScale();
+  const minHeight = () => options.minHeight ? Math.min(parent.innerHeight, options.minHeight * getUiScale()) : 160;
   let dockHandler: (() => void) | undefined;
   let layout: FloatingLayout = { geometry: { ...initial }, hidden: false, collapsed: false };
   try {
@@ -36,27 +40,28 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   } catch { /* disabled or invalid storage */ }
   const save = (): void => { try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* session only */ } };
   const clamp = (g: Geometry): Geometry => {
-    const bounded = clampFloatingGeometry(g, parent, { w: 300 * getUiScale(), h: 160 });
+    const bounded = clampFloatingGeometry(g, parent, { w: minWidth(), h: minHeight() });
     // Keep the close/Dock controls reachable after shrinking the host viewport.
     bounded.x = Math.min(bounded.x, Math.max(0, parent.innerWidth - bounded.w));
-    const height = layout.collapsed ? root.getBoundingClientRect().height : bounded.h;
+    const height = (layout.collapsed || temporaryCollapsed) ? root.getBoundingClientRect().height : bounded.h;
     bounded.y = Math.min(Math.max(0, g.y), Math.max(0, parent.innerHeight - height));
     return bounded;
   };
   const apply = (): void => {
     root.style.zoom = String(getUiScale());
-    root.classList.toggle('mc-collapsed', layout.collapsed); body.hidden = layout.collapsed;
+    const collapsed = layout.collapsed || temporaryCollapsed;
+    root.classList.toggle('mc-collapsed', collapsed); body.hidden = collapsed;
     root.hidden = layout.hidden;
     if (!portal.isPoppedOut()) {
       // Measure the collapsed strip at its new width/scale, preserving the
       // expanded height solely for the next expansion.
-      if (layout.collapsed) {
-        root.style.width = `${clampFloatingGeometry(layout.geometry, parent, { w: 300 * getUiScale(), h: 160 }).w / getUiScale()}px`;
+      if (collapsed) {
+        root.style.width = `${clampFloatingGeometry(layout.geometry, parent, { w: minWidth(), h: minHeight() }).w / getUiScale()}px`;
         root.style.height = 'auto';
       }
       layout.geometry = clamp(layout.geometry); const g = layout.geometry, s = getUiScale();
       applyFloatingGeometry(root, g, s);
-      if (layout.collapsed) root.style.height = 'auto';
+      if (collapsed) root.style.height = 'auto';
     }
     root.hidden = layout.hidden; root.setAttribute('aria-label', title());
     head.querySelector('strong')!.textContent = title();
@@ -68,7 +73,8 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
       ['[data-close]', '×', zh ? '隐藏此窗口；接收和录制继续' : 'Hide this view; reception and recording continue'],
     ]) { const control = head.querySelector<HTMLButtonElement>(selector)!; const symbol = selector === '[data-pop]' ? 'external' : selector === '[data-dock]' ? 'dock'
       : selector === '[data-close]' ? 'close' : layout.collapsed ? 'expand' : 'minus';
-      control.innerHTML = `${workbenchIcon(symbol)}<span>${text}</span>`; control.title = tip; control.setAttribute('aria-label', tip); }
+      const actualTip = selector === '[data-close]' ? options.closeTip?.() ?? tip : tip;
+      control.innerHTML = `${workbenchIcon(symbol)}<span>${text}</span>`; control.title = actualTip; control.setAttribute('aria-label', actualTip); }
     if (dockHandler) {
       const dock = head.querySelector<HTMLButtonElement>('[data-dock]')!;
       dock.hidden = false; dock.title = zh ? '放回信道概览' : 'Return to channel overview';
@@ -79,7 +85,7 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   const portal = createSurfacePortal(root, { title, beforeMove: () => { gesture = null; },
     afterMove: () => { apply(); onChange?.(); }, popSelector: '[data-pop]', dockSelector: '[data-dock]', errorSelector: '[data-popup-error]' });
   const front = (): void => { root.style.zIndex = String(++top); };
-  const show = (): void => { layout.hidden = false; apply(); save(); front(); root.focus(); onChange?.(); };
+  const show = (): void => { layout.hidden = false; apply(); save(); front(); if (portal.isPoppedOut()) root.ownerDocument.defaultView?.focus(); root.focus(); onChange?.(); };
   const hide = (): void => { portal.dock(); layout.hidden = true; apply(); save(); onChange?.(); };
   root.querySelector('[data-close]')!.addEventListener('click', hide);
   root.querySelector('[data-pop]')!.addEventListener('click', () => portal.popout());
@@ -87,6 +93,7 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   root.querySelector('[data-collapse]')!.addEventListener('click', () => { layout.collapsed = !layout.collapsed; apply(); save(); });
   root.addEventListener('pointerdown', front);
   root.addEventListener('keydown', event => {
+    if (event.defaultPrevented || options.escape?.(event)) return;
     if ((event.target as HTMLElement).matches('input,select,textarea')) return;
     if (event.key === 'Escape') { hide(); event.stopPropagation(); }
   });
@@ -103,10 +110,10 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
       const dx = event.clientX - px, dy = event.clientY - py; const next = { ...g };
       if (d === 'move') { next.x += dx; next.y += dy; }
       else {
-        if (d.includes('e')) next.w = Math.max(300 * getUiScale(), g.w + dx);
-        if (d.includes('s')) next.h = Math.max(160, g.h + dy);
-        if (d.includes('w')) { next.w = Math.max(300 * getUiScale(), g.w - dx); next.x = g.x + g.w - next.w; }
-        if (d.includes('n')) { next.h = Math.max(160, g.h - dy); next.y = g.y + g.h - next.h; }
+        if (d.includes('e')) next.w = Math.max(minWidth(), g.w + dx);
+        if (d.includes('s')) next.h = Math.max(minHeight(), g.h + dy);
+        if (d.includes('w')) { next.w = Math.max(minWidth(), g.w - dx); next.x = g.x + g.w - next.w; }
+        if (d.includes('n')) { next.h = Math.max(minHeight(), g.h - dy); next.y = g.y + g.h - next.h; }
       }
       layout.geometry = next; apply();
     });
@@ -133,6 +140,7 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   return { root, body, portal, show, hide, sync: () => portal.sync(),
     geometry: () => ({ ...layout.geometry }),
     setGeometry: geometry => { layout.geometry = { ...layout.geometry, ...geometry }; apply(); save(); },
+    setTemporaryCollapsed: collapsed => { temporaryCollapsed = collapsed; apply(); },
     setCollapsed: collapsed => { layout.collapsed = collapsed; apply(); save(); },
     setDockHandler: handler => { const changed = !!dockHandler !== !!handler; dockHandler = handler; if (changed) apply(); },
     recall: (reset = false) => { portal.dock(); if (reset) { layout.geometry = { ...initial }; layout.collapsed = false; } show(); },

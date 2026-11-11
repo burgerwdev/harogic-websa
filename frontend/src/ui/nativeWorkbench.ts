@@ -10,6 +10,7 @@ import { confirmSdrReceiverNumbers, currentSdrChannel } from './sdrChannels';
 import { sdrAudioOn, sdrListenHz } from './sdrState';
 
 interface NativeWorkbenchOwner {
+  session: WorkbenchSession;
   quickChannel: ReturnType<typeof mountSdrQuickChannel>;
   showOverview(): void;
   showChannels(): void;
@@ -68,7 +69,7 @@ async function ensureNativeWorkbench(): Promise<NativeWorkbenchOwner | null> {
       if (receiver) session.select(receiver.receiver_uid);
     };
     document.addEventListener('websa:sdr-channel-selection', select);
-    owner = { quickChannel,
+    owner = { session, quickChannel,
       showOverview: () => views().showOverview(),
       showChannels: () => views().showChannels(),
       toggleChannels: () => views().toggleChannels(),
@@ -111,4 +112,8 @@ export async function initNativeSdrChannels(): Promise<void> { await ensureNativ
 export async function focusNativeSdrChannel(): Promise<void> {
   const current = await ensureNativeWorkbench();
   if (current && current === owner) document.dispatchEvent(new CustomEvent('websa:sdr-channel-selection'));
+}
+
+export async function nativeWorkbenchSession(): Promise<WorkbenchSession | null> {
+  return (await ensureNativeWorkbench())?.session ?? null;
 }

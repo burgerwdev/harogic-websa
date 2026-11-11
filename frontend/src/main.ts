@@ -2,6 +2,7 @@
 // Project-owned code: AGPL-3.0-only with ../../LICENSE-EXCEPTION; see ../../LICENSING.md.
 // Entry point: initialize all modules
 import './style.css';
+import { initSdrScan } from './ui/sdrScan';
 import * as S from './core/store';
 import { buildUnitGroups } from './core/units';
 import { connectWS } from './core/ws';
@@ -58,6 +59,7 @@ function init() {
   syncToggleIcons();
   bindActions();
   bindCanvas();
+  initSdrScan();
   initSpectrumZoomUi();
   initSdrEqualizer();
   initPopoverDrag();

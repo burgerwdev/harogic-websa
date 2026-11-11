@@ -356,6 +356,7 @@ impl DevState {
     }
 
     pub(super) fn apply_channel_config(&mut self, data: &Value) -> Result<(), String> {
+        self.retire_scan_probe()?;
         let config = self.parse_channel_config(data)?;
         let channel = config.channel;
         if self.receivers.check_control(channel,data)? {return Ok(());}

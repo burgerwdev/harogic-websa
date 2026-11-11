@@ -129,7 +129,7 @@ export type ServiceCommand = ConfigureCommand | SceneCommand
   | { type: 'record_rename'; request_id: string; task_id: string; name: string }
   | { type: 'record_delete'; request_id: string; task_id: string }
   | { type: 'output'; request_id: string; receiver_uid: ReceiverUid; enabled: boolean }
-  | { type: 'create'; request_id: string; config: ReceiverConfig }
+  | { type: 'create'; request_id: string; config: ReceiverConfig; scan?: { capture_epoch: string; signal_id: string; signal_generation: string } }
   | { type: 'retire'; request_id: string; receiver_uid: ReceiverUid };
 export interface CommandReply { request_id: string; snapshot: ServiceSnapshot; fault: Fault | null }
 export type ServiceEvent = { type: 'snapshot'; snapshot: ServiceSnapshot }

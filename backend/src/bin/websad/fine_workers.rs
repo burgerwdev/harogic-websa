@@ -193,6 +193,8 @@ pub(super) struct FineLaneSnapshot {
     thread_cpu_ns: Option<u64>,
     fault: Option<FineFault>,
 }
+impl FineLaneSnapshot { pub(super) fn scan_pressure(&self)->bool {self.held_bytes>self.input_bytes_limit*2/3 || self.in_flight>INPUT_JOBS as u64*2/3} }
+
 
 fn flush_lane(lane: &mut Lane) {
     if lane.pending.is_empty() {
