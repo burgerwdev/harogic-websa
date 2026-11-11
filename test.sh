@@ -9,10 +9,9 @@ esac
 cd "$(dirname "$0")"
 
 echo "==== Rust service contracts ===="
-# Integration tests also build the service executable. Keep one profile so they
-# share dependencies with the unit tests and do not repeat a debug build.
+# Share the release dependencies with make native and avoid a separate debug build.
 cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib --bins --tests -- --test-threads=1
-echo 'Service binary rebuilt for integration tests; restart any running instance with make restart.'
+echo 'Native tests complete; use make native to build websad, then restart its running instance.'
 
 echo "==== Python tool tests (pytest) ===="
 python3 -m pytest tests/ -q

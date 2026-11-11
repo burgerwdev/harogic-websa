@@ -382,6 +382,10 @@ def test_receiver_schema_covers_idle_processing_and_disabled_responses(launcher)
     # cannot pass by falling through to an unconstrained diagnostic object.
     for path, invalid in [
         (('action_token',), 7),
+        (('scan', 'running'), 'false'),
+        (('scan', 'probe_slots_used'), 2),
+        (('scan', 'state'), 'unknown'),
+        (('scan', 'unexpected'), True),
         (('capabilities', 'control_capacity'), '64'),
         (('capabilities', 'resource_policy'), 'unlimited'),
         (('host_resources', 'available_memory_bytes'), -1),
@@ -432,7 +436,11 @@ def test_receiver_schema_checks_nonempty_faults_and_recovery_history():
                    'precision': 'block', 'channel_id': '3', 'epoch': '9',
                    'input_index': '9007199254740993', 'fraction_num': '0', 'fraction_den': '1',
                    'input_rate': 62500000.0, 'delay_input_samples': 12.5}}
+    scan_guard = {'capture_epoch': '7', 'signal_id': 's1', 'signal_generation': '3'}
     cases = [
+        ('scan_guard', scan_guard, ('capture_epoch',), 7),
+        ('scan_guard', scan_guard, ('signal_generation',), 3),
+        ('scan_guard', scan_guard, ('unexpected',), True),
         ('processing_fault', fault, ('generation',), '7'),
         ('processing_fault', fault, ('last_success', 'input_index'), 9007199254740993),
         ('processing_fault', fault, ('kind',), 'normal'),
