@@ -13,7 +13,7 @@ In SDR, Center moves shared capture and Current together. IQ bandwidth changes s
 while preserving receiver tuning. To Center moves capture to the selected receiver. Moving
 capture can interrupt all receivers and create recording boundaries.
 
-Press **?** (or click **? Help**) for the translucent shortcuts and mouse gestures window.
+Press **?** or click **Help** to open the translucent shortcuts and mouse gestures window.
 In the main SDR view, **A** saves the current frequency without listening, **L** saves and
 listens, **R** saves and records audio, and **I** saves and records IQ. An already saved
 frequency is reused even if the current tuning settings differ: L/R/I toggle only their own

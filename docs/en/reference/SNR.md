@@ -57,7 +57,7 @@ transmitter. Co-channel energy is inseparable; dense majority contamination,
 sharp PSD curvature and receiver filtering can bias it. A quality flag is not an
 error bound. See the [pinned official source review](FT8_SNR_REVIEW.md),
 [fixed acceptance conditions](../../ft8-snr-acceptance.md) and
-[before/after validation](../../../tools/bench/ft8_snr_validation_v2.json).
+[validation data](../../../tools/bench/ft8_snr_validation_v2.json).
 
 ## RF analysis and limitations
 

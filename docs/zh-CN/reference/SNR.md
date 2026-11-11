@@ -46,8 +46,8 @@ CSV 追加数值类型、质量、定义及完整测量 JSON，JSONL 保留相�
 这是局部背景估计，不是独立发射机功率的精密测量。同频信号不可分离；多数参考
 持续受污染、背景急剧弯曲以及接收滤波都可能造成偏差。质量提示不是误差上界。
 参见[固定提交的官方源码核对](FT8_SNR_REVIEW.md)、
-[预先确定的验收条件](../../ft8-snr-acceptance.md)及
-[修改前后验证记录](../../../tools/bench/ft8_snr_validation_v2.json)。
+[验收条件](../../ft8-snr-acceptance.md)及
+[验证数据](../../../tools/bench/ft8_snr_validation_v2.json)。
 
 ## RF 分析与限制
 

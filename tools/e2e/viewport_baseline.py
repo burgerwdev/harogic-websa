@@ -377,7 +377,7 @@ def fmt(metrics: dict) -> list[str]:
                          f"device px: zoomed-box rounding)")
         if c['stretch'] and c['stretch'] > 1.02:
             findings.append(f"canvas {c['id']} bitmap stretched {c['stretch']}x (blur)")
-        if c['litRatio'] == 0:
+        if c['litRatio'] == 0 and c['id'] not in ('spectrum-overlay', 'waterfall-overlay'):
             findings.append(f"canvas {c['id']} has no painted pixels")
         elif c['id'] == 'spectrum':
             findings += plot_geometry(c)

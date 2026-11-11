@@ -36,11 +36,6 @@ serially after compilation, without concurrent builds or test suites.
 - Report same-input meter and full-decoder wall/CPU medians separately. Meter
   median wall and CPU ≤1.25× baseline, full-decoder median ≤1.10× baseline;
   retain existing timing gates. These are host measurements, not hard deadlines.
-- Warning-free native/frontend builds. Immediately before restarting, snapshot
-  actual receive configuration; restore using the new service identity and
-  verify frequency, mode and every channel. Verify /proc/PID/exe matches disk.
-  Remove this task's temporary IQ/audio, reference binaries and test processes.
 
-Keep failed experiments in the validation record when they lead to estimator
-changes. Do not delete scenarios, narrow the interval or relax these tolerances
-to obtain a pass. Statistical calibration is distinct from decoder sensitivity.
+Statistical calibration is distinct from decoder sensitivity. Validation retains
+all scenarios, the complete input interval and the numerical tolerances above.

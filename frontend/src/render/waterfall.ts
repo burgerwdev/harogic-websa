@@ -250,7 +250,6 @@ document.addEventListener('visibilitychange', () => {
   wfImg = null; wfPixels = null; wfCanvas = null;
 });
 
-/** Paint over the clean history image; never write the indicator into cached pixels. */
 function overlayContext(): CanvasRenderingContext2D | null {
   const canvas = document.getElementById('waterfall-overlay') as HTMLCanvasElement | null;
   const base = document.getElementById('waterfall') as HTMLCanvasElement | null;
@@ -269,6 +268,7 @@ export function renderWaterfallOverlay(): void {
   paintBadgeIndicator(ctx, ctx.canvas.width, ctx.canvas.height);
 }
 
+/** Paint channel indicators independently of the retained history pixels. */
 function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   if (ctx.canvas?.id === 'waterfall' && overlayContext()) { renderWaterfallOverlay(); return; }
   const frequency = S.sdrMode && sdrPassbandVisible.get()
