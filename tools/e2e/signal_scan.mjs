@@ -36,7 +36,7 @@ try {
   await root.locator('[data-scan-select]').click();
   await page.mouse.move(c.x + c.width * .35, c.y + c.height * .5); await page.mouse.down(); await page.mouse.move(c.x + c.width * .37, c.y + c.height * .8, { steps: 10 });
   await page.screenshot({ path: `${artifacts}/选区-双图同步.png` }); await page.mouse.up();
-  await eventually(async () => (await api('/api/sdr/scan')).signals.some(s => s.source === 'region' && !['detecting', 'queued', 'sampling', 'analyzing'].includes(s.identify_state)), 'One-shot identification did not finish');
+  await eventually(async () => (await api('/api/sdr/scan')).signals.some(s => s.source === 'region' && s.identify_state === 'complete' && s.activity !== 'stale'), 'One-shot identification did not finish');
   let current = await api('/api/sdr/scan'); assert.equal(current.running, false); assert.equal(current.range, null); report.oneShot = current;
   assert.equal(commands.slice(baselineCommands).some(c => c.url.endsWith('/api/config')), false, 'Selection emitted a tuning command');
   let receivers = await api('/api/sdr/receivers?detail=live'); assert.equal(receivers.receivers.find(r => r.receiver_uid === primary.receiver_uid).stream.epoch, primary.stream.epoch);
@@ -46,7 +46,7 @@ try {
   assert.match(await page.locator('.sdr-identify-menu').innerText(), /current|当前/);
   await page.keyboard.press('Escape'); assert.equal(await page.locator('.sdr-identify-menu').count(), 0);
   await root.locator('[data-scan-select]').click(); await page.keyboard.press('Enter');
-  await eventually(async () => { const s = await api('/api/sdr/scan'); return s.signals.some(r => r.source === 'region' && r.identify_state === 'complete'); }, 'Keyboard selection did not finish');
+  await eventually(async () => { const s = await api('/api/sdr/scan'); return s.signals.some(r => r.source === 'region' && r.identify_state === 'complete' && r.activity !== 'stale'); }, 'Keyboard selection did not finish');
   await page.waitForTimeout(600);
   await root.locator('.sdr-scan-footer select').selectOption('iq');
   const add = root.locator('.sdr-scan-footer button').last(); await add.click();

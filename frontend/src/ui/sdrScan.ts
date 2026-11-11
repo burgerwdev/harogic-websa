@@ -151,7 +151,7 @@ function mount(session: WorkbenchSession) {
   function configFor(s: ScanSignal): ReceiverConfig {
     const chosen = mode === 'auto' ? s.suggested_mode ?? 'iq' : mode;
     const descriptor = session.snapshot.capabilities.mode_descriptors?.find(d => d.id === chosen);
-    const bandwidth = Math.max(chosen === 'wfm' ? 180000 : chosen === 'cw' ? 1000 : 2500, s.bandwidth_hz);
+    const bandwidth = Math.max(chosen === 'wfm' ? 180000 : chosen === 'cw' ? 1000 : chosen === 'am' ? 12000 : 2500, s.bandwidth_hz);
     const passband = descriptor ? occupiedBandwidth(descriptor, bandwidth, 700) : bandwidth, transition = defaultTransitionHz(passband);
     return { name: `${mhz(s.center_hz)} MHz · ${chosen.toUpperCase()}`, color: CHANNEL_COLORS[session.snapshot.receivers.length % CHANNEL_COLORS.length], tags: [], enabled: true,
       purpose: chosen === 'iq' ? 'iq' : descriptor?.kind === 'digital' ? 'digital' : 'listen', baseband: { frequency_hz: s.center_hz, passband_hz: passband, transition_hz: transition,
