@@ -32,6 +32,14 @@ def bandwidth_gate(page, origin):
         reply = api(origin, payload={'type': 'configure', 'request_id': f'narrow-{mode}',
                     'receiver_uid': uid, 'expected_revision': row['revision'], 'config': candidate})
         assert reply['fault'] is None, reply
+        confirmed = next(row for row in reply['snapshot']['receivers'] if row['receiver_uid'] == uid)
+        # API setup advances identity even when the visible width already matches.
+        # Wait for the browser to observe that revision before creating an edit.
+        page.wait_for_function('''({uid, revision}) =>
+          window.__audioSettingsStatus?.sdr?.channels?.some(row =>
+            row.control?.receiver_uid === uid && typeof row.control.revision === 'string'
+            && BigInt(row.control.revision) >= BigInt(revision))''',
+            arg={'uid': uid, 'revision': confirmed['revision']})
         group = page.locator(f'#sdr-ifbw-group[data-mode="{mode}"]')
         expect(group.locator(f'[data-sdr-ifbw="{narrow}"]')).to_have_attribute('aria-pressed', 'true')
         wider = group.locator(f'[data-sdr-ifbw="{wide}"]')
@@ -175,6 +183,19 @@ def browser_gate(origin, snapshot, artifacts):
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={'width': 1440, 'height': 1000})
         page.add_init_script("""localStorage.setItem('web-sa-sdr-audio','1');localStorage.setItem('web-sa-lang','zh');
+          const NativeWebSocket=window.WebSocket;
+          window.WebSocket=class extends NativeWebSocket {
+            constructor(...args) {
+              super(...args);
+              this.addEventListener('message', event => {
+                if (typeof event.data !== 'string') return;
+                try {
+                  const value=JSON.parse(event.data);
+                  if (value.cmd === 'STATUS') window.__audioSettingsStatus=value;
+                } catch { /* Binary streams and unrelated messages are not STATUS. */ }
+              });
+            }
+          };
           const NativeAudioContext=window.AudioContext;
           window.AudioContext=class extends NativeAudioContext {
             constructor(...args) { super(...args); window.__reviewAudioContext=this; }
