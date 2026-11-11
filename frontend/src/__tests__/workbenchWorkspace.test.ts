@@ -51,6 +51,32 @@ function nativeWorkspace(quota?: ServiceSnapshot['recording_resources']): void {
 }
 
 describe('per-channel audio settings', () => {
+  it('keeps diagnostic history out of normal refreshes and holds a snapshot until manual refresh', async () => {
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const row = session.snapshot.receivers[0];
+    let detail = { ...clone(row), processing_statistics: [{ marker: 'first-snapshot' }] };
+    const load = vi.fn(async () => detail);
+    Object.assign(adapter, { diagnostics: load });
+    session.notify(); await vi.advanceTimersByTimeAsync(1000);
+    expect(load).not.toHaveBeenCalled();
+    const section = element<HTMLDetailsElement>('[data-section=live-diagnostics]');
+    section.open = true; section.dispatchEvent(new Event('toggle'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledOnce();
+    const pre = section.querySelector('pre')!;
+    expect(pre.textContent).toContain('first-snapshot');
+    const observer = new MutationObserver(() => {});
+    observer.observe(pre, { subtree: true, characterData: true, childList: true });
+    for (let i = 0; i < 5; i++) { row.revision = String(i + 10); session.notify(); }
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(load).toHaveBeenCalledOnce();
+    expect(observer.takeRecords()).toHaveLength(0); observer.disconnect();
+    detail = { ...clone(row), processing_statistics: [{ marker: 'manual-snapshot' }] };
+    section.querySelector<HTMLButtonElement>('[data-action=refresh-diagnostics]')!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(pre.textContent).toContain('manual-snapshot');
+  });
   it('uses a practical ADS-B transition for mode changes and new channels', async () => {
     nativeWorkspace();
     session.snapshot.capabilities.mode_descriptors!.push(receiverPlugin('adsb', {kind:'digital',provider:'onair',

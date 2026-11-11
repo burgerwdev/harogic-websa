@@ -327,6 +327,7 @@ def test_receiver_schema_covers_idle_processing_and_disabled_responses(launcher)
             uid = receiver['receiver_uid']
             config = copy.deepcopy(receiver['confirmed'])
             config['processors'][0]['pcm_gain'] = 0.75
+            config['processors'][0]['rf_snr'] = True
             async with session.ws_connect(base + '/ws/audio', params={'receiver_uid': uid}) as audio:
                 reply = await request('/api/sdr/receivers', {
                     'type': 'configure', 'request_id': 'schema-processing',

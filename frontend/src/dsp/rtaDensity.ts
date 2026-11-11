@@ -418,6 +418,7 @@ export function paintDensity(
 	bounds?: DensityRasterBounds, rowOffset = 0,
 ): void {
 	pixels.fill(0);
+	const packed = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.length / 4);
 	const half = footprint / 2;
 	const feather = Math.min(1, half);
 	if (paintCoverage.length < rows) paintCoverage = new Float64Array(rows);
@@ -462,12 +463,8 @@ export function paintDensity(
 				alpha = 255 * (1 - Math.exp(-5 * Math.pow(n, 0.4)));
 			}
 			for (let y = y0; y < y1; y++) {
-				const a = Math.round(alpha * paintCoverage[y]), o = ((y - rowOffset) * cols + x) * 4;
-				if (a <= pixels[o + 3]) continue;
-				pixels[o] = colour & 0xff;
-				pixels[o + 1] = (colour >> 8) & 0xff;
-				pixels[o + 2] = (colour >> 16) & 0xff;
-				pixels[o + 3] = a;
+				const a = Math.round(alpha * paintCoverage[y]), o = (y - rowOffset) * cols + x;
+				if (a > packed[o] >>> 24) packed[o] = (a << 24) | colour;
 			}
 		}
 	}

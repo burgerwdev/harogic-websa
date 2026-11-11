@@ -664,7 +664,7 @@ pub(super) async fn range(
     }
     let format = format.to_owned();
     let (path, snapshot) = {
-        let state = app.state.lock().unwrap();
+        let state = app.state.lock_async().await.unwrap();
         let Some(manager) = &state.recordings else {
             return StatusCode::NOT_FOUND.into_response();
         };

@@ -1,13 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { FixtureReceiverAdapter } from '../dev/fixtureReceiverAdapter';
 import type { ReceiverState } from '../core/multichannel';
-import { ReceiverDiagnostics } from '../ui/receiverDiagnostics';
+import { ReceiverDiagnostics, receiverDiagnosticDetails } from '../ui/receiverDiagnostics';
 
 const fixture = new FixtureReceiverAdapter();
 const row = fixture.snapshot().receivers[0]; fixture.dispose();
 afterEach(() => vi.useRealTimers());
 
-it('fetches only for an expanded visible view and cancels refresh on collapse', async () => {
+it('fetches once on expansion, never polls, and refreshes only on request', async () => {
   vi.useFakeTimers();
   const load = vi.fn(async (_uid: string, _signal: AbortSignal) => row), changed = vi.fn();
   const details = new ReceiverDiagnostics(load, changed);
@@ -15,7 +15,11 @@ it('fetches only for an expanded visible view and cancels refresh on collapse', 
   expect(load).not.toHaveBeenCalled();
   details.update(row, 'boot-A', true); await vi.advanceTimersByTimeAsync(0);
   expect(details.value).toBe(row); expect(changed).toHaveBeenCalledOnce();
-  await vi.advanceTimersByTimeAsync(2000); expect(load).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(60000); expect(load).toHaveBeenCalledOnce();
+  details.update({ ...row, revision: '99', processing_runtime: { state: 'active', processing_generation: '42', oldest_input_wait_ns: 0, input_held_bytes: 0, input_held_media_ns: 0 } }, 'boot-A', true);
+  expect(load).toHaveBeenCalledOnce();
+  details.refresh(); await vi.advanceTimersByTimeAsync(0);
+  expect(load).toHaveBeenCalledTimes(2);
   const signal = load.mock.calls[0]?.[1];
   details.update(row, 'boot-A', false); await vi.advanceTimersByTimeAsync(10000);
   expect(load).toHaveBeenCalledTimes(2); expect(details.value).toBeUndefined();
@@ -37,4 +41,17 @@ it('rejects replies from a previous receiver, service, or closed view', async ()
   expect(details.value).toBeUndefined();
   details.dispose(); replies[2](next); await vi.advanceTimersByTimeAsync(10000);
   expect(changed).not.toHaveBeenCalled(); expect(load).toHaveBeenCalledTimes(3);
+});
+
+it('formats a requested diagnostic snapshot only once across live renders', () => {
+  const detail = { ...row, processing_statistics: Array.from({ length: 128 }, (_, generation) => ({ generation })) };
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    const html = receiverDiagnosticDetails(detail);
+    for (let i = 0; i < 20; i++) expect(receiverDiagnosticDetails(detail)).toBe(html);
+    expect(stringify).toHaveBeenCalledOnce();
+    expect(html).toContain('refresh-diagnostics');
+    receiverDiagnosticDetails(undefined);
+    expect(stringify).toHaveBeenCalledOnce();
+  } finally { stringify.mockRestore(); }
 });

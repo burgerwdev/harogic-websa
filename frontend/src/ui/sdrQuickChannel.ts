@@ -7,6 +7,9 @@ import { currentSdrChannel } from './sdrChannels';
 import { sdrAgc, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSquelch, sdrVolume } from './sdrState';
 import { sdrAmSync, sdrDeemph, sdrSstvMode, sdrRadiofaxAcquisition, sdrRadiofaxIoc, sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPolarity, sdrRadiofaxClockRecovery, sdrRadiofaxPhasePixels, sdrRadiofaxClockPpm } from './sdrState';
 import type { WorkbenchSession } from './workbenchSession';
+import { formatAvailable, savedAudioFormat } from './recordingFormats';
+
+export type SdrQuickChannelAction = 'add' | 'listen' | 'audio' | 'iq';
 
 const l = (en: string, zh: string) => getLang() === 'zh' ? zh : en;
 export function currentChannelConfig(session: WorkbenchSession): ReceiverConfig {
@@ -34,7 +37,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
   dialog.className = 'mc-create-dialog sdr-replace-dialog'; dialog.dataset.replaceChannel = '';
   dialog.innerHTML = '<form><header><strong data-title></strong><button type="button" data-dismiss>×</button></header><p data-frequency></p><div data-targets></div><p data-error class="mc-error" role="alert"></p><footer><button type="button" data-dismiss></button><button type="submit" class="mc-primary"></button></footer></form>';
   host.append(dialog);
-  let candidate: { config: ReceiverConfig; service?: string; lifecycle: number } | null = null, busy = false, disposed = false;
+  let candidate: { config: ReceiverConfig; action?: SdrQuickChannelAction; service?: string; lifecycle: number } | null = null, busy = false, disposed = false;
   const revisions = new Map<string, string>();
   const selected = () => dialog.querySelector<HTMLInputElement>('[name=replace]:checked:not(:disabled)')?.value;
   const error = dialog.querySelector<HTMLElement>('[data-error]')!;
@@ -76,7 +79,44 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
     });
     submit.textContent = l('Replace channel', '覆盖信道'); submit.disabled = !selected();
   };
-  const apply = async (config: ReceiverConfig, target?: ReceiverState): Promise<boolean> => {
+  const act = async (receiver: ReceiverState, action: SdrQuickChannelAction | undefined, toggle: boolean): Promise<void> => {
+    const uid = receiver.receiver_uid;
+    if (disposed || session.clearingChannels || session.retiring(uid)) return;
+    if (action === 'add') return;
+    const service = session.snapshot.service_id, lifecycle = session.lifecycleVersion;
+    const valid = () => !disposed && service === session.snapshot.service_id && lifecycle === session.lifecycleVersion;
+    const enable = async () => {
+      if (receiver.confirmed.enabled) return;
+      const config = clone(receiver.confirmed); config.enabled = true;
+      const reply = await session.send({ type: 'configure', request_id: session.requestId(), receiver_uid: uid,
+        expected_revision: receiver.revision, config });
+      if (reply.fault) throw new Error(reply.fault.message);
+    };
+    if (action === undefined || action === 'listen') {
+      if (!receiverHasAudio(session.snapshot, receiver.confirmed)) {
+        if (action) throw new Error(l('This channel has no audio output.', '此信道没有音频输出。'));
+        return;
+      }
+      const enabled = toggle ? !session.listening(uid) : true;
+      if (enabled) await enable();
+      if (!valid()) return;
+      if (enabled && action === 'listen') session.masterMuted = false;
+      session.monitor(uid, { enabled });
+      return;
+    }
+    const task = session.snapshot.recordings.find(task => task.receiver_uid === uid
+      && task.tracks.some(track => track.kind === action) && ['preparing', 'waiting', 'recording', 'finalizing'].includes(task.state));
+    if (task?.state === 'finalizing') return;
+    if (!task && action === 'audio' && !receiverHasAudio(session.snapshot, receiver.confirmed))
+      throw new Error(l('This channel has no audio output.', '此信道没有音频输出。'));
+    if (!task) await enable();
+    if (!valid()) return;
+    const preferred = savedAudioFormat(), audio_format = formatAvailable(session.snapshot, preferred) ? preferred : 'wav';
+    const reply = await session.send(task ? { type: 'record_stop', request_id: session.requestId(), task_id: task.task_id }
+      : { type: 'record_start', request_id: session.requestId(), receiver_uid: uid, kinds: [action], ...(action === 'audio' ? { audio_format } : {}) });
+    if (reply.fault) throw new Error(reply.fault.message);
+  };
+  const apply = async (config: ReceiverConfig, target?: ReceiverState, action?: SdrQuickChannelAction): Promise<boolean> => {
     if (disposed) return false;
     const service = session.snapshot.service_id, lifecycle = session.lifecycleVersion;
     const capture = session.snapshot.capture, bb = config.baseband;
@@ -91,7 +131,9 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
     const uid = target?.receiver_uid ?? ('receiver_uid' in reply ? reply.receiver_uid : null);
     const receiver = session.snapshot.receivers.find(r => r.receiver_uid === uid);
     if (!receiver) throw new Error(l('Channel state changed. Try again.', '信道状态已变化，请重试。'));
-    if (receiverHasAudio(session.snapshot, receiver.confirmed)) session.monitor(receiver.receiver_uid, { enabled: true });
+    if (action && action !== 'listen') session.monitor(receiver.receiver_uid, { enabled: false });
+    await act(receiver, action, false);
+    if (disposed || service !== session.snapshot.service_id || lifecycle !== session.lifecycleVersion) return false;
     doc.dispatchEvent(new CustomEvent('websa:sdr-channels-changed'));
     return true;
   };
@@ -109,7 +151,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
     busy = true; error.textContent = '';
     dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => { control.disabled = true; });
     submit.textContent = l('Applying…', '正在覆盖…');
-    void apply(clone(candidate.config), target).then(applied => { if (applied && !disposed) { candidate = null; dialog.close(); } })
+    void apply(clone(candidate.config), target, candidate.action).then(applied => { if (applied && !disposed) { candidate = null; dialog.close(); } })
       .catch(reason => { if (!disposed) error.textContent = String(reason.message ?? reason); })
       .finally(() => {
         busy = false; if (disposed) return;
@@ -119,7 +161,7 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
   });
   const stop = session.subscribe(update), stopLang = onLangChange(update);
   return {
-    async add(): Promise<string | null> {
+    async add(action?: SdrQuickChannelAction): Promise<string | null> {
       if (disposed || busy) return null;
       if (dialog.open) { dialog.focus(); return null; }
       const config = currentChannelConfig(session);
@@ -128,20 +170,21 @@ export function mountSdrQuickChannel(session: WorkbenchSession, host: HTMLElemen
       const duplicate = [...session.snapshot.receivers].sort((a, b) => a.display_number - b.display_number).find(r =>
         r.display_number !== currentSdrChannel()
         && Math.abs(r.confirmed.baseband.frequency_hz - config.baseband.frequency_hz) < 0.5
-        && r.confirmed.processors.length === config.processors.length
+        && (action !== undefined || (r.confirmed.processors.length === config.processors.length
         && (['passband_hz', 'transition_hz', 'minimum_rate_hz'] as const).every(field => r.confirmed.baseband[field] === config.baseband[field])
         && ([...modeControlKeys, 'mode', 'bandwidth_hz', 'pcm_gain', 'agc', 'squelch_dbm', 'nr', 'nr_algorithm', 'nr_strength', 'nr_atten_db'] as const)
-          .every(field => ({ ...copyModeControls(r.confirmed.processors[0]), ...r.confirmed.processors[0] })[field] === config.processors[0]?.[field]));
+          .every(field => ({ ...copyModeControls(r.confirmed.processors[0]), ...r.confirmed.processors[0] })[field] === config.processors[0]?.[field]))));
       if (duplicate) {
-        if (receiverHasAudio(session.snapshot, duplicate.confirmed) && duplicate.state === 'running') session.monitor(duplicate.receiver_uid, { enabled: true });
-        session.select(duplicate.receiver_uid); onReuse?.(duplicate.receiver_uid);
+        busy = true;
+        try { await act(duplicate, action, action !== undefined); } finally { busy = false; }
+        if (action === undefined) { session.select(duplicate.receiver_uid); onReuse?.(duplicate.receiver_uid); }
         return l(`Already saved as C${duplicate.display_number}`, `已保存至 C${duplicate.display_number}`);
       }
       if (session.snapshot.receivers.length < session.snapshot.capabilities.max_channels) {
         busy = true;
-        try { return await apply(config) ? l('Channel added', '已加入信道') : null; } finally { busy = false; }
+        try { return await apply(config, undefined, action) ? l('Channel added', '已加入信道') : null; } finally { busy = false; }
       }
-      candidate = { config, service: session.snapshot.service_id, lifecycle: session.lifecycleVersion }; revisions.clear(); error.textContent = '';
+      candidate = { config, action, service: session.snapshot.service_id, lifecycle: session.lifecycleVersion }; revisions.clear(); error.textContent = '';
       dialog.querySelectorAll<HTMLInputElement>('[name=replace]').forEach(input => { input.checked = false; });
       dialog.showModal(); update(); return null;
     },

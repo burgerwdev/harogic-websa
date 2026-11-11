@@ -27,11 +27,14 @@ import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTun
 import { beginSdrLocateClick, cancelSdrLocate, commitSdrLocateClick, updateSdrLocateHover } from './sdrLocate';
 import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, sdrPassbandToggleAt, sdrSpectrumWindow, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
 import { sdrPassbandVisible } from './sdrPassbandState';
+import { sdrChannelLabels, type SdrChannelLabel } from '../render/sdrChannelBands';
+import { toggleSdrHelp } from './sdrHelp';
+import type { SdrQuickChannelAction } from './sdrQuickChannel';
 import { resetCarrierEvidence } from '../dsp/carrierSnap';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
-import { requestRender } from '../render/redraw';
+import { batchRender, requestRender } from '../render/redraw';
 import { getDisplayPowers } from '../dsp/peaks';
 
 import { normRefWinUser } from './measurePrefs';
@@ -1164,6 +1167,7 @@ function sdrSet(id: string, value: string) {
 
 // Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
 let lastSdrPanelReport: any = null;
+let nativeChannelsStarting = false;
 
 function syncSdrChannelButtons(): void {
   const add = document.querySelector('[data-action="sdr-channel-add"]');
@@ -1319,7 +1323,14 @@ export function syncSdrPanel(s: any) {
     && generation >= 0 && generation <= 0xffffffff ? generation : null);
   // The saved detector preference is replayed only once, when a connected SDR STATUS
   // first arrives; a disconnected mode report is not an entry into a receiver session.
-  if (sdr.receiver_api === 'multichannel-draft-v1') initialSdrAmSync = null;
+  if (sdr.receiver_api === 'multichannel-draft-v1') {
+    initialSdrAmSync = null;
+    if (!nativeChannelsStarting) {
+      nativeChannelsStarting = true;
+      void import('./nativeWorkbench').then(module => module.initNativeSdrChannels())
+        .catch(() => { nativeChannelsStarting = false; });
+    }
+  }
   if (initialSdrAmSync !== null) {
     const enabled = initialSdrAmSync;
     initialSdrAmSync = null;
@@ -1738,6 +1749,7 @@ export function bindActions() {
       .catch(error => postRefNotice(String(error), 4000)); },
     'sdr-overview': () => { void import('./nativeWorkbench').then(module => module.openNativeChannelOverview())
       .catch(error => postRefNotice(String(error), 4000)); },
+    'sdr-help': () => toggleSdrHelp(),
     'sdr-channel-add': (el) => {
       setDomProperty((el as HTMLButtonElement), 'disabled', true);
       void import('./nativeWorkbench').then(module => module.addCurrentSdrChannel())
@@ -2043,7 +2055,7 @@ function axisBandCursor(band: Axis | null): string {
 
 type CanvasGesture = {
   surface: HTMLCanvasElement;
-  owner: 'axis' | 'filter' | 'marker' | 'zoom' | 'tune' | 'jump' | 'badge';
+  owner: 'axis' | 'filter' | 'marker' | 'zoom' | 'tune' | 'jump' | 'badge' | 'channel';
   sdr: boolean;
   mode: string;
   demod: string;
@@ -2058,6 +2070,7 @@ type CanvasGesture = {
   marker?: S.MarkerState;
   markerBefore?: S.MarkerState;
   activeBefore?: number;
+  channel?: SdrChannelLabel;
 };
 let canvasGesture: CanvasGesture | null = null;
 let canvasPointerId: number | null = null;
@@ -2145,6 +2158,11 @@ function canvasGestureCurrent(): boolean {
 export function bindCanvas() {
   const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
   if (!canvas) return;
+  const channelLabelAt = (x: number, y: number): SdrChannelLabel | undefined => {
+    const view = sdrSpectrumWindow();
+    return view && S.ctx ? sdrChannelLabels(S.ctx, view.lo, view.hi, plotRectPub())
+      .find(box => x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) : undefined;
+  };
 
   const gesturePoint = (event: MouseEvent, gesture: CanvasGesture) => {
     if (gesture.surface === canvas) return { x: canvasX(event, canvas), y: canvasY(event, canvas) };
@@ -2197,6 +2215,11 @@ export function bindCanvas() {
       canvas.title = t('sdr_passband_tune_tip');
       requestRender();
       return;
+    }
+    const channel = sdr && !e.ctrlKey && !e.metaKey && channelLabelAt(x, y);
+    if (channel) {
+      cancelSdrLocate(); accept('channel').channel = channel;
+      canvas.style.cursor = 'pointer'; return;
     }
     const hit = markerDiamondAt(x, y, canvas);
     const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
@@ -2289,7 +2312,11 @@ export function bindCanvas() {
     let tune: number | null = null;
     let jump: number | null = null;
     let filter: number | null = null;
-    if (gesture.owner === 'badge') {
+    if (gesture.owner === 'channel') {
+      const hit = channelLabelAt(x, y), original = gesture.channel!;
+      if (!gesture.moved && hit?.mark.channel === original.mark.channel && hit.mark.freq === original.mark.freq
+        && hit.mark.control?.receiver_uid === original.mark.control?.receiver_uid) tune = hit.mark.freq;
+    } else if (gesture.owner === 'badge') {
       tune = gesture.moved ? moveSdrBadgeDrag(x) : null;
     } else if (gesture.owner === 'filter') {
       filter = endFilterDrag(e.pointerId);
@@ -2338,6 +2365,13 @@ export function bindCanvas() {
       canvas.title = t('sdr_passband_toggle_tip');
       return;
     }
+    const channel = currentGraphMode() === 'sdr' && !ctrl && channelLabelAt(x, y);
+    if (channel) {
+      setSdrHoverFrequency(null); setFilterHover(null); cancelSdrLocate();
+      canvas.style.cursor = 'pointer';
+      canvas.title = `${channel.text} · ${channel.mark.freq.toLocaleString()} Hz · ${t('sdr_channel_label_tip')}`;
+      return;
+    }
     setSdrHoverFrequency(currentGraphMode() === 'sdr' && x >= plot.x && x <= plot.x + plot.w
       && y >= plot.y && y <= plot.y + plot.h ? spectrumFreqAtX(x) : null);
     const tolerance = 8 * scale;
@@ -2383,8 +2417,10 @@ export function bindCanvas() {
     const boxY = Math.max(1, rect.height - 2 * borderY);
     const x = (hoverX - rect.left - borderX) * (S.W / boxX);
     const y = (hoverY - rect.top - borderY) * (S.H / boxY);
-    updateCanvasHover(x, y, hoverCtrl, S.W / boxX);
-    publishCursor(x, y);
+    batchRender(() => {
+      updateCanvasHover(x, y, hoverCtrl, S.W / boxX);
+      publishCursor(x, y);
+    }, true);
   };
   const queueCanvasHover = (e: MouseEvent) => {
     hoverX = e.clientX;
@@ -2486,7 +2522,7 @@ export function bindCanvas() {
   const queueWaterfallHover = (event: MouseEvent) => {
     wfX = event.clientX; wfY = event.clientY;
     if (wfHoverPending) return;
-    wfHoverPending = true; window.requestAnimationFrame(updateWaterfallHover);
+    wfHoverPending = true; window.requestAnimationFrame(() => batchRender(updateWaterfallHover, true));
   };
   const clearWaterfallHover = () => {
     wfHoverPending = false;
@@ -2569,6 +2605,7 @@ export function bindCanvas() {
     canvas.style.cursor = '';
   };
   window.addEventListener('blur', stopKeyboardTune);
+  window.addEventListener('pagehide', () => { nativeChannelsStarting = false; });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopKeyboardTune(); });
 
   // Keyboard / trackpad-only operation (no mouse required).
@@ -2577,7 +2614,25 @@ export function bindCanvas() {
     if (currentGraphMode() !== 'sdr' || e.defaultPrevented || e.altKey || e.metaKey || e.isComposing
         || (e.ctrlKey && e.shiftKey) || canvasPointerId !== null || document.hidden) return;
     const el = document.activeElement as HTMLElement | null;
+    if (e.key === '?' && !e.ctrlKey && !el?.closest('input,select,textarea,[contenteditable]:not([contenteditable="false"])')) {
+      if (!e.repeat) toggleSdrHelp();
+      e.preventDefault(); return;
+    }
     if (el?.closest('input,select,textarea,[contenteditable]:not([contenteditable="false"]),[role="dialog"],.keypad,#zoom-overview-box')) return;
+    if (!e.ctrlKey && !e.shiftKey && ['a', 'l', 'r', 'i', 'v'].includes(e.key.toLowerCase())) {
+      e.preventDefault();
+      if (e.repeat) return;
+      const key = e.key.toLowerCase();
+      if (key === 'v') void import('./nativeWorkbench').then(module => module.toggleNativeChannelOverview())
+        .catch(error => postRefNotice(String(error.message ?? error), 5000));
+      else {
+        const action = ({ a: 'add', l: 'listen', r: 'audio', i: 'iq' } as Record<string, SdrQuickChannelAction>)[key];
+        void import('./nativeWorkbench').then(module => module.addCurrentSdrChannel(action))
+          .then(message => { if (message) postRefNotice(message, 3000); })
+          .catch(error => postRefNotice(String(error.message ?? error), 5000));
+      }
+      return;
+    }
     if (!e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'h') {
       if (!e.repeat) toggleSdrPassband();
       e.preventDefault();

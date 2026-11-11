@@ -31,6 +31,17 @@ afterEach(() => {
   ui.dispose(); session.dispose(); adapter.dispose(); document.body.replaceChildren(); setLang('en'); setTheme('dark'); vi.restoreAllMocks(); vi.useRealTimers();
 });
 describe('channel overview ownership', () => {
+  it('toggles the existing overview from its focused controls without changing receivers', () => {
+    const root = overview(), before = clone(session.snapshot);
+    const button = root.querySelector('button')!;
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true, cancelable: true }));
+    expect(root.hidden).toBe(true);
+    ui.toggleChannels(); expect(overview()).toBe(root); expect(root.hidden).toBe(false);
+    const input = root.querySelector('input')!;
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true, cancelable: true }));
+    expect(root.hidden).toBe(false);
+    expect(session.snapshot).toEqual(before);
+  });
   it('defers hidden channel windows and refreshes them when reopened', () => {
     const detail = detach('fixture-c2');
     detail.querySelector<HTMLButtonElement>('[data-dock]')!.click();
@@ -42,12 +53,14 @@ describe('channel overview ownership', () => {
     expect(detail.textContent).toContain('Renamed while docked');
   });
 
-  it('renders the current diagnostic snapshot only while the disclosure is open', () => {
+  it('renders the current diagnostic snapshot only while the disclosure is open', async () => {
+    Object.assign(adapter, { diagnostics: async (uid: string) => clone(session.snapshot.receivers.find(row => row.receiver_uid === uid)) });
     const detail = detach('fixture-c2');
     const section = detail.querySelector<HTMLDetailsElement>('[data-section=live-diagnostics]')!;
     expect(section.querySelector('pre')!.textContent).toBe('');
     session.snapshot.receivers[1].clock!.output_index = '7654321'; session.notify();
     section.open = true; section.dispatchEvent(new Event('toggle'));
+    await vi.advanceTimersByTimeAsync(0);
     expect(section.querySelector('pre')!.textContent).toContain('7654321');
     section.open = false; section.dispatchEvent(new Event('toggle'));
     expect(section.querySelector('pre')!.textContent).toBe('');

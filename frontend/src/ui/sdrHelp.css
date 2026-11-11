@@ -1,0 +1,24 @@
+.sdr-help-button {
+  margin-right: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 3px;
+  background: var(--btn-bg);
+  color: var(--label);
+  font: inherit;
+  cursor: pointer;
+}
+.sdr-help-button:hover { background: var(--btn-hover); color: var(--text); }
+.sdr-help-window:focus { outline: none; }
+.sdr-help-window.mc-window {
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.sdr-help-window .mc-head { background: color-mix(in srgb, var(--head-bg) 76%, transparent); }
+.sdr-help-window .mc-body { padding: 12px 20px; }
+.sdr-help-window h2 { margin: 18px 0 8px; color: var(--text); font-size: 13px; }
+.sdr-help-window p { color: var(--label); margin: 0 0 12px; }
+.sdr-help-window dl { display: grid; grid-template-columns: minmax(110px, 30%) minmax(0, 1fr); gap: 8px 16px; margin: 0; }
+.sdr-help-window dt { color: var(--text); font-family: monospace; overflow-wrap: anywhere; }
+.sdr-help-window dd { color: var(--label); margin: 0; }

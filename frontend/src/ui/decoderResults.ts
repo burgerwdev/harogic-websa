@@ -4,6 +4,7 @@ import { decoderLog, decoderRasterChanges, type DecoderRaster, type DecoderImage
 import { drawAudioScope } from './audioScope';
 import { copyDetails, copyDetailsButton } from './copyDetails';
 import { patchWorkbench } from './workbenchDom';
+import { setDomProperty } from './domState';
 
 const rendered = new WeakMap<HTMLElement, { identity: string; presentation: string; nodes: Map<number, { entry: DecoderLogEntry; node: HTMLElement }> }>();
 function record(value: unknown): value is Record<string, unknown> {
@@ -427,11 +428,11 @@ function resultNode(doc: Document, entry: DecoderLogEntry, utc: boolean): HTMLEl
   article.appendChild(details);
   const update: ResultUpdater = (next, nextUtc) => {
     current.entry = next;
-    article.className = `decoder-result decoder-result-${next.kind}`;
-    header.title = t('decoder_received_tip'); summary.textContent = t('decoder_details');
-    header.textContent = `${next.provider === 'native' ? next.mode.toUpperCase() : next.provider} · ${clock(next.at, nextUtc)} ${nextUtc ? 'UTC' : 'LT'}`;
+    setDomProperty(article, 'className', `decoder-result decoder-result-${next.kind}`);
+    setDomProperty(header, 'title', t('decoder_received_tip')); setDomProperty(summary, 'textContent', t('decoder_details'));
+    setDomProperty(header, 'textContent', `${next.provider === 'native' ? next.mode.toUpperCase() : next.provider} · ${clock(next.at, nextUtc)} ${nextUtc ? 'UTC' : 'LT'}`);
     fillResultBody(body, next, nextUtc);
-    if (details.open) raw.textContent = JSON.stringify(next.data, null, 2);
+    if (details.open) setDomProperty(raw, 'textContent', JSON.stringify(next.data, null, 2));
   };
   update(entry, utc);
   resultUpdaters.set(article, update);
@@ -445,7 +446,10 @@ export function renderDecoderResults(host: HTMLElement, channel: number, mode: s
 /** Shared renderer; development and native adapters supply isolated retained entries. */
 export function renderDecoderEntries(host: HTMLElement, input: readonly DecoderLogEntry[], identity: string, utc: boolean, evicted = 0, limitMiB = 8): void {
   const log = { entries: input, evicted };
-  const entries = [...log.entries].sort((a, b) => Number(b.kind === 'image') - Number(a.kind === 'image'));
+  // Live status records retain their ID but the log moves each refreshed item
+  // to the front. Keep their cards in a stable order across differing cadences.
+  const rank = (entry: DecoderLogEntry): number => entry.kind === 'image' ? 0 : entry.kind === 'status' ? 2 : 1;
+  const entries = [...log.entries].sort((a, b) => rank(a) - rank(b) || (a.kind === 'status' ? b.id - a.id : 0));
   const presentation = `${utc}:${getLang()}`;
   let cache = rendered.get(host);
   if (!cache || cache.identity !== identity) {

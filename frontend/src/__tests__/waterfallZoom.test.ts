@@ -20,6 +20,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+  document.dispatchEvent(new Event('visibilitychange'));
+  hidden.mockRestore();
   clearSdrBadgeDrag();
   setSdrHoverFrequency(null);
   clearDisplayBounds();
@@ -32,6 +35,44 @@ afterEach(() => {
 });
 
 describe('native waterfall history', () => {
+  it.each([1, 2])('keeps incremental ring pixels identical to a full repaint at row height %i', rowHeight => {
+    S.setSdrMode(false);
+    const buffers = new WeakMap<HTMLCanvasElement, Uint32Array>();
+    const pixels = (canvas: HTMLCanvasElement): Uint32Array => {
+      let data = buffers.get(canvas);
+      if (!data || data.length !== canvas.width * canvas.height) {
+        data = new Uint32Array(canvas.width * canvas.height); buffers.set(canvas, data);
+      }
+      return data;
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+      const canvas = this;
+      return { canvas,
+        createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+        putImageData: (image: ImageData, dx: number, dy: number, sx = 0, sy = 0, width = image.width, height = image.height) => {
+          const src = new Uint32Array(image.data.buffer), dst = pixels(canvas);
+          for (let y = sy; y < sy + height; y++) for (let x = sx; x < sx + width; x++) {
+            if (y + dy >= 0 && y + dy < canvas.height) dst[(y + dy) * canvas.width + x + dx] = src[y * image.width + x];
+          }
+        },
+        drawImage: (source: HTMLCanvasElement, sx: number, sy: number, width: number, height: number, dx: number, dy: number) => {
+          const src = pixels(source).slice(), dst = pixels(canvas);
+          for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) dst[(y + dy) * canvas.width + x + dx] = src[(y + sy) * source.width + x + sx];
+        },
+      } as unknown as CanvasRenderingContext2D;
+    });
+    const canvas = document.createElement('canvas'); canvas.width = 7; canvas.height = 5;
+    for (let i = 0; i < 21; i++) {
+      S.pushWaterfallRow(Uint16Array.from([i, i + 5, i + 20, i + 10]), null);
+      if (i % 4 === 0) S.pushWaterfallRow(new Uint16Array([i + 30, i, i + 5]), null);
+      renderWaterfall(canvas, 100, rowHeight);
+    }
+    const incremental = pixels(canvas).slice();
+    const full = document.createElement('canvas'); full.width = 7; full.height = 5;
+    renderWaterfall(full, 100, rowHeight);
+    expect(pixels(full)).toEqual(incremental);
+  });
+
   it('keeps rendered noise dark at minimum contrast and darkens it at maximum across every palette', () => {
     S.setSdrMode(true);wfPaused.set(true);
     const count=1024, freq=Float64Array.from({length:count+2},(_,i)=>1e6+i);

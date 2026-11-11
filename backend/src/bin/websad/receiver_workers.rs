@@ -33,6 +33,7 @@ pub(super) struct ChannelConfig {
     /// Independent baseband; None retains the legacy mode-derived plan.
     pub baseband: Option<BasebandConfig>,
     pub processing_enabled: bool,
+    pub rf_snr: bool,
     pub freq: f64,
     pub mode: String,
     pub am_sync: bool,
@@ -71,7 +72,7 @@ pub(super) struct BasebandConfig {
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
-            channel: 1, enabled: true, recovery_settle:false, continuity: Default::default(), baseband: None, processing_enabled: true,
+            channel: 1, enabled: true, recovery_settle:false, continuity: Default::default(), baseband: None, processing_enabled: true, rf_snr: false,
             freq: 0.0, mode: "am".into(), if_bw: 6000.0,
             am_sync: false,
             am_sync_generation: 0,
@@ -150,7 +151,7 @@ impl ChannelConfig {
                 })),
             mode: self.mode.clone(), input_rate, audio_rate: self.audio_rate, if_bw: self.if_bw,
             center_hz: self.freq.max(0.0).round() as u64,
-            am_sync: self.am_sync,
+            am_sync: self.am_sync, rf_snr: self.rf_snr,
             am_sync_generation: self.am_sync_generation,
             pitch: self.pitch, agc: self.agc, gain: self.volume as f32, squelch_dbm: self.squelch,
             nr: self.nr, nr_strength: self.nr_strength, nr_algorithm: self.nr_algorithm.clone(),

@@ -2,6 +2,8 @@
 
 [Documentation](../INDEX.md) · [简体中文](../../zh-CN/reference/SNR.md)
 
+RF SNR measurement is disabled by default. Enable **Measure RF SNR** in the channel’s mode settings and apply settings to start analysis and show its live card. Disabling it releases the analyzer and stops RF measurement events; demodulation, protocol SNR and audio continue. The processor API field is `rf_snr` (boolean, default `false`); `observed_receiver.rf_measurement` is absent while disabled.
+
 ## Definitions and contract
 
 The native receiver emits `rf-measurement` events on SDE2 and includes the latest `rf_measurement` in `processing_runtime.observed_receiver`. Each event inherits the receiver UID, service ID, fine-channel ID, capture epoch, processing generation and sample clock of its envelope. Historical decoded FT8 reports describe their original burst; they are not current channel readings.
@@ -55,7 +57,7 @@ transmitter. Co-channel energy is inseparable; dense majority contamination,
 sharp PSD curvature and receiver filtering can bias it. A quality flag is not an
 error bound. See the [pinned official source review](FT8_SNR_REVIEW.md),
 [fixed acceptance conditions](../../ft8-snr-acceptance.md) and
-[before/after validation](../../../tools/bench/ft8_snr_validation_v2.json).
+[validation data](../../../tools/bench/ft8_snr_validation_v2.json).
 
 ## RF analysis and limitations
 

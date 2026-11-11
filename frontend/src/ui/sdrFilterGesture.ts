@@ -342,7 +342,7 @@ export function filterViewResolution(): { samples: number; atDataLimit: boolean 
 // ---------------- renderer hook ----------------
 
 /** Draw inside the caller's plot clip; a badge drag may preview a different dial frequency. */
-export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: number | null = null): boolean {
+export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: number | null = null, ctx = S.ctx): boolean {
   if (!S.sdrMode || !sdrPassbandVisible.get() || sdrChannelMarks().find(c => c.channel === currentSdrChannel())?.processing_enabled === false) return false;
   const listen = listenPreview ?? sdrListenHz.get();
   if (!(listen > 0)) return false;
@@ -362,7 +362,7 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
   // Diagnostic/e2e contract: what the overlay claims, in Hz relative to the dial (the
   // pixel scan cannot read these edges off the canvas - see the old spectrum.ts note).
   const ds = `${bandLo}..${bandHi}`;
-  if (ctx.canvas.dataset.demodBand !== ds) ctx.canvas.dataset.demodBand = ds;
+  if (S.canvas.dataset.demodBand !== ds) S.canvas.dataset.demodBand = ds;
 
   const colors = canvasColors();
   drawPassband(ctx, x0, x1, p.x, p.y, p.w, p.h, colors, false);

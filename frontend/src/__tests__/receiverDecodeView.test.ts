@@ -17,6 +17,45 @@ beforeEach(() => { setLang('en'); host = document.createElement('div'); document
 afterEach(() => { vi.restoreAllMocks(); forgetDecoderLog(uid); document.body.replaceChildren(); });
 
 describe('receiver Decode interaction and live results', () => {
+  it('hides RF SNR by default and ignores its updates until measurement is enabled', () => {
+    const view = mountReceiverDecodeView(host);
+    const measurement = (value: number): DecoderLogEntry => ({ ...message(10, ''), kind: 'status', mode: 'wfm',
+      data: { type: 'rf-measurement', measurement: { value, state: 'conditional', reference_bandwidth_hz: 180000 } } });
+    try {
+      view.update([measurement(12)], uid, 'wfm', 0, '');
+      expect(host.textContent).not.toContain('RF SNR');
+      const observer = new MutationObserver(() => {});
+      observer.observe(host, { subtree: true, childList: true, attributes: true, characterData: true });
+      view.update([measurement(13)], uid, 'wfm', 0, '');
+      expect(observer.takeRecords()).toHaveLength(0);
+      observer.disconnect();
+      view.update([measurement(14)], uid, 'wfm', 0, '', undefined, true);
+      expect(host.textContent).toContain('RF SNR');
+      expect(host.textContent).toContain('14.0 dB');
+      view.update([measurement(14)], uid, 'wfm', 0, '');
+      expect(host.textContent).not.toContain('RF SNR');
+    } finally { view.dispose(); }
+  });
+  it('keeps alternating RF and demodulator status cards in place', () => {
+    const view = mountReceiverDecodeView(host);
+    const add = (type: string, value: number): void => {
+      addDecoderResult({ provider: 'native', mode: 'wfm', kind: 'status', data: type === 'rf-measurement'
+        ? { type, measurement: { value, state: 'conditional', reference_bandwidth_hz: 180000 } }
+        : { type, rdsLocked: true, ps: 'RADIO', stereo: true } }, '1:1', uid);
+      view.update(decoderLog(uid).entries, uid, 'wfm', 0, '', undefined, true);
+    };
+    try {
+      add('rf-measurement', 12); add('wfm-info', 0);
+      const cards = [...host.querySelectorAll('.mc-decode-log > .decoder-result')];
+      expect(cards).toHaveLength(2);
+      const observer = new MutationObserver(() => {});
+      observer.observe(host.querySelector('.mc-decode-log')!, { childList: true });
+      for (let i = 0; i < 5; i++) { add('rf-measurement', 12 + i); add('wfm-info', 0); }
+      expect([...host.querySelectorAll('.mc-decode-log > .decoder-result')]).toEqual(cards);
+      expect(observer.takeRecords()).toHaveLength(0);
+      observer.disconnect();
+    } finally { view.dispose(); }
+  });
   it('shows near-zero estimates without negative zero and retains the original value in hover and export', () => {
     const view = mountReceiverDecodeView(host);
     try {

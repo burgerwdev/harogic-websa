@@ -34,7 +34,7 @@ Rust 生产 IQS 路径使用版本化 shim 校验的 `62.5 MHz / capture_decimat
 
 每路 `processing_statistics` 按逻辑 UID、服务身份、处理代次及流身份保存有界历史。`packets`、`searches` 分别报告已接纳、已开始、成功、失败、取消、拒收和在途；只有成功输入累计媒体秒。`occupancy` 包含排队、执行中、待发输出与搜索回传引用的字节／样本和单调年龄。`wall_ns`、可得的 `thread_cpu_ns` 与排队等待独立。水位描述源块；`service_consumed` 指服务已排出，不能当作远端扬声器已播放。`source_watermarks` 串联共享输入／PFB 观测和 fine 信道时钟，各观测不保证同时。模型请求／实际状态、静噪和协议窗口保留另行报告；不可观测的上游解码消费为 null。UTC 跳变、静噪关闭及协议窗口等待不等于源样本缺失。
 
-浏览器轮询 `GET /api/sdr/receivers?detail=live`，只传送控制、时钟、故障、录制信息与精简的当前健康状态，省去 `processing_statistics` 和详细接收机观测。展开诊断面板后，立即请求 `GET /api/sdr/receivers?receiver_uid=<uid>`，并在可见时每两秒刷新；折叠、隐藏、切换身份或关闭窗口会取消请求与定时器。诊断响应不会替换实时控制状态。默认接口和命令回执仍保留完整诊断；当前处理状态只读取匹配 UID 与处理代次的数据。
+浏览器轮询 `GET /api/sdr/receivers?detail=live`，只传送控制、时钟、故障、录制信息与精简的当前健康状态，省去 `processing_statistics` 和详细接收机观测。展开诊断面板时，只请求一次 `GET /api/sdr/receivers?receiver_uid=<uid>`；点击刷新才获取新快照，实时状态更新不会轮询或重新格式化诊断 JSON。折叠、隐藏、切换身份或关闭窗口会取消请求。诊断响应不会替换实时控制状态。默认 GET 接口仍按请求提供完整诊断；普通命令回执及其去重缓存使用轻量状态；当前处理状态只读取匹配 UID 与处理代次的数据。
 
 周期 `STATUS` 消息及 `GET /api/state?detail=live` 省去详细线程统计、事件历史与保留的采集故障证据。`GET /api/state` 按请求生成完整诊断；普通频谱展示不会构造这些历史事件和计时 JSON。
 
@@ -45,6 +45,8 @@ Rust 生产 IQS 路径使用版本化 shim 校验的 `62.5 MHz / capture_decimat
 AudioWorklet 按 50 ms 电平采样节奏合并电平、周期额度、状态和累计投递确认。确认只属于当前播放代次；重置会丢弃待发送的旧反馈，旧代次的确认不能释放新代次保留的 PCM。初始额度、播放状态切换和故障仍立即报告，音频样本、源连续性校验和播放时钟的语义保持不变。
 
 `USB IQ capture handoff queue full: status=-130` 表示本服务采集适配层的有界 USB 交接队列溢出，采集连续性已丢失，恢复时报告 `source_gap`；这个错误码不能用来判断厂商 SDK 的带宽上限。
+
+对于明确标注 `sustained capture stall requires a new stream epoch` 的 IQS `-8/-9/-10` 持续停滞，也按信号源缺口进行有限次数恢复。持续接收会重新打开已退出的采集会话，并建立新的流与处理身份，无需切换 SDR 模式；严格连续策略仍停止并等待手动续收。未带此标注的设备错误仍停止。
 
 粗信道输出列按活动接收机频率生成，同一粗频点可由多路共享。局部调谐或删除在排空边界替换选择并释放闲置列，其他信道的连续流保持不变。没有粗信道消费者时，PFB 只维护输入历史与时钟，跳过 FIR／FFT 输出计算；独立频谱显示和原始 IQ 直接路由继续运行。
 

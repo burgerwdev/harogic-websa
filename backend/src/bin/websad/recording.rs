@@ -1069,7 +1069,7 @@ pub(super) async fn index(
     // Reserve the same lease as deletion while looking up the live task. No
     // cached sidecar may outlive a management tombstone or be read across deletion.
     let (path, permit) = {
-        let state = app.state.lock().unwrap();
+        let state = app.state.lock_async().await.unwrap();
         let Some(manager) = &state.recordings else {
             return StatusCode::NOT_FOUND.into_response();
         };

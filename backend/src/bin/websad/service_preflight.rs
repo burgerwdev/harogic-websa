@@ -72,7 +72,7 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
     static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
     static WAITING:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(64);
     {
-        let state = app.state.lock().unwrap();
+        let state = app.state.lock_async().await.unwrap();
         if state.swp.mode == "server" && !matches!(cmd, "STATUS" | "SET_MODE" | "SET_SERVER") {
             return Err("leave server mode before changing hardware settings".into());
         }
@@ -80,10 +80,10 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
     let display_only = matches!(cmd, "AUTO_SCALE" | "SET_REF")
         && data["display_only"] == true
         && (cmd == "AUTO_SCALE" || data["mode"] == "auto");
-    if display_only { return Ok(Admission::empty(app.state.lock().unwrap().config_version, cmd, data)); }
-    if !matches!(cmd, "AUTO_SCALE" | "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET") { return Ok(Admission::empty(app.state.lock().unwrap().config_version, cmd, data)); }
+    if display_only { return Ok(Admission::empty(app.state.lock_async().await.unwrap().config_version, cmd, data)); }
+    if !matches!(cmd, "AUTO_SCALE" | "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET") { return Ok(Admission::empty(app.state.lock_async().await.unwrap().config_version, cmd, data)); }
     {
-        let state = app.state.lock().unwrap();
+        let state = app.state.lock_async().await.unwrap();
         if !data.is_object() { return Err("JSON message must be an object".into()); }
         if matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC") {
             if state.swp.mode != "sdr" { return Err("channel commands require SDR mode".into()); }
@@ -110,7 +110,7 @@ where F: FnOnce(&[receiver_workers::ChannelConfig]) -> Result<receiver_workers::
     let _queued=WAITING.try_acquire().map_err(|_|"admission_busy: command preparation queue full (64)")?;
     let permit = ADMISSION.acquire().await.map_err(|_| "admission_busy: service admission already running")?;
     let candidate = {
-        let state = app.state.lock().unwrap();
+        let state = app.state.lock_async().await.unwrap();
         let revision = state.config_version;
         let channels = matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC");
         let front_end = matches!(cmd, "AUTO_SCALE" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT");

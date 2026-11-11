@@ -636,7 +636,7 @@ async fn stream_ws(ws:WebSocketUpgrade,app:Arc<App>,params:HashMap<String,String
     let receiver_uid=params.get("receiver_uid").cloned();
     if receiver_uid.is_some() && params.contains_key("channel") {return StatusCode::BAD_REQUEST.into_response();}
     let channel=if let Some(uid)=receiver_uid.as_deref() {
-        let mut state=app.state.lock().unwrap();
+        let mut state=app.state.lock_async().await.unwrap();
         let Some(slot)=state.receiver_slot(uid) else {return StatusCode::NOT_FOUND.into_response();};
         let Some(config)=state.channel_config(slot) else {return StatusCode::NOT_FOUND.into_response();};
         if !config.enabled || !config.processing_enabled || state.swp.mode!="sdr" {return StatusCode::CONFLICT.into_response();}

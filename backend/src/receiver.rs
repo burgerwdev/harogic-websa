@@ -31,6 +31,8 @@ pub struct ReceiverConfig {
     pub if_bw: f64,
     /// Certified full flat upstream FIR passband; None means offline unfiltered IQ.
     pub measurement_passband_hz: Option<f64>,
+    /// Optional channel IQ analysis; disabled receivers allocate no FFT state.
+    pub rf_snr: bool,
     pub pitch: f64,
     pub agc: bool,
     pub am_sync: bool,
@@ -57,7 +59,7 @@ pub struct ReceiverConfig {
 impl Default for ReceiverConfig {
     fn default() -> Self {
         Self { mode: "am".into(), center_hz: 0, input_rate: 48_000.0, audio_rate: 48_000,
-            if_bw: 6_000.0, measurement_passband_hz: None, pitch: 700.0, agc: true, am_sync: false, am_sync_generation: 0, gain: 1.0,
+            if_bw: 6_000.0, measurement_passband_hz: None, rf_snr: false, pitch: 700.0, agc: true, am_sync: false, am_sync_generation: 0, gain: 1.0,
             squelch_dbm: audio::SQUELCH_OPEN_DBM, nr: false, nr_strength: 0.6,
             nr_algorithm: "wiener".into(), nr_atten_db: 10.0, deemph_us: -1.0,
             stereo: true, sstv_mode: None,
@@ -299,7 +301,7 @@ impl PreparedDecoder {
 }
 
 pub struct Receiver {
-    rf_meter: crate::rf_measure::RfMeter,
+    rf_meter: Option<crate::rf_measure::RfMeter>,
     rf_clock: Option<(InputClock, usize)>,
     config: ReceiverConfig,
     epoch: u64,
@@ -340,15 +342,16 @@ impl Receiver {
     /// Actual retained protocol window and model state, observed by its owner.
     pub fn processing_status(&self) -> Value {
         let nr=self.nr.status();
-        json!({"mode":self.config.mode,"nr_requested":nr.requested.name(),
+        let mut status = json!({"mode":self.config.mode,"nr_requested":nr.requested.name(),
             "nr_effective":nr.effective.map(NrAlgorithm::name),"nr_state":nr.state,"nr_reason":nr.reason,
             "model_sessions":crate::nr::model_sessions(),
             "squelch":self.squelch_status().map(|(open,gain)|json!({"open":open,"gain":gain})),
             "protocol_window_samples":self.ft8.as_ref().map(|window|window.samples.len()/2),
             "protocol_window_bytes":self.ft8.as_ref().map(|window|window.samples.len()*4),
             "protocol_waiting":self.ft8.as_ref().is_some_and(|window|window.samples.len()<FT8_RATE as usize*30),
-            "rf_measurement":self.rf_meter.snapshot(),
-            "external":self.external.as_ref().map(|decoder|decoder.buffer_status())})
+            "external":self.external.as_ref().map(|decoder|decoder.buffer_status())});
+        if let Some(meter) = &self.rf_meter { status["rf_measurement"] = json!(meter.snapshot()); }
+        status
     }
     pub fn new(config: ReceiverConfig) -> Result<Self, String> {
         config.validate()?;
@@ -419,14 +422,7 @@ impl Receiver {
         let ft8 = if mode == "ft8" { Some(Ft8Window::new()) } else { None };
         let audio_format = analog.as_ref().map(|_|(config.audio_rate,
             if config.mode == "wfm" && config.stereo {2} else {1}));
-        let (low, high) = match descriptor.sideband.as_str() {
-            "upper" => (0.0, config.if_bw),
-            "lower" => (-config.if_bw, 0.0),
-            _ if mode == "cw" => (config.pitch-config.if_bw/2.0, config.pitch+config.if_bw/2.0),
-            _ => (-config.if_bw/2.0, config.if_bw/2.0),
-        };
-        let rf_meter = crate::rf_measure::RfMeter::new(config.input_rate, low, high,
-            config.measurement_passband_hz.unwrap_or(config.input_rate*0.9));
+        let rf_meter = Self::measurement(&config);
         Ok(Self { rf_meter, rf_clock: None, config, epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed), analog, digital, external,
             adapter, converted: Vec::new(), listener, side_listener, side_pcm:AnalogPcm::default(), pcm: AnalogPcm::default(),
             side: Vec::new(), nr, nr_right, nr_scratch: Vec::new(), cw, ft8, pushes: 0,
@@ -435,6 +431,18 @@ impl Receiver {
             radiofax_new_page: false,
             analog_frames: 0, audio_source_offset: 0,
             audio_origin: None, input_origin:None, audio_frames: 0, audio_format, peak_hold: 0.0 })
+    }
+    fn measurement(config: &ReceiverConfig) -> Option<crate::rf_measure::RfMeter> {
+        config.rf_snr.then(|| {
+            let (low, high) = match crate::catalog::mode(&config.mode).unwrap().sideband.as_str() {
+                "upper" => (0.0, config.if_bw),
+                "lower" => (-config.if_bw, 0.0),
+                _ if config.mode == "cw" => (config.pitch-config.if_bw/2.0, config.pitch+config.if_bw/2.0),
+                _ => (-config.if_bw/2.0, config.if_bw/2.0),
+            };
+            crate::rf_measure::RfMeter::new(config.input_rate, low, high,
+                config.measurement_passband_hz.unwrap_or(config.input_rate*0.9))
+        })
     }
     pub fn config(&self) -> &ReceiverConfig { &self.config }
     pub fn epoch(&self) -> u64 { self.epoch }
@@ -482,6 +490,10 @@ impl Receiver {
         self.nr.configure_band(&config.mode, config.if_bw, config.pitch, config.input_rate);
         self.nr_right.configure_band(&config.mode, config.if_bw, config.pitch, config.input_rate);
         self.nr.ensure_ready()?;self.nr_right.ensure_ready()?;
+        if config.rf_snr != self.config.rf_snr {
+            self.rf_meter = Self::measurement(&config);
+            self.rf_clock = None;
+        }
         self.next_status = 0;
         self.config = config;
         Ok(())
@@ -506,7 +518,7 @@ impl Receiver {
         Ok(events)
     }
     pub fn retune(&mut self) -> Result<(), String> {
-        self.rf_meter.reset();
+        if let Some(meter) = &mut self.rf_meter { meter.reset(); }
         self.rf_clock = None;
         self.epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
         if let Some(analog) = self.analog.as_mut() { analog.retune(); }
@@ -535,12 +547,12 @@ impl Receiver {
             return Err("invalid receiver source clock".into());
         }
         if self.input_origin.is_some_and(|origin| origin.input_rate != clock.input_rate) {
-            self.rf_meter.reset();
+            if let Some(meter) = &mut self.rf_meter { meter.reset(); }
             self.rf_clock = None;
             return Err("receiver source clock rate changed without a reset".into());
         }
         if iq.iter().any(|sample| !sample.is_finite()) {
-            self.rf_meter.reset();
+            if let Some(meter) = &mut self.rf_meter { meter.reset(); }
             return Err("receiver IQ samples must be finite".into());
         }
         let mut out = ReceiverOutput::default();
@@ -550,19 +562,21 @@ impl Receiver {
         self.input_origin.get_or_insert(clock);
         // The owning worker rejects/retires discontinuous streams. This local
         // check also protects direct/offline Receiver users from stale estimates.
-        let mut rf_restarted = self.rf_clock.is_none();
-        if let Some((previous, count)) = self.rf_clock {
-            let actual = clock.first_sample_index as i128-previous.first_sample_index as i128;
-            let expected = count as f64*clock.input_rate/self.config.input_rate;
-            if previous.input_rate != clock.input_rate || (actual as f64-expected).abs()>2.0 {
-                self.rf_meter.reset();
-                rf_restarted = true;
+        if let Some(meter) = &mut self.rf_meter {
+            let mut rf_restarted = self.rf_clock.is_none();
+            if let Some((previous, count)) = self.rf_clock {
+                let actual = clock.first_sample_index as i128-previous.first_sample_index as i128;
+                let expected = count as f64*clock.input_rate/self.config.input_rate;
+                if previous.input_rate != clock.input_rate || (actual as f64-expected).abs()>2.0 {
+                    meter.reset();
+                    rf_restarted = true;
+                }
             }
-        }
-        self.rf_clock = Some((clock, iq.len()/2));
-        let rf_updated = self.rf_meter.push(iq);
-        if rf_updated || rf_restarted {
-            out.events.push(json!({"type":"rf-measurement","measurement":self.rf_meter.snapshot()}));
+            self.rf_clock = Some((clock, iq.len()/2));
+            let rf_updated = meter.push(iq);
+            if rf_updated || rf_restarted {
+                out.events.push(json!({"type":"rf-measurement","measurement":meter.snapshot()}));
+            }
         }
         self.pushes += 1;
         self.elapsed_samples = self.elapsed_samples.saturating_add((iq.len() / 2) as u64);
@@ -1709,8 +1723,33 @@ mod tests {
 mod rf_measurement_lifecycle_tests {
     use super::*;
     #[test]
+    fn rf_measurement_is_opt_in_and_toggles_without_resetting_audio() {
+        let mut receiver = Receiver::new(ReceiverConfig::default()).unwrap();
+        let clock = InputClock { first_sample_index: 0, input_rate: 48_000.0, delay_input_samples: 0.0 };
+        let iq = vec![0.0; 2048];
+        let output = receiver.process(&iq, clock, None).unwrap();
+        assert!(receiver.rf_meter.is_none());
+        assert!(receiver.processing_status().get("rf_measurement").is_none());
+        assert!(!output.events.iter().any(|event|event["type"]=="rf-measurement"));
+        let epoch = receiver.epoch();
+        let audio_frames = receiver.audio_frames;
+        receiver.configure(ReceiverConfig { rf_snr: true, ..receiver.config().clone() }).unwrap();
+        assert_eq!(receiver.epoch(), epoch);
+        assert_eq!(receiver.audio_frames, audio_frames);
+        let output = receiver.process(&iq, InputClock { first_sample_index: 1024, ..clock }, None).unwrap();
+        assert!(output.events.iter().any(|event|event["type"]=="rf-measurement"));
+        receiver.configure(ReceiverConfig { rf_snr: false, ..receiver.config().clone() }).unwrap();
+        assert!(receiver.rf_meter.is_none());
+        assert!(receiver.rf_clock.is_none());
+        let output = receiver.process(&iq, InputClock { first_sample_index: 2048, ..clock }, None).unwrap();
+        assert!(!output.events.iter().any(|event|event["type"]=="rf-measurement"));
+        assert_eq!(receiver.epoch(), epoch);
+        receiver.configure(ReceiverConfig { rf_snr: true, ..receiver.config().clone() }).unwrap();
+        assert_eq!(receiver.rf_meter.as_ref().unwrap().snapshot().reason, Some("warming_up"));
+    }
+    #[test]
     fn rf_is_isolated_passive_and_independent_of_audio_controls_and_tuning() {
-        let config=ReceiverConfig {input_rate:12000.0,if_bw:3000.0,..ReceiverConfig::default()};
+        let config=ReceiverConfig {rf_snr:true,input_rate:12000.0,if_bw:3000.0,..ReceiverConfig::default()};
         let mut a=Receiver::new(config.clone()).unwrap();
         let mut b=Receiver::new(ReceiverConfig {gain:0.0,agc:false,squelch_dbm:0.0,nr:true,..config.clone()}).unwrap();
         let mut silent=Receiver::new(config.clone()).unwrap();
@@ -1727,14 +1766,14 @@ mod rf_measurement_lifecycle_tests {
             silent.process(&vec![0.0;iq.len()],clock,None).unwrap();
             assert_eq!(iq,unchanged,"measurement cannot modify received samples");
         }
-        let value=a.rf_meter.snapshot().value.expect("signal");
-        assert_eq!(Some(value),b.rf_meter.snapshot().value,"AGC/squelch/NR/volume independence");
-        assert_eq!(silent.rf_meter.snapshot().value,None,"channel isolation");
+        let value=a.rf_meter.as_ref().unwrap().snapshot().value.expect("signal");
+        assert_eq!(Some(value),b.rf_meter.as_ref().unwrap().snapshot().value,"AGC/squelch/NR/volume independence");
+        assert_eq!(silent.rf_meter.as_ref().unwrap().snapshot().value,None,"channel isolation");
         let before=a.epoch();a.retune().unwrap();assert_ne!(a.epoch(),before);
-        assert_eq!(a.rf_meter.snapshot().value,None);
+        assert_eq!(a.rf_meter.as_ref().unwrap().snapshot().value,None);
         b.configure(ReceiverConfig{center_hz:1000,..b.config().clone()}).unwrap();
-        assert_eq!(b.rf_meter.snapshot().value,None);
+        assert_eq!(b.rf_meter.as_ref().unwrap().snapshot().value,None);
         let clock=InputClock{first_sample_index:9999999,input_rate:12000.0,delay_input_samples:0.0};
-        silent.process(&[0.0;2048],clock,None).unwrap();assert_eq!(silent.rf_meter.snapshot().reason,Some("warming_up"));
+        silent.process(&[0.0;2048],clock,None).unwrap();assert_eq!(silent.rf_meter.as_ref().unwrap().snapshot().reason,Some("warming_up"));
     }
 }

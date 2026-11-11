@@ -105,6 +105,7 @@
       </div>
       <div class="spectrum-box">
         <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
+        <canvas id="spectrum-overlay" class="plot-overlay" aria-hidden="true"></canvas>
         <span id="status-error" role="alert" aria-atomic="true"
               style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;"></span>
       </div>
@@ -114,6 +115,7 @@
            data-i18n-title="wf_split_tip" data-i18n-attr="title" title="Drag to resize the waterfall"></div>
       <div id="waterfall-container" class="waterfall-container" style="display:none;">
         <canvas id="waterfall" width="800" height="135" tabindex="0"></canvas>
+        <canvas id="waterfall-overlay" class="plot-overlay" aria-hidden="true"></canvas>
         <div id="wf-controls" class="wf-controls">
           <button class="btn wf-btn" id="btn-wf-pause" data-action="wf-pause" data-i18n="tip_waterfall_pause" data-i18n-attr="title" title="Pause/Resume waterfall">⏸</button>
           <button class="btn wf-btn" id="btn-wf-reset" data-action="wf-reset" data-i18n="tip_waterfall_reset" data-i18n-attr="title" title="Restart waterfall from scratch">↻</button>
@@ -355,9 +357,7 @@
               <input type="range" id="input-sdr-nr-atten" data-action="set-sdr-nr-atten" min="0" max="20" step="1" value="6" style="flex:1;" data-i18n-title="nr_atten_tip" data-i18n-attr="title" title="DeepFilterNet3 attenuation limit (dB)">
               <span class="cur-val" id="cur-nr-atten">6 dB</span></div>
             <div class="param-row sdr-hint-row">
-              <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint" data-i18n-title="sdr_hint_tip">click=tune &middot; Ctrl+drag=marker &middot; Zoom: drag=select</span>
-              <!-- The level readout sits with the hint: the volume row is cramped and the level is a
-                   status, not a control. -->
+              <button type="button" class="sdr-help-button" data-action="sdr-help" data-i18n="sdr_help" data-i18n-title="sdr_help_tip">Help</button>
               <span class="cur-val" id="cur-sdr-level">--- dBFS</span>
             </div>
           </div>
@@ -899,7 +899,7 @@
       <span class="info-label">2026 © HAROGIC WebSA</span>
       <a class="version-tag-link" href="/static/dist/legal.html" target="_blank" rel="noopener" data-i18n="license_link" title="AGPL-3.0-only + HAROGIC SDK / FDK AAC exceptions">License + exceptions</a>
       <a class="version-tag-link" href="/static/dist/legal/__WEBSA_SOURCE_ARCHIVE__" download data-i18n="source_code" title="__WEBSA_SOURCE_ID__">Source</a>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.12.19 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.12.20 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

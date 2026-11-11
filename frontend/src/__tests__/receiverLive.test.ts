@@ -56,7 +56,7 @@ it('clears only recovered notices, survives refreshes and shows a new interrupti
  expect(receiverLive(r,[])).toContain('data-action="clear-interruption"');
  session.clearInterruption(r.receiver_uid);expect(session.interruptionCleared(r.receiver_uid)).toBe(true);
  expect(receiverLive(r,[],false,false,session.interruptionCleared(r.receiver_uid))).not.toContain('class="mc-live-interruption"');
- expect(receiverLive(r,[],false,true,true)).toContain('queue full'); // Diagnostics retain the record.
+ expect(receiverLive(r,[],false,true,true,r)).toContain('queue full'); // Diagnostics retain the record.
  session.dispose();session=new WorkbenchSession(adapter);
  expect(session.interruptionCleared(r.receiver_uid)).toBe(true);
  session.snapshot.receivers[0].reception!.interruptions++;

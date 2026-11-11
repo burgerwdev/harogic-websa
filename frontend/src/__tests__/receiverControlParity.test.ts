@@ -10,7 +10,7 @@ import { receiverRuntime } from '../ui/receiverRuntime';
 
 afterEach(() => {clearMainReceiverControls();document.body.replaceChildren();sessionStorage.clear();vi.useRealTimers();});
 it('round trips every persisted mode field, and exposes controls by their mode in either editor', () => {
-  const controls = {...copyModeControls(undefined),am_sync:true,pitch:1350,deemph_us:75,stereo:false,audio_rate:24000,
+  const controls = {...copyModeControls(undefined),rf_snr:true,am_sync:true,pitch:1350,deemph_us:75,stereo:false,audio_rate:24000,
     radiofax_acquisition:'manual',radiofax_ioc:'576',radiofax_lpm:'120',radiofax_modulation:'am',radiofax_polarity:'inverted',
     radiofax_clock_recovery:'off',radiofax_phase_pixels:7.5,radiofax_clock_ppm:-23};
   const form=document.createElement('form');form.innerHTML=receiverControlFields(controls,'am');document.body.append(form);

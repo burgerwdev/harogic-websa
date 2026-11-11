@@ -238,6 +238,7 @@ impl DevState {
         config.squelch = number(data, &["squelch"], config.squelch)?;
         config.volume = number(data, &["volume"], config.volume)?;
         config.agc = boolean(data, "agc", config.agc)?;
+        config.rf_snr = boolean(data, "rf_snr", config.rf_snr)?;
         config.pitch = number(data, &["pitch"], config.pitch)?;
         config.deemph_us = number(data, &["deemph_us", "deemph"], config.deemph_us)?;
         if let Some(minimum) = analog_filter_min_hz(&config.mode).filter(|_|config.processing_enabled) {

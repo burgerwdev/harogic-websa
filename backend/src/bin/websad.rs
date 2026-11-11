@@ -3831,7 +3831,7 @@ async fn publisher_loop(
             }
             if preparing.is_none() && prepared.is_none() {
                 let candidate = {
-                    let state = app.state.lock().unwrap();
+                    let state = app.state.lock_async().await.unwrap();
                     let restarting = state.swp.mode == "sdr" && state.receiver_failure.is_none()
                         && ((state.hardware_shim.is_some() && state.pipeline.is_none() && state.ddc.is_none())
                             || state.auto_receiver_preparation_required());
@@ -4082,7 +4082,7 @@ async fn publisher_loop(
                 status_due = tokio::time::Instant::now();
             }
             let (iq_frame,aux_frame)={
-                let mut state=app.state.lock().unwrap();
+                let mut state=app.state.lock_async().await.unwrap();
                 let clients=app.clients.lock();
                 let iq_all=clients.iter().any(|client|client.iq&&client.receiver_uid.is_none());
                 let aux_all=clients.iter().any(|client|client.aux&&client.receiver_uid.is_none());
@@ -4457,7 +4457,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
     let mut iq_subscriber=multichannel::IqSubscriber::default();
     let mut iq_health=tokio::time::interval(Duration::from_millis(500));
     let initial_decode={
-        let mut state=app.state.lock().unwrap();
+        let mut state=app.state.lock_async().await.unwrap();
         if (audio || decode) && (state.receiver_failure.is_some() || channel.is_some_and(|channel|
             state.receiver_workers.as_ref().and_then(|workers|workers.channel_failure(channel)).is_some())) {
             receiver_failed.store(true,Ordering::Release);
@@ -4551,7 +4551,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
             let ack_deadline = decode_credit.deadline();
             tokio::select! {
                 _ = iq_health.tick(), if receiver_uid.is_some() => {
-                    let closing={let mut state=app.state.lock().unwrap();
+                    let closing={let mut state=app.state.lock_async().await.unwrap();
                         let failed=!state.link_up || state.swp.mode!="sdr" || state.ddc_error.is_some()
                             || ((audio||decode)&&receiver_uid.as_deref().is_some_and(|uid|
                                 state.receiver_slot(uid).is_none_or(|slot| {
@@ -4665,9 +4665,9 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                         if receiver_failed.load(Ordering::Acquire) || overflow.load(Ordering::Acquire) {break 'client true;}
                         if !packet.epoch_current(epoch.load(Ordering::Acquire)) {continue;}
                         let framed=if let Some(uid)=receiver_uid.as_deref() {
-                            if iq||aux {iq_subscriber.frames(&mut app.state.lock().unwrap(),uid,message)}
+                            if iq||aux {iq_subscriber.frames(&mut app.state.lock_async().await.unwrap(),uid,message)}
                             else {
-                                match multichannel::processing_frame(&mut app.state.lock().unwrap(),uid,message) {
+                                match multichannel::processing_frame(&mut app.state.lock_async().await.unwrap(),uid,message) {
                                     Ok(Some(frame))=>subscriber.frames(frame),Ok(None)=>Ok(Vec::new()),Err(error)=>Err(error),
                                 }
                             }
@@ -4732,6 +4732,7 @@ fn load_golden() -> (Value, Value) {
     for command in ["SET_SDR_DEMOD","SET_SDR_DDC"] {
         if let Some(params)=schema["commands"][command]["params"].as_array_mut() {
             params.extend([
+                json!({"name":"rf_snr","type":"boolean","required":false,"default":false}),
                 json!({"name":"nr","type":"boolean","required":false,"default":false}),
                 json!({"name":"nr_algorithm","type":"choice","required":false,"default":"wiener",
                     "choices":["wiener","dfn","gtcrn","ul-unas","fastenhancer"]}),

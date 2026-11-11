@@ -92,8 +92,12 @@ def sdr_panel_visible(page: Page) -> bool:
 #: column, summed over three rows: the marker is the opaque `#00ffa0` line (by far the largest
 #: excess), and the band is the 12%-alpha fill - the longest run that is tinted but not opaque.
 OVERLAY_SCAN = """() => {
-  const c = document.getElementById('spectrum');
+  const base = document.getElementById('spectrum');
+  const c = document.createElement('canvas'); c.width = base.width; c.height = base.height;
   const g = c.getContext('2d');
+  g.drawImage(base, 0, 0);
+  const overlay = document.getElementById('spectrum-overlay');
+  if (overlay && overlay.width === c.width && overlay.height === c.height) g.drawImage(overlay, 0, 0);
   const ex = new Float64Array(c.width);
   for (const frac of [0.3, 0.5, 0.7]) {
     const d = g.getImageData(0, Math.round(c.height * frac), c.width, 1).data;
@@ -496,22 +500,26 @@ def main() -> int:
               f'{expected / 1e6:.3f} MHz (axis {lo / 1e6:.1f}'
               f'..{hi / 1e6:.1f} MHz)')
 
-        # 5b - the audio toggle must follow the user's choice even with a stored value
-        print("5b) audio toggle with a stored preference")
+        print("5b) master mute preserves listening and its initial preference")
         def audio_snapshot():
             return page.evaluate("""() => {
                 const button = document.getElementById('btn-sdr-audio');
                 const gate = document.getElementById('spectrum').dataset.sdrAudio || '';
+                const routes = window.websaAudioStatus().filter(route => route.enabled);
                 return {pressed: button.getAttribute('aria-pressed'),
                         active: button.classList.contains('active'),
-                        stored: localStorage.getItem('web-sa-sdr-audio'), gate};
+                        stored: localStorage.getItem('web-sa-sdr-audio'), gate,
+                        routes: routes.map(route => ({channel: route.channel, streamKey: route.streamKey,
+                            frames: route.frames, masterMuted: route.masterMuted, error: route.error}))};
             }""")
 
         def matches_audio_choice(snapshot, on):
             return (snapshot['pressed'] == ('false' if on else 'true')
                     and snapshot['active'] == (not on)
-                    and snapshot['stored'] == ('1' if on else '0')
-                    and f"enabled={str(on).lower()}" in snapshot['gate'].split()
+                    and snapshot['stored'] == store
+                    and bool(snapshot['routes'])
+                    and all(route['masterMuted'] == (not on) and not route['error'] for route in snapshot['routes'])
+                    and 'enabled=true' in snapshot['gate'].split()
                     and 'muted=false' in snapshot['gate'].split())
 
         store = page.evaluate("localStorage.getItem('web-sa-sdr-audio')")
@@ -519,38 +527,41 @@ def main() -> int:
         page.wait_for_timeout(600)
         audio = audio_snapshot()
         check(
-            "toggle turns audio on",
+            "unmute enables the master output and preserves listening",
             matches_audio_choice(audio, True),
             f"{audio} (stored value before: {store})",
         )
-        # Leaving SDR must preserve the stored audio preference.
         page.click("#btn-mode-rta")
         page.wait_for_timeout(2500)
         page.click("#btn-mode-sdr")
         page.wait_for_timeout(3000)
         audio = audio_snapshot()
         check(
-            "audio on survives a mode round trip",
+            "master unmute survives a mode round trip",
             matches_audio_choice(audio, True),
             str(audio),
         )
 
+        before_mute = audio_snapshot()
         page.click("#btn-sdr-audio")
         page.wait_for_timeout(600)
         audio = audio_snapshot()
         check(
-            "toggle turns audio off again",
+            "master mute preserves the listening streams",
             matches_audio_choice(audio, False),
             str(audio),
         )
-        # ...and "off" is a preference too: it comes back as off.
+        check("master mute keeps the same streams consuming audio",
+              all(any(route['channel'] == before['channel'] and route['streamKey'] == before['streamKey']
+                      and route['frames'] > before['frames'] for route in audio['routes']) for before in before_mute['routes']),
+              str(audio['routes']))
         page.click("#btn-mode-rta")
         page.wait_for_timeout(2500)
         page.click("#btn-mode-sdr")
         page.wait_for_timeout(3000)
         audio = audio_snapshot()
         check(
-            "audio off survives a mode round trip",
+            "master mute survives a mode round trip",
             matches_audio_choice(audio, False),
             str(audio),
         )

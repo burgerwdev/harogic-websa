@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { receiverPlugin } from './pluginFixtures';
 
 vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
+vi.mock('../ui/nativeWorkbench', () => ({ addCurrentSdrChannel: vi.fn().mockResolvedValue(null),
+  toggleNativeChannelOverview: vi.fn().mockResolvedValue(undefined), initNativeSdrChannels: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../audio/sdrAudio', () => ({
   nativeAudioOwnsSpeakers: vi.fn(() => false), nativeAudioIsMuted: vi.fn(() => false),
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
@@ -165,6 +167,47 @@ describe('canvas pointer ownership', () => {
     expect(vi.mocked(send).mock.calls[0][0]).not.toHaveProperty('freq');
     expect(viewport.isZoomed()).toBe(false);
     expect(filter.filterDragging()).toBe(false);
+  });
+
+  it.each([false, true])('clicks a packed channel label at its exact frequency with Zoom %s', async zoom => {
+    const { S, plot, state, send } = await load(zoom);
+    const { confirmSdrChannels } = await import('../ui/sdrChannels');
+    const { sdrChannelLabels } = await import('../render/sdrChannelBands');
+    const frequency = 10_021_337;
+    confirmSdrChannels([{ channel: 1, freq: 10_000_000, mode: 'am', if_bw: 40000, enabled: true },
+      { channel: 2, freq: frequency, mode: 'am', if_bw: 6000, enabled: true }]);
+    state.sdrLocateMode.set('channel'); state.sdrChannelStepHz.set(1000);
+    const label = sdrChannelLabels(S.ctx, 9_800_000, 10_200_000, plot.plotRect()).find(box => box.mark.channel === 2)!;
+    pointer('pointerdown', label.x + 8, label.y + 8);
+    expect(send).not.toHaveBeenCalled();
+    pointer('pointerup', label.x + 8, label.y + 8);
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: frequency }));
+  });
+
+  it('dispatches channel shortcuts once and protects editors, modifiers and composition', async () => {
+    await load();
+    const native = await import('../ui/nativeWorkbench');
+    const press = (key: string, extra = {}) => document.dispatchEvent(new KeyboardEvent('keydown', {
+      key, bubbles: true, cancelable: true, ...extra,
+    }));
+    canvas.focus();
+    for (const key of ['a', 'l', 'r', 'i']) { press(key); await vi.advanceTimersByTimeAsync(0); }
+    expect(vi.mocked(native.addCurrentSdrChannel).mock.calls.map(call => call[0])).toEqual(['add', 'listen', 'audio', 'iq']);
+    for (const extra of [{ repeat: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }]) press('r', extra);
+    const input = document.createElement('input'); document.body.append(input); input.focus();
+    for (const key of ['a', 'l', 'r', 'i', 'v', '?']) press(key);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(native.addCurrentSdrChannel).toHaveBeenCalledTimes(4);
+    expect(native.toggleNativeChannelOverview).not.toHaveBeenCalled();
+    canvas.focus(); press('v'); press('v', { repeat: true }); await vi.advanceTimersByTimeAsync(0);
+    expect(native.toggleNativeChannelOverview).toHaveBeenCalledOnce();
+    press('?', { shiftKey: true });
+    expect(document.querySelector<HTMLElement>('.sdr-help-window')!.hidden).toBe(false);
+    expect(document.querySelector('.sdr-help-window')!.textContent).toContain('IQ');
+    document.querySelector('.sdr-help-window')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(document.querySelector<HTMLElement>('.sdr-help-window')!.hidden).toBe(true);
+    expect(document.activeElement).toBe(canvas);
+    window.dispatchEvent(new Event('pagehide'));
   });
 
   it('toggles both passband overlays with the badge square and H without sending device commands', async () => {

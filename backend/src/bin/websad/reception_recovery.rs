@@ -71,9 +71,14 @@ impl FaultKind {
         // Clock/ADC warnings can follow a brief RF/hardware disturbance. Discard
         // this stream and reconfigure with a fresh epoch under the bounded retry
         // policy. Never publish those samples as a continuous, valid clock.
-        // Generic USB errors (-8/-9), timeouts and panics still require repair.
+        // The IQS owner explicitly retires sustained USB/timeout stalls. Those
+        // can reopen through the same bounded, fresh-epoch recovery path.
+        // Unqualified device errors and panics still require repair.
         let reconfigure = (-19..=-14).any(|status| error.starts_with("SDK IQS ") && error.contains(&format!("status={status} ")));
-        if reconfigure || error.contains("status=-130 ") || error.contains("IQS stamp discontinuity ") {
+        let stalled = error.starts_with("SDK IQS ")
+            && error.ends_with("; sustained capture stall requires a new stream epoch")
+            && [-8, -9, -10].iter().any(|status| error.contains(&format!("status={status} samples=0")));
+        if reconfigure || stalled || error.contains("status=-130 ") || error.contains("IQS stamp discontinuity ") {
             Self::SourceGap
         } else if error.contains("SDK") {
             Self::Device
@@ -921,56 +926,58 @@ mod tests {
     }
 
     #[test]
-    fn clock_warning_recaptures_iq_display_and_audio_without_changing_sdr_mode() {
+    fn clock_warning_and_sustained_stalls_recapture_iq_display_and_audio_without_changing_sdr_mode() {
         let _guard = hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let injection = "/tmp/websa_fake_iqs_fail.txt";
         for path in [injection, "/tmp/websa_fake_iqs_open_fail.txt", "/tmp/websa_fake_iqs_reconfig_fail.txt", "/tmp/websa_fake_iqs_auto.txt"] {
             let _ = std::fs::remove_file(path);
         }
-        let (golden, schema) = load_golden();
-        let mut state = DevState::new(golden, schema);
-        state.hardware_shim = Some(hardware_iqs::tests::compile_fake_iqs_display_shim());
-        state.swp.mode = "sdr".into();
-        state.sdr_center = 100e6;
-        state.sdr_listen = 100e6;
-        state.sdr_decimate = 16;
-        state.take_hardware_presentation(1).unwrap();
-        let epoch = state.pipeline.as_ref().unwrap().snapshot.epoch;
-        std::fs::write(injection, "-15 1").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let error = loop {
-            match state.take_hardware_presentation(1) {
-                Err(error) => break error,
-                _ => { assert!(Instant::now() < deadline, "clock warning was not observed"); std::thread::sleep(Duration::from_millis(1)); }
+        for status in [-15, -8, -9, -10] {
+            let (golden, schema) = load_golden();
+            let mut state = DevState::new(golden, schema);
+            state.hardware_shim = Some(hardware_iqs::tests::compile_fake_iqs_display_shim());
+            state.swp.mode = "sdr".into();
+            state.sdr_center = 100e6;
+            state.sdr_listen = 100e6;
+            state.sdr_decimate = 16;
+            state.take_hardware_presentation(1).unwrap();
+            let epoch = state.pipeline.as_ref().unwrap().snapshot.epoch;
+            std::fs::write(injection, format!("{status} 1000")).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let error = loop {
+                match state.take_hardware_presentation(1) {
+                    Err(error) => break error,
+                    _ => { assert!(Instant::now() < deadline, "clock warning was not observed"); std::thread::sleep(Duration::from_millis(1)); }
+                }
+            };
+            let _ = std::fs::remove_file(injection);
+            assert!(error.contains(&format!("status={status} ")), "{error}");
+            state.hardware_presentation_failed(error);
+            assert_eq!(state.reception.snapshot(1)["state"], "recovering");
+            state.reception.lanes.get_mut(&1).unwrap().due = Instant::now();
+            state.ddc_retry_at = Some(Instant::now());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut iq = false;
+            let mut spectrum = false;
+            let mut audio = false;
+            loop {
+                let presentation = state.take_hardware_presentation(1).unwrap().unwrap().finish().unwrap();
+                iq |= presentation.frames.iter().any(|frame| frame.len() > 56);
+                spectrum |= !presentation.pan.is_empty();
+                multichannel::tag_iq(&mut state, presentation.frames);
+                audio |= !state.drain_receiver_frames().unwrap().audio.is_empty();
+                state.reception.next_check = None;
+                state.advance_reception_recovery();
+                assert!(state.receiver_failure.is_none(), "{:?}", state.receiver_failure);
+                if iq && spectrum && audio && state.reception.snapshot(1)["state"] == "receiving" { break; }
+                assert!(Instant::now() < deadline, "recaptured source did not resume IQ/display/audio: {}", state.reception.snapshot(1));
+                std::thread::sleep(Duration::from_millis(1));
             }
-        };
-        let _ = std::fs::remove_file(injection);
-        assert!(error.contains("status=-15 "), "{error}");
-        state.hardware_presentation_failed(error);
-        assert_eq!(state.reception.snapshot(1)["state"], "recovering");
-        state.reception.lanes.get_mut(&1).unwrap().due = Instant::now();
-        state.ddc_retry_at = Some(Instant::now());
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut iq = false;
-        let mut spectrum = false;
-        let mut audio = false;
-        loop {
-            let presentation = state.take_hardware_presentation(1).unwrap().unwrap().finish().unwrap();
-            iq |= presentation.frames.iter().any(|frame| frame.len() > 56);
-            spectrum |= !presentation.pan.is_empty();
-            multichannel::tag_iq(&mut state, presentation.frames);
-            audio |= !state.drain_receiver_frames().unwrap().audio.is_empty();
-            state.reception.next_check = None;
-            state.advance_reception_recovery();
-            assert!(state.receiver_failure.is_none(), "{:?}", state.receiver_failure);
-            if iq && spectrum && audio && state.reception.snapshot(1)["state"] == "receiving" { break; }
-            assert!(Instant::now() < deadline, "recaptured source did not resume IQ/display/audio: {}", state.reception.snapshot(1));
-            std::thread::sleep(Duration::from_millis(1));
+            assert_eq!(state.swp.mode, "sdr");
+            assert_ne!(state.pipeline.as_ref().unwrap().snapshot.epoch, epoch);
+            assert!(state.ddc_error.is_none());
+            assert_eq!(state.ddc_error_count, 1);
         }
-        assert_eq!(state.swp.mode, "sdr");
-        assert_ne!(state.pipeline.as_ref().unwrap().snapshot.epoch, epoch);
-        assert!(state.ddc_error.is_none());
-        assert_eq!(state.ddc_error_count, 1);
     }
     #[test]
     fn strict_device_and_internal_errors_do_not_auto_retry_or_forge_clocks() {
@@ -1001,6 +1008,9 @@ mod tests {
         );
         for status in -19..=-14 {
             assert_eq!(FaultKind::capture(&format!("SDK IQS next/FFT status={status} samples=0")), FaultKind::SourceGap);
+        }
+        for status in [-8, -9, -10] {
+            assert_eq!(FaultKind::capture(&format!("SDK IQS next/FFT status={status} samples=0; sustained capture stall requires a new stream epoch")), FaultKind::SourceGap);
         }
         for status in [-8, -9, -10, -103, -150] {
             assert_eq!(FaultKind::capture(&format!("SDK IQS next/FFT status={status} samples=0")), FaultKind::Device);
