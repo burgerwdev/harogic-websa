@@ -138,8 +138,11 @@ and runtime library requirements rather than assuming a development machine prov
 also removes dependencies and targets; committed diagnostic WASM remains. Never remove user
 recordings, logs needed for diagnosis or unrelated caches as incidental cleanup. Documentation
 covers current usage, interfaces, build procedures and maintenance constraints. Update both languages,
-check document links/structure, and remove superseded pages. Keep individual screenshots, logs and
-measurement reports in CI artifacts, release attachments or test directories outside the checkout.
+check document links/structure, and remove superseded pages. Keep the curated feature screenshots
+used by both READMEs in `screenshots/`. Keep other test screenshots, logs and measurement reports
+in CI artifacts, release attachments or test directories outside the checkout.
+`tools/e2e/readme_shots.py` captures paired UI languages from a prepared running service;
+review its `/tmp` output before replacing feature images. Label fixture/replay screenshots explicitly.
 Turn data needed for regression into documented `tests/fixtures/` inputs. Use Git for old documents
 and historical reports.
 

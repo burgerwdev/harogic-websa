@@ -115,7 +115,10 @@ python tools/bench/multichannel_rf.py --shim <matching-sdk-shim.so> \
 `make clean` 删除缓存／dist、保留依赖及 Rust target；`make clean-all` 还删除依赖和 target，
 保留已提交诊断 WASM。不能顺手删除用户录制、排障所需日志或无关缓存。
 文档只维护当前使用说明、接口、构建流程和维护约束。更新时同时修改双语，运行文档链接及结构检查，
-删除已被替代的页面。单次运行的截图、日志和测量报告放到 CI 产物、发布附件或仓库外的测试目录；
+删除已被替代的页面。两种语言 README 使用的主要功能截图保存在 `screenshots/`；
+其他测试截图、日志和测量报告放到 CI 产物、发布附件或仓库外的测试目录；
+`tools/e2e/readme_shots.py` 从准备好的运行实例截取中英文界面，先审阅 `/tmp` 产物再替换功能图。
+合成／回放截图须注明来源。
 需要长期回归的数据应提炼为有来源说明的 `tests/fixtures/` 样本。旧文档与历史报告通过 Git 查阅。
 
 ## 依赖与许可

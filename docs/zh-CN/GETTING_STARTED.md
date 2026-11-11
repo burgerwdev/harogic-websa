@@ -16,6 +16,8 @@ WebSA 运行于 Linux。仓库的 `runtime/` 包含 Linux x86_64/glibc 服务、
 `tests/fixtures/`。启动脚本依赖 Bash、coreutils、util-linux（`flock`）、`/proc` 和 curl。
 启动器及崩溃监护还需要 Python 3；运行捆绑版本不需要 Rust 或 Node。
 
+![HAROGIC SAN-90 分析仪](../../screenshots/harogic_san-90.jpg)
+
 ## 首次安装
 
 Linux x86_64 用户在 clone 后运行 `make setup`，统一构建当前前端／服务，准备原生降噪运行库，

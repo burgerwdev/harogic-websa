@@ -46,7 +46,7 @@ CSV 追加数值类型、质量、定义及完整测量 JSON，JSONL 保留相�
 这是局部背景估计，不是独立发射机功率的精密测量。同频信号不可分离；多数参考
 持续受污染、背景急剧弯曲以及接收滤波都可能造成偏差。质量提示不是误差上界。
 参见[固定提交的官方源码核对](FT8_SNR_REVIEW.md)、
-[验收条件](../../ft8-snr-acceptance.md)及
+[验收条件](FT8_SNR_ACCEPTANCE.md)及
 [验证数据](../../../tools/bench/ft8_snr_validation_v2.json)。
 
 ## RF 分析与限制
@@ -80,7 +80,7 @@ python3 tools/bench/compare_ft8_snr.py --reference-bin /tmp/wsjtx/usr/bin --outp
 载频偏移、纯噪声误报与解码时间预算。
 
 [FT8 验证记录](../../../tools/bench/ft8_snr_validation_v2.json)包含全部数值样例、
-误差统计、质量标记、解码率和性能结果。[验收规范](../../ft8-snr-acceptance.md)
+误差统计、质量标记、解码率和性能结果。[验收规范](FT8_SNR_ACCEPTANCE.md)
 定义数值及资源门槛。`tools/bench/ft8_snr_cost.py` 对预先编译的程序执行七轮
 交替串行测量，计时区间排除编译和其他测试；进程 CPU 包含相同的输入准备及测试框架。
 

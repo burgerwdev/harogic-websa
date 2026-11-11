@@ -12,7 +12,7 @@
   },
   "method": "Original IQ decoded-tone Hann power minus median-initialized, exponential-upper-tail-corrected pooled local noise; computed ENBW / 2500 Hz",
   "value_semantics": "Finite values are estimates, never report-clamped or substituted bounds; snrDb equals measurement.value. Good/degraded quality does not guarantee error bounds.",
-  "acceptance_document": "docs/ft8-snr-acceptance.md",
+  "acceptance_document": "docs/en/reference/FT8_SNR_ACCEPTANCE.md",
   "acceptance_passed": true,
   "calibration": {
     "known_codeword_is_not_a_sensitivity_test": true,

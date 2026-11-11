@@ -19,8 +19,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install SDK-free patch check dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl patch
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y curl patch
       - name: Shell syntax and pinned SoapyHarogic patch
         run: make soapy-check-patch
 
@@ -35,8 +35,8 @@ jobs:
       - &install-fdk
         name: Build and install FDK AAC 2.0.3
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake g++ git pkg-config libusb-1.0-0-dev ffmpeg
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y cmake g++ git pkg-config libusb-1.0-0-dev ffmpeg
           source_dir="$(mktemp -d)"
           trap 'rm -rf -- "$source_dir"' EXIT
           git -C "$source_dir" init

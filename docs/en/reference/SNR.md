@@ -56,7 +56,7 @@ This is a local background estimate, not a precision measurement of an isolated
 transmitter. Co-channel energy is inseparable; dense majority contamination,
 sharp PSD curvature and receiver filtering can bias it. A quality flag is not an
 error bound. See the [pinned official source review](FT8_SNR_REVIEW.md),
-[fixed acceptance conditions](../../ft8-snr-acceptance.md) and
+[fixed acceptance conditions](FT8_SNR_ACCEPTANCE.md) and
 [validation data](../../../tools/bench/ft8_snr_validation_v2.json).
 
 ## RF analysis and limitations
@@ -93,7 +93,7 @@ offsets, pure-noise rejection and the decoder timing budget.
 
 Numerical cases, error statistics, quality flags, decode rates and performance
 results are available in the [FT8 validation record](../../../tools/bench/ft8_snr_validation_v2.json).
-The [acceptance specification](../../ft8-snr-acceptance.md) defines numerical and
+The [acceptance specification](FT8_SNR_ACCEPTANCE.md) defines numerical and
 resource limits. `tools/bench/ft8_snr_cost.py` compares precompiled executables in
 seven alternating serial trials; compilation and other tests are excluded from
 the timed interval. Process CPU includes identical input/test setup.

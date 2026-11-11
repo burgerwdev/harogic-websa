@@ -44,6 +44,6 @@ Fake 模式只有独立基带回放，没有共同的 RF 采集 IQ，因此不�
 
 ## 验证
 
-`cargo test --release --manifest-path backend/Cargo.toml --bin websad` 与前端 Vitest 覆盖算法、命令、资源和选择状态。`tools/e2e/signal_scan.mjs` 和 `tools/bench-signal-scan.py` 需要显式设置 `WEBSA_SCAN_LIVE=1`，对已运行的实机服务执行浏览器闭环和 1/8/16 路测量；产物目录必须指定在仓库外。后者只在单信道基线上运行，创建带唯一标签的测试接收机，并在结束时清理测试录制和信道。
+`cargo test --release -j 1 --manifest-path backend/Cargo.toml --bin websad -- --test-threads=1` 与前端 Vitest 覆盖算法、命令、资源和选择状态。`tools/e2e/signal_scan.mjs` 和 `tools/bench-signal-scan.py` 需要显式设置 `WEBSA_SCAN_LIVE=1`，对已运行的实机服务执行浏览器闭环和 1/8/16 路测量；产物目录必须指定在仓库外。后者只在单信道基线上运行，创建带唯一标签的测试接收机，并在结束时清理测试录制和信道。
 
 `tools/verify-broadcast-scan.py` 是针对现场 9–10 MHz AM 与 100–107 MHz 广播 FM 的可选回归，需 `WEBSA_SCAN_LIVE=1`、单 Current 基线和仓库外 `--artifacts`。它临时调谐并恢复采集，检查多路发现、实际调制／导频证据和各三次独立选区完成；现场没有这些信号时应失败，不能作为通用 CI 或 RF 准确率结论。浏览器 gate 必须等到选区 `complete`，取消、失效或其他终态不能冒充识别完成。

@@ -59,6 +59,7 @@ mod configuration_transactions {
 
     #[test]
     fn owner_recovery_phase_noise_acquisition_failure_respects_retry_cooldown() {
+        let recovered_shim = compile_fake_pnm_shim();
         let source = FAKE_PNM_SHIM.replace("dev->i += 1;", "return -110;");
         let mut state = hardware_state(Some(compile_fake_swp_source("pnm_next_failure", &source)));
         state.swp.mode = "pnm".into();
@@ -67,7 +68,7 @@ mod configuration_transactions {
         assert!(state.pnm_hw.is_none() && !state.link_up);
         assert!(state.pnm_error.as_deref().unwrap().contains("-110"));
         assert!(state.pnm_retry_at.is_some(), "acquisition failures must throttle reopening as startup failures do");
-        state.hardware_shim = Some(compile_fake_pnm_shim());
+        state.hardware_shim = Some(recovered_shim);
         assert!(state.step_pnm().is_empty());
         assert!(state.pnm_hw.is_none());
         state.pnm_retry_at = None;

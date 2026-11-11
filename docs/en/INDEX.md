@@ -18,6 +18,7 @@
 |---|---|
 | Integrate HTTP and WebSocket clients | [API](reference/API.md) |
 | Manage receivers, presets and subscriptions | [Receivers](reference/RECEIVERS.md) |
+| Discover in-band signals, identify a region and start reception | [Scan and identify](reference/SIGNAL_SCAN.md) |
 | Record, read and export | [Recordings](reference/RECORDINGS.md) |
 | Change modes and parameter ownership | [State ownership](reference/STATE.md) |
 | Maintain DRM bench and AAC fixtures | [DRM](reference/DRM.md) |

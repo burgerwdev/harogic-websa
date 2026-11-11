@@ -9,7 +9,7 @@
 WebSA 由原生 Rust 采集／DSP 服务、连接 HAROGIC SDK 的 C++ 适配器及 TypeScript 浏览器界面组成。
 Python 用于崩溃监护、离线工具和测试。
 
-原生测量会报告带宽、方法和有效状态，详见[信噪比定义与可重复验证](docs/zh-CN/reference/SNR.md)。
+测量报告带宽、方法和有效状态，详见[信噪比定义与验证](docs/zh-CN/reference/SNR.md)。
 
 ## 主要功能
 
@@ -18,10 +18,25 @@ Python 用于崩溃监护、离线工具和测试。
 - AM／DSB／USB／LSB／CW／NFM／WFM／PM、FM 立体声／RDS、降噪、FT8、DRM／DRM+、
   SSTV 和无线电传真；可选外部 provider 扩展解码目录。
 - IQ、音频及解码结果录制，文件试听／导出，信道预设，中英文界面和明暗主题。
+- 带宽内信号发现、频谱／瀑布选区识别、临时试听及将结果加入已保存信道，详见[扫描与识别](docs/zh-CN/reference/SIGNAL_SCAN.md)。
 - 向外部 SDR 客户端提供独占 SoapySDRServer 接管。
 
 模式可用性取决于已安装 provider 和采集几何。十六路持续 RF 容量仍待验收；合成验证不构成硬件
 性能保证。详见[已知限制](docs/zh-CN/OPERATIONS.md)。
+
+## 功能截图
+
+| 实时频谱与瀑布 | 测量与标记 |
+|---|---|
+| ![实时频谱与瀑布](screenshots/waterfall_rta_zh.png) | ![幅度测量与峰值标记](screenshots/measure_amplitude_zh.png) |
+| 多信道接收与本地混听 | 信号发现与识别 |
+| ![信道总览](screenshots/sdr_channels_zh.png) | ![带宽内扫描与识别](screenshots/sdr_scan_zh.png) |
+| 录制、试听与导出 | 数字解码 |
+| ![录制库](screenshots/sdr_recordings_zh.png) | ![FT8 解码器](screenshots/sdr_ft8_zh.png) |
+| 浅色主题 | |
+| ![浅色主题频谱分析仪](screenshots/main_light_zh.png) | |
+
+解码和录制截图使用合成／回放 IQ，其余截图使用 SAN-90。
 
 ## 试用
 
@@ -71,6 +86,7 @@ make sdk-shim                  # 硬件适配器，需要厂商 SDK
 | 排查设备或服务问题 | [运行与排障](docs/zh-CN/OPERATIONS.md) |
 | 理解实现 | [架构](docs/zh-CN/ARCHITECTURE.md) |
 | 对接客户端 | [接口](docs/zh-CN/reference/API.md)、[接收机](docs/zh-CN/reference/RECEIVERS.md)、[录制](docs/zh-CN/reference/RECORDINGS.md) |
+| 发现信号与识别选定频段 | [扫描与识别](docs/zh-CN/reference/SIGNAL_SCAN.md) |
 | 安装外部 provider | [工具](tools/README.md) |
 
 `backend/` 负责服务及硬件边界，`dsp/` 负责共享信号处理内核，`frontend/` 负责浏览器交互，

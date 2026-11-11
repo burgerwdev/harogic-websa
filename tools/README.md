@@ -435,6 +435,12 @@ fractional IQ rates, and transitions between analog and codec modes. Capture
 cadence and combined trace/density/waterfall rendering have separate limits;
 a native 20-fps gate does not certify browser rendering or seamless playback.
 
+`e2e/readme_shots.py --only spectrum,measurements,waterfall` captures paired English/Chinese
+analyzer views from a running service. Prepare SDR receivers, scan results and recordings before
+using `--only channels,scan,recordings`; `--only decoder` requires decoded FT8 messages and can
+use a separate fixture service. The tool creates no RF signal or recording. Review its default
+`/tmp/websa-readme-shots` output before replacing the curated README images in `screenshots/`.
+
 The state-regression, viewport and native-IQ browser probes tear down browsers and contexts even after an exception. The system-Chromium screenshot path uses a unique temporary profile and log, terminates and reaps only its own process group, removes its temporary files, and restores monitor focus.
 
 ## RF transmit and capture

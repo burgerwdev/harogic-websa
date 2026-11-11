@@ -1,4 +1,4 @@
-import type { ScanSignal } from './sdrScan';
+import type { ScanSignal } from '../core/sdrScan';
 export type ScanSort = 'frequency' | 'width' | 'power' | 'activity' | 'type';
 export interface ScanFilters { query: string; type: string; status: string; source: string; minPower: string; sort: ScanSort; descending: boolean }
 export const defaultScanFilters = (): ScanFilters => ({ query: '', type: 'all', status: 'all', source: 'all', minPower: '', sort: 'frequency', descending: false });

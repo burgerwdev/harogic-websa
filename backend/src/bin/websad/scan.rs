@@ -743,6 +743,21 @@ mod tests {
         s.link_up=false;s.scan_tick();let r=request(&s,"clear","offline");assert!(s.scan_command(r).unwrap()["signals"].as_array().unwrap().is_empty());
     }
     #[test]
+    fn stopping_capture_retires_probe_before_finishing_formal_receivers(){
+        let mut s=state();s.remember_receiver_streams();
+        let engine=s.scan.as_ref().unwrap().clone();
+        {let mut d=engine.data.lock();let mut signal=Signal::new(1,100_090_000.0,100_100_000.0,"region");signal.activity="active".into();d.signals.push(signal);d.enqueue("s1",true).unwrap();}
+        s.scan_tick();assert!(s.scan_probe.is_some());
+        let registry=s.stream_registry();
+        let frames=s.ddc.as_mut().unwrap().0.step().unwrap();
+        assert!(frames.iter().any(|f|s.scan_probe.as_ref().unwrap().matches(f)));
+        s.pending_iq.extend(frames);
+        s.stop_pipeline().unwrap();
+        s.finish_radiofax_with_registry(registry).unwrap();
+        assert!(s.scan_probe.is_none());
+        assert!(s.receiver_failure.is_none());
+    }
+    #[test]
     fn full_definitions_wait_then_reuse_compatible_iq_and_retire_probe_before_create(){let mut s=state();s.remember_receiver_streams();
         let engine=s.scan.as_ref().unwrap().clone();{let mut d=engine.data.lock();let mut signal=Signal::new(1,100_090_000.0,100_100_000.0,"region");signal.activity="active".into();d.signals.push(signal);d.enqueue("s1",true).unwrap();}
         s.scan_tick();assert!(s.scan_probe.is_some());let slot=s.scan_probe.as_ref().unwrap().slot;assert!(s.receiver_uid_for_slot(slot).is_none());

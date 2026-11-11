@@ -9,7 +9,7 @@
 WebSA combines a native Rust acquisition/DSP service, a C++ adapter for the HAROGIC SDK,
 and a TypeScript browser interface. Python runs the crash monitor, offline tools and tests.
 
-Native measurements now report their bandwidth, method and validity; see [SNR definitions and reproducible validation](docs/en/reference/SNR.md).
+Measurements report their bandwidth, method and validity; see [SNR definitions and validation](docs/en/reference/SNR.md).
 
 ## What it does
 
@@ -22,11 +22,27 @@ Native measurements now report their bandwidth, method and validity; see [SNR de
   and radiofax; optional external decoder providers extend the mode catalog.
 - IQ, audio and decoded-result recording, saved-file playback/export, receiver presets,
   English/Chinese UI and light/dark themes.
+- In-band signal discovery, spectrum/waterfall region identification, temporary listening
+  and adding results to saved channels. See [Scan and identify](docs/en/reference/SIGNAL_SCAN.md).
 - Exclusive SoapySDRServer handoff for external SDR clients.
 
 Mode availability depends on installed providers and capture geometry. Sustained sixteen-channel
 RF capacity remains unqualified; synthetic validation is not a hardware performance guarantee.
 See [Known limitations](docs/en/OPERATIONS.md).
+
+## Feature screenshots
+
+| Real-time spectrum and waterfall | Measurements and markers |
+|---|---|
+| ![Real-time spectrum and waterfall](screenshots/waterfall_rta.png) | ![Amplitude measurements and peak markers](screenshots/measure_amplitude.png) |
+| Multichannel reception and local mixing | Signal discovery and identification |
+| ![Channel overview](screenshots/sdr_channels.png) | ![In-band scan and identify](screenshots/sdr_scan.png) |
+| Recordings, playback and export | Digital decoding |
+| ![Recording library](screenshots/sdr_recordings.png) | ![FT8 decoder](screenshots/sdr_ft8.png) |
+| Light theme | |
+| ![Spectrum analyzer in the light theme](screenshots/main_light.png) | |
+
+The decoder and recording screenshots use synthetic/replayed IQ. Other screenshots use a SAN-90.
 
 ## Try it
 
@@ -78,6 +94,7 @@ checks and packaging are in [Development](docs/en/DEVELOPMENT.md).
 | Troubleshoot a device or service | [Operations](docs/en/OPERATIONS.md) |
 | Understand the implementation | [Architecture](docs/en/ARCHITECTURE.md) |
 | Integrate another client | [API](docs/en/reference/API.md), [receivers](docs/en/reference/RECEIVERS.md), [recordings](docs/en/reference/RECORDINGS.md) |
+| Discover signals and identify selected bands | [Scan and identify](docs/en/reference/SIGNAL_SCAN.md) |
 | Install optional providers | [Tools](tools/README.md) |
 
 `backend/` owns the service and hardware boundary; `dsp/` owns shared signal-processing

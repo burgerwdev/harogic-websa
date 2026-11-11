@@ -1,338 +1,137 @@
 #!/usr/bin/env python3
-"""Capture the README screenshots on the bench (SAN-90 + signal sources).
+"""Capture paired English/Chinese feature screenshots from a prepared live service.
 
-The committed images under `screenshots/` can be reproduced with this script.
-New captures default to /tmp; review them before explicitly choosing --out screenshots.
+Build the current frontend and service first. Prepare tuning, saved receivers,
+scan results or recordings on the target instance before capturing. This tool
+changes the displayed mode but does not create receivers, recordings or RF signals.
+Decoder captures require a running FT8 receiver with decoded messages;
+the committed fixture may be replayed on a separate --fake instance.
 
-  * Analyzer-side shots (spectrum, markers, measurements, RTA/waterfall) need the analyzer
-    and a CW source on the tinySA (`--tinysa-port`; the level comes from the smoke test's
-    table).
-  * SDR shots (FT8 / CW decoding) need a PlutoSDR transmitting: start
-    `tools/pluto/pluto_ft8_tx.py --lo 411e6` or `tools/pluto/pluto_cw_tx.py --lo 411e6` first and pass
-    `--only sdr_ft8` / `--only sdr_cw`. The decode window fills over a few FT8 slots, so
-    those two wait longer than the rest.
+  python tools/e2e/readme_shots.py --only spectrum,measurements,waterfall
+  python tools/e2e/readme_shots.py --only channels,scan,recordings
+  python tools/e2e/readme_shots.py --url http://127.0.0.1:8099 --only decoder
 
-Usage:
-  python3 tools/e2e/readme_shots.py --tinysa-port /dev/ttyACM0
-  python3 tools/e2e/readme_shots.py --only sdr_ft8,sdr_cw      # Pluto already transmitting
+Output defaults to /tmp. Review before copying the curated images to screenshots/.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import sys
-import time
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
+from playwright.sync_api import expect, sync_playwright
+from viewport_baseline import wait_ui_ready
 
-from playwright.sync_api import sync_playwright  # noqa: E402
-
-CARRIER_HZ = 100.2e6                 # tinySA CW, the frequency the smoke test uses
-SPAN_HZ = 2e6
-PNM_HZ = 1e9                         # phase noise / harmonic source (a clean 1 GHz carrier)
-PNM_LEVEL_DBM = -30.0
-HARM_SPAN_HZ = 100e6                 # the widest per-harmonic sweep the panel offers
-SDR_HZ = 411e6                       # Pluto FT8/CW (tools/pluto/pluto_*_tx.py --lo 411e6)
-RTA_CENTER_HZ = 2.425e9               # RTA + waterfall: ambient WiFi / base stations (2.4G antenna)
-RTA_SPAN_HZ = 50.78125e6             # the widest RTA span the device offers (~50 MHz)
-VIEWPORT = {'width': 1380, 'height': 900}    # the size the committed shots use
-
-ANALYZER_SHOTS = ['main_dark', 'main_zh', 'main_light', 'marker_peaks',
-                  'measure_amplitude', 'measure_harmonic', 'measure_phasenoise',
-                  'waterfall_rta']
-SDR_SHOTS = ['sdr_ft8', 'sdr_cw']
+VIEWS = {
+    'spectrum': ('std', 'main'),
+    'measurements': ('std', 'measure_amplitude'),
+    'waterfall': ('rta', 'waterfall_rta'),
+    'channels': ('sdr', 'sdr_channels'),
+    'scan': ('sdr', 'sdr_scan'),
+    'recordings': ('sdr', 'sdr_recordings'),
+    'decoder': ('sdr', 'sdr_ft8'),
+}
 
 
-def post(url: str, payload: dict) -> dict:
-    request = urllib.request.Request(f'{url}/api/config', data=json.dumps(payload).encode(),
+def post(origin: str, payload: dict) -> dict:
+    request = urllib.request.Request(origin + '/api/config', json.dumps(payload).encode(),
                                      headers={'Content-Type': 'application/json'})
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.load(response)
 
 
-def painted_pixels(page) -> int:
-    return page.evaluate(
-        """() => {
-          const c = document.getElementById('spectrum');
-          const g = c.getContext('2d');
-          const d = g.getImageData(0, 0, c.width, c.height).data;
-          let n = 0;
-          for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
-          return n;
-        }""")
+def toggle(page, selector: str, on: bool, *, active: bool = False) -> None:
+    control = page.locator(selector)
+    state = (control.evaluate("el => el.classList.contains('active')") if active
+             else control.inner_text().strip().casefold() in {'on', '开'})
+    if state != on:
+        control.click()
 
 
-def set_theme(page, theme: str) -> None:
-    for _ in range(3):
-        if page.evaluate("document.documentElement.dataset.theme") == theme:
-            return
-        page.click('#btn-theme')
-        page.wait_for_timeout(400)
-    raise RuntimeError(f'the UI would not switch to the {theme} theme')
-
-
-def set_lang(page, lang: str) -> None:
-    expected = 'zh-CN' if lang == 'zh' else lang      # setLang() writes a full tag
-    for _ in range(3):
-        if page.evaluate("document.documentElement.lang") == expected:
-            return
-        page.click('#btn-lang')
-        page.wait_for_timeout(400)
-    raise RuntimeError(f'the UI would not switch to {lang}')
-
-
-def settle(page, ms: int = 2500, min_pixels: int = 5000) -> None:
-    """Wait out the render, and fail loudly on an empty canvas (a blank shot is worthless)."""
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        page.wait_for_timeout(ms)
-        if painted_pixels(page) > min_pixels:
-            return
-    raise RuntimeError('the spectrum canvas stayed empty')
-
-
-def set_source(source, hz: float, level_dbm: float) -> None:
-    """Point the tinySA CW source at `hz` / `level_dbm` (no-op without a source)."""
-    if source is None:
-        return
-    source.enable_cw(hz, 'normal')          # enables the output at the band's safe level
-    source.command(f'level {level_dbm:g}')
-    print(f'  source: {hz / 1e6:g} MHz at {level_dbm:g} dBm')
-
-
-def bind_sweep(page, url: str, hz: float = CARRIER_HZ) -> None:
-    """A clean swept view of the CW source: 2 MHz around it, signal framed."""
-    post(url, {'cmd': 'SET_MODE', 'mode': 'std'})
-    post(url, {'cmd': 'SET_FREQ', 'center': hz, 'span': SPAN_HZ})
-    post(url, {'cmd': 'SET_RBW', 'mode': 'auto'})
-    post(url, {'cmd': 'SET_POINTS', 'points': 1001})
-    page.wait_for_timeout(1200)
-    post(url, {'cmd': 'AUTO_SCALE', 'range_db': 100})
-    settle(page)
-
-
-def capture(page, out: Path, name: str) -> None:
-    path = out / f'{name}.png'
-    page.screenshot(path=str(path))
-    print(f'  {name}: {path.stat().st_size // 1024} KB')
-
-
-def button_on(page, button_id: str) -> bool:
-    """Read the visible toggle in either supported screenshot language."""
-    label = page.locator(f'#{button_id}').inner_text().strip().casefold()
-    states = {'on': True, '开': True, 'off': False, '关': False}
-    if label not in states:
-        raise RuntimeError(f'{button_id} has an unknown toggle label: {label!r}')
-    return states[label]
-
-
-def ensure_button(page, button_id: str, on: bool) -> None:
-    for _ in range(3):
-        if button_on(page, button_id) == on:
-            return
-        page.click(f'#{button_id}')
-        page.wait_for_timeout(600)
-    raise RuntimeError(f'{button_id} would not switch to {"On" if on else "Off"}')
-
-
-def ensure_active(page, selector: str, on: bool = True) -> None:
-    """Click a toggle that marks its state with the `active` class, only when needed."""
-    for _ in range(3):
-        is_on = page.evaluate(
-            f"() => document.querySelector('{selector}')?.classList.contains('active')")
-        if bool(is_on) == on:
-            return
-        page.click(selector)
-        page.wait_for_timeout(600)
-    raise RuntimeError(f'{selector} would not switch to {on}')
-
-
-def analyzer_shots(page, url: str, out: Path, names: list[str], source) -> None:
-    bind_sweep(page, url)
-    if 'main_dark' in names:
-        set_lang(page, 'en')
-        set_theme(page, 'dark')
-        settle(page)
-        capture(page, out, 'main_dark')
-    if 'main_zh' in names:
-        set_lang(page, 'zh')
-        settle(page)
-        capture(page, out, 'main_zh')
-    if 'main_light' in names:
-        set_theme(page, 'light')
-        set_lang(page, 'en')
-        settle(page)
-        capture(page, out, 'main_light')
-        set_theme(page, 'dark')
-
-    if 'marker_peaks' in names:
-        page.select_option('#select-trace-mode', 'MAX_HOLD')
-        page.select_option('#select-smooth', '1')      # unsmoothed: the raw trace reads best here
-        ensure_active(page, '#btn-markers-all')
-        ensure_active(page, '#btn-marker-tracking')
-        settle(page, 4000)
-        capture(page, out, 'marker_peaks')
-
-    if 'measure_amplitude' in names:
-        ensure_button(page, 'btn-meas-onoff', True)
-        ensure_button(page, 'btn-peaklist', True)
-        page.click('[data-action="peakthr-auto"]')
-        page.click('[data-meas-tab="amp"]')
-        settle(page, 3000)
-        capture(page, out, 'measure_amplitude')
-
-    # The differential measurements want a clean, strong carrier at 1 GHz: switch the source
-    # over (and the analyzer with it) before either of them runs.
-    if {'measure_harmonic', 'measure_phasenoise'} & set(names):
-        set_source(source, PNM_HZ, PNM_LEVEL_DBM)
-        bind_sweep(page, url, PNM_HZ)
-    if 'measure_harmonic' in names:
-        # The panel's apply functions return early unless the measurement is switched on.
-        ensure_button(page, 'btn-meas-onoff', True)
-        page.select_option('#select-smooth', '1')      # unsmoothed trace, as requested
-        page.click('[data-meas-tab="harm"]')
-        page.fill('#input-harm-f0', f'{PNM_HZ / 1e6:g}')
-        page.fill('#input-harm-count', '5')
-        page.select_option('#select-harm-span', str(int(HARM_SPAN_HZ)))
-        page.click('#btn-harm-set')
-        settle(page, 6000)
-        page.wait_for_timeout(10000)          # let the server walk H1..H5
-        capture(page, out, 'measure_harmonic')
-    if 'measure_phasenoise' in names:
-        ensure_button(page, 'btn-meas-onoff', True)
-        page.click('[data-meas-tab="pnm"]')
-        page.fill('#input-pnm', f'{PNM_HZ / 1e6:g}')
-        page.click('[data-action="meas-pnm"]')
-        settle(page, 12000)
-        page.wait_for_timeout(10000)
-        capture(page, out, 'measure_phasenoise')
-
-    if 'waterfall_rta' in names:
-        ensure_button(page, 'btn-meas-onoff', False)   # the panel would cover the plot
-        # Ambient signals (WiFi / base stations) around 2.425 GHz: a real wide-band view with no
-        # signal source attached. Connect a 2.4 GHz antenna to the analyzer before this shot.
-        post(url, {'cmd': 'SET_MODE', 'mode': 'std'})
-        post(url, {'cmd': 'SET_FREQ', 'center': RTA_CENTER_HZ, 'span': 10e6})
-        page.wait_for_timeout(1500)
-        page.click('#btn-mode-rta')
-        page.wait_for_timeout(2500)
-        page.fill('#input-rta-center', f'{RTA_CENTER_HZ / 1e6:g}')
-        page.select_option('#select-rta-span', str(int(RTA_SPAN_HZ)))
-        page.select_option('#select-rta-fade', '0.995')   # slowest fade: bursty signals accumulate
-        page.click('[data-action="apply-rta"]')
-        page.wait_for_timeout(2000)
-        ensure_active(page, '[data-action="toggle-waterfall"]')
-        settle(page, 2500)
-        page.wait_for_timeout(30000)                   # let the intermittent traffic build up
-        capture(page, out, 'waterfall_rta')
-
-
-def wait_decodes(page, mode: str, timeout_s: float, want: int) -> int:
-    """Wait until the decode window really holds content; raise when nothing arrives.
-
-    An empty floating window is worse than no screenshot, so the FT8 count and the CW log are
-    polled instead of guessed at with a fixed sleep.
-    """
-    deadline = time.monotonic() + timeout_s
-    count = 0
-    while True:
-        count = page.evaluate(
-            """(mode) => {
-              if (mode === 'cw') return document.querySelectorAll('#decode-window-cw .cw-line').length;
-              const c = document.getElementById('decode-window-count');
-              return c ? parseInt(c.textContent || '0', 10) || 0 : 0;
-            }""", mode)
-        if count >= want or time.monotonic() > deadline:
-            break
-        page.wait_for_timeout(2000)
-    if count < want:
-        raise RuntimeError(
-            f'the {mode} decode window has {count}/{want} requested decodes after {timeout_s:.0f}s; '
-            'is the signal source transmitting (tools/pluto/pluto_*_tx.py)?')
-    return count
-
-
-def sdr_shots(page, url: str, out: Path, names: list[str]) -> None:
-    ensure_active(page, '#btn-mode-sdr')
-    page.wait_for_timeout(2500)
-    # Tune through the operator controls and wait for the confirmed service state.
-    page.fill('#input-sdr-center', f'{SDR_HZ / 1e6:g}')
-    page.click('[data-action="apply-sdr"]')
-    page.wait_for_timeout(2000)
-    page.fill('#input-sdr-listen', f'{SDR_HZ / 1e6:g}')
-    page.click('[data-action="apply-sdr-tune"]')
-    page.wait_for_timeout(2000)
-    # The bench recipe for the decoders: a -40 dBm reference (it also sets the device's
-    # attenuation) with the trace averaged, so the channel sits well inside the window.
-    page.fill('#input-ref', '-40')
-    page.click('#btn-ref-set')
-    page.select_option('#select-trace-mode', 'AVERAGE')
-    page.select_option('#select-trace-avg', '16')
-    page.wait_for_timeout(2500)
-    # (name, demod, filter preset, decodes wanted before the shot, how long to keep waiting)
-    for name, mode, ifbw, want, wait_s in (('sdr_ft8', 'ft8', '3000', 2, 180),
-                                           ('sdr_cw', 'cw', '3000', 3, 90)):
-        if name not in names:
-            continue
-        page.click(f'[data-sdr-demod="{mode}"]')     # through the panel, like a user
-        page.wait_for_timeout(1500)
-        page.click(f'[data-sdr-ifbw="{ifbw}"]')      # the panel's Filter preset
-        page.wait_for_timeout(1500)
-        if not page.locator('#decode-window').is_visible():
-            page.click('#btn-decode-window')
-        settle(page, 3000)
-        count = wait_decodes(page, mode, wait_s, want)
-        window_text = page.evaluate(
-            """(mode) => mode === 'cw'
-              ? Array.from(document.querySelectorAll('#decode-window-cw .cw-line'))
-                  .map(e => e.textContent.replace(/\\s+/g, ' ').trim()).join(' | ')
-              : Array.from(document.querySelectorAll('#decode-window-rows tr'))
-                  .map(e => e.textContent.replace(/\\s+/g, ' ').trim()).join(' | ')""", mode)
-        print(f'  {name}: {count} decode(s): {window_text[:160]}')
-        page.wait_for_timeout(2000)
-        capture(page, out, name)
+def prepare(page, view: str, scan_type: str) -> None:
+    if view == 'measurements':
+        toggle(page, '#btn-markers-all', True, active=True)
+        toggle(page, '#btn-meas-onoff', True)
+        toggle(page, '#btn-peaklist', True)
+        page.locator('[data-meas-tab=amp]').click()
+    elif view == 'waterfall':
+        toggle(page, '[data-action=toggle-waterfall]', True, active=True)
+        page.wait_for_timeout(12000)
+    elif view == 'channels':
+        page.locator('[data-action=sdr-overview]').click()
+        expect(page.locator('.mc-overview-card').first).to_be_visible()
+        page.locator('[data-overview-layout]').select_option('2')
+        cards = page.locator('.mc-overview-card')
+        for index in range(min(3, cards.count())):
+            listen = cards.nth(index).locator('[data-action=listen]')
+            if listen.count() and listen.is_enabled() and listen.get_attribute('aria-pressed') != 'true':
+                listen.click()
+        if cards.count() >= 3:
+            cards.nth(1).locator('[data-card-pan]').click()
+            cards.nth(2).locator('[data-card-pan]').click(click_count=2, delay=150)
+    elif view == 'scan':
+        page.locator('#sdr-scan-toggle').click()
+        expect(page.locator('#sdr-scan-window tr[data-signal]').first).to_be_visible()
+        page.locator('[data-scan-type]').select_option(scan_type)
+        expect(page.locator('#sdr-scan-window tr[data-signal]').first).to_be_visible()
+    elif view == 'recordings':
+        page.locator('[data-action=sdr-workbench]').click()
+        page.locator('[data-view-id=overview-follow] [data-action=recording-files]').click()
+        page.locator('[data-view-id=overview-follow] [data-close]').click()
+        expect(page.locator('[data-view-id=recording-library]')).to_be_visible()
+        expect(page.locator('.mc-file').first).to_be_visible()
+    elif view == 'decoder':
+        page.locator('[data-action=sdr-workbench]').click()
+        workbench = page.locator('[data-view-id=overview-follow]')
+        row = workbench.locator('.mc-row', has_text='FT8').first
+        row.locator('.mc-row-more > summary').click()
+        row.locator('[data-action=results]').click()
+        workbench.locator('[data-close]').click()
+        expect(page.locator('.mc-message-table tbody tr').first).to_be_visible(timeout=45000)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', default='http://127.0.0.1:8080')
-    parser.add_argument('--out', default='/tmp/websa-readme-shots')
-    parser.add_argument('--tinysa-port', default='')
-    parser.add_argument('--only', default='', help='comma-separated shot names (default: all)')
+    parser.add_argument('--out', type=Path, default=Path('/tmp/websa-readme-shots'))
+    parser.add_argument('--chromium', help='optional system Chromium executable')
+    parser.add_argument('--scan-type', default='all', choices=['all', 'am', 'fm', 'digital', 'carrier', 'unknown'])
+    parser.add_argument('--only', required=True, help='comma-separated: ' + ','.join(VIEWS))
     args = parser.parse_args()
-
-    names = [n.strip() for n in args.only.split(',') if n.strip()] or ANALYZER_SHOTS + SDR_SHOTS
-    unknown = set(names) - set(ANALYZER_SHOTS + SDR_SHOTS)
-    if unknown:
-        parser.error(f'unknown screenshot names: {sorted(unknown)}')
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-
-    source = None
-    try:
-        if args.tinysa_port and set(names) & set(ANALYZER_SHOTS):
-            from tools.bench.hardware_smoke import TinySaSource
-
-            source = TinySaSource(args.tinysa_port)
-            identification = source.identify().splitlines()
-            print('tinySA:', identification[1] if len(identification) > 1 else '?')
-            set_source(source, CARRIER_HZ, -25.0)
-        with sync_playwright() as p:
-            browser = p.chromium.launch(args=['--autoplay-policy=no-user-gesture-required'])
-            page = browser.new_page(viewport=VIEWPORT)
-            page.goto(f'{args.url}/', wait_until='networkidle')
-            page.wait_for_timeout(3000)
-            if set(names) & set(ANALYZER_SHOTS):
-                analyzer_shots(page, args.url, out, names, source)
-            if set(names) & set(SDR_SHOTS):
-                sdr_shots(page, args.url, out, names)
-            browser.close()
-    finally:
-        if source is not None:
-            source.close(disable_output=True)
+    views = args.only.split(',')
+    if set(views) - VIEWS.keys():
+        parser.error('unknown view')
+    args.out.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as playwright, closing(playwright.chromium.launch(executable_path=args.chromium)) as browser:
+        for view in views:
+            mode, name = VIEWS[view]
+            post(args.url, {'cmd': 'SET_MODE', 'mode': mode})
+            for lang in ['en', 'zh']:
+                with closing(browser.new_context(viewport={'width': 1600, 'height': 1000})) as context:
+                    context.add_init_script(f"""localStorage.setItem('web-sa-lang', '{lang}');
+                        localStorage.setItem('web-sa-theme', 'dark');
+                        localStorage.setItem('web-sa-ui-scale', '1');""")
+                    page = context.new_page()
+                    errors: list[str] = []
+                    page.on('pageerror', lambda error, errors=errors: errors.append(str(error)))
+                    page.goto(args.url, wait_until='domcontentloaded')
+                    wait_ui_ready(page, mode)
+                    page.evaluate('() => document.fonts.ready')
+                    prepare(page, view, args.scan_type)
+                    page.wait_for_timeout(1800)
+                    suffix = '_zh' if lang == 'zh' else ''
+                    target = ('main_zh' if lang == 'zh' else 'main_dark') if view == 'spectrum' else name + suffix
+                    page.mouse.move(1580, 980)
+                    page.screenshot(path=str(args.out / f'{target}.png'))
+                    if view == 'spectrum':
+                        page.locator('#btn-theme').click()
+                        page.wait_for_timeout(600)
+                        page.screenshot(path=str(args.out / f'main_light{suffix}.png'))
+                    if errors:
+                        raise RuntimeError(errors)
+                    print(target, flush=True)
     return 0
 
 

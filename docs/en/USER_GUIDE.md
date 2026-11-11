@@ -23,6 +23,22 @@ the overview in the page. Text editors keep their normal keys; holding these sho
 Click a spectrum channel label to tune Current exactly to that frequency. Labels stack to
 avoid overlap; **●L**, **●R**, and **●IQ** show listening, audio recording and IQ recording.
 
+## Scan and identify
+
+In SDR, click the framed **i** beside Channels. **Start** discovers signals inside the current
+capture; **Pause** stops continuous observations. **Select region** lets you drag a frequency
+band on the spectrum or waterfall and identify it once without starting a continuous scan.
+It analyzes live IQ even on a frozen plot. Esc cancels selection.
+
+Each result offers **Listen** for a temporary preview and **Add** to retain a receiver.
+Auto uses the suggested mode; an explicit Listen / Add mode changes reception without changing
+the identification. IQ-only has no audio. Stop or hide ends the preview; Add keeps its receiver.
+The default exclusive preview mutes other local speaker routes while their reception and recordings
+continue. Search, type/status filters and column sorting affect the list only. Clearing results
+keeps saved channels. More settings contains fixed-frequency power windows and automatic identification.
+Labels describe modulation evidence; they are not guaranteed protocol identifications.
+See [Scan reference](reference/SIGNAL_SCAN.md) for resource limits, validity and API details.
+
 ## Channels and listening
 
 Channels opens the shared workbench. Current permanently reserves one of sixteen slots,

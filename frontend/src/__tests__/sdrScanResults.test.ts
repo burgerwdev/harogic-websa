@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defaultScanFilters, scanResults } from '../ui/sdrScanResults';
-import type { ScanSignal } from '../ui/sdrScan';
+import type { ScanSignal } from '../core/sdrScan';
 const row = (id: string, hz: number, label: string, excess: number, extra = {}): ScanSignal => ({ id, center_hz: hz, label, excess_db: excess, bandwidth_hz: 12000, source: 'scan', activity: 'active', identify_state: 'complete', observed_hit_ratio: 1, protocol: null, ...extra } as ScanSignal);
 const rows = [row('a', 9.4e6, 'AM-like', 15), row('b', 101.7e6, 'FM stereo pilot', 30, { bandwidth_hz: 180000 }), row('c', 9.8e6, 'unknown', 6, { identify_state: 'waiting' }), row('d', 9.5e6, 'AM-like', 15, { activity: 'stale' })];
 describe('scan result search and sorting', () => {

@@ -18,6 +18,8 @@ included. Fixture mode needs no analyzer or SDK, but uses this checkout's `tests
 Bash, coreutils, util-linux (`flock`), `/proc`, curl and Python 3 support the launcher and
 its crash monitor. Rust and Node are unnecessary for running the bundle.
 
+![HAROGIC SAN-90 analyzer](../../screenshots/harogic_san-90.jpg)
+
 ## First-time setup
 
 On Linux x86_64, run `make setup` after cloning to build the current frontend/service,

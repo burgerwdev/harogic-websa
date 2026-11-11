@@ -215,6 +215,8 @@ impl DevState {
         Ok(())
     }
     pub(super) fn stop_pipeline(&mut self) -> Result<(), String> {
+        // Probe IQ has no formal receiver; drain it before finalizing receiver tails.
+        self.retire_scan_probe()?;
         self.remember_capture_parameters();
         if let Some(mut pipeline) = self.pipeline.take() {
             let output = pipeline.stop()?;
