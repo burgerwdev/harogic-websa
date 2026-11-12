@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_audio import configure
 from native_multichannel_audio import download as download_audio
@@ -173,7 +174,7 @@ def browser_gate(origin, snapshot, artifacts):
         name.press('Home'); name.press('Shift+ArrowRight'); name.evaluate('e=>window.keptName=e')
         child.wait_for_timeout(1200)
         assert name.evaluate('e=>e===window.keptName&&e.selectionStart===0&&e.selectionEnd===1')
-        page.locator('#btn-lang').click(); page.locator('#btn-theme').click()
+        page.locator('#btn-lang').click(); toggle_theme(page)
         expect(child.locator('html')).to_have_attribute('lang', 'zh-CN')
         expect(child.locator('html')).to_have_attribute('data-theme', 'light')
         assert compact.locator('.mc-body').evaluate('e=>e.scrollWidth-e.clientWidth') == 0
@@ -182,7 +183,7 @@ def browser_gate(origin, snapshot, artifacts):
         with child.expect_event('close'):
             child.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
         expect(view.locator('[name=name]')).to_have_value('Daily AM edited')
-        page.locator('#btn-lang').click(); page.locator('#btn-theme').click()
+        page.locator('#btn-lang').click(); toggle_theme(page)
         submit_settings()
         am = next(r for r in api(origin)['receivers'] if r['receiver_uid'] == uid)
         assert am['confirmed']['name'] == 'Daily AM edited'

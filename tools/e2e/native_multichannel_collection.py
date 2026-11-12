@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_archive import expected_range
 from native_multichannel_processing import assert_receivers_continue
@@ -126,7 +127,7 @@ def browser_gate(origin, saved, root, output, python):
         child.evaluate('document.fonts.ready')
         compact = child.locator('[data-view-id=iq-recording]')
         page.locator('#btn-lang').click(); expect(child.locator('html')).to_have_attribute('lang', 'zh-CN')
-        page.locator('#btn-theme').click(); expect(child.locator('html')).to_have_attribute('data-theme', 'light')
+        toggle_theme(page); expect(child.locator('html')).to_have_attribute('data-theme', 'light')
         expect(compact.locator('[data-download-collection]')).to_have_text('全部片段（2）')
         with child.expect_download() as download:
             compact.locator('[data-download-collection]').click(delay=1100)

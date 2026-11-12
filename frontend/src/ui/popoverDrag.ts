@@ -5,16 +5,24 @@
 // rows — re-renders touch text content, never the popover's position. The Close
 // button inside the head stays an ordinary click.
 
+import { bindWindowOpacity } from './windowOpacity';
+
 const DRAG_POPovers = ['gnss-popover', 'refclk-popover', 'device-popover'];
 
 export function enablePopoverDrag(popoverId: string): void {
   const pop = document.getElementById(popoverId);
   const head = pop?.querySelector('.gnss-popover-head') as HTMLElement | null;
   if (!pop || !head) return;
+  if (!head.querySelector('.window-opacity')) {
+    const slider = document.createElement('input');
+    slider.className = 'window-opacity';
+    head.insertBefore(slider, head.querySelector('button'));
+    bindWindowOpacity(pop, slider);
+  }
   head.style.cursor = 'move';
   let stopDrag: (() => void) | null = null;
   head.addEventListener('pointerdown', (ev: PointerEvent) => {
-    if (ev.button !== 0 || stopDrag || (ev.target as HTMLElement).closest('button')) return;
+    if (ev.button !== 0 || stopDrag || (ev.target as HTMLElement).closest('button,input,select,label,[data-no-drag]')) return;
     ev.preventDefault();
     // offsetLeft/offsetTop are relative to the positioned .info-item ancestor, which is
     // also what the stylesheet's top/left anchor against — so dragging just adds deltas.

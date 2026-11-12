@@ -1,16 +1,20 @@
+import './workbenchIcons.css';
+
 const paths: Record<string, string> = {
   minus: '<path d="M5 12h14"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   expand: '<path d="M9 3H3v6m0-6 7 7m5 11h6v-6m0 6-7-7"/>',
   dock: '<path d="M4 4h16v16H4zM14 7v7H7m7 0-5-5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  'chevron-left': '<path d="m15 5-7 7 7 7"/>',
+  'chevron-right': '<path d="m9 5 7 7-7 7"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
   volume: '<path d="m11 5-6 4H2v6h3l6 4zM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
   headphones: '<path d="M4 14v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="12" width="4" height="9" rx="2"/><rect x="17" y="12" width="4" height="9" rx="2"/>',
   muted: '<path d="m11 5-6 4H2v6h3l6 4zM16 9l6 6m0-6-6 6"/>',
   signal: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   record: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
-  'record-iq': '<rect x="2" y="4" width="20" height="16" rx="3"/><text x="12" y="15.5" text-anchor="middle" font-family="monospace" font-size="10" font-weight="600" fill="currentColor" stroke="none">IQ</text>',
+  'record-iq': '<rect x="2" y="4" width="20" height="16" rx="3"/><path d="M5 8h4m-2 0v8m-2 0h4m7-3 4 4"/><ellipse cx="15.5" cy="12" rx="3" ry="4"/>',
   external: '<path d="M14 3h7v7m0-7-11 11m0-11H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/>',
   play: '<path d="m8 4 12 8-12 8z"/>',
   stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',

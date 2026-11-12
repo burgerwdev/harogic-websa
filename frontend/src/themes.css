@@ -1,0 +1,361 @@
+/* Shared instrument tokens. Each theme keeps the established layout and UI scale.
+   Preview cards use the same tokens as the application, including canvas colours. */
+:root[data-theme], [data-theme-preview] {
+  --theme-scheme: light;
+  --theme-radius: 3px;
+  --theme-surface-shadow: none;
+  --theme-control-shadow: none;
+  --theme-pressed-shadow: none;
+  --ui-font: system-ui, -apple-system, 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  --head-bg: var(--panel-2);
+  --separator: var(--inner-border);
+  --input-border: var(--card-border);
+  --label: var(--text);
+  --sub: var(--label);
+  --table-bg: var(--input-bg);
+  --table-head: var(--head-bg);
+  --table-cell: var(--text);
+  --table-cell-dim: var(--label);
+  --select-arrow: var(--label);
+  --muted: var(--label);
+  --sa-bg: var(--input-bg);
+  --sa-text: var(--label);
+  --sa-marker: var(--sa-marker1);
+  --sa-marker-fill: var(--sa-marker1);
+  --sa-dim: var(--sa-marker2);
+  --sa-peak: var(--sa-trace3);
+  --sa-harm: var(--sa-trace4);
+  --sa-pnm: var(--sa-trace1);
+  --sa-cross: var(--sa-marker1);
+  --sa-ref: var(--sa-trace1);
+  --sa-norm: var(--sa-marker2);
+  --sa-warning: var(--dot-off);
+  --sa-rta: var(--sa-trace1);
+  --sa-label-bg: var(--panel);
+  --sa-label-border: var(--input-border);
+  --sa-osd-stroke: var(--sa-bg);
+  --sa-osd-fill: var(--text);
+  --sa-passband: rgba(25, 120, 180, .16);
+  --sa-passband-edge: var(--sa-trace1);
+  --sa-passband-outline: var(--sa-bg);
+  --sa-hover-passband: rgba(175, 75, 160, .15);
+  --sa-hover-passband-edge: var(--sa-trace4);
+  --t1: var(--sa-trace1); --t1-bg: color-mix(in srgb, var(--t1) 14%, var(--panel));
+  --t2: var(--sa-trace2); --t2-bg: color-mix(in srgb, var(--t2) 14%, var(--panel));
+  --t3: var(--sa-trace3); --t3-bg: color-mix(in srgb, var(--t3) 14%, var(--panel));
+  --t4: var(--sa-trace4); --t4-bg: color-mix(in srgb, var(--t4) 14%, var(--panel));
+  --m1: var(--sa-marker1); --m1-bg: color-mix(in srgb, var(--m1) 14%, var(--panel));
+  --m2: var(--sa-marker2); --m2-bg: color-mix(in srgb, var(--m2) 14%, var(--panel));
+  --m3: var(--sa-marker3); --m3-bg: color-mix(in srgb, var(--m3) 14%, var(--panel));
+  --m4: var(--sa-marker4); --m4-bg: color-mix(in srgb, var(--m4) 14%, var(--panel));
+  color-scheme: var(--theme-scheme);
+}
+
+/* ============ 主题变量 ============ */
+:root, :root[data-theme="dark"], [data-theme-preview="dark"] {
+  --theme-scheme: dark;
+  --theme-radius: 2px;
+  --ui-font: 'LXGW WenKai', '霞鹜文楷', 'Noto Sans CJK SC', 'Noto Sans CJK', 'Source Han Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'WenQuanYi Zen Hei', sans-serif;
+  /* UI */
+  --bg: #121212;
+  --panel: #1a1a1a;
+  --panel-2: #111;
+  --head-bg: #0d1f0d;
+  --card-border: #005500;
+  --inner-border: #003300;
+  --input-bg: #000;
+  --input-border: #00aa00;
+  --text: #00ff00;
+  --label: #00cc00;
+  --sub: #006600;
+  --separator: #005500;
+  --btn-bg: #2a2a2a;
+  --btn-hover: #005500;
+  --btn-active: #006600;
+  --dot-on: #00ff00;
+  --dot-off: #ff4444;
+  --table-bg: #000;
+  --table-head: #052205;
+  --table-cell: #00cc00;
+  --table-cell-dim: #336633;
+  --select-arrow: #00aa00;
+  /* canvas */
+  --sa-bg: #000;
+  --sa-grid: #1e3a24;
+  --sa-axis: #4d8a5a;
+  --sa-text: #7fd19a;
+  --sa-band: rgba(60, 140, 90, 0.10);
+  --sa-trace1: #00ff00;
+  --sa-trace2: #ffff00;
+  --sa-trace3: #00ffff;
+  --sa-trace4: #ff00ff;
+  --sa-marker1: #ff4444;
+  --sa-marker2: #ffd700;
+  --sa-marker3: #1e90ff;
+  --sa-marker4: #ffffff;
+  --sa-marker: #ff4d4d;
+  --sa-marker-fill: #ff4d4d;
+  --sa-dim: #ffa04d;
+  --sa-peak: #00bbff;
+  --sa-harm: #0088ff;
+  --sa-pnm: #00ff88;
+  --sa-cross: #ff8b5e;
+  --sa-ref: #00ff00;
+  --sa-norm: #ffd75e;
+  --sa-warning: #ff4d4d;
+  --sa-rta: #00ff88;
+  --sa-passband: rgba(0, 255, 160, 0.24);
+  --sa-passband-edge: rgba(224, 242, 234, 0.8);
+  --sa-passband-outline: rgba(0, 0, 0, 0.45);
+  --sa-hover-passband: rgba(232, 121, 249, 0.24);
+  --sa-hover-passband-edge: #f0abfc;
+  --sa-label-bg: rgba(0, 0, 0, 0.7);
+  --sa-label-border: #00aa66;
+  --sa-osd-stroke: rgba(0, 0, 0, 0.9);
+  --sa-osd-fill: #00ff00;
+  /* trace/marker 按钮色 */
+  --t1: #00ff00; --t1-bg: #003300;
+  --t2: #ffff00; --t2-bg: #333300;
+  --t3: #00ffff; --t3-bg: #003333;
+  --t4: #ff00ff; --t4-bg: #330033;
+  --m1: #ff4444; --m1-bg: #331111;
+  --m2: #ffd700; --m2-bg: #332211;
+  --m3: #1e90ff; --m3-bg: #111933;
+  --m4: #ffffff; --m4-bg: #333333;
+}
+
+/* light 主题: 浅色背景 + 高对比度 marker/迹线 */
+:root[data-theme="light"], [data-theme-preview="light"] {
+  --theme-scheme: light;
+  --theme-radius: 2px;
+  --ui-font: 'LXGW WenKai', '霞鹜文楷', 'Noto Sans CJK SC', 'Noto Sans CJK', 'Source Han Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'WenQuanYi Zen Hei', sans-serif;
+  --bg: #eef1ee;
+  --panel: #ffffff;
+  --panel-2: #f5f8f5;
+  --head-bg: #e4ece4;
+  --card-border: #9dbb9d;
+  --inner-border: #c8dcc8;
+  --input-bg: #ffffff;
+  --input-border: #4a8a4a;
+  --text: #1a5a1a;
+  --label: #2a6a2a;
+  --sub: #6a8a6a;
+  --separator: #b8c8b8;
+  --btn-bg: #e8f0e8;
+  --btn-hover: #c8e0c8;
+  --btn-active: #b0d8b0;
+  --dot-on: #1a9a1a;
+  --dot-off: #d33;
+  --table-bg: #ffffff;
+  --table-head: #e4ece4;
+  --table-cell: #1a5a1a;
+  --table-cell-dim: #7a9a7a;
+  --select-arrow: #2a6a2a;
+  /* canvas: 浅底 + 深色高对比描线 */
+  --sa-bg: #fbfdfb;
+  --sa-grid: #d8e6d8;
+  --sa-axis: #5a8a5a;
+  --sa-text: #2a5a2a;
+  --sa-band: rgba(60, 140, 90, 0.08);
+  --sa-trace1: #0d7a2e;
+  --sa-trace2: #8a6a00;
+  --sa-trace3: #0050c8;
+  --sa-trace4: #c04000;
+  --sa-marker1: #c00000;
+  --sa-marker2: #9a6a00;
+  --sa-marker3: #0050c8;
+  --sa-marker4: #333333;
+  --sa-marker: #d00000;
+  --sa-marker-fill: #d00000;
+  --sa-dim: #b06000;
+  --sa-peak: #0050c8;
+  --sa-harm: #0050c8;
+  --sa-pnm: #0d7a2e;
+  --sa-cross: #c04000;
+  --sa-ref: #0d7a2e;
+  --sa-norm: #9a6a00;
+  --sa-warning: #c00000;
+  --sa-rta: #0d7a2e;
+  --sa-passband: rgba(13, 122, 46, 0.24);
+  --sa-passband-edge: rgba(35, 62, 46, 0.8);
+  --sa-passband-outline: rgba(255, 255, 255, 0.6);
+  --sa-hover-passband: rgba(162, 28, 175, 0.20);
+  --sa-hover-passband-edge: #86198f;
+  --sa-label-bg: rgba(255, 255, 255, 0.88);
+  --sa-label-border: #b0c4b0;
+  --sa-osd-stroke: rgba(255, 255, 255, 0.9);
+  --sa-osd-fill: #1a5a1a;
+  --t1: #0d7a2e; --t1-bg: #d8f0d8;
+  --t2: #8a6a00; --t2-bg: #f4e8c0;
+  --t3: #0050c8; --t3-bg: #d8e4f4;
+  --t4: #c04000; --t4-bg: #f4e0d8;
+  --m1: #d00000; --m1-bg: #f8d8d8;
+  --m2: #b8860b; --m2-bg: #f4ecc8;
+  --m3: #0050c8; --m3-bg: #d8e0f4;
+  --m4: #333333; --m4-bg: #e0e0e0;
+}
+
+/* Frosted blue surfaces, small highlights and an opaque plotting surface. */
+:root[data-theme="liquid-glass"], [data-theme-preview="liquid-glass"] {
+  --bg: #e8ebf0; --panel: #f7f8fb; --panel-2: #f0f2f6;
+  --head-bg: #f3f5f8; --card-border: #cbd0da; --inner-border: #d5d9e2;
+  --input-bg: #fbfcfe; --input-border: #b4bac7;
+  --text: #1c1c1e; --label: #50525a; --sub: #656873;
+  --btn-bg: #f0f2f6; --btn-hover: #e4e9f0; --btn-active: #d4e5fc;
+  --dot-on: #187a4b; --dot-off: #c4314b;
+  --sa-grid: #e2e6ee; --sa-axis: #686f7d; --sa-band: rgba(0, 122, 255, .06);
+  --sa-trace1: #006fdf; --sa-trace2: #966700; --sa-trace3: #007a6a; --sa-trace4: #8950b9;
+  --sa-marker1: #c4314b; --sa-marker2: #926600; --sa-marker3: #006fdf; --sa-marker4: #535965;
+  --theme-radius: 6px;
+  --theme-surface-shadow: inset 0 1px 0 #ffffffd9, 0 3px 12px #214e7312;
+  --theme-control-shadow: inset 0 1px 0 #ffffffeb, 0 1px 3px #1d4c7314;
+  --theme-pressed-shadow: inset 0 1px 3px #2b60832e;
+  --theme-workspace-bg: radial-gradient(ellipse at 80% 0%, #bee0ee 0%, transparent 55%), radial-gradient(ellipse at 15% 90%, #d4d0f0 0%, transparent 55%), #e1eef7;
+}
+
+/* The same glass optics over a dark neutral canvas and a subdued night scene. */
+:root[data-theme="liquid-glass-dark"], [data-theme-preview="liquid-glass-dark"] {
+  --theme-scheme: dark;
+  --bg: #10131d; --panel: #1b1e28; --panel-2: #151924;
+  --head-bg: #202530; --card-border: #383f4e; --inner-border: #303746;
+  --input-bg: #0d121c; --input-border: #515969;
+  --text: #f1f2f6; --label: #b7bdca; --sub: #a2abbd;
+  --btn-bg: #282d39; --btn-hover: #333a49; --btn-active: #283f5c;
+  --dot-on: #6adb9b; --dot-off: #ff8391;
+  --sa-grid: #242c3a; --sa-axis: #8c97aa; --sa-band: rgba(103, 176, 255, .08);
+  --sa-trace1: #67b0ff; --sa-trace2: #e2c074; --sa-trace3: #72d5c2; --sa-trace4: #c39ff3;
+  --sa-marker1: #ff8391; --sa-marker2: #e2c074; --sa-marker3: #67b0ff; --sa-marker4: #e4e7ee;
+  --sa-passband: rgba(103, 176, 255, .18);
+  --sa-hover-passband: rgba(195, 159, 243, .16);
+}
+
+/* Crisp neutral surfaces; coral is reserved for active controls and traces. */
+:root[data-theme="minimalist-flat"], [data-theme-preview="minimalist-flat"] {
+  --bg: #f6f6f6; --panel: #fff; --panel-2: #f7f7f8;
+  --head-bg: #f0f0f2; --card-border: #bbbcc4; --inner-border: #dddde3;
+  --input-bg: #fff; --input-border: #94959e;
+  --text: #202126; --label: #53545e; --sub: #61626d;
+  --btn-bg: #fff; --btn-hover: #ededf0; --btn-active: #fce2e9;
+  --dot-on: #167858; --dot-off: #c52a4d;
+  --sa-grid: #e7e7eb; --sa-axis: #62636f; --sa-band: rgba(38, 38, 45, .04);
+  --sa-trace1: #c62d58; --sa-trace2: #906100; --sa-trace3: #167b76; --sa-trace4: #5353bd;
+  --sa-marker1: #be284f; --sa-marker2: #906100; --sa-marker3: #225bb2; --sa-marker4: #27272d;
+  --theme-radius: 0px;
+}
+
+/* Restrained relief: the original small controls retain clear boundaries. */
+:root[data-theme="neumorphism"], [data-theme-preview="neumorphism"] {
+  --bg: #e0e5ec; --panel: #e0e5ec; --panel-2: #e0e5ec;
+  --head-bg: #e0e5ec; --card-border: #b8c3d2; --inner-border: #c3cbd7;
+  --input-bg: #e7ecf3; --input-border: #a5b0c3;
+  --text: #303c54; --label: #515e76; --sub: #5e6b81;
+  --btn-bg: #e0e5ec; --btn-hover: #e9edf4; --btn-active: #d3daea;
+  --dot-on: #25745d; --dot-off: #b13251;
+  --sa-grid: #cdd5e0; --sa-axis: #5d6b82; --sa-band: rgba(92, 74, 182, .07);
+  --sa-trace1: #6250b9; --sa-trace2: #926000; --sa-trace3: #187974; --sa-trace4: #b14167;
+  --sa-marker1: #b33355; --sa-marker2: #8b6200; --sa-marker3: #2862af; --sa-marker4: #3d4960;
+  --theme-radius: 5px;
+  --theme-surface-shadow: 3px 3px 7px #b9c1ce, -3px -3px 7px #ffffffb3;
+  --theme-control-shadow: 2px 2px 4px #bec6d2, -2px -2px 4px #ffffffb3;
+  --theme-pressed-shadow: inset 2px 2px 4px #b9c3d2, inset -2px -2px 4px #ffffff9e;
+}
+
+/* Navy armour, olive dividing rules and amber equipment labels. */
+:root[data-theme="mecha"], [data-theme-preview="mecha"] {
+  --theme-scheme: dark;
+  --bg: #101824; --panel: #1a2740; --panel-2: #152033;
+  --head-bg: #26344a; --card-border: #667152; --inner-border: #38475b;
+  --input-bg: #101a29; --input-border: #7b8766;
+  --text: #e8e8d6; --label: #c2c7b3; --sub: #a4b09d;
+  --btn-bg: #283549; --btn-hover: #3b4653; --btn-active: #505038;
+  --dot-on: #a6dc72; --dot-off: #ff7971;
+  --sa-grid: #293848; --sa-axis: #9aa88c; --sa-band: rgba(160, 178, 108, .08);
+  --sa-trace1: #efc45d; --sa-trace2: #a6dc72; --sa-trace3: #7ecbea; --sa-trace4: #e99e80;
+  --sa-marker1: #ff7971; --sa-marker2: #efc45d; --sa-marker3: #7ecbea; --sa-marker4: #e8e8d6;
+  --sa-passband: rgba(239, 196, 93, .16);
+  --theme-radius: 0px; --theme-surface-shadow: 2px 2px 0 #080e18;
+  --ui-font: ui-monospace, 'SFMono-Regular', Consolas, 'Noto Sans CJK SC', monospace;
+}
+
+/* NES/JRPG: deep purple, pixel-blue equipment and gold selection cues. */
+:root[data-theme="pixel-anime"], [data-theme-preview="pixel-anime"] {
+  --theme-scheme: dark;
+  --bg: #211548; --panel: #251950; --panel-2: #1d1341;
+  --head-bg: #342363; --card-border: #649bdb; --inner-border: #493871;
+  --input-bg: #160e34; --input-border: #688ec1;
+  --text: #efe8ff; --label: #c6bce6; --sub: #b1a4d3;
+  --btn-bg: #30245c; --btn-hover: #403270; --btn-active: #3d316d;
+  --dot-on: #7be4a8; --dot-off: #ff9099;
+  --sa-grid: #342551; --sa-axis: #a499ce; --sa-band: rgba(118, 185, 255, .08);
+  --sa-trace1: #76b9ff; --sa-trace2: #ffd93d; --sa-trace3: #7be4a8; --sa-trace4: #ff9099;
+  --sa-marker1: #ff9099; --sa-marker2: #ffd93d; --sa-marker3: #76b9ff; --sa-marker4: #efe8ff;
+  --sa-passband: rgba(118, 185, 255, .18);
+  --theme-radius: 0px; --theme-surface-shadow: 2px 2px 0 #100925;
+  --theme-control-shadow: 1px 1px 0 #100925;
+  --theme-pressed-shadow: inset 1px 1px 0 #100925;
+  --ui-font: ui-monospace, 'SFMono-Regular', Consolas, 'Noto Sans CJK SC', monospace;
+}
+
+/* Fine cyan reticles. Glow stays at the edges, away from live data. */
+:root[data-theme="sci-fi-hud"], [data-theme-preview="sci-fi-hud"] {
+  --theme-scheme: dark;
+  --bg: #040c16; --panel: #091927; --panel-2: #06131f;
+  --head-bg: #0c2535; --card-border: #247086; --inner-border: #163c50;
+  --input-bg: #030e19; --input-border: #348ca1;
+  --text: #c3eff5; --label: #78c7d6; --sub: #74adbd;
+  --btn-bg: #0d293a; --btn-hover: #153b4e; --btn-active: #1b4e5f;
+  --dot-on: #6fe0b8; --dot-off: #ff8d9b;
+  --sa-grid: #113144; --sa-axis: #64abba; --sa-band: rgba(49, 172, 202, .07);
+  --sa-trace1: #5de0ed; --sa-trace2: #e8cf78; --sa-trace3: #7db5ff; --sa-trace4: #ce9dff;
+  --sa-marker1: #ff8d9b; --sa-marker2: #e8cf78; --sa-marker3: #7db5ff; --sa-marker4: #d4f5f8;
+  --sa-passband: rgba(93, 224, 237, .16);
+  --theme-radius: 0px; --theme-surface-shadow: inset 0 0 12px #38b7d00a, 0 0 6px #38b7d012;
+  --ui-font: ui-monospace, 'SFMono-Regular', Consolas, 'Noto Sans CJK SC', monospace;
+}
+
+/* The early web: plain rules, native typography and blue actions. */
+:root[data-theme="brutalist-web"], [data-theme-preview="brutalist-web"] {
+  --bg: #fff; --panel: #fff; --panel-2: #fff;
+  --head-bg: #f0f0f0; --card-border: #444; --inner-border: #b3b3b3;
+  --input-bg: #fff; --input-border: #666;
+  --text: #111; --label: #333; --sub: #555;
+  --btn-bg: #eee; --btn-hover: #ddd; --btn-active: #dfe8ff;
+  --dot-on: #008000; --dot-off: #c00;
+  --sa-grid: #ddd; --sa-axis: #555; --sa-band: rgba(0, 0, 255, .04);
+  --sa-trace1: #0000cc; --sa-trace2: #876000; --sa-trace3: #008000; --sa-trace4: #a00080;
+  --sa-marker1: #c00; --sa-marker2: #876000; --sa-marker3: #0000cc; --sa-marker4: #111;
+  --theme-radius: 0px;
+  --ui-font: ui-monospace, 'Courier New', 'Noto Sans CJK SC', monospace;
+}
+
+/* Night-blue surfaces, pink signage and cyan data, without animated effects. */
+:root[data-theme="neon-tokyo"], [data-theme-preview="neon-tokyo"] {
+  --theme-scheme: dark;
+  --bg: #0b0917; --panel: #161125; --panel-2: #100d1e;
+  --head-bg: #24152e; --card-border: #78436d; --inner-border: #3b2547;
+  --input-bg: #0c0a18; --input-border: #975078;
+  --text: #f2dff0; --label: #d5a5c9; --sub: #b69ac6;
+  --btn-bg: #2a1933; --btn-hover: #3b2144; --btn-active: #4d2350;
+  --dot-on: #67dbbd; --dot-off: #ff829f;
+  --sa-grid: #2c193a; --sa-axis: #b48bc1; --sa-band: rgba(217, 75, 174, .07);
+  --sa-trace1: #ff78c5; --sa-trace2: #ffc078; --sa-trace3: #66dfec; --sa-trace4: #b99aff;
+  --sa-marker1: #ff829f; --sa-marker2: #ffc078; --sa-marker3: #66dfec; --sa-marker4: #e9dfff;
+  --sa-passband: rgba(255, 120, 197, .16);
+  --theme-radius: 3px; --theme-surface-shadow: 0 0 8px #e23d9a14, inset 0 1px 0 #eb6aba1c;
+  --theme-workspace-bg: linear-gradient(145deg, #101027, #1c1025 70%, #0b1220);
+}
+
+/* Warm paper and ink. Trace and marker levels remain distinct in grayscale. */
+:root[data-theme="e-ink"], [data-theme-preview="e-ink"] {
+  --bg: #efede4; --panel: #f5f3ea; --panel-2: #edeae0;
+  --head-bg: #e5e2d8; --card-border: #93938b; --inner-border: #c4c2b7;
+  --input-bg: #faf8f0; --input-border: #85867d;
+  --text: #20211e; --label: #53554d; --sub: #62645a;
+  --btn-bg: #f5f3ea; --btn-hover: #e1dfd4; --btn-active: #d5d3c7;
+  --dot-on: #30332c; --dot-off: #50534a;
+  --sa-grid: #d7d5c9; --sa-axis: #66695f; --sa-band: rgba(32, 33, 30, .05);
+  --sa-trace1: #20211e; --sa-trace2: #62645b; --sa-trace3: #41433c; --sa-trace4: #797b70;
+  --sa-marker1: #20211e; --sa-marker2: #62645b; --sa-marker3: #41433c; --sa-marker4: #797b70;
+  --sa-passband: rgba(32, 33, 30, .13); --sa-hover-passband: rgba(85, 87, 80, .12);
+  --theme-radius: 0px;
+}

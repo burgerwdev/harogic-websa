@@ -1,0 +1,130 @@
+/* A single regular-glass control plane, following Apple's material hierarchy.
+   Separate transmission, specular rim and shadow, as in rdev/liquid-glass-react
+   and 9und30/glassy-liquid. Keep shadows off the SVG backdrop-filter surface:
+   Chromium can otherwise offset the sampled backdrop by the shadow overflow.
+   https://github.com/rdev/liquid-glass-react
+   https://github.com/9und30/glassy-liquid */
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]), :is([data-theme-preview="liquid-glass"], [data-theme-preview="liquid-glass-dark"]) {
+  --ui-font: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, 'Noto Sans CJK SC', sans-serif;
+  --theme-radius: 999px; --theme-field-radius: 6px; --theme-surface-radius: 22px;
+  --theme-surface-border-width: 0px;
+  --liquid-scene: url('/themes/liquid-field.svg');
+  --theme-workspace-bg: var(--liquid-scene) center / cover no-repeat;
+  --theme-surface-bg: linear-gradient(135deg, #ffffff80, #ffffff38 52%, #edf2ff66);
+  --theme-head-bg: transparent;
+  --theme-button-bg: #ffffff66;
+  --theme-control-shadow: inset 0 .5px 0 #ffffffb3, 0 .5px 1.5px #181e2e12;
+  --theme-field-bg: #5058690d;
+  --theme-field-shadow: inset 0 .5px 1px #252a3814;
+  --theme-surface-shadow: 0 16px 36px -12px #17213a38, 0 2px 8px -2px #17213a24, inset 0 1px 1px #fffffff2, inset 1px 0 2px #ffffff80, inset 0 -1px 2px #1d263224;
+  --theme-pressed-shadow: inset 0 1px 2px #252a3821;
+  --theme-active-bg: #007aff24; --theme-active-text: #005ec9;
+  --liquid-outline: #ffffffa6; --liquid-bar-outline: #ffffff80;
+  --liquid-divider: #303a4d12; --liquid-heading: #4b4e58;
+  --liquid-field-outline: #ffffff66; --liquid-button-outline: #ffffff33;
+  --liquid-button-press: #ffffffb3; --liquid-button-hover: #ffffff4d;
+  --liquid-dialog-tint: #f2f4f980; --liquid-popup-tint: #f2f4f966;
+  --liquid-solid: #f7f8fb;
+  --window-material-tint: var(--liquid-popup-tint);
+  --liquid-saturation: 1.5; --liquid-bloom: #ffffff66; --liquid-reflection: #ffffff38;
+  --liquid-rim-bright: #ffffffd9; --liquid-rim-faint: #ffffff14;
+  --liquid-rim-cool: #a4b1c338; --liquid-rim-soft: #ffffffa6;
+  --liquid-rim-dark: #252d3b14; --liquid-rim-quiet: #ffffff0d; --liquid-rim-end: #fff;
+}
+/* Dark glass keeps the same construction, with subdued highlights and cool ink. */
+:root[data-theme="liquid-glass-dark"], [data-theme-preview="liquid-glass-dark"] {
+  --liquid-scene: url('/themes/liquid-field-dark.svg');
+  --theme-workspace-bg: var(--liquid-scene) center / cover no-repeat;
+  --theme-surface-bg: linear-gradient(135deg, #292f3d99, #171c2980 52%, #262e406b);
+  --theme-button-bg: #ffffff0d;
+  --theme-control-shadow: inset 0 .5px 0 #ffffff1a, 0 .5px 1.5px #00000029;
+  --theme-field-bg: #ffffff0b;
+  --theme-field-shadow: inset 0 .5px 1px #0000004d;
+  --theme-surface-shadow: 0 16px 36px -12px #00000099, 0 2px 8px -2px #00000066, inset 0 1px 1px #e2eeff59, inset 1px 0 2px #cfddff1f, inset 0 -1px 2px #00000066;
+  --theme-pressed-shadow: inset 0 1px 2px #0000004d;
+  --theme-active-bg: #409cff2e; --theme-active-text: #9bc8ff;
+  --liquid-outline: #d8e8ff26; --liquid-bar-outline: #d8e8ff1f;
+  --liquid-divider: #c6d5f012; --liquid-heading: #c5cbd8;
+  --liquid-field-outline: #ffffff0f; --liquid-button-outline: #ffffff0a;
+  --liquid-button-press: #ffffff1a; --liquid-button-hover: #ffffff14;
+  --liquid-dialog-tint: #1b1f2cb3; --liquid-popup-tint: #161b2680;
+  --liquid-solid: #1b1e28;
+  --liquid-saturation: 1.35; --liquid-bloom: #d9eaff12; --liquid-reflection: #e2eeff0d;
+  --liquid-rim-bright: #d8e8ff66; --liquid-rim-faint: #e4ebff05;
+  --liquid-rim-cool: #8ca5d326; --liquid-rim-soft: #d6e5ff4d;
+  --liquid-rim-dark: #00000066; --liquid-rim-quiet: #e4ebff08; --liquid-rim-end: #edf5ff99;
+}
+.liquid-glass-defs { position: fixed; inset: 0 auto auto 0; pointer-events: none; }
+/* The glass belongs to the stationary frame. Pseudo-elements on the scrolling
+   control panel would move its one-viewport rim/shadow through the controls. */
+.control-panel-surface { display: contents; }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .control-panel-surface {
+  display: flex; flex-direction: column; flex: 0 0 var(--panel-w); min-width: 0; min-height: 0;
+  position: relative; padding: 4px; box-sizing: border-box;
+  border: 1px solid var(--liquid-outline); border-radius: 22px;
+  background: var(--theme-surface-bg); box-shadow: var(--theme-surface-shadow);
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .control-panel {
+  flex: 1 1 0; gap: 2px; padding: 0; border-radius: 18px;
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]).ui-stacked :is(.control-panel-surface, .control-panel) { flex: 0 0 auto; }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .control-panel-surface:has(> .panel-hidden) { display: none; }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .control-group {
+  background: transparent; border: 0; border-radius: 0; box-shadow: none;
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .control-group:not(:last-child) { border-bottom: 1px solid var(--liquid-divider); }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .group-head { background: transparent; border: 0; }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .group-title { color: var(--liquid-heading); font-weight: 600; letter-spacing: -.01em; }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.info-bar, .dev-bar) {
+  position: relative; border-color: var(--liquid-bar-outline); border-radius: 14px;
+  background: var(--theme-surface-bg); box-shadow: var(--theme-surface-shadow);
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .liquid-panel {
+  isolation: isolate; box-shadow: none;
+  border-color: var(--liquid-outline);
+  backdrop-filter: blur(var(--liquid-frost, 18px)) saturate(var(--liquid-saturation)) var(--liquid-refraction, blur(0px));
+}
+/* Broad transmitted light + very fine grain give the frost body, while the
+   paired inset highlights/shade make its rounded edge read as thick glass. */
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .liquid-panel::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+  background: radial-gradient(ellipse at var(--liquid-light-x, 15%) var(--liquid-light-y, 0%), var(--liquid-bloom), transparent 65%),
+    linear-gradient(155deg, var(--liquid-reflection), transparent 35%, transparent 65%, var(--liquid-reflection)),
+    url('/themes/glass-grain.svg');
+  box-shadow: var(--theme-surface-shadow);
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .liquid-panel::before {
+  content: ''; position: absolute; inset: 0; box-sizing: border-box; border-radius: inherit;
+  padding: 1.5px; pointer-events: none;
+  background: conic-gradient(from var(--liquid-light-angle, -40deg), var(--liquid-rim-bright), var(--liquid-rim-faint) 22%, var(--liquid-rim-cool) 38%, var(--liquid-rim-soft) 48%, var(--liquid-rim-dark) 60%, var(--liquid-rim-quiet) 78%, var(--liquid-rim-end) 98%);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.param-row input, .param-row select) { border-color: var(--liquid-field-outline); }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.btn, .unit-btn, .gh-toggle, .keypad-key, .theme-picker-close, .mc-body button) {
+  position: relative; isolation: isolate; background: transparent; border-color: transparent; box-shadow: none;
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.btn, .unit-btn, .gh-toggle, .keypad-key, .theme-picker-close, .mc-body button)::before {
+  content: ''; position: absolute; inset: -1px; z-index: -1; pointer-events: none;
+  border: 1px solid var(--liquid-button-outline); border-radius: inherit;
+  background: var(--theme-button-bg); box-shadow: var(--theme-control-shadow);
+  transition: transform 420ms cubic-bezier(.2, 1.7, .4, 1), box-shadow 160ms ease;
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.btn, .unit-btn, .gh-toggle, .keypad-key, .theme-picker-close, .mc-body button):active:not(:disabled)::before {
+  transform: scale(1.035, .95); background: var(--liquid-button-press); box-shadow: var(--theme-pressed-shadow); transition-duration: 90ms;
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.btn.active, .unit-btn.active, .mc-body button[aria-pressed="true"]) {
+  background: var(--theme-active-bg); color: var(--theme-active-text); border-color: transparent;
+}
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.btn, .unit-btn):hover:not(:disabled, .active) { background: var(--liquid-button-hover); filter: none; }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .theme-picker { background-color: var(--liquid-dialog-tint); }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.mc-window, .gnss-popover, .decode-window) { background-color: var(--liquid-popup-tint); }
+:root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .surface-popup-body { background: var(--theme-workspace-bg); }
+.theme-sample:is([data-theme-preview="liquid-glass"], [data-theme-preview="liquid-glass-dark"]) { border: 1px solid var(--liquid-button-press); background: var(--theme-surface-bg), var(--liquid-scene) 80% 50% / cover; }
+@media (prefers-reduced-motion: reduce) {
+  :root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.btn, .unit-btn, .gh-toggle, .keypad-key, .theme-picker-close, .mc-body button)::before { transition: none; transform: none; }
+  :root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) :is(.btn, .unit-btn, .gh-toggle, .keypad-key, .theme-picker-close, .mc-body button):active:not(:disabled)::before { transition: none; transform: none; }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root:is([data-theme="liquid-glass"], [data-theme="liquid-glass-dark"]) .liquid-panel { background: var(--liquid-solid); backdrop-filter: none; }
+}

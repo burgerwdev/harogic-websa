@@ -1,0 +1,14 @@
+.window-opacity {
+  flex: 0 1 64px; width: 64px; min-width: 40px; max-width: 64px;
+  height: 14px; margin: 0 2px; padding: 0; border: 0;
+  accent-color: var(--text); cursor: pointer; touch-action: auto;
+}
+.window-opacity:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.gnss-popover-head > span:first-child { flex: 1; }
+/* Intrinsic material transparency must also reach the opaque endpoint. The
+   fill grows continuously with the global control, including glass themes. */
+[data-window-opacity] {
+  background-color: color-mix(in srgb, var(--window-material-tint, var(--panel)), var(--panel) var(--window-solid-fill)) !important;
+}
+[data-window-opacity="opaque"] { background-color: var(--panel) !important; backdrop-filter: none !important; }
+.mc-channel-window.mc-collapsed .mc-head > .window-opacity { grid-column: 1; grid-row: 2; width: 56px; }

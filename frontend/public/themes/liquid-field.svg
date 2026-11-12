@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200">
+  <defs>
+    <linearGradient id="ambient" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#edf0f6"/><stop offset=".6" stop-color="#d5dbea"/><stop offset="1" stop-color="#e4e1ed"/></linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#b3c9ec" stop-opacity=".4"/><stop offset=".5" stop-color="#a4b8db" stop-opacity=".8"/><stop offset="1" stop-color="#e1e6f6" stop-opacity=".5"/></linearGradient>
+    <radialGradient id="warm"><stop stop-color="#f8e9e5" stop-opacity=".9"/><stop offset="1" stop-color="#f8e9e5" stop-opacity="0"/></radialGradient>
+    <filter id="soft"><feGaussianBlur stdDeviation="28"/></filter>
+  </defs>
+  <path fill="url(#ambient)" d="M0 0h1600v1200H0z"/>
+  <g filter="url(#soft)">
+    <path fill="url(#blue)" d="M900-100c-180 240 420 330 220 660S930 890 1200 1300h500V-100z"/>
+    <path fill="#f5f8ff" fill-opacity=".65" d="M1060-100c-200 200 410 400 160 700s-100 460 160 700c-370-180-300-460-130-710s-420-420-190-690z"/>
+    <ellipse fill="url(#warm)" cx="1420" cy="190" rx="430" ry="390"/>
+  </g>
+</svg>

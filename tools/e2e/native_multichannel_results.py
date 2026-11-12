@@ -23,6 +23,7 @@ import urllib.request
 import zlib
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_processing import setup
 from native_multichannel_recording import finish, task, until
@@ -210,7 +211,7 @@ def browser_gate(origin, artifacts):
         link = shell.locator(f'[data-task-id="{recording}"] .mc-results-download')
         expect(link).to_be_visible()
         page.locator('#btn-lang').click(); expect(popup.locator('html')).to_have_attribute('lang', 'zh-CN')
-        page.locator('#btn-theme').click(); expect(popup.locator('html')).to_have_attribute('data-theme', 'light')
+        toggle_theme(page); expect(popup.locator('html')).to_have_attribute('data-theme', 'light')
         with popup.expect_download() as info:
             link.click()
         downloaded = artifacts / 'browser-results.tar'; info.value.save_as(downloaded)

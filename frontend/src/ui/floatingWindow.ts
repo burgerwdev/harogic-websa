@@ -3,6 +3,7 @@ import { getLang } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { createSurfacePortal, type SurfacePortal } from './surfacePortal';
 import { applyFloatingGeometry, clampFloatingGeometry, type Geometry } from './floatingGeometry';
+import { bindWindowOpacity } from './windowOpacity';
 
 export interface FloatingLayout { geometry: Geometry; hidden: boolean; collapsed: boolean }
 export interface FloatingWindow {
@@ -19,7 +20,8 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
   const doc = document, parent = window;
   const root = doc.createElement('section'); root.className = 'mc-window'; root.dataset.viewId = id;
   root.setAttribute('role', 'dialog'); root.tabIndex = -1;
-  root.innerHTML = '<header class="mc-head"><strong></strong><div class="mc-window-actions"><button data-collapse>−</button><button data-pop>Pop out</button><button data-dock hidden>Dock</button><button data-close>×</button></div></header><p data-popup-error role="alert" hidden></p><div class="mc-body"></div>';
+  root.innerHTML = '<header class="mc-head"><strong></strong><input class="window-opacity" type="range"><div class="mc-window-actions"><button data-collapse>−</button><button data-pop>Pop out</button><button data-dock hidden>Dock</button><button data-close>×</button></div></header><p data-popup-error role="alert" hidden></p><div class="mc-body"></div>';
+  const unbindOpacity = bindWindowOpacity(root, root.querySelector<HTMLInputElement>('.window-opacity')!);
   const head = root.querySelector<HTMLElement>('.mc-head')!, body = root.querySelector<HTMLElement>('.mc-body')!;
   const key = `websa-workbench-layout:${id}`;
   let temporaryCollapsed = false;
@@ -144,5 +146,5 @@ export function createFloatingWindow(id: string, title: () => string, initial: G
     setCollapsed: collapsed => { layout.collapsed = collapsed; apply(); save(); },
     setDockHandler: handler => { const changed = !!dockHandler !== !!handler; dockHandler = handler; if (changed) apply(); },
     recall: (reset = false) => { portal.dock(); if (reset) { layout.geometry = { ...initial }; layout.collapsed = false; } show(); },
-    dispose: () => { observer?.disconnect(); if (resizeFrame !== null) parent.cancelAnimationFrame(resizeFrame); portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
+    dispose: () => { unbindOpacity(); observer?.disconnect(); if (resizeFrame !== null) parent.cancelAnimationFrame(resizeFrame); portal.dispose(); parent.removeEventListener('resize', resize); root.remove(); } };
 }

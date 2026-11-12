@@ -39,3 +39,11 @@ it('keeps a detail-popover drag owned by the initiating pointer', () => {
   pointer(window, 'pointermove', 50);
   expect(popover.style.left).toBe('30px');
 });
+
+it('lets the opacity slider move without dragging the detail popover', () => {
+  const slider = document.querySelector<HTMLInputElement>('.window-opacity')!;
+  const popover = document.getElementById('device-popover')!;
+  pointer(slider, 'pointerdown', 20);
+  pointer(window, 'pointermove', 90);
+  expect(popover.style.left).toBe('');
+});

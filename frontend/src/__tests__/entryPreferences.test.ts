@@ -23,6 +23,12 @@ vi.mock('../audio/sdrAudio', () => ({ sampleEnvelope: vi.fn(), sampleSpectrum: v
 
 beforeEach(() => {
   vi.resetModules(); vi.useFakeTimers();
+  localStorage.clear();
+  // jsdom does not implement native dialog methods; browser tests cover focus and dismissal.
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
+    close: { configurable: true, value(this: HTMLDialogElement) { this.open = false; } },
+  });
   document.body.innerHTML = '<button id="btn-theme"></button><button id="btn-lang"></button>';
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); document.body.replaceChildren(); });
@@ -44,10 +50,20 @@ it('finishes theme and language actions when preference storage is full', async 
   vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
   try {
     document.querySelector<HTMLButtonElement>('#btn-theme')!.click();
+    document.querySelector<HTMLButtonElement>('[data-theme-choice="light"]')!.click();
     document.querySelector<HTMLButtonElement>('#btn-lang')!.click();
     expect(errors).toEqual([]);
     expect(document.documentElement.dataset.theme).toBe('light');
     expect(document.documentElement.lang).toBe('zh-CN');
     expect(document.querySelector('#btn-lang')!.textContent).toBe('中文');
   } finally { window.removeEventListener('error', failed); }
+});
+
+it('restores a saved style and keeps its name translated after changing language', async () => {
+  localStorage.setItem('web-sa-theme', 'neon-tokyo');
+  await import('../main');
+  expect(document.documentElement.dataset.theme).toBe('neon-tokyo');
+  expect(document.querySelector('#btn-theme')!.textContent).toBe('Neon');
+  document.querySelector<HTMLButtonElement>('#btn-lang')!.click();
+  expect(document.querySelector('#btn-theme')!.textContent).toBe('霓虹');
 });

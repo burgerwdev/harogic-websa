@@ -8,6 +8,7 @@ import json
 import urllib.request
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from playwright.sync_api import expect, sync_playwright
 from rust_iq_browser import free_port, post, start_service, stop
 from viewport_baseline import wait_async_condition, wait_ui_ready
@@ -337,7 +338,7 @@ def browser_gate(origin, artifacts):
         assert page.evaluate(stripe, "waterfall") == baseline["waterfall"], (
             "Hover must erase from paused history"
         )
-        page.locator("#btn-theme").click()
+        toggle_theme(page)
         page.mouse.move(5, 5)
         page.wait_for_timeout(150)
         light_baseline = page.evaluate(stripe, "waterfall")
@@ -349,7 +350,7 @@ def browser_gate(origin, artifacts):
         page.mouse.move(5, 5)
         page.wait_for_timeout(150)
         assert page.evaluate(stripe, "waterfall") == light_baseline
-        page.locator("#btn-theme").click()
+        toggle_theme(page)
         spectrum = page.locator("#spectrum").bounding_box()
         page.mouse.move(box["x"] + box["width"] * 0.35, spectrum["y"] + spectrum["height"] * 0.5)
         page.wait_for_timeout(150)

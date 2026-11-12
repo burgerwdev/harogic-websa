@@ -1,0 +1,3 @@
+/* Icons have an intrinsic box in every context, including docked views and
+   controls shown before the floating-workbench stylesheet has loaded. */
+.mc-icon { display:inline-block; width:16px; height:16px; flex:0 0 auto; vertical-align:middle; }

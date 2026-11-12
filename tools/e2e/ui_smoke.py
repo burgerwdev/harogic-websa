@@ -18,6 +18,7 @@ from contextlib import ExitStack
 
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent.parent.parent))
 
+from browser_preferences import toggle_theme
 from playwright.sync_api import sync_playwright  # noqa: E402
 from rust_iq_browser import free_port, start_service, stop  # noqa: E402
 from viewport_baseline import wait_ui_ready  # noqa: E402
@@ -321,9 +322,9 @@ def main() -> int:
         }""")
         # Repaint cached label layers once after installing the probe. Restore the
         # original theme; later hover/offset frames can reuse these observed pixels.
-        js_click(page, '#btn-theme')
+        toggle_theme(page)
         page.wait_for_function('window.offsetCanvasSample.labels.length > 1')
-        js_click(page, '#btn-theme')
+        toggle_theme(page)
         box = page.locator('#spectrum').bounding_box()
         page.mouse.move(box['x'] + box['width'] * 0.5, box['y'] + box['height'] * 0.5)
         page.wait_for_function('window.offsetCanvasSample.points.length > 0')

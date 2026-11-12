@@ -15,6 +15,7 @@ import { createFloatingWindow, type FloatingWindow } from './floatingWindow';
 import type { WorkbenchSession } from './workbenchSession';
 import { beginIdentifySelection, highlightIdentifyBand, identifySelecting, initIdentifySelection, setIdentifySource, type IdentifyRequest } from './sdrIdentifySelection';
 import { currentGraphMode } from './graphMode';
+import { isKeypadOpen } from './keypad';
 import type { ScanSignal, ScanSnapshot } from '../core/sdrScan';
 import { ScanUpdates } from './sdrScanUpdates';
 
@@ -59,7 +60,8 @@ function updateToggle(): void {
   const visible = mounted?.visible() ?? false;
   button.setAttribute('aria-label', l('Scan / Identify', '扫描／识别')); button.setAttribute('aria-pressed', String(visible)); button.setAttribute('aria-expanded', String(visible));
   button.dataset.running = String(summary?.running === true);
-  button.title = `${l('Scan / Identify', '扫描 / 识别')} · ${summary ? text(summary.state) : l('Status unknown', '状态待核实')}`;
+  button.title = `${l('Scan / Identify', '扫描 / 识别')} (S) · ${summary ? text(summary.state) : l('Status unknown', '状态待核实')}`;
+  button.setAttribute('aria-keyshortcuts', 'S');
 }
 export function acceptScanStatus(status: { connected?: boolean; mode?: string; sdr?: { scan?: typeof summary } }): void {
   summary = status.connected && status.mode === 'sdr' ? status.sdr?.scan ?? null : null;
@@ -72,9 +74,24 @@ async function ensure(): Promise<ReturnType<typeof mount> | null> {
   opening = (async () => { const session = await (await import('./nativeWorkbench')).nativeWorkbenchSession(); return session ? mounted = mount(session) : null; })();
   try { return await opening; } finally { opening = null; }
 }
+export function toggleSdrScan(): void {
+  void ensure().then(view => view?.toggle()).catch(showError);
+}
+function scanShortcut(event: KeyboardEvent): void {
+  if (event.key.toLowerCase() !== 's' || event.defaultPrevented || event.ctrlKey || event.altKey
+      || event.metaKey || event.shiftKey || event.isComposing || currentGraphMode() !== 'sdr' || isKeypadOpen()) return;
+  const doc = (event.target as Node)?.ownerDocument ?? document;
+  const focused = doc.activeElement;
+  if (doc.hidden || focused?.closest('input,select,textarea,[contenteditable]:not([contenteditable="false"]),.keypad,#zoom-overview-box')) return;
+  const dialog = focused?.closest('dialog,[role="dialog"]');
+  if (dialog && dialog.id !== 'sdr-scan-window') return;
+  event.preventDefault();
+  if (!event.repeat) toggleSdrScan();
+}
 export function initSdrScan(): void {
   initIdentifySelection();
-  document.querySelector('#sdr-scan-toggle')?.addEventListener('click', () => { void ensure().then(view => view?.toggle()).catch(showError); });
+  document.querySelector('#sdr-scan-toggle')?.addEventListener('click', toggleSdrScan);
+  document.addEventListener('keydown', scanShortcut);
   document.addEventListener('websa:identify-region', event => {
     const request = (event as CustomEvent<IdentifyRequest>).detail;
     void ensure().then(async view => { view?.show(); await view?.identifyRegion(request); }).catch(showError);
@@ -115,6 +132,8 @@ function mount(session: WorkbenchSession) {
     { x: Math.max(16, plotRight - 740 * scale), y: Math.max(20, innerHeight - 510 * scale), w: 720 * scale, h: 460 * scale }, statusChanged,
     { minWidth: 520, minHeight: 300, closeTip: () => l('Hide window; scanning continues', '隐藏窗口，扫描继续'), escape: closeDetails });
   win.root.id = 'sdr-scan-window'; win.root.classList.add('sdr-scan-window'); win.hide();
+  // The same shortcut keeps working when this live subtree moves to a popout.
+  win.root.addEventListener('keydown', scanShortcut, { signal: lifetime.signal });
   function accept(value: ScanSnapshot): void {
     if (value.service_id !== session.snapshot.service_id) return;
     if (snapshot?.service_id === value.service_id && BigInt(value.revision) < BigInt(snapshot.revision)) return;

@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_audio import (
     download,
@@ -173,7 +174,7 @@ def browser_gate(origin, saved, waves, rows, artifacts, first=500001, count=2000
         path = artifacts / 'browser-audio-range.tar'; downloaded.value.save_as(path)
         result = verify(path.read_bytes(), saved, waves, rows, first=first, count=count)
         assert not child.evaluate('window.removedSave')
-        page.locator('#btn-lang').click(); page.locator('#btn-theme').click()
+        page.locator('#btn-lang').click(); toggle_theme(page)
         expect(compact.locator('[data-audio-status]')).to_have_text('就绪')
         child.screenshot(path=str(artifacts / 'audio-playback-420-zh-light.png'))
         assert compact.locator('.mc-body').evaluate('e=>e.scrollWidth-e.clientWidth') == 0

@@ -42,6 +42,7 @@ import { drawAudioScope as drawScope } from './audioScope';
 import { renderDecoderResults } from './decoderResults';
 import { createDecodePopout, type DecodePopout } from './decodePopout';
 import { applyFloatingGeometry, clampFloatingGeometry } from './floatingGeometry';
+import { bindWindowOpacity, initWindowOpacity } from './windowOpacity';
 import './decodeResults.css';
 import { ft8GeoTexts } from './ft8GeoText';
 import { ft8SessionKey, markQsoRows } from './ft8Qso';
@@ -88,11 +89,7 @@ const LS_KEY = 'websa-decode-window';
 // The FM pane is the tallest: a service row, RadioText, the metrics (which reflow to two rows in
 // this width), the audio scope and the level row. The default has to show all of it on first open.
 const DEFAULT_SIZE = { w: 460, h: 290 };
-/// The floor keeps the window grabbable. An invisible one would be worse than a moved one: the same
-/// reason the position is clamped into the viewport rather than restored blindly.
-const MIN_OPACITY = 0.35;
-/// Live opacity, persisted alongside the geometry (one record, one writer).
-let opacity = 1;
+let unbindOpacity: (() => void) | undefined;
 /// Whether the timestamps show UTC (off = the operator's local time). Persisted like the geometry.
 let utcTime = false;
 /** FT8 rows rendered; the log holds more, but a table nobody scrolls should not cost layout time. */
@@ -252,9 +249,7 @@ function readGeometry(): Geometry | null {
 	try {
 		const raw = localStorage.getItem(LS_KEY);
 		if (!raw) { utcTime = false; return null; }
-		const parsed = JSON.parse(raw) as Partial<Geometry> & { opacity?: number; utc?: boolean; v?: number };
-		const stored = Number(parsed.opacity);
-		opacity = Number.isFinite(stored) ? Math.min(1, Math.max(MIN_OPACITY, stored)) : 1;
+		const parsed = JSON.parse(raw) as Partial<Geometry> & { utc?: boolean; v?: number };
 		utcTime = parsed.utc === true;
 		if (parsed.v !== 2 || typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return null;
 		return {
@@ -271,8 +266,7 @@ function readGeometry(): Geometry | null {
 function writeGeometry(geometry: Geometry): void {
 	if (portal?.isPoppedOut() && floatingGeometry) geometry = floatingGeometry;
 	try {
-		// The opacity and UTC choice ride along: one record, one writer, so they cannot drift apart.
-		localStorage.setItem(LS_KEY, JSON.stringify({ ...geometry, opacity, utc: utcTime, v: 2 }));
+		localStorage.setItem(LS_KEY, JSON.stringify({ ...geometry, utc: utcTime, v: 2 }));
 	} catch {
 		/* storage disabled: the window still works for this session */
 	}
@@ -1583,6 +1577,7 @@ function bindRadiofaxOutside(): void {
 
 /** Wire the window: its buttons, its drag/resize handles and the tune callback. */
 export function initDecodeWindow(next: DecodeWindowHooks): void {
+	initWindowOpacity();
 	hooks = next;
 	const win = portal?.isPoppedOut() ? surface : document.getElementById('decode-window');
 	if (!win) return;
@@ -1946,18 +1941,10 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	});
 	}
 
-	// Opacity slider. `input` (not `change`) so the window dims while the handle moves.
-	win.style.opacity = String(opacity);
+	// All tool windows share this preference, including adopted popout documents.
+	unbindOpacity?.();
 	const slider = element('decode-window-opacity') as HTMLInputElement | null;
-	if (slider) {
-		slider.value = String(Math.round(opacity * 100));
-		slider.addEventListener('input', () => {
-			const percent = Number(slider.value);
-			opacity = Number.isFinite(percent) ? Math.min(1, Math.max(MIN_OPACITY, percent / 100)) : 1;
-			win.style.opacity = String(opacity);
-			writeGeometry(currentGeometry(win));
-		});
-	}
+	unbindOpacity = slider ? bindWindowOpacity(win, slider) : undefined;
 
 	// UTC toggle: off = the operator's local time, on = UTC. It re-renders both panes (the FT8 rows
 	// and the CW line timestamps read the same flag) and persists with the geometry.

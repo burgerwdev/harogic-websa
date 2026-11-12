@@ -2,6 +2,7 @@
  * The decode window: gated on the demodulator, fed by the FT8 and CW logs, and its retained message rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setWindowOpacity } from '../ui/windowOpacity';
 import { initDecodeWindow, ingestDecodeEvents, decodeChannel, decodeWindowOpen, decodeWindowMode, refreshDecodeWindow, setDecodeActive, setDecodeChannel, setDecodeChannelMode, setDecodeError, setDecodeTiming, setDecodeWindowAvailable, toggleDecodeWindow } from '../ui/decodeWindow';
 import { addFt8Spot, clearFt8Spots, clock, ft8Spots, setFt8DecoderState } from '../sdr/ft8Log';
 import { addCwText, clearCwLog, cwLog, cwLevel, setCwLevel } from '../sdr/cwLog';
@@ -130,6 +131,7 @@ const rows = () => Array.from(document.querySelectorAll('#decode-window-rows tr'
 const shown = () => (document.getElementById('decode-window') as HTMLElement).style.display;
 
 beforeEach(() => {
+	setWindowOpacity(1);
 	setDecodeActive(true);
 	sdrSstvMode.reset();
 	sdrSstvMode.confirm(-1);
@@ -522,7 +524,7 @@ describe('the FT8 decode window', () => {
 		slider.value = '60';
 		slider.dispatchEvent(new Event('input', { bubbles: true }));
 		expect(win.style.opacity).toBe('0.6');
-		expect(JSON.parse(localStorage.getItem('websa-decode-window') || '{}').opacity).toBeCloseTo(0.6);
+		expect(Number(localStorage.getItem('web-sa-window-opacity'))).toBeCloseTo(0.6);
 
 		// The floor is a guard, not a preference: an invisible window cannot be dragged back, which is
 		// the same reason the position is clamped into the viewport instead of restored blindly.

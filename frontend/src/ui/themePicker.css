@@ -1,0 +1,54 @@
+/* Keep settings within the viewport at every instrument scale. */
+.theme-picker {
+  zoom: var(--ui, 1);
+  width: 540px; max-width: calc((100vw - 32px) / var(--ui, 1)); max-height: calc((100dvh - 32px) / var(--ui, 1));
+  box-sizing: border-box; padding: 20px; margin: auto; overflow: auto;
+  border: 1px solid var(--input-border); border-radius: 12px;
+  background: var(--panel); color: var(--text); box-shadow: 0 20px 80px #0005;
+  color-scheme: var(--theme-scheme, dark); font-size: 12px;
+  scrollbar-width: thin; scrollbar-color: var(--input-border) var(--panel);
+}
+.theme-picker::backdrop { background: #050b1899; }
+.theme-picker-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.theme-picker h2 { font-size: 19px; font-weight: 700; line-height: 1.3; margin: 0; }
+.theme-picker-head p { color: var(--label); font-size: 12px; margin: 5px 0 0; }
+.theme-picker-close {
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  flex-shrink: 0; width: 28px; height: 28px; line-height: 1; appearance: none;
+  padding: 0; border: 1px solid var(--inner-border); border-radius: 5px;
+  background: var(--btn-bg); color: var(--label); font-size: 20px; cursor: pointer;
+}
+.theme-picker-close svg { display: block; flex: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+.theme-picker-close:hover { background: var(--btn-hover); color: var(--text); }
+.theme-picker-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.theme-option {
+  display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 6px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--inner-border);
+  border-radius: 7px; cursor: pointer; text-align: left;
+}
+.theme-option:hover { border-color: var(--input-border); background: var(--btn-hover); }
+.theme-option[aria-pressed="true"] { border-color: var(--text); outline: 1px solid var(--text); }
+.theme-option:focus-visible, .theme-picker-close:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.theme-option-label { display: flex; align-items: center; justify-content: space-between; gap: 2px; font-size: 11px; line-height: 1.5; }
+.theme-option-label > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.theme-option-check { visibility: hidden; flex-shrink: 0; }
+.theme-option[aria-pressed="true"] .theme-option-check { visibility: visible; }
+.theme-sample { display: block; overflow: hidden; box-sizing: border-box; width: 100%; border: var(--theme-surface-border-width) solid var(--card-border); border-radius: var(--theme-surface-radius); background: var(--theme-surface-bg); box-shadow: var(--theme-surface-shadow, none); clip-path: var(--theme-surface-clip); }
+/* The glass workspace supplies its own light beneath translucent panels. */
+.theme-sample[data-theme-preview="liquid-glass"] { background-color: var(--panel); }
+.theme-sample-bar { display: flex; align-items: center; gap: 3px; height: 11px; padding: 0 4px; background: var(--theme-head-bg); border-bottom: 1px var(--theme-head-rule-style) var(--inner-border); }
+.theme-sample-bar i { width: 3px; height: 3px; background: var(--label); border-radius: var(--theme-radius, 1px); }
+.theme-sample-body { display: flex; height: 48px; padding: 4px; gap: 4px; }
+.theme-sample svg { flex: 1; min-width: 0; background: var(--sa-bg); }
+.theme-sample-grid { fill: none; stroke: var(--sa-grid); stroke-width: .7; }
+.theme-sample-trace { fill: none; stroke: var(--sa-trace1); stroke-width: 1.5; stroke-linejoin: round; }
+.theme-sample-controls { display: flex; flex-direction: column; gap: 4px; width: 23%; }
+.theme-sample-controls i { height: 10px; box-sizing: border-box; border: var(--theme-button-border-width) var(--theme-button-border-style) var(--input-border); background: var(--theme-button-bg); border-radius: var(--theme-radius); box-shadow: var(--theme-control-shadow, none); clip-path: var(--theme-control-clip); }
+.theme-sample-controls i:first-child { background: var(--theme-active-bg); box-shadow: var(--theme-pressed-shadow); }
+.theme-picker-note { margin: 15px 0 0; text-align: center; color: var(--label); font-size: 11px; }
+@media (max-width: 420px) {
+  .theme-picker { padding: 14px; max-width: calc((100vw - 16px) / var(--ui, 1)); max-height: calc((100dvh - 16px) / var(--ui, 1)); }
+  .theme-picker-grid { gap: 6px; }
+  .theme-option { padding: 4px; }
+  .theme-option-label { font-size: 10px; }
+}

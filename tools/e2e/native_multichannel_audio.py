@@ -22,6 +22,7 @@ import urllib.request
 import zlib
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_processing import setup
 from native_multichannel_recording import task, until
@@ -359,7 +360,7 @@ def browser_gate(origin, artifacts):
         saved = until(lambda: t if (t := task(origin, recording))['state'] == 'completed' else None)
         assert int(saved['tracks'][0]['raw_bytes']) > before
         link = shell.locator(f'[data-task-id="{recording}"] .mc-audio-download'); expect(link).to_be_visible()
-        page.locator('#btn-lang').click(); expect(popup.locator('html')).to_have_attribute('lang', 'zh-CN'); page.locator('#btn-theme').click()
+        page.locator('#btn-lang').click(); expect(popup.locator('html')).to_have_attribute('lang', 'zh-CN'); toggle_theme(page)
         with popup.expect_download() as info:
             link.click()
         target = artifacts / 'browser-audio.tar'; info.value.save_as(target)

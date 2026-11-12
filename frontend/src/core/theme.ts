@@ -1,5 +1,25 @@
-// Theme system: dark/light, CSS variables + canvas color reading
-export type Theme = 'dark' | 'light';
+import type { I18nKey } from './i18n';
+
+// Keep the original IDs so existing browser preferences retain their appearance.
+export const THEMES = [
+  { id: 'dark', name: 'theme_dark', scheme: 'dark' },
+  { id: 'light', name: 'theme_light', scheme: 'light' },
+  { id: 'liquid-glass', name: 'theme_liquid_glass', scheme: 'light' },
+  { id: 'liquid-glass-dark', name: 'theme_liquid_glass_dark', scheme: 'dark' },
+  { id: 'minimalist-flat', name: 'theme_minimalist_flat', scheme: 'light' },
+  { id: 'neumorphism', name: 'theme_neumorphism', scheme: 'light' },
+  { id: 'mecha', name: 'theme_mecha', scheme: 'dark' },
+  { id: 'pixel-anime', name: 'theme_pixel_anime', scheme: 'dark' },
+  { id: 'sci-fi-hud', name: 'theme_sci_fi_hud', scheme: 'dark' },
+  { id: 'brutalist-web', name: 'theme_brutalist_web', scheme: 'light' },
+  { id: 'neon-tokyo', name: 'theme_neon_tokyo', scheme: 'dark' },
+  { id: 'e-ink', name: 'theme_e_ink', scheme: 'light' },
+] as const satisfies readonly { id: string; name: I18nKey; scheme: 'dark' | 'light' }[];
+export type Theme = typeof THEMES[number]['id'];
+
+export function isTheme(value: unknown): value is Theme {
+  return THEMES.some(theme => theme.id === value);
+}
 
 let current: Theme = 'dark';
 const listeners = new Set<(th: Theme) => void>();
@@ -86,8 +106,8 @@ export function canvasColors(): CanvasColors {
 }
 
 // Initialize the saved theme, defaulting to dark.
-export function initTheme(saved?: Theme | null) {
-  const th = saved || 'dark';
+export function initTheme(saved?: unknown) {
+  const th = isTheme(saved) ? saved : 'dark';
   setTheme(th);
   return th;
 }

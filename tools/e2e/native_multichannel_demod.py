@@ -25,6 +25,7 @@ import zlib
 from pathlib import Path
 
 import numpy as np
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_processing import assert_receivers_continue, setup
 from native_multichannel_recording import finish, read_archive, start, task, until
@@ -216,7 +217,7 @@ def browser_gate(origin, saved, raw, out, frequency=731, bandwidth=1500, tuning_
         path = out / 'browser-demod.tar'; download.value.save_as(path)
         verified = verify(path.read_bytes(), raw, saved, frequency=frequency, tuning_offset=tuning_offset)
         assert not child.evaluate('window.removedSave')
-        page.locator('#btn-lang').click(); page.locator('#btn-theme').click()
+        page.locator('#btn-lang').click(); toggle_theme(page)
         expect(compact.locator('[data-demod-save]')).to_have_text('下载音频与来源')
         expect(compact.locator('[data-demod-status]')).to_have_text('就绪 · 48 kHz · 单声道')
         child.screenshot(path=str(out / 'demod-420-zh-light.png'))

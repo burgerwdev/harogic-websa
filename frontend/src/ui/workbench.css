@@ -22,13 +22,13 @@
   border:1px solid var(--input-border); border-radius:4px; background:var(--panel);
   color:var(--text); box-shadow:0 8px 22px #0008;
   container-type:inline-size; font:inherit; font-size:12px; line-height:1.5;
-  color-scheme:dark;
+  color-scheme:var(--theme-scheme, dark);
+  /* Focus keeps shortcuts/Escape active; visible rings belong to the controls. */
+  outline:none;
 }
-:root[data-theme="light"] .mc-window { color-scheme:light; }
 .mc-window *, .mc-window *::before, .mc-window *::after { box-sizing:border-box; }
 .mc-window input, .mc-window button, .mc-window select { font:inherit; }
 .mc-window button { cursor:pointer; }
-.mc-window .mc-icon { width:16px; height:16px; flex:0 0 auto; vertical-align:middle; }
 .mc-head { display:flex; align-items:center; gap:6px; padding:8px 12px; background:var(--head-bg); border-bottom:1px solid var(--inner-border); border-radius:3px 3px 0 0; cursor:move; touch-action:none; flex-shrink:0; }
 .mc-window-actions { display:flex; flex:none; align-items:center; gap:2px; white-space:nowrap; }
 .mc-window-actions .mc-icon { display:none; }
@@ -102,9 +102,11 @@
 .mc-row .mc-channel-select { display:flex; width:100%; text-align:left; justify-content:flex-start; gap:9px; padding:0; border:0; border-radius:0; background:transparent; min-height:34px; color:var(--text); }
 .mc-row .mc-channel-select:hover, .mc-row .mc-channel-select[aria-pressed=true] { background:transparent; border:0; color:var(--text); }
 .mc-channel-avatar { display:flex; align-items:center; justify-content:center; width:36px; height:36px; flex:0 0 auto; background:color-mix(in srgb,var(--channel,var(--text)) 13%,var(--panel)); color:var(--text); border:1px solid color-mix(in srgb,var(--channel,var(--text)) 25%,var(--card-border)); border-radius:3px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; }
+.mc-channel-avatar { box-sizing:border-box; min-width:36px; min-height:36px; padding:4px; line-height:1; }
+.mc-channel-avatar>.mc-icon { display:block; width:18px; height:18px; max-width:100%; max-height:100%; }
 .mc-channel-identity { display:flex; flex-direction:column; min-width:0; flex:1; gap:4px; }
 .mc-channel-identity strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:600; }
-.mc-channel-identity>span { display:flex; align-items:center; gap:7px; color:var(--label); font-size:10px; }
+.mc-channel-identity>span { display:flex; align-items:center; flex-wrap:wrap; gap:3px 7px; color:var(--label); font-size:10px; line-height:normal; overflow-wrap:anywhere; }
 .mc-channel-row-head { display:flex; align-items:center; gap:6px; }
 .mc-channel-row-head .mc-channel-select { flex:1; min-width:0; }
 .mc-row .mc-selection-mark { flex:0 0 28px; width:28px; min-height:28px; padding:5px; color:var(--label); border-color:transparent; background:transparent; }
@@ -681,7 +683,7 @@ body:has(#workbench-app) { display:block; }
 .mc-frequency-input[data-frequency-input] { gap:8px; }
 .mc-frequency-input[data-frequency-input] input[data-frequency-value] { height:36px; min-height:36px; border-color:var(--mc-control-border); border-radius:5px; font-size:17px; }
 .mc-frequency-input[data-frequency-input] .unit-btn-group { gap:0; padding:2px; border:1px solid var(--inner-border); border-radius:5px; background:var(--panel-2); }
-.mc-frequency-input[data-frequency-input] button.unit-btn { min-width:29px; min-height:28px; height:28px; border-color:transparent; background:transparent; border-radius:3px; color:var(--label); }
+.mc-frequency-input[data-frequency-input] button.unit-btn { min-width:29px; min-height:28px; height:auto; line-height:normal; border-color:transparent; background:transparent; border-radius:3px; color:var(--label); }
 .mc-frequency-input[data-frequency-input] button.unit-btn.active { background:var(--btn-active); color:var(--text); border-color:var(--mc-control-border); }
 .mc-mode-field>select { min-height:36px; height:36px; }
 .mc-channel-audio, .mc-body [data-mode-controls] { margin:0; padding:10px 12px 12px; border-radius:6px; background:var(--panel-2); }

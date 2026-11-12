@@ -1,0 +1,229 @@
+/* Material and geometry are separate from colour palettes. Preview cards use
+   these same tokens, so they show each theme's actual panel and control shapes. */
+:root[data-theme], [data-theme-preview] {
+  --theme-surface-radius: calc(var(--theme-radius) * 1.5);
+  --theme-surface-border-width: 1px;
+  --theme-surface-bg: var(--panel-2);
+  --theme-surface-clip: none;
+  --theme-control-clip: none;
+  --theme-head-bg: var(--head-bg);
+  --theme-head-rule-style: solid;
+  --theme-head-weight: 700;
+  --theme-head-tracking: normal;
+  --theme-field-bg: var(--input-bg);
+  --theme-field-radius: var(--theme-radius);
+  --theme-field-shadow: none;
+  --theme-button-bg: var(--btn-bg);
+  --theme-button-border-width: 1px;
+  --theme-button-border-style: solid;
+  --theme-active-bg: var(--btn-active);
+  --theme-active-text: var(--text);
+}
+
+/* Flat: open sections, ruled fields and solid, decisive selected actions. */
+:root[data-theme="minimalist-flat"], [data-theme-preview="minimalist-flat"] {
+  --theme-surface-border-width: 0px; --theme-surface-bg: var(--panel);
+  --theme-head-bg: transparent; --theme-head-weight: 800; --theme-head-tracking: .025em;
+  --theme-button-bg: #eeeef1; --theme-active-bg: #202126; --theme-active-text: #fff;
+}
+
+/* Neumorphism: a single clay surface with raised keys and scooped-out fields. */
+:root[data-theme="neumorphism"], [data-theme-preview="neumorphism"] {
+  --theme-radius: 7px; --theme-surface-radius: 14px; --theme-surface-bg: var(--panel);
+  --theme-head-bg: transparent; --theme-field-bg: var(--panel);
+  --theme-control-shadow: 3px 3px 5px #b6bfce, -3px -3px 5px #fcfdff;
+  --theme-field-shadow: inset 2px 2px 4px #b5c0d0, inset -2px -2px 4px #ffffffc9;
+  --theme-surface-shadow: 4px 4px 8px #b5bfce, -4px -4px 8px #ffffffc9;
+  --theme-pressed-shadow: inset 3px 3px 5px #b1bdd0, inset -3px -3px 5px #ffffffc4;
+}
+
+/* Pixel: stepped corners, checkerboard trim and unblurred cartridge buttons. */
+:root[data-theme="pixel-anime"], [data-theme-preview="pixel-anime"] {
+  --theme-surface-clip: polygon(0 6px, 3px 6px, 3px 3px, 6px 3px, 6px 0, calc(100% - 6px) 0, calc(100% - 6px) 3px, calc(100% - 3px) 3px, calc(100% - 3px) 6px, 100% 6px, 100% calc(100% - 6px), calc(100% - 3px) calc(100% - 6px), calc(100% - 3px) calc(100% - 3px), calc(100% - 6px) calc(100% - 3px), calc(100% - 6px) 100%, 6px 100%, 6px calc(100% - 3px), 3px calc(100% - 3px), 3px calc(100% - 6px), 0 calc(100% - 6px));
+  --theme-surface-shadow: inset 0 0 0 2px #649bdb, inset 0 0 0 4px #160e34;
+  --theme-head-bg: repeating-conic-gradient(#4a70ad 0 25%, #342363 0 50%) bottom / 6px 4px repeat-x, #342363;
+  --theme-head-tracking: .04em;
+  --theme-control-shadow: inset 1px 1px 0 #7bb9f04d, inset -2px -2px 0 #100925;
+  --theme-field-shadow: inset 2px 2px 0 #090621;
+  --theme-pressed-shadow: inset 2px 2px 0 #233d73;
+  --theme-active-bg: #4a90d9; --theme-active-text: #071b37;
+}
+
+/* HUD: open reticles instead of a box, dashed readouts and one cut key corner. */
+:root[data-theme="sci-fi-hud"], [data-theme-preview="sci-fi-hud"] {
+  --theme-control-clip: polygon(0 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%);
+  --theme-surface-bg: linear-gradient(#5de0ed, #5de0ed) left top / 18px 2px no-repeat,
+    linear-gradient(#5de0ed, #5de0ed) left top / 2px 18px no-repeat,
+    linear-gradient(#5de0ed, #5de0ed) right top / 18px 2px no-repeat,
+    linear-gradient(#5de0ed, #5de0ed) right top / 2px 18px no-repeat,
+    linear-gradient(#5de0ed, #5de0ed) left bottom / 18px 2px no-repeat,
+    linear-gradient(#5de0ed, #5de0ed) left bottom / 2px 18px no-repeat,
+    linear-gradient(#5de0ed, #5de0ed) right bottom / 18px 2px no-repeat,
+    linear-gradient(#5de0ed, #5de0ed) right bottom / 2px 18px no-repeat, #06131f;
+  --theme-head-bg: linear-gradient(90deg, #16445d80, transparent);
+  --theme-head-rule-style: dashed; --theme-head-tracking: .12em;
+  --theme-button-bg: linear-gradient(135deg, #16445d80, #0b24344d);
+  --theme-control-shadow: inset 0 -1px 0 #247086;
+  --theme-pressed-shadow: inset 0 -2px 0 #5de0ed, 0 0 8px #5de0ed35;
+}
+
+/* Early web: native bevels, serif section headings and literal underlined links. */
+:root[data-theme="brutalist-web"], [data-theme-preview="brutalist-web"] {
+  --theme-head-bg: #fff; --theme-button-border-width: 2px; --theme-button-border-style: outset;
+  --theme-field-shadow: inset 1px 1px 0 #999;
+  --theme-pressed-shadow: inset 1px 1px 0 #888;
+  --theme-active-bg: #0000cc; --theme-active-text: #fff;
+}
+
+/* Neon signage: double tube outlines, luminous headings and glassy dark keys. */
+:root[data-theme="neon-tokyo"], [data-theme-preview="neon-tokyo"] {
+  --theme-surface-radius: 8px; --theme-head-weight: 800; --theme-head-tracking: .05em;
+  --theme-surface-bg: linear-gradient(160deg, #2b1738b3, #100d1e 70%);
+  --theme-head-bg: linear-gradient(90deg, #421b43b3, #191127);
+  --theme-button-bg: linear-gradient(180deg, #3b2446, #20162e);
+  --theme-surface-shadow: inset 0 0 0 2px #100d1e, inset 0 0 0 3px #ff78c570, 0 0 8px #ff78c51f;
+  --theme-control-shadow: inset 0 1px 0 #ffb8e329, 0 0 3px #df40931a;
+  --theme-field-shadow: inset 0 2px 4px #0008;
+  --theme-pressed-shadow: inset 0 -2px 0 #66dfec, 0 0 7px #ff78c54d;
+}
+
+/* E-ink: printed section rules, dotted row guides and black ink selection. */
+:root[data-theme="e-ink"], [data-theme-preview="e-ink"] {
+  --theme-surface-border-width: 0px; --theme-surface-bg: var(--panel);
+  --theme-head-bg: transparent; --theme-head-rule-style: double;
+  --theme-head-weight: 700; --theme-head-tracking: .07em;
+  --theme-active-bg: #20211e; --theme-active-text: #f5f3ea;
+}
+
+/* Bind only instrument surfaces. Keep plots, row sizes and signal colours owned
+   by their renderers; range/checkbox controls retain their native interaction. */
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) {
+  --theme-select-arrow: linear-gradient(45deg, transparent 50%, var(--select-arrow) 50%) no-repeat right 8px center / 3px 3px,
+    linear-gradient(135deg, var(--select-arrow) 50%, transparent 50%) no-repeat right 5px center / 3px 3px;
+}
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) .analyzer-card { background: var(--theme-workspace-bg, var(--panel)); }
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.control-group, .gnss-popover, .decode-window, .mc-window, .mc-create-dialog, .theme-picker) {
+  border-width: var(--theme-surface-border-width); border-radius: var(--theme-surface-radius);
+  background: var(--theme-surface-bg); box-shadow: var(--theme-surface-shadow); clip-path: var(--theme-surface-clip);
+}
+/* A popup/dialog remains a framed surface even in the two unboxed themes. */
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.gnss-popover, .decode-window, .mc-window, .mc-create-dialog, .theme-picker) { border-width: 1px; }
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.group-head, .mc-head, .decode-window-head) { background: var(--theme-head-bg); border-radius: 0; }
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.group-title, .mc-head strong) { font-weight: var(--theme-head-weight); letter-spacing: var(--theme-head-tracking); }
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.btn, .unit-btn, .trace-btn, .mkr-btn, .gh-toggle, .rail-item, .rail-toggle, .keypad-key, .mc-body button, .mc-create-dialog button, .theme-picker-close) {
+  border-radius: var(--theme-radius); border-width: var(--theme-button-border-width); border-style: var(--theme-button-border-style);
+  box-shadow: var(--theme-control-shadow); clip-path: var(--theme-control-clip);
+}
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.btn, .unit-btn, .gh-toggle, .keypad-key, .mc-body button, .mc-create-dialog button, .theme-picker-close) { background: var(--theme-button-bg); }
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.param-row input:not([type="range"], [type="checkbox"]), .param-row select, .mc-body input:not([type="range"], [type="checkbox"]), .mc-body select, .mc-create-dialog input:not([type="range"], [type="checkbox"]), .mc-create-dialog select) {
+  border-radius: var(--theme-field-radius); box-shadow: var(--theme-field-shadow); background-color: var(--theme-field-bg);
+}
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.btn.active, .unit-btn.active, .btn:active, .mc-body button[aria-pressed="true"], .mc-create-dialog button:active) {
+  background: var(--theme-active-bg); color: var(--theme-active-text); box-shadow: var(--theme-pressed-shadow);
+}
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.btn, .unit-btn, .gh-toggle, .keypad-key, .mc-body button, .theme-picker-close):hover:not(:disabled, .active, [aria-pressed="true"]) { background-color: var(--btn-hover); filter: brightness(1.04); }
+:root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(button, input, select, a):focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+/* Sort labels are part of the table heading. Do not put compact zero-padding
+   labels inside the themed pill/bevel used for ordinary action buttons. */
+:root[data-theme] .mc-body th button {
+  height: auto; min-height: 0; max-width: none; padding: .25em .4em;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none; clip-path: none;
+  line-height: normal; text-align: start; justify-content: flex-start; white-space: nowrap; filter: none;
+}
+:root[data-theme] .mc-body th button::before,
+:root[data-theme] .mc-body th button::after { content: none; }
+:root[data-theme] .mc-body th button:hover { background: var(--head-bg); color: var(--text); filter: none; }
+/* Structured selection rows already contain their avatar/background. A second
+   pill behind the entire row makes the square avatar protrude past its curve. */
+:root[data-theme] .mc-body :is(.mc-channel-select, .mc-card-name) {
+  background: transparent; border: 0; border-radius: 0; box-shadow: none; clip-path: none;
+}
+:root[data-theme] .mc-body :is(.mc-channel-select, .mc-card-name)::before,
+:root[data-theme] .mc-body :is(.mc-channel-select, .mc-card-name)::after { content: none; }
+:root:is([data-theme="pixel-anime"], [data-theme="sci-fi-hud"]) :is(button, input, select):focus-visible { outline-offset: -3px; }
+
+:root[data-theme="minimalist-flat"] :is(.group-head, .mc-head) { border-bottom: 2px solid var(--text); }
+:root[data-theme="minimalist-flat"] :is(.btn, .unit-btn, .gh-toggle, .rail-item, .rail-toggle) { border-color: transparent; }
+:root[data-theme="minimalist-flat"] :is(.param-row input, .param-row select) { border-color: transparent; border-bottom-color: var(--input-border); }
+:root[data-theme="minimalist-flat"] .control-group { border-top: 3px solid transparent; }
+:root[data-theme="minimalist-flat"] .rail-item.active { background: var(--text); color: var(--panel); }
+:root[data-theme="minimalist-flat"] .marker-table th { background: var(--panel); border-bottom: 2px solid var(--text); }
+
+:root[data-theme="neumorphism"] :is(.control-group, .btn, .unit-btn, .gh-toggle, .param-row input, .param-row select) { border-color: transparent; }
+:root[data-theme="neumorphism"] .control-panel { padding: 4px 5px 6px 4px; box-sizing: border-box; gap: 12px; }
+:root[data-theme="neumorphism"] .group-head { box-shadow: 0 1px 0 #b8c3d242, 0 2px 0 #ffffff73; }
+:root[data-theme="neumorphism"] :is(.btn.active, .unit-btn.active) { border-color: #8a7aca; }
+
+/* Mecha retains its original compact navy/olive treatment. */
+:root[data-theme="mecha"] .analyzer-card { background: var(--panel); }
+:root[data-theme="mecha"] :is(.control-group, .gnss-popover, .decode-window, .mc-window, .mc-create-dialog) {
+  border-radius: 0; box-shadow: var(--theme-surface-shadow);
+}
+:root[data-theme="mecha"] :is(.btn, .unit-btn, .trace-btn, .mkr-btn, .param-row input, .param-row select, .mc-body button, .mc-body input, .mc-body select) {
+  border-radius: 0; box-shadow: var(--theme-control-shadow);
+}
+:root[data-theme="mecha"] :is(.btn.active, .btn:active, .mc-body button[aria-pressed="true"]) { box-shadow: var(--theme-pressed-shadow); }
+:root[data-theme="mecha"] :is(button, input, select, a):focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+:root[data-theme="mecha"] .group-head {
+  box-shadow: inset 3px 0 0 #efc45d;
+  background: linear-gradient(135deg, transparent 0 5px, var(--head-bg) 5px), var(--panel-2);
+}
+:root[data-theme="mecha"] :is(.group-title, .mc-head strong) { color: #efc45d; }
+:root[data-theme="mecha"] .btn.active { border-color: #efc45d; }
+:root[data-theme="mecha"] {
+  --theme-select-arrow: linear-gradient(45deg, transparent 50%, var(--select-arrow) 50%) no-repeat right 8px center / 3px 3px,
+    linear-gradient(135deg, var(--select-arrow) 50%, transparent 50%) no-repeat right 5px center / 3px 3px;
+}
+
+:root[data-theme="pixel-anime"] .control-group { border-color: transparent; }
+:root[data-theme="pixel-anime"] :is(.group-head, .mc-head) { border-bottom: 2px solid #649bdb; }
+:root[data-theme="pixel-anime"] .group-title { color: #ffd93d; }
+:root[data-theme="pixel-anime"] .group-title::before { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 7px 1px 0; background: #ffd93d; box-shadow: 2px 2px 0 #916b29; }
+:root[data-theme="pixel-anime"] .rail-item { box-shadow: inset -2px -2px 0 #100925, inset 1px 1px 0 #7bb9f04d; }
+
+:root[data-theme="sci-fi-hud"] :is(.control-group, .theme-picker) { border-color: transparent; }
+:root[data-theme="sci-fi-hud"] :is(.group-head, .mc-head) { border-bottom: 1px dashed #247086; }
+:root[data-theme="sci-fi-hud"] :is(.group-title, .mc-head strong) { color: #8ee6ef; text-transform: uppercase; }
+:root[data-theme="sci-fi-hud"] .group-title::before { content: ''; display: inline-block; width: 4px; height: 4px; margin: 0 7px 2px 0; border: 1px solid #5de0ed; }
+:root[data-theme="sci-fi-hud"] :is(.param-row input, .param-row select) { border-style: dashed; }
+:root[data-theme="sci-fi-hud"] .rail-item { border-color: transparent; border-left: 1px solid #348ca1; border-right: 1px solid #348ca1; border-radius: 0; }
+
+:root[data-theme="brutalist-web"] :is(.group-title, .mc-head strong, .theme-picker h2) { font-family: Georgia, 'Noto Serif CJK SC', 'Songti SC', serif !important; font-size: 13px; }
+:root[data-theme="brutalist-web"] .theme-picker h2 { font-size: 20px; }
+:root[data-theme="brutalist-web"] :is(.group-head, .mc-head) { border-bottom: 1px solid #111; }
+:root[data-theme="brutalist-web"] :is(.btn, .unit-btn, .mc-body button, a) { color: #0000cc; text-decoration: underline; text-underline-offset: 2px; }
+:root[data-theme="brutalist-web"] :is(.btn.active, .unit-btn.active) { color: #fff; }
+:root[data-theme="brutalist-web"] :is(.param-row input, .param-row select) { border-style: inset; }
+:root[data-theme="brutalist-web"] .marker-table th { background: #eee; border-bottom: 2px solid #111; }
+:root[data-theme="brutalist-web"] .mc-tabs { flex-wrap: wrap; gap: 0 12px; }
+
+:root[data-theme="neon-tokyo"] .group-head { border-bottom: 1px solid #ff78c54d; }
+:root[data-theme="neon-tokyo"] .group-title { color: #ff9ad2; text-shadow: 0 0 6px #ff78c566; }
+:root[data-theme="neon-tokyo"] .control-group:nth-child(odd) { border-color: #66dfec88; box-shadow: inset 0 0 0 2px #100d1e, inset 0 0 0 3px #66dfec70, 0 0 8px #66dfec1a; }
+:root[data-theme="neon-tokyo"] .control-group:nth-child(odd) .group-title { color: #87e5ee; text-shadow: 0 0 6px #66dfec66; }
+:root[data-theme="neon-tokyo"] .rail-item { box-shadow: inset 0 0 0 1px #100d1e, inset 0 0 0 2px #ff78c540; }
+:root[data-theme="neon-tokyo"] .info-value { color: #87e5ee; }
+
+:root[data-theme="e-ink"] :is(.group-head, .mc-head) { border-bottom: 3px double #53554d; }
+:root[data-theme="e-ink"] :is(.group-title, .mc-head strong) { text-transform: uppercase; }
+:root[data-theme="e-ink"] .param-row { background: radial-gradient(circle, #bab9b0 .6px, transparent .8px) left bottom / 4px 1px repeat-x; }
+:root[data-theme="e-ink"] :is(.param-row input, .param-row select) { background-color: var(--panel); border-color: var(--input-border); }
+:root[data-theme="e-ink"] :is(.btn, .unit-btn) { border-color: var(--text); }
+:root[data-theme="e-ink"] .rail-item { border-color: transparent; border-bottom-color: var(--card-border); border-radius: 0; }
+:root[data-theme="e-ink"] .rail-item.active { border-left: 3px solid var(--text); }
+:root[data-theme="e-ink"] .dot.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dot-off); }
+:root:is([data-theme="minimalist-flat"], [data-theme="brutalist-web"], [data-theme="e-ink"]) :is(.dot.on, .server-mark) { box-shadow: none; }
+
+/* Showcase interaction language, scaled down for instrument controls. */
+:root[data-theme="minimalist-flat"] :is(.btn, .unit-btn):hover:not(:disabled, .active) { background: var(--text); color: var(--panel); filter: none; }
+:root[data-theme="neumorphism"] :is(.btn, .unit-btn) { transition: box-shadow 120ms ease; }
+:root[data-theme="neumorphism"] :is(.btn, .unit-btn):active { box-shadow: var(--theme-pressed-shadow); }
+:root[data-theme="pixel-anime"] :is(.btn, .unit-btn):active { translate: 1px 1px; }
+:root[data-theme="sci-fi-hud"] :is(.btn, .unit-btn):hover:not(:disabled, .active) { border-color: #5de0ed; box-shadow: inset 0 -1px 0 #5de0ed, 0 0 5px #5de0ed30; }
+:root[data-theme="neon-tokyo"] .control-group:nth-child(3n) .group-title { color: #ffc078; text-shadow: 0 0 6px #ff9c4866; }
+:root[data-theme="neon-tokyo"] :is(.btn, .unit-btn):hover:not(:disabled, .active) { border-color: #ff9ad2; box-shadow: 0 0 6px #ff78c54d, inset 0 1px 0 #fff3; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-theme="dark"], [data-theme="light"], [data-theme="mecha"]) :is(.btn, .unit-btn, .rail-item) { transition: none; }
+  :root[data-theme="pixel-anime"] :is(.btn, .unit-btn):active { translate: none; }
+}

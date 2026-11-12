@@ -9,6 +9,7 @@ import os
 import urllib.error
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_processing import assert_receivers_continue, setup
 from native_multichannel_recording import finish, start, task, until
@@ -127,7 +128,7 @@ def browser_gate(origin, snapshot, recording, artifacts):
         child_panel.locator('[data-preset-name]').evaluate('e=>window.presetName=e')
         child.wait_for_timeout(1300)
         assert child_panel.locator('[data-preset-name]').evaluate('e=>e===window.presetName&&e.selectionStart===0&&e.selectionEnd===1')
-        page.locator('#btn-lang').click(); page.locator('#btn-theme').click()
+        page.locator('#btn-lang').click(); toggle_theme(page)
         expect(child_panel.locator('summary')).to_have_text('频点预设')
         child_panel.locator('[data-preset-load]').focus(); child.keyboard.press('Space', delay=1300)
         expect(compact.locator('[data-preview]')).to_contain_text('100.000000')

@@ -6,6 +6,7 @@
 import { hasKey, onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
 import { activeIndex } from './railMath';
+import { workbenchIcon } from './workbenchIcons';
 
 interface RailItem { el: HTMLButtonElement; group: HTMLElement; }
 
@@ -128,9 +129,10 @@ function setRailCollapsed(collapsed: boolean): void {
   if (!host) return;
   host.classList.toggle('collapsed', collapsed);
   if (toggle) {
-    toggle.textContent = collapsed ? '\u00bb' : '\u00ab';
+    toggle.innerHTML = workbenchIcon(collapsed ? 'chevron-right' : 'chevron-left');
     toggle.setAttribute('aria-expanded', String(!collapsed));
     toggle.title = t(collapsed ? 'rail_expand' : 'rail_collapse');
+    toggle.setAttribute('aria-label', toggle.title);
   }
   try { localStorage.setItem(RAIL_LS_KEY, collapsed ? 'collapsed' : 'expanded'); } catch { /* ignore */ }
 }
@@ -151,9 +153,10 @@ function setPanelHidden(hidden: boolean): void {
   // push a collapsed rail's floating toggles past the viewport edge (unreachable).
   document.getElementById('control-rail')?.classList.toggle('panel-hidden', hidden);
   // +/- like the group collapse buttons: - hides the panel, + shows it.
-  btn.textContent = hidden ? '+' : '-';
+  btn.innerHTML = workbenchIcon(hidden ? 'plus' : 'minus');
   btn.setAttribute('aria-expanded', String(!hidden));
   btn.title = t(hidden ? 'panel_show' : 'panel_hide');
+  btn.setAttribute('aria-label', btn.title);
   try { localStorage.setItem(PANEL_LS_KEY, hidden ? 'hidden' : 'shown'); } catch { /* ignore */ }
 }
 

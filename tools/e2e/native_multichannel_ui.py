@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_processing import assert_receivers_continue, setup
 from playwright.sync_api import expect, sync_playwright
@@ -218,7 +219,7 @@ def browser_gate(origin, snapshot, artifacts):
         page.locator('#btn-lang').click()
         expect(child.locator('html')).to_have_attribute('lang', 'zh-CN')
         child.screenshot(path=str(artifacts / 'decode-sstv-420-zh.png'))
-        page.locator('#btn-theme').click()
+        toggle_theme(page)
         expect(child.locator('html')).to_have_attribute('data-theme', 'light')
         child.screenshot(path=str(artifacts / 'decode-sstv-420-zh-light.png'))
         assert page.evaluate('window.uxCanvas.isConnected')

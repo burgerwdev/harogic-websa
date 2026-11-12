@@ -25,6 +25,7 @@ import zlib
 from pathlib import Path
 
 import numpy as np
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_audio import (
     download,
@@ -204,7 +205,7 @@ def browser_gate(origin, recording, artifacts):
             library.locator('[data-pop]').click()
         popup = info.value; popup.set_viewport_size({'width': 420, 'height': 760})
         popup.wait_for_function("Array.from(document.querySelectorAll('link[rel=stylesheet]')).every(e=>e.sheet)"); popup.evaluate('document.fonts.ready')
-        page.locator('#btn-lang').click(); expect(popup.locator('html')).to_have_attribute('lang', 'zh-CN'); page.locator('#btn-theme').click()
+        page.locator('#btn-lang').click(); expect(popup.locator('html')).to_have_attribute('lang', 'zh-CN'); toggle_theme(page)
         shell = popup.locator('[data-view-id=recording-library]')
         saved = shell.locator(f'[data-task-id="{recording}"]')
         saved.locator('.mc-audio-export summary').click()

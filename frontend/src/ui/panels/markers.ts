@@ -2,7 +2,6 @@
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
 import { markerFreqHz } from '../../core/markerCommon';
-import { getTheme } from '../../core/theme';
 import { send } from '../../core/wsSend';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../../dsp/markerTracking';
 import { findExtremesOrdered, getDisplayPowers, nextExtreme, parabolaFit, setMarkerIdx } from '../../dsp/peaks';
@@ -122,8 +121,6 @@ export function toggleMarkersAll() {
     S.markers.forEach(m => autoTrackMarker(m));
   }
   updateMarkersAllBtn();
-  const themeBtn = document.getElementById('btn-theme');
-  if (themeBtn) themeBtn.textContent = getTheme() === 'dark' ? t('dark') : t('light');
   syncMarkerTrackingToggle();
   requestRender();
 }

@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 
 import rust_iq_browser
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_flac import boundary_fixture
 from native_multichannel_processing import setup
@@ -82,7 +83,7 @@ def browser(origin, recording, artifacts):
         result.value.save_as(str(artifacts / 'browser-opus.tar'))
         # Narrow windows and light Chinese UI use the same controls and live draft.
         page.evaluate("document.getElementById('btn-lang').click()")
-        page.evaluate("document.getElementById('btn-theme').click()")
+        toggle_theme(page)
         with page.expect_popup() as popup_result:
             files.locator('[data-pop]').click()
         popup = popup_result.value

@@ -27,8 +27,11 @@ import './render/spectrum';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
 import { initSpectrumZoomUi } from './ui/spectrumZoomUi';
 import { initSdrEqualizer } from './ui/sdrEqualizer';
-import { applyI18n, setLang, t } from './core/i18n';
-import { initTheme, onThemeChange, toggleTheme } from './core/theme';
+import { applyI18n, setLang } from './core/i18n';
+import { initTheme, onThemeChange } from './core/theme';
+import { initThemePicker } from './ui/themePicker';
+import { initLiquidGlass } from './ui/liquidGlass';
+import { initWindowOpacity } from './ui/windowOpacity';
 import { updateInfoBar } from './render/infobar';
 import { syncToggleTexts } from './ui/controls';
 
@@ -44,7 +47,8 @@ function init() {
     savedTheme = localStorage.getItem('web-sa-theme');
     savedLang = localStorage.getItem('web-sa-lang');
   } catch { /* Optional preferences must not prevent controls from starting. */ }
-  initTheme(savedTheme === 'light' ? 'light' : 'dark');
+  initTheme(savedTheme);
+  initWindowOpacity();
   setLang(savedLang === 'zh' ? 'zh' : 'en');
   applyI18n();
 
@@ -68,17 +72,9 @@ function init() {
   document.addEventListener('websa:sdr-audio-gesture', () => requestRender());
 
 
-  // Theme/language toggle buttons (dev-bar, next to preset, no label)
-  const btnTheme = document.getElementById('btn-theme');
-  if (btnTheme) {
-    btnTheme.textContent = S_getTheme() === 'dark' ? t('dark') : t('light');
-    btnTheme.addEventListener('click', () => {
-      const th = toggleTheme();
-      try { localStorage.setItem('web-sa-theme', th); } catch { /* session only */ }
-      btnTheme.textContent = th === 'dark' ? t('dark') : t('light');
-      requestRender();
-    });
-  }
+  initThemePicker();
+  initLiquidGlass();
+  // Language button (dev-bar, next to appearance).
   const btnLang = document.getElementById('btn-lang');
   if (btnLang) {
     btnLang.textContent = getLang() === 'en' ? 'EN' : '中文';
@@ -100,7 +96,6 @@ function init() {
   setInterval(() => { if (!document.hidden && (S.viewMode === 'pnm' || S.viewMode === 'harm')) requestRender(); }, 200);
 }
 
-import { getTheme as S_getTheme } from './core/theme';
 import { getLang } from './core/i18n';
 import { sampleEnvelope, sampleSpectrum } from './audio/sdrAudio';
 import { renderRequestCount } from './render/redraw';

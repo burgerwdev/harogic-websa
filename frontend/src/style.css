@@ -1,4 +1,8 @@
 @import './ui/sdrModePicker.css';
+@import './themes.css';
+@import './themeComponents.css';
+@import './ui/liquidGlass.css';
+@import './ui/windowOpacity.css';
 
 /* ============ 自托管字体: 全平台/浏览器一致 ============
    LXGW WenKai (霞鹜文楷) GB2312 常用子集 + 拉丁 + UI 符号, woff2
@@ -20,150 +24,13 @@
 }
 /* ============ 全局强制字体: 自托管优先, 未打包字符 fallback 系统 ============ */
 *, *::before, *::after {
-  font-family: 'LXGW WenKai', '霞鹜文楷', 'Noto Sans CJK SC', 'Noto Sans CJK',
-               'Source Han Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
-               'WenQuanYi Zen Hei', sans-serif !important;
+  font-family: var(--ui-font) !important;
 }
 select option { font-size: 11px; }
 input, select, button, textarea { font-size: 11px; }
-
-/* ============ 主题变量 ============ */
-:root, :root[data-theme="dark"] {
-  /* UI */
-  --bg: #121212;
-  --panel: #1a1a1a;
-  --panel-2: #111;
-  --head-bg: #0d1f0d;
-  --card-border: #005500;
-  --inner-border: #003300;
-  --input-bg: #000;
-  --input-border: #00aa00;
-  --text: #00ff00;
-  --label: #00cc00;
-  --sub: #006600;
-  --separator: #005500;
-  --btn-bg: #2a2a2a;
-  --btn-hover: #005500;
-  --btn-active: #006600;
-  --dot-on: #00ff00;
-  --dot-off: #ff4444;
-  --table-bg: #000;
-  --table-head: #052205;
-  --table-cell: #00cc00;
-  --table-cell-dim: #336633;
-  --select-arrow: #00aa00;
-  /* canvas */
-  --sa-bg: #000;
-  --sa-grid: #1e3a24;
-  --sa-axis: #4d8a5a;
-  --sa-text: #7fd19a;
-  --sa-band: rgba(60, 140, 90, 0.10);
-  --sa-trace1: #00ff00;
-  --sa-trace2: #ffff00;
-  --sa-trace3: #00ffff;
-  --sa-trace4: #ff00ff;
-  --sa-marker1: #ff4444;
-  --sa-marker2: #ffd700;
-  --sa-marker3: #1e90ff;
-  --sa-marker4: #ffffff;
-  --sa-marker: #ff4d4d;
-  --sa-marker-fill: #ff4d4d;
-  --sa-dim: #ffa04d;
-  --sa-peak: #00bbff;
-  --sa-harm: #0088ff;
-  --sa-pnm: #00ff88;
-  --sa-cross: #ff8b5e;
-  --sa-ref: #00ff00;
-  --sa-norm: #ffd75e;
-  --sa-warning: #ff4d4d;
-  --sa-rta: #00ff88;
-  --sa-passband: rgba(0, 255, 160, 0.24);
-  --sa-passband-edge: rgba(224, 242, 234, 0.8);
-  --sa-passband-outline: rgba(0, 0, 0, 0.45);
-  --sa-hover-passband: rgba(232, 121, 249, 0.24);
-  --sa-hover-passband-edge: #f0abfc;
-  --sa-label-bg: rgba(0, 0, 0, 0.7);
-  --sa-label-border: #00aa66;
-  --sa-osd-stroke: rgba(0, 0, 0, 0.9);
-  --sa-osd-fill: #00ff00;
-  /* trace/marker 按钮色 */
-  --t1: #00ff00; --t1-bg: #003300;
-  --t2: #ffff00; --t2-bg: #333300;
-  --t3: #00ffff; --t3-bg: #003333;
-  --t4: #ff00ff; --t4-bg: #330033;
-  --m1: #ff4444; --m1-bg: #331111;
-  --m2: #ffd700; --m2-bg: #332211;
-  --m3: #1e90ff; --m3-bg: #111933;
-  --m4: #ffffff; --m4-bg: #333333;
-}
-
-/* light 主题: 浅色背景 + 高对比度 marker/迹线 */
-:root[data-theme="light"] {
-  --bg: #eef1ee;
-  --panel: #ffffff;
-  --panel-2: #f5f8f5;
-  --head-bg: #e4ece4;
-  --card-border: #9dbb9d;
-  --inner-border: #c8dcc8;
-  --input-bg: #ffffff;
-  --input-border: #4a8a4a;
-  --text: #1a5a1a;
-  --label: #2a6a2a;
-  --sub: #6a8a6a;
-  --separator: #b8c8b8;
-  --btn-bg: #e8f0e8;
-  --btn-hover: #c8e0c8;
-  --btn-active: #b0d8b0;
-  --dot-on: #1a9a1a;
-  --dot-off: #d33;
-  --table-bg: #ffffff;
-  --table-head: #e4ece4;
-  --table-cell: #1a5a1a;
-  --table-cell-dim: #7a9a7a;
-  --select-arrow: #2a6a2a;
-  /* canvas: 浅底 + 深色高对比描线 */
-  --sa-bg: #fbfdfb;
-  --sa-grid: #d8e6d8;
-  --sa-axis: #5a8a5a;
-  --sa-text: #2a5a2a;
-  --sa-band: rgba(60, 140, 90, 0.08);
-  --sa-trace1: #0d7a2e;
-  --sa-trace2: #8a6a00;
-  --sa-trace3: #0050c8;
-  --sa-trace4: #c04000;
-  --sa-marker1: #c00000;
-  --sa-marker2: #9a6a00;
-  --sa-marker3: #0050c8;
-  --sa-marker4: #333333;
-  --sa-marker: #d00000;
-  --sa-marker-fill: #d00000;
-  --sa-dim: #b06000;
-  --sa-peak: #0050c8;
-  --sa-harm: #0050c8;
-  --sa-pnm: #0d7a2e;
-  --sa-cross: #c04000;
-  --sa-ref: #0d7a2e;
-  --sa-norm: #9a6a00;
-  --sa-warning: #c00000;
-  --sa-rta: #0d7a2e;
-  --sa-passband: rgba(13, 122, 46, 0.24);
-  --sa-passband-edge: rgba(35, 62, 46, 0.8);
-  --sa-passband-outline: rgba(255, 255, 255, 0.6);
-  --sa-hover-passband: rgba(162, 28, 175, 0.20);
-  --sa-hover-passband-edge: #86198f;
-  --sa-label-bg: rgba(255, 255, 255, 0.88);
-  --sa-label-border: #b0c4b0;
-  --sa-osd-stroke: rgba(255, 255, 255, 0.9);
-  --sa-osd-fill: #1a5a1a;
-  --t1: #0d7a2e; --t1-bg: #d8f0d8;
-  --t2: #8a6a00; --t2-bg: #f4e8c0;
-  --t3: #0050c8; --t3-bg: #d8e4f4;
-  --t4: #c04000; --t4-bg: #f4e0d8;
-  --m1: #d00000; --m1-bg: #f8d8d8;
-  --m2: #b8860b; --m2-bg: #f4ecc8;
-  --m3: #0050c8; --m3-bg: #d8e0f4;
-  --m4: #333333; --m4-bg: #e0e0e0;
-}
+/* Size readouts using the actual fallback glyph metrics, including minimum
+   browser font sizes, rather than an inherited fixed line box. */
+output { display: inline-block; line-height: normal; vertical-align: middle; }
 
 /* ---- Adaptive frame ----------------------------------------------------------------
    Everything below used to be written against one 1366x768 panel: a 1280px card, an 860px
@@ -702,7 +569,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   pointer-events: none;
   border-color: transparent;
 }
-.wf-btn { min-width: 0; width: 100%; padding: 0; text-align: center; font-size: 9px; line-height: 1.4; box-sizing: border-box; }
+.wf-btn { display: flex; align-items: center; justify-content: center; min-width: 0; width: 100%; min-height: 24px; padding: 3px; text-align: center; font-size: 9px; line-height: 1.4; box-sizing: border-box; }
 /* Display-only local zoom (ui/spectrumZoomUi.ts): the top-bar toggle shares .btn.bar-btn
    and .btn.active with the keypad button; the overview is its own element between the plot
    and the waterfall split, right-aligned on wide screens, full width on narrow ones. */
@@ -736,12 +603,12 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .control-rail {
   position: relative;
   display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
-  width: 24px; height: 100%; overflow: hidden; padding: 1px 0;
+  width: max-content; min-width: 24px; height: 100%; overflow: hidden; padding: 1px 0;
   transition: width 0.12s ease;
 }
 /* Collapsed: take no layout width and cancel one flex gap, so the plot keeps exactly
    the width it would have without a rail; the arrow floats in the remaining gap. */
-.control-rail.collapsed { width: 0; margin-left: -12px; overflow: visible; }
+.control-rail.collapsed { width: 0; min-width: 0; margin-left: -12px; overflow: visible; }
 .control-rail.collapsed .rail-items { display: none; }
 .control-rail.collapsed .rail-toggle {
   position: absolute; left: 0; top: 1px; width: 12px; height: 26px;
@@ -756,6 +623,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   font-size: 11px; line-height: 1; cursor: pointer; border-radius: 3px;
 }
 .rail-toggle:hover { color: var(--text); border-color: var(--text); background: var(--btn-hover); }
+.rail-toggle .mc-icon { display: block; width: 12px; height: 12px; margin: auto; }
 .rail-items {
   display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto;
   min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
@@ -768,7 +636,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   flex: 0 0 auto; box-sizing: border-box;
   padding: 6px 0; border-radius: 3px; border: 1px solid var(--card-border);
   background: var(--panel-2); color: var(--label);
-  font-size: 10px; font-weight: bold; letter-spacing: 0.5px;
+  font-size: 10px; font-weight: bold; letter-spacing: 0.5px; line-height: normal;
   white-space: nowrap; cursor: pointer; user-select: none;
 }
 .rail-item:hover { color: var(--text); border-color: var(--text); background: var(--btn-hover); }
@@ -840,12 +708,12 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .marker-ops .param-row .btn { padding: 4px 4px; font-size: 12px; text-align: center; }
 .marker-ops .param-row .btn[data-action="mkr-peak"],
 .marker-ops .param-row .btn[data-action="mkr-valley"],
-.marker-ops .param-row .btn[data-action="mkr-center"] { width: 88px; min-width: 88px; }
+.marker-ops .param-row .btn[data-action="mkr-center"] { width: auto; min-width: 88px; }
 .marker-ops .param-row .btn[data-action="mkr-peak-left"],
 .marker-ops .param-row .btn[data-action="mkr-peak-right"],
 .marker-ops .param-row .btn[data-action="mkr-valley-left"],
 .marker-ops .param-row .btn[data-action="mkr-valley-right"] { width: 34px; min-width: 34px; padding: 4px 0; }
-.marker-ops .param-row label { min-width: 48px; }
+.marker-ops .param-row label { flex-basis: 48px; min-width: min-content; }
 .mkr-gap { width: 34px; flex-shrink: 0; }   /* 间隔一个按钮宽度 */
 .ref-step-btn { min-width: 28px; padding: 2px 4px; }
 @keyframes refclk-flash { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 2px var(--dot-on); } }
@@ -869,26 +737,27 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 #input-wf-lo:disabled, #input-wf-hi:disabled { opacity: 0.45; }
 #span-step-unit { min-width: 34px; }
 .param-row label { color: var(--label); font-size: 11px; min-width: 58px; }
-.density-settings { display: grid; grid-template-columns: 58px minmax(0, 1fr) 58px minmax(0, 1fr); gap: 4px; }
+.param-row > label { flex: 0 0 58px; min-width: min-content; line-height: normal; }
+.density-settings { display: grid; grid-template-columns: minmax(58px, max-content) minmax(0, 1fr) minmax(58px, max-content) minmax(0, 1fr); gap: 4px; }
 .density-settings label { min-width: 0; }
 .density-settings select { width: 100%; min-width: 0; box-sizing: border-box; }
 .density-settings[hidden] { display: none; }
-.density-layers-row { display: grid; grid-template-columns: 58px minmax(0, 120px) auto; justify-content: start; gap: 4px; }
+.density-layers-row { display: grid; grid-template-columns: minmax(58px, max-content) minmax(0, 120px) auto; justify-content: start; gap: 4px; }
 .density-layers-row select { width: 100%; min-width: 0; }
 .density-layers-row .btn { min-width: 58px; }
 #btn-density-more::after { content: ' v'; }
 #btn-density-more[aria-expanded="true"]::after { content: ' ^'; }
-#sdr-settings .sdr-volume-row, #sdr-settings .sdr-squelch-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 4px; align-items: center; }
+#sdr-settings .sdr-volume-row, #sdr-settings .sdr-squelch-row { display: grid; grid-template-columns: minmax(58px, max-content) minmax(0, 1fr) auto; gap: 4px; align-items: center; }
 #sdr-settings .sdr-volume-row { grid-template-columns: 58px minmax(0, 1fr) auto auto; }
 #sdr-settings .sdr-volume-row input, #sdr-settings .sdr-squelch-row input { width: 100%; min-width: 0; margin: 0; }
 #sdr-settings .sdr-squelch-row #cur-sdr-squelch { width: 9ch; }
 #sdr-settings .sdr-volume-row #btn-sdr-agc { min-width: 0; width: calc(7ch + 10px); box-sizing: border-box; padding: 3px 4px; white-space: nowrap; }
 #sdr-settings #btn-sdr-audio { white-space: nowrap; }
 #rta-freq-settings .param-row { flex-wrap: nowrap; align-items: center; }
-#rta-freq-settings .param-row label { min-width: 52px; }
+#rta-freq-settings .param-row label { flex-basis: 52px; min-width: min-content; }
 /* main control column: input == select */
 #rta-freq-settings input[type="number"],
-#rta-freq-settings select { width: 108px; height: 22px; box-sizing: border-box; }
+#rta-freq-settings select { width: 108px; min-height: 22px; height: auto; box-sizing: border-box; }
 /* One value column for the Center, IQ BW, Listen and Step rows. The column is 140px wide. This
    width holds the longest frequency ("1000.000000", 11 monospace digits) with spare room. The
    old box stretched to the panel and stayed mostly empty. All four rows keep the same width, so
@@ -933,7 +802,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .sdr-hint-note { color: var(--label); font-size: 11px; flex: 1 1 100%; }
 .sdr-channel-actions { padding-left: 62px; }
 .sdr-channel-buttons { display: flex; align-items: center; gap: 4px; width: 234px; max-width: 100%; min-width: 0; }
-.sdr-channel-buttons > .btn { display:inline-flex; align-items:center; justify-content:center; height:20px; min-height:20px; padding:2px 0; box-sizing:border-box; line-height:1; }
+.sdr-channel-buttons > .btn { display:inline-flex; align-items:center; justify-content:center; height:auto; min-height:20px; padding:2px 0; box-sizing:border-box; line-height:normal; }
 .sdr-channel-buttons > [data-action="sdr-workbench"] { flex: 1; min-width: 0; white-space: nowrap; }
 .sdr-channel-buttons > :is([data-action="sdr-overview"], [data-action="sdr-channel-add"], .sdr-channel-nav) { flex:0 0 24px; width:24px; }
 .sdr-channel-nav[hidden] { display: none; }
@@ -975,12 +844,12 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .control-rail.panel-hidden.collapsed .rail-toggle,
 .control-rail.panel-hidden.collapsed #panel-vis-toggle { left: auto; right: 0; }
 #rta-freq-settings .btn {
-  height: 22px; font-size: 11px; box-sizing: border-box; line-height: 1;
+  min-height: 22px; height: auto; font-size: 11px; box-sizing: border-box; line-height: normal;
   padding: 0 8px; display: inline-flex; align-items: center; justify-content: center;
 }
 #rta-freq-settings .unit-btn-group { gap: 2px; }
 #rta-freq-settings .unit-btn-group .btn,
-#rta-freq-settings .unit-btn-group .unit-btn { height: 22px; padding: 0 6px; }
+#rta-freq-settings .unit-btn-group .unit-btn { min-height: 22px; height: auto; padding: 0 6px; line-height: normal; }
 /* ▼/▲ step buttons: narrow and equal; Full/Set keep natural text width */
 #rta-freq-settings .btn[data-action="rta-span-down"],
 #rta-freq-settings .btn[data-action="rta-span-up"] { width: 24px; padding: 0; font-size: 10px; }
@@ -1009,7 +878,7 @@ body:not(.rta-mode) #trigger-panel .rta-only { pointer-events: none; opacity: 0.
 #limit-rows .limit-level { width: 66px; }
 #limit-rows .limit-del { padding: 2px 7px; }
 select {
-  background: var(--input-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%2300aa00' stroke-width='1.2' fill='none'/%3E%3C/svg%3E") no-repeat right 5px center;
+  background: var(--theme-select-arrow, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%2300aa00' stroke-width='1.2' fill='none'/%3E%3C/svg%3E") no-repeat right 5px center) var(--input-bg);
   color: var(--text); border: 1px solid var(--input-border); padding: 2px 16px 2px 4px;
   font-family: 'Courier New', monospace; font-size: 11px; border-radius: 2px;
   outline: none; cursor: pointer; appearance: none; -webkit-appearance: none;
@@ -1047,8 +916,8 @@ select:focus { border-color: var(--text); }
 .marker-table td.num { font-variant-numeric: tabular-nums; }
 .marker-table td.mk-cell { display: flex; align-items: center; gap: 4px; }
 .mk-cell { display: inline-flex; align-items: center; gap: 5px; font-weight: bold; }
-.marker-toggle { display: inline-flex; align-items: center; gap: 5px; min-width: 48px; height: 24px; padding: 2px 6px; vertical-align: middle; border: 1px solid var(--inner-border); border-radius: 3px; background: var(--input-bg); color: var(--muted); cursor: pointer; font-weight: bold; }
-.mk-active { width: 18px; height: 24px; padding: 0; vertical-align: middle; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--inner-border); cursor: pointer; font-size: 10px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+.marker-toggle { display: inline-flex; align-items: center; gap: 5px; min-width: 48px; min-height: 24px; height: auto; line-height: normal; padding: 2px 6px; vertical-align: middle; border: 1px solid var(--inner-border); border-radius: 3px; background: var(--input-bg); color: var(--muted); cursor: pointer; font-weight: bold; }
+.mk-active { min-width: 18px; width: auto; min-height: 24px; height: auto; padding: 0 2px; vertical-align: middle; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--inner-border); cursor: pointer; font-size: 10px; line-height: normal; display: inline-flex; align-items: center; justify-content: center; }
 .mk-active:hover { border-color: var(--marker-color, var(--inner-border)); color: var(--text); }
 .mk-active.active { color: var(--marker-color, var(--text)); font-size: 12px; }
 .marker-toggle:hover { border-color: var(--marker-color); color: var(--text); }

@@ -21,6 +21,7 @@ import urllib.request
 from contextlib import closing
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from playwright.sync_api import expect, sync_playwright
 from viewport_baseline import wait_ui_ready
 
@@ -126,7 +127,7 @@ def main() -> int:
                     page.mouse.move(1580, 980)
                     page.screenshot(path=str(args.out / f'{target}.png'))
                     if view == 'spectrum':
-                        page.locator('#btn-theme').click()
+                        toggle_theme(page)
                         page.wait_for_timeout(600)
                         page.screenshot(path=str(args.out / f'main_light{suffix}.png'))
                     if errors:

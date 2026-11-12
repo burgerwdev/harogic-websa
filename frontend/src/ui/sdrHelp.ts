@@ -19,13 +19,14 @@ export function toggleSdrHelp(): void {
     const render = () => {
       if (!panel) return;
       const group = (title: string, rows: string[][]) => `<h2>${title}</h2><dl>${rows.map(([key, description]) => `<dt>${key}</dt><dd>${description}</dd>`).join('')}</dl>`;
-      panel.body.innerHTML = `<p>${l('Main shortcuts apply in SDR outside text fields and dialogs. Holding A/L/R/I/V/? does not repeat the action.', '主界面快捷键在 SDR 模式下生效；编辑输入框和对话框时不触发。长按 A/L/R/I/V/? 不会重复执行。')}</p>`
+      panel.body.innerHTML = `<p>${l('Main shortcuts apply in SDR outside text fields and dialogs. Holding A/L/R/I/V/S/? does not repeat the action.', '主界面快捷键在 SDR 模式下生效；编辑输入框和对话框时不触发。长按 A/L/R/I/V/S/? 不会重复执行。')}</p>`
         + group(l('Channels', '信道管理'), [
           ['A', l('Save this frequency without listening. Already saved: keep its state.', '加入当前频点，不开启监听；已加入时保持现有状态。')],
           ['L', l('Save and listen; already saved: toggle listening.', '加入并监听；已加入时切换监听。')],
           ['R', l('Save and record audio; already saved: toggle audio recording.', '加入并录制音频；已加入时切换音频录制。')],
           ['I', l('Save and record IQ; already saved: toggle IQ recording.', '加入并录制 IQ；已加入时切换 IQ 录制。')],
           ['V', l('Show/hide the channel overview, including a popped-out overview. Hiding docks and closes the popup.', '显示／隐藏信道概览；已弹出时也有效，隐藏会收回并关闭独立窗口。')],
+          ['S', l('Show/hide Scan / Identify. Also works inside its window or popout; scanning continues while hidden.', '显示／隐藏扫描 / 识别浮窗；在其窗口或独立弹窗内也有效，隐藏后扫描继续。')],
           ['●L / ●R / ●IQ', l('Label indicators: listening / audio recording / IQ recording. These actions are independent.', '标签状态：监听／音频录制／IQ 录制；三个动作互相独立。')],
         ]) + group(l('Tuning & audio', '调谐与音频'), [
           ['← / →', l('Tune down/up by one step.', '按当前步进向下／向上调谐。')],

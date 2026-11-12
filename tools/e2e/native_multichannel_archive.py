@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from browser_preferences import toggle_theme
 from native_multichannel import api
 from native_multichannel_recording import finish, protocol, read_archive, setup, start, task, until
 from playwright.sync_api import expect, sync_playwright
@@ -134,7 +135,7 @@ def browser_gate(origin, saved, root, artifacts, sigmf_python):
         page.locator('#btn-lang').click()
         expect(child.locator('html')).to_have_attribute('lang', 'zh-CN')
         expect(compact.locator('[data-download]')).to_have_text('下载 SigMF')
-        page.locator('#btn-theme').click()
+        toggle_theme(page)
         expect(child.locator('html')).to_have_attribute('data-theme', 'light')
         child.screenshot(path=str(artifacts / 'archive-420-zh-light.png'))
         assert compact.locator('.mc-body').evaluate('(e)=>e.scrollWidth-e.clientWidth') == 0
