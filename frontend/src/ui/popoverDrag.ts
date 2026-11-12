@@ -13,6 +13,15 @@ export function enablePopoverDrag(popoverId: string): void {
   const pop = document.getElementById(popoverId);
   const head = pop?.querySelector('.gnss-popover-head') as HTMLElement | null;
   if (!pop || !head) return;
+  const bar = pop.closest<HTMLElement>('.info-bar, .dev-bar');
+  if (bar) {
+    // Glass bars form stacking contexts. Lift the containing bar while any
+    // detail is open so its children can cover the plots and control panels.
+    const syncLayer = () => bar.classList.toggle('detail-popover-open',
+      [...bar.querySelectorAll<HTMLElement>('.gnss-popover')].some(detail => !detail.hidden && detail.style.display !== 'none'));
+    new MutationObserver(syncLayer).observe(pop, { attributes: true, attributeFilter: ['style', 'hidden'] });
+    syncLayer();
+  }
   if (!head.querySelector('.window-opacity')) {
     const slider = document.createElement('input');
     slider.className = 'window-opacity';

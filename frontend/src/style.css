@@ -501,6 +501,7 @@ select:disabled { color: var(--label); }
 .gnss-popover .param-row[hidden] { display: none; }
 .gnss-popover .param-row label { min-width: 0; }
 .info-item { position: relative; }
+.info-bar.detail-popover-open, .dev-bar.detail-popover-open { position: relative; z-index: 100; }
 .screen-container {
   display: flex; flex-direction: row; gap: 12px; align-items: stretch;
   flex: 1 1 auto; min-height: 0;

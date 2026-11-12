@@ -55,6 +55,27 @@ def close_icon_is_centered(page) -> None:
     assert dx <= .5 and dy <= .5, (page.locator('html').get_attribute('data-theme'), dx, dy)
 
 
+def check_detail_popover_layers(page, theme: str) -> None:
+    def foreground(kind: str) -> None:
+        popover = page.locator(f'#{kind}-popover')
+        expect(popover).to_be_visible()
+        assert popover.evaluate("""e => {
+          const r=e.getBoundingClientRect();
+          return [.15,.5,.9].every(y => e.contains(document.elementFromPoint(r.x+r.width/2, r.y+r.height*y)));
+        }"""), (theme, kind, 'detail covered by another surface')
+
+    for kind in ['gnss', 'refclk', 'device']:
+        page.locator(f'[data-action="{kind}-detail"]').click()
+        foreground(kind)
+        page.locator(f'#{kind}-popover [data-action="{kind}-close"]').click()
+        expect(page.locator(f'#{kind}-popover')).not_to_be_visible()
+    page.locator('[data-action="gnss-detail"]').click()
+    page.locator('[data-action="refclk-detail"]').click()
+    page.locator('#refclk-popover [data-action="refclk-close"]').click()
+    foreground('gnss')
+    page.locator('#gnss-popover [data-action="gnss-close"]').click()
+
+
 def check_glass_optics(page) -> None:
     # A stable striped scene distinguishes real displacement from blur/tint alone.
     page.evaluate("""() => {
@@ -277,6 +298,7 @@ def main() -> int:
             if theme == 'mecha':
                 assert page.locator('.control-group').first.evaluate('e => getComputedStyle(e).clipPath') == 'none'
                 assert page.locator('.group-title').first.evaluate('e => getComputedStyle(e).textTransform') == 'none'
+            check_detail_popover_layers(page, theme)
             page.wait_for_function("""trace => {
               const canvas = document.getElementById('spectrum');
               const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
