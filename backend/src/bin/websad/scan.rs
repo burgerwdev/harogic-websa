@@ -6,14 +6,30 @@ use serde::Serialize;
 use rustfft::{num_complex::Complex32, FftPlanner};
 use receiver_workers::{BasebandConfig, ChannelConfig};
 const FFT:usize=65_536;
+const MAX_DISCOVERY_FFT:usize=FFT*4;
+fn discovery_fft(rate:f64)->usize {
+    [FFT,FFT*2,MAX_DISCOVERY_FFT].into_iter().find(|&n|rate/n as f64<=250.0).unwrap_or(MAX_DISCOVERY_FFT)
+}
+#[cfg(test)]
 const BLOCK:usize=FFT*5/2;
 const MAX_SIGNALS:usize=256;
 const MAX_IQ:usize=1_048_576; // complex f32: 8 MiB hard ceiling
 const MAX_RETAINED_FEATURE_SAMPLES:usize=262_144;
+const OBSERVATION_SECONDS:[f64;3]=[0.16,0.4,0.8];
+const EARLY_MARGIN_DB:f64=12.0;
+fn first_observation_stage(excess:f64)->usize {if excess>=EARLY_MARGIN_DB {0}else{OBSERVATION_SECONDS.len()-1}}
+
+#[path = "scan_latency.rs"]
+mod latency;
+use latency::FeatureBudget;
 
 #[cfg(test)]
 #[path = "scan_performance.rs"]
 mod performance;
+
+#[cfg(test)]
+#[path = "scan_noise.rs"]
+mod noise_tests;
 
 // Scale is calibration metadata, not source identity. The SDK can refresh it
 // without a tune, sample gap or new capture. Assemble each PSD at one scale,
@@ -29,9 +45,11 @@ struct Signal {
     excess_db:f64, power_v2_db:f64, activity:String, observed_hit_ratio:f64,
     label:String, verdict:String, identify_state:String, suggested_mode:Option<String>,
     protocol:Option<String>, receiver_available:bool,decoder_available:bool, receiver_uid:Option<String>,iq_receiver_uid:Option<String>, flags:Vec<String>,
-    source:String, data_source:&'static str, sampled_at_ms:Option<String>, evidence:Value,
+    source:String, data_source:&'static str, sampled_at_ms:Option<String>, evidence:Value, timing:Value,
     #[serde(skip)] stable:bool, #[serde(skip)] hits:u64, #[serde(skip)] observations:u64, #[serde(skip)] history:u8,
-    #[serde(skip)] last_seen:Option<Instant>, #[serde(skip)] created:Option<Instant>,
+    #[serde(skip)] last_seen:Option<Instant>, #[serde(skip)] created:Option<Instant>, #[serde(skip)] queued_at:Option<Instant>,
+    #[serde(skip)] probe_bandwidth_hz:f64,
+    #[serde(skip)] sampling_started:Option<Instant>,
 }
 impl Signal {
     fn advance_generation(&mut self){self.generation=self.generation.parse::<u64>().unwrap_or(0).saturating_add(1).to_string();}
@@ -41,17 +59,20 @@ impl Signal {
             excess_db:0.0,power_v2_db:-300.0,activity:"short".into(),observed_hit_ratio:0.0,
             label:"unknown".into(),verdict:"unknown".into(),identify_state:"idle".into(),suggested_mode:None,
             protocol:None,receiver_available:false,decoder_available:false,receiver_uid:None,iq_receiver_uid:None,flags:vec![],source:source.into(),data_source:"live_iq",
-            sampled_at_ms:None,evidence:json!({}),stable:false,hits:0,observations:0,history:0,last_seen:None,created:Some(Instant::now())}
+            sampled_at_ms:None,evidence:json!({}),timing:json!({}),stable:false,hits:0,observations:0,history:0,last_seen:None,created:Some(Instant::now()),queued_at:None,probe_bandwidth_hz:hi-lo,sampling_started:None}
     }
 }
 #[derive(Clone)]
 struct Region {lo:f64,hi:f64,origin:String,token:u64}
 struct Collector {id:String,token:u64,entry:sdr_pipeline::ChannelRegistryEntry,iq:Vec<f32>,
-    next_seq:Option<u32>,next_index:Option<u64>,first_index:Option<u64>,started:Instant,at:String}
-struct FeatureJob {id:String,token:u64,rate:f64,offset:f64,bandwidth:f64,iq:Vec<f32>,at:String,source:Value}
+    next_seq:Option<u32>,next_index:Option<u64>,first_index:Option<u64>,started:Instant,at:String,
+    stage:usize,in_flight:bool,attempt:u64,available_bandwidth:f64}
+struct FeatureJob {id:String,token:u64,rate:f64,offset:f64,bandwidth:f64,iq:Vec<f32>,at:String,source:Value,
+    stage:usize,attempt:u64,enqueued:Instant,sampling_started:Instant,wide_bandwidth:Option<f64>,limits:(f64,f64)}
 struct RawJob {job:display_fft::Job,token:u64}
 #[derive(Default)]
-struct Metrics {observations:u64,skipped:u64,observed_seconds:f64,cpu_seconds:f64,feature_cpu_seconds:f64,last_ms:f64,last_at:Option<String>,started:Option<Instant>,rate_hz:f64,overloads:u64,scale_updates:u64,iq_restarts:u64}
+struct Metrics {observations:u64,skipped:u64,observed_seconds:f64,cpu_seconds:f64,feature_cpu_seconds:f64,last_ms:f64,last_at:Option<String>,started:Option<Instant>,rate_hz:f64,overloads:u64,scale_updates:u64,iq_restarts:u64,
+    feature_jobs:u64,completed:u64,early_completed:u64,extended:u64}
 struct Data {
     capture:Value, signature:Value, meta:Option<display_fft::Meta>,token:u64,revision:u64,next:u64,
     tap_attached:bool,running:bool,state:String,range:Option<(f64,f64)>,channels:Vec<(f64,f64)>,auto:bool,threshold:f64,
@@ -60,33 +81,38 @@ struct Data {
     replies:VecDeque<(String,Value,Value)>,
     next_schedule:Instant,next_owner_tick:Instant,
     pressure_until:Option<Instant>,pressure_ticks:u32,last_queue_full:u64,
+    feature_budget:FeatureBudget,updates:tokio::sync::watch::Sender<u64>,fft_size:usize,
 }
 impl Default for Data {
-    fn default()->Self {Self{capture:json!({}),signature:Value::Null,meta:None,token:1,revision:0,next:0,tap_attached:false,running:false,state:"stopped".into(),range:None,channels:vec![],auto:true,threshold:8.0,signals:vec![],region:None,queue:VecDeque::new(),collector:None,metrics:Metrics{rate_hz:5.0,..Metrics::default()},background_reliable:false,truncated:0,reason:None,replies:VecDeque::new(),next_schedule:Instant::now(),next_owner_tick:Instant::now(),pressure_until:None,pressure_ticks:0,last_queue_full:0}}
+    fn default()->Self {Self{capture:json!({}),signature:Value::Null,meta:None,token:1,revision:0,next:0,tap_attached:false,running:false,state:"stopped".into(),range:None,channels:vec![],auto:true,threshold:8.0,signals:vec![],region:None,queue:VecDeque::new(),collector:None,metrics:Metrics{rate_hz:5.0,..Metrics::default()},background_reliable:false,truncated:0,reason:None,replies:VecDeque::new(),next_schedule:Instant::now(),next_owner_tick:Instant::now(),pressure_until:None,pressure_ticks:0,last_queue_full:0,feature_budget:FeatureBudget::default(),updates:tokio::sync::watch::channel(0).0,fft_size:FFT}}
 }
 impl Data {
+    fn changed(&self){self.updates.send_modify(|version|*version=version.wrapping_add(1));}
     fn cancel(&mut self){self.token+=1;self.queue.clear();self.collector=None;self.region=None;
-        for signal in &mut self.signals {if matches!(signal.identify_state.as_str(),"detecting"|"sampling"|"queued"|"waiting"|"analyzing") {signal.identify_state="cancelled".into();}}}
+        if self.reason.as_deref()==Some("no_signal_detected"){self.reason=None;}
+        for signal in &mut self.signals {if matches!(signal.identify_state.as_str(),"detecting"|"sampling"|"queued"|"waiting"|"analyzing") {signal.identify_state="cancelled".into();}}self.changed();}
     fn enqueue(&mut self,id:&str,front:bool)->Result<(),String> {
         if front {self.next_schedule=Instant::now();}
         if self.collector.as_ref().is_some_and(|c|c.id==id) {return Ok(());}
         self.queue.retain(|known|known!=id);
         if self.queue.len()>=32 {if front {if let Some(id)=self.queue.pop_back(){if let Some(s)=self.signals.iter_mut().find(|s|s.id==id){s.identify_state="budget_skipped".into();}}} else {return Err("identify queue full".into());}}
         if front {self.queue.push_front(id.into());} else {self.queue.push_back(id.into());}
-        if let Some(signal)=self.signals.iter_mut().find(|s|s.id==id) {signal.identify_state="queued".into();} Ok(())
+        if let Some(signal)=self.signals.iter_mut().find(|s|s.id==id) {if !matches!(signal.identify_state.as_str(),"queued"|"waiting"){signal.queued_at=Some(Instant::now());signal.timing=json!({});}signal.identify_state="queued".into();} Ok(())
     }
     fn snapshot(&self,service:&str,probe:bool)->Value {
         let rows:Vec<Value>=self.signals.iter().filter(|s|s.source=="region").chain(self.signals.iter().filter(|s|s.source!="region"&&(s.stable||s.history.count_ones()>=2||s.source=="channel"))).take(128).map(|s|{let mut row=json!(s);row.as_object_mut().unwrap().remove("evidence");row}).collect();
         json!({"service_id":service,"scan_id":format!("scan-{service}"),"revision":self.revision.to_string(),
             "capture":self.capture,"running":self.running,"state":self.state,"range":self.range.map(|(lo,hi)|json!({"low_hz":lo,"high_hz":hi})),
-            "fft_size":FFT,"bin_spacing_hz":self.meta.map(|m|m.rate/FFT as f64),"background_reliable":self.background_reliable,
+            "fft_size":self.fft_size,"bin_spacing_hz":self.meta.map(|m|m.rate/self.fft_size as f64),"background_reliable":self.background_reliable,
             "signals":rows,"truncated":self.truncated+self.signals.len().saturating_sub(128),"reason":self.reason,
             "probe_slots_used":usize::from(probe),"identify_queued":self.queue.len(),"auto_identify":self.auto,
             "statistics":{"observations":self.metrics.observations,"skipped":self.metrics.skipped,
                 "observed_seconds":self.metrics.observed_seconds,"analysis_cpu_seconds":self.metrics.cpu_seconds,
                 "feature_cpu_seconds":self.metrics.feature_cpu_seconds,"last_processing_ms":self.metrics.last_ms,
                 "last_observed_at_ms":self.metrics.last_at,"rate_hz":self.metrics.rate_hz,"overloads":self.metrics.overloads,
-                "elapsed_seconds":self.metrics.started.map(|t|t.elapsed().as_secs_f64()),"scale_updates":self.metrics.scale_updates,"iq_restarts":self.metrics.iq_restarts,"coverage":"intermittent"}})
+                "elapsed_seconds":self.metrics.started.map(|t|t.elapsed().as_secs_f64()),"scale_updates":self.metrics.scale_updates,"iq_restarts":self.metrics.iq_restarts,"coverage":"intermittent",
+                "feature_jobs":self.metrics.feature_jobs,"identifications_completed":self.metrics.completed,"early_completed":self.metrics.early_completed,"extended_observations":self.metrics.extended,
+                "feature_budget_wait_ms":self.feature_budget.wait(Instant::now()).as_secs_f64()*1000.0}})
     }
 }
 
@@ -102,6 +128,7 @@ impl Engine {
             while let Ok(work)=rx.recv() {
                 let cpu=receiver_workers::cpu_now();let start=Instant::now();
                 let config={let d=state.lock();if d.token!=work.token {continue;}(d.running,d.range,d.channels.clone(),d.region.clone().filter(|r|r.token==d.token),d.threshold)};
+                let n=discovery_fft(work.job.meta.rate);if psd.n!=n {psd=Psd::new(n);}
                 let spectrum=psd.compute(&work.job.iq,work.job.meta.rate,work.job.meta.scale);
                 let floor=psd.floor(work.job.meta,&spectrum);
                 let observation=prepare_observation(work.job.meta,&spectrum,config.0,config.1,&config.2,config.3,config.4,Some(&floor));
@@ -119,28 +146,62 @@ impl Engine {
             websa_channelizer::capture_scheduling::normal();
             let mut analyzer=FeatureAnalyzer::default();
             while let Ok(job)=fx.recv() {
-                if state.lock().token!=job.token {continue;}
+                let excess={let d=state.lock();if d.token!=job.token {continue;}d.signals.iter().find(|s|s.id==job.id).map_or(0.0,|s|s.excess_db)};
                 let cpu=receiver_workers::cpu_now();let start=Instant::now();
-                let mut result=match isolate_region(&job.iq,job.rate,job.offset,job.bandwidth) {
-                    Ok((iq,rate,delay))=>{let mut result=analyzer.analyze(&iq,rate,0.0);result.evidence["additional_filter_delay_seconds"]=json!(delay);result},
+                let mut early=false;
+                let mut result=match analyzer.observation(&job) {
+                    Ok((mut result,iq,rate,delay,bandwidth))=>{
+                        if job.stage+1<OBSERVATION_SECONDS.len()&&can_finish_early(&result,bandwidth,excess) {
+                            let half=(iq.len()/4)*2;
+                            let a=analyzer.analyze(&iq[..half],rate,0.0);
+                            let b=analyzer.analyze(&iq[half..],rate,0.0);
+                            early=a.mode==result.mode&&b.mode==result.mode
+                                &&can_finish_early(&a,bandwidth,excess)&&can_finish_early(&b,bandwidth,excess);
+                            result.evidence["consistent_independent_halves"]=json!(early);
+                        }
+                        result.evidence["additional_filter_delay_seconds"]=json!(delay);result.evidence["analysis_bandwidth_hz"]=json!(bandwidth);result
+                    },
                     Err(reason)=>Features{label:"unknown",verdict:"unknown",mode:None,evidence:json!({"reason":reason})}
                 };result.evidence["source"]=job.source;
                 let cost=cpu.zip(receiver_workers::cpu_now()).map_or(start.elapsed().as_secs_f64(),|(a,b)|b.saturating_sub(a) as f64/1e9);
-                let mut d=state.lock();if d.token!=job.token {continue;}
+                let mut d=state.lock();
                 d.metrics.feature_cpu_seconds+=cost;
-                d.next_schedule=Instant::now()+Duration::from_secs_f64(cost*10.0);
+                d.metrics.feature_jobs+=1;d.feature_budget.charge(cost,Instant::now());
+                if d.token!=job.token {continue;}
+                if d.signals.iter().find(|s|s.id==job.id).is_none_or(|s|s.sampling_started.is_some_and(|at|at!=job.sampling_started)){continue;}
+                let final_stage=job.stage+1==OBSERVATION_SECONDS.len();
+                if !final_stage&&!d.collector.as_ref().is_some_and(|c|c.id==job.id&&c.token==job.token&&c.attempt==job.attempt&&c.stage==job.stage&&c.in_flight){continue;}
+                if !final_stage&&!early {
+                    if let Some(c)=d.collector.as_mut(){c.stage+=1;c.in_flight=false;}
+                    if let Some(signal)=d.signals.iter_mut().find(|s|s.id==job.id&&s.identify_state=="analyzing"){signal.identify_state="sampling".into();}
+                    d.metrics.extended+=1;d.changed();continue;
+                }
+                if early {d.collector=None;}
+                result.evidence["observation_stage"]=json!(job.stage+1);result.evidence["early_exit"]=json!(early);
                 if let Some(signal)=d.signals.iter_mut().find(|s|s.id==job.id && s.identify_state=="analyzing") {
+                    if let Some(bw)=result.evidence["analysis_bandwidth_hz"].as_f64().filter(|&bw|bw>signal.analysis_bandwidth_hz) {
+                        signal.analysis_bandwidth_hz=bw;signal.advance_generation();
+                    }
+                    let now=Instant::now();let queued=signal.queued_at.unwrap_or(job.sampling_started);
+                    signal.timing=json!({"queue_ms":job.sampling_started.saturating_duration_since(queued).as_secs_f64()*1000.0,
+                        "sampling_ms":job.enqueued.saturating_duration_since(job.sampling_started).as_secs_f64()*1000.0,
+                        "feature_queue_ms":start.saturating_duration_since(job.enqueued).as_secs_f64()*1000.0,
+                        "processing_ms":start.elapsed().as_secs_f64()*1000.0,"total_ms":now.saturating_duration_since(queued).as_secs_f64()*1000.0,
+                        "observation_seconds":job.iq.len() as f64/(2.0*job.rate),"checkpoints":job.stage+1,"early_exit":early});
                     if let Some(hz)=refined_center(signal,&result) {
                         // Preserve a subset of the original analysis window on
                         // any later retry; never expand a user's selected band.
                         signal.analysis_bandwidth_hz=(signal.analysis_bandwidth_hz-2.0*(hz-signal.center_hz).abs()).max(50.0);
+                        signal.probe_bandwidth_hz=(signal.probe_bandwidth_hz-2.0*(hz-signal.center_hz).abs()).max(signal.analysis_bandwidth_hz);
                         signal.center_hz=hz;signal.advance_generation();
                     }
                     signal.label=result.label.into();if signal.protocol.is_none(){signal.verdict=result.verdict.into();}
                     if signal.protocol.is_none(){let next=result.mode.map(str::to_owned);if signal.suggested_mode!=next {signal.advance_generation();}signal.suggested_mode=next;}
                     if signal.protocol.is_none(){signal.receiver_available=result.mode.and_then(websa_channelizer::catalog::mode).is_some_and(|m|m.available);signal.decoder_available=false;}
                     let protocol_evidence=signal.evidence.get("protocol_evidence").cloned();signal.evidence=result.evidence;if signal.protocol.is_some(){if let Some(evidence)=protocol_evidence {signal.evidence["protocol_evidence"]=evidence;}}signal.identify_state="complete".into();signal.sampled_at_ms=Some(job.at);
+                    d.metrics.completed+=1;if early {d.metrics.early_completed+=1;}
                 }
+                d.changed();
             }
         }).expect("identify worker");
         Arc::new(Self{data,raw,features,skipped:AtomicU64::new(0)})
@@ -158,7 +219,10 @@ impl Engine {
                 // Only the copied analysis stream may have missed a frame.
                 // Retry from this frame within the original two-second lease;
                 // never join samples across the gap or reset the deadline.
-                c.iq.clear();c.first_index=None;c.at=recording::millis();d.metrics.iq_restarts+=1;
+                c.iq.clear();c.first_index=None;c.at=recording::millis();c.attempt+=1;
+                c.stage=first_observation_stage(d.signals.iter().find(|s|s.id==c.id).map_or(0.0,|s|s.excess_db));
+                c.in_flight=false;d.metrics.iq_restarts+=1;
+                if let Some(s)=d.signals.iter_mut().find(|s|s.id==c.id){s.identify_state="sampling".into();}
             }
             c.first_index.get_or_insert(index);
             let Some(native)=frame.native_iq() else {continue;};
@@ -166,60 +230,74 @@ impl Engine {
             c.next_seq=seq.checked_add(1);
             // Source index counts input samples, not output samples.
             c.next_index=Some(index+(native.samples.len()/2) as u64*(c.entry.input_rate/c.entry.output_rate).round() as u64);
-            let target=(c.entry.output_rate*0.8) as usize;
-            if c.iq.len()/2>=target.min(MAX_IQ) {
+            let target=((c.entry.output_rate*OBSERVATION_SECONDS[c.stage]).ceil() as usize).min(MAX_IQ);
+            if !c.in_flight&&c.iq.len()/2>=target&&d.feature_budget.wait(Instant::now()).is_zero() {
                 let source=json!({"data_source":"live_iq","capture_epoch":d.capture["epoch"],"channel_id":c.entry.channel_id.to_string(),"epoch":c.entry.epoch.to_string(),"center_hz":c.entry.frequency_hz,"sample_rate_hz":c.entry.output_rate,"first_input_index":c.first_index.map(|n|n.to_string()),"sample_time_kind":"host_receive_time"});
                 if let Some(s)=d.signals.iter_mut().find(|s|s.id==c.id) {
-                    let job=FeatureJob{id:c.id.clone(),token:c.token,rate:c.entry.output_rate,offset:s.center_hz-c.entry.frequency_hz,bandwidth:s.analysis_bandwidth_hz,iq:c.iq,at:c.at,source};
-                    s.identify_state=if self.features.try_send(job).is_ok() {"analyzing"} else {"budget_skipped"}.into();
-                }return;
+                    let final_stage=c.stage+1==OBSERVATION_SECONDS.len();
+                    let iq=if final_stage {std::mem::take(&mut c.iq)}else{c.iq[..2*target].to_vec()};
+                    let job=FeatureJob{id:c.id.clone(),token:c.token,rate:c.entry.output_rate,offset:s.center_hz-c.entry.frequency_hz,bandwidth:s.analysis_bandwidth_hz,iq,at:c.at.clone(),source,
+                        stage:c.stage,attempt:c.attempt,enqueued:Instant::now(),sampling_started:c.started,
+                        wide_bandwidth:(s.probe_bandwidth_hz>s.analysis_bandwidth_hz&&c.available_bandwidth+1e-6>=s.probe_bandwidth_hz&&c.entry.output_rate>=s.probe_bandwidth_hz*1.2).then_some(s.probe_bandwidth_hz),
+                        limits:(s.low_hz-s.center_hz,s.high_hz-s.center_hz)};
+                    match self.features.try_send(job) {
+                        Ok(())=>{s.identify_state="analyzing".into();c.in_flight=true;d.changed();if final_stage {return;}},
+                        Err(mpsc::TrySendError::Full(job))=>{if final_stage {c.iq=job.iq;}},
+                        Err(mpsc::TrySendError::Disconnected(_))=>{s.identify_state="unavailable".into();d.changed();return;}
+                    }
+                }
             }
         }
         d.collector=Some(c);
     }
 }
 
-pub(super) struct Tap {engine:Arc<Engine>,assembler:display_fft::Assembler,token:u64,next_start:u64,collecting:bool}
+pub(super) struct Tap {engine:Arc<Engine>,assembler:display_fft::Assembler,token:u64,next_start:u64,collecting:bool,meta:Option<display_fft::Meta>,rate_hz:f64}
 impl Tap {
-    fn new(engine:Arc<Engine>)->Self {Self{engine,assembler:Default::default(),token:0,next_start:0,collecting:false}}
+    fn new(engine:Arc<Engine>)->Self {Self{engine,assembler:Default::default(),token:0,next_start:0,collecting:false,meta:None,rate_hz:5.0}}
     pub fn push(&mut self,meta:display_fft::Meta,seq:u64,stamp:u64,iq:&[i16],warning:i32){
-        let Some(mut d)=self.engine.data.try_lock() else {if self.collecting {self.engine.skipped.fetch_add(1,Ordering::Relaxed);}self.assembler=Default::default();self.collecting=false;return;};
-        if !d.running&&d.region.is_none() || d.pressure_ticks>=3 {return;}
-        if d.capture["epoch"].as_str()!=Some(meta.epoch.to_string().as_str()) {return;}
-        if d.meta.is_some_and(|old|!same_capture(old,meta)) {d.cancel();for s in &mut d.signals {s.activity="stale".into();}d.meta=None;}
-        if d.meta.is_some_and(|old|old.scale!=meta.scale){d.metrics.scale_updates+=1;}
-        d.meta=Some(meta);
-        let token=d.token;let hz=d.metrics.rate_hz;
-        if self.token!=token {self.assembler=Default::default();self.token=token;self.next_start=0;self.collecting=false;}
-        drop(d);
+        // Once admitted, finish the bounded observation without consulting the
+        // analysis lock on every packet. Metadata changes still revalidate;
+        // cancellation is fenced by the job token in the worker.
+        if !self.collecting||self.meta!=Some(meta) {
+            let Some(mut d)=self.engine.data.try_lock() else {if self.collecting {self.engine.skipped.fetch_add(1,Ordering::Relaxed);}self.assembler=Default::default();self.collecting=false;return;};
+            if !d.running&&d.region.is_none() || d.pressure_ticks>=3 {return;}
+            if d.capture["epoch"].as_str()!=Some(meta.epoch.to_string().as_str()) {return;}
+            if d.meta.is_some_and(|old|!same_capture(old,meta)) {d.cancel();for s in &mut d.signals {s.activity="stale".into();}d.meta=None;}
+            if d.meta.is_some_and(|old|old.scale!=meta.scale){d.metrics.scale_updates+=1;}
+            d.meta=Some(meta);self.meta=Some(meta);self.rate_hz=d.metrics.rate_hz;
+            if self.token!=d.token {self.assembler=Default::default();self.token=d.token;self.next_start=0;self.collecting=false;}
+        }
         // Cadence belongs to the tap, not to partial assembly. A busy analysis
         // lock may discard a partial block but must never reset the duty cycle.
         if !self.collecting {
             if stamp<self.next_start {return;}
-            self.next_start=stamp.saturating_add((125_000_000.0/hz) as u64);self.collecting=true;self.assembler=Default::default();
+            self.next_start=stamp.saturating_add((125_000_000.0/self.rate_hz) as u64);self.collecting=true;self.assembler=Default::default();
         }
-        if let Some(job)=self.assembler.push_at(BLOCK,meta,seq,stamp,iq,warning,hz){
+        if let Some(job)=self.assembler.push_at(discovery_fft(meta.rate)*5/2,meta,seq,stamp,iq,warning,self.rate_hz){
             self.collecting=false;
-            if warning!=0 && warning!=-301 {if let Some(mut d)=self.engine.data.try_lock(){d.metrics.skipped+=1;d.metrics.overloads+=1;d.metrics.rate_hz=0.5;d.reason=Some("capture_pressure".into());}return;}
-            if self.engine.raw.try_send(RawJob{job,token}).is_err(){self.engine.skipped.fetch_add(1,Ordering::Relaxed);}
+            if job.warning!=0 && job.warning!=-301 {if let Some(mut d)=self.engine.data.try_lock(){d.metrics.skipped+=1;d.metrics.overloads+=1;d.metrics.rate_hz=0.5;d.reason=Some("capture_pressure".into());}return;}
+            if self.engine.raw.try_send(RawJob{job,token:self.token}).is_err(){self.engine.skipped.fetch_add(1,Ordering::Relaxed);}
         }
     }
 }
 
-struct Psd {n:usize,fft:Arc<dyn rustfft::Fft<f32>>,window:Vec<f32>,energy:f64,buffer:Vec<Complex32>,scratch:Vec<Complex32>,background:Vec<f64>,background_meta:Option<display_fft::Meta>}
+struct Psd {n:usize,fft:Arc<dyn rustfft::Fft<f32>>,window:Vec<f32>,energy:f64,buffer:Vec<Complex32>,scratch:Vec<Complex32>,background:Vec<f64>}
 impl Psd {
-    fn new(n:usize)->Self {let fft=FftPlanner::new().plan_fft_forward(n);let window:Vec<f32>=(0..n).map(|i|(0.5-0.5*(std::f64::consts::TAU*i as f64/n as f64).cos()) as f32).collect();
+    fn new(n:usize)->Self {let fft=FftPlanner::new().plan_fft_forward(n);let window:Vec<f32>=(0..n).map(|i|{
+        let phase=std::f64::consts::TAU*i as f64/n as f64;
+        // Strong HF carriers need low sidelobes as well as fine bins, otherwise
+        // leakage joins the skirts of neighbouring stations. Feature FFTs keep
+        // their own windows; this is only the power-normalized discovery PSD.
+        (0.35875-0.48829*phase.cos()+0.14128*(2.0*phase).cos()-0.01168*(3.0*phase).cos()) as f32
+    }).collect();
         let energy=window.iter().map(|w|(*w as f64).powi(2)).sum();let scratch=vec![Complex32::default();fft.get_inplace_scratch_len()];
-        Self{n,fft,window,energy,buffer:vec![Complex32::default();n],scratch,background:vec![],background_meta:None}}
+        Self{n,fft,window,energy,buffer:vec![Complex32::default();n],scratch,background:vec![]}}
     fn floor(&mut self,meta:display_fft::Meta,power:&[f64])->&[f64]{
-        let estimate=estimate_floor(meta,power);
-        if self.background_meta.is_none_or(|old|!same_capture(old,meta))||self.background.len()!=estimate.len(){self.background=estimate;}
-        else {for ((old,new),p) in self.background.iter_mut().zip(estimate).zip(power){
-            if let Some(previous)=self.background_meta { *old*=(meta.scale as f64/previous.scale as f64).powi(2); }
-            // Occupied bins cannot raise their own background. Decreases track
-            // faster than increases; source/ref/scale changes reset the model.
-            if new<*old {*old=0.9* *old+0.1*new;}else if *p<*old*3.0 {*old=0.98* *old+0.02*new;}
-        }}self.background_meta=Some(meta);&self.background
+        // Each estimate already pools many nearby frequency cells and four
+        // Welch segments. A historical low floor must not freeze when noise
+        // rises, nor outlive this observation's calibration scale.
+        self.background=estimate_floor(meta,power);&self.background
     }
     fn compute(&mut self,iq:&[i16],rate:f64,scale:f32)->Vec<f64>{
         let n=self.n;let mut power=vec![0.0;n];let mut segments=0;
@@ -234,17 +312,36 @@ impl Psd {
 }
 #[derive(Debug)]
 struct Detection {lo:f64,hi:f64,excess:f64,power:f64,edge:bool}
-/// Local lower quantiles resist narrow peaks; a global lower quantile prevents
-/// a broad occupied plateau from being incorporated into its own background.
+/// Guarded, frequency-local ordered statistics. The full capture's quietest
+/// frequencies are not a reference for another part of a sloping noise floor.
 fn estimate_floor(meta:display_fft::Meta,power:&[f64])->Vec<f64>{
     let n=power.len();let bin=meta.rate/n as f64;let start=meta.center-meta.rate/2.0;
     let first=((((meta.center-meta.bandwidth/2.0).max(0.0)-start)/bin).ceil() as usize).min(n);
     let end=(((meta.center+meta.bandwidth/2.0-start)/bin).floor() as usize).min(n);
     if end<=first {return vec![1e-30;n];}
-    let quantile=|values:&[f64]|{let mut a=values.to_vec();let k=a.len()/5;a.select_nth_unstable_by(k,|a,b|a.total_cmp(b));a[k].max(1e-30)};
-    let global=quantile(&power[first..end]);let mut background=vec![global;n];
-    for base in (first..end).step_by(512) {let stop=(base+512).min(end);let local=quantile(&power[base..stop]).min(global*4.0);
-        background[base..stop].fill(local);}
+    let half=(750_000.0/bin).ceil().clamp(1.0,n as f64) as usize;
+    let guard=(12_000.0/bin).ceil().max(4.0).min(half as f64) as usize;
+    let step=(half/4).max(32);
+    let mut work=Vec::with_capacity((2*half).min(n));let mut anchors:Vec<(usize,f64)>=Vec::new();
+    for at in (first..end).step_by(step).chain(std::iter::once(end-1)) {
+        if anchors.last().is_some_and(|&(previous,_)|previous==at){continue;}
+        work.clear();
+        work.extend_from_slice(&power[at.saturating_sub(half).max(first)..at.saturating_sub(guard).max(first)]);
+        work.extend_from_slice(&power[(at+guard+1).min(end)..(at+half+1).min(end)]);
+        if work.is_empty(){work.extend_from_slice(&power[first..end]);}
+        let k=work.len()/5;work.select_nth_unstable_by(k,|a,b|a.total_cmp(b));
+        // For the mean of four noise periodograms, q20/mean is approximately
+        // 0.5742 (Gamma shape 4). Correct its bias instead of using q20 as mean;
+        // otherwise ordinary noise itself sits about 2.4 dB above the floor.
+        anchors.push((at,(work[k]*1.7415634701060234).max(1e-30)));
+    }
+    let mut background=vec![anchors[0].1;n];
+    for pair in anchors.windows(2) {
+        let ((a,left),(b,right))=(pair[0],pair[1]);
+        let ratio=((right/left).ln()/(b-a) as f64).exp();let mut value=left;
+        for floor in &mut background[a..b] {*floor=value;value*=ratio;}
+    }
+    let &(last,value)=anchors.last().unwrap();background[last..].fill(value);
     background
 }
 #[cfg(test)]
@@ -281,7 +378,9 @@ fn detect_floor<'a>(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshol
         while lo>first && i-lo<limit && ratio[lo-1]>2.5 {lo-=1;}
         while hi<end && hi-last<limit && ratio[hi]>2.5 {hi+=1;}
         let gap=(1500.0/bin).ceil().max(4.0) as usize;
-        if let Some(previous)=runs.last_mut().filter(|r|lo<=r.1+gap.max((r.1-r.0)/8)) {previous.1=previous.1.max(hi);}
+        // A growing component must not grow its allowed gap too: that chains
+        // neighbouring HF stations into a band wider than any one probe.
+        if let Some(previous)=runs.last_mut().filter(|r|lo<=r.1+gap) {previous.1=previous.1.max(hi);}
         else {runs.push((lo,hi));}
         i=hi.max(i+1);
     }
@@ -294,11 +393,11 @@ fn detect_floor<'a>(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshol
     }
     (rows,background,occupied as f64/((end-first) as f64)<0.7)
 }
-struct Observation {incoming:Vec<(Detection,&'static str)>,reliable:bool,truncated:usize,origin:Option<String>}
+struct Observation {incoming:Vec<(Detection,&'static str)>,reliable:bool,truncated:usize,origin:Option<String>,fft_size:usize,empty_region:bool}
 fn prepare_observation(meta:display_fft::Meta,power:&[f64],running:bool,range:Option<(f64,f64)>,channels:&[(f64,f64)],region:Option<Region>,threshold:f64,floor:Option<&[f64]>)->Observation {
     let full=((meta.center-meta.bandwidth/2.0).max(0.0),meta.center+meta.bandwidth/2.0);
     let (regions,background,reliable)=detect_floor(meta,power,range.unwrap_or(full),threshold,floor);
-    let mut incoming=Vec::new();let mut truncated=0;let mut origin=None;
+    let mut incoming=Vec::new();let mut truncated=0;let mut origin=None;let mut empty_region=false;
     if running {
         if channels.is_empty(){incoming.extend(regions.into_iter().map(|r|(r,"scan")));}
         else {
@@ -313,10 +412,17 @@ fn prepare_observation(meta:display_fft::Meta,power:&[f64],running:bool,range:Op
         let (mut rows,_,_)=detect_floor(meta,power,(region.lo,region.hi),threshold,floor);
         rows.sort_by(|a,b|b.excess.total_cmp(&a.excess));
         truncated=rows.len().saturating_sub(8);rows.truncate(8);
-        if rows.is_empty(){rows.push(Detection{lo:region.lo,hi:region.hi,excess:0.0,power:0.0,edge:false});}
+        if rows.is_empty(){
+            // Preserve explicit, narrow IQ measurements below the discovery
+            // threshold. An empty wide search is not one giant RF signal.
+            let requested=Signal::new(0,region.lo,region.hi,"region");
+            if probe_channel(&requested,2,meta.rate,meta.center,meta.bandwidth,16).is_ok() {
+                rows.push(Detection{lo:region.lo,hi:region.hi,excess:0.0,power:0.0,edge:false});
+            } else {empty_region=true;}
+        }
         incoming.extend(rows.into_iter().map(|r|(r,"region")));origin=Some(region.origin);
     }
-    Observation{incoming,reliable,truncated,origin}
+    Observation{incoming,reliable,truncated,origin,fft_size:power.len(),empty_region}
 }
 impl Data {
     #[cfg(test)]
@@ -325,14 +431,14 @@ impl Data {
     }
     fn apply_observation(&mut self,meta:display_fft::Meta,ready:Observation) {
         let selected_bounds=self.region.as_ref().map(|r|(r.lo,r.hi));
-        self.metrics.observations+=1;self.metrics.observed_seconds+=BLOCK as f64/meta.rate;
+        self.fft_size=ready.fft_size;self.metrics.observations+=1;self.metrics.observed_seconds+=(self.fft_size*5/2) as f64/meta.rate;
         self.metrics.last_at=Some(recording::millis());if self.meta.is_none(){self.meta=Some(meta);}self.background_reliable=ready.reliable;self.truncated=ready.truncated;
         self.signals.retain(|s|s.source=="region"||s.activity!="stale");
         if self.running {
             self.state="running".into();
             for s in self.signals.iter_mut().filter(|s|s.source!="region"&&s.activity!="ignored"&&s.activity!="stale") {s.observations+=1;s.history=(s.history<<1)&7;if s.last_seen.is_some_and(|t|t.elapsed()>Duration::from_secs(1)){s.activity="unseen".into();}}
         }
-        if let Some(origin)=ready.origin {self.region=None;self.signals.retain(|s|s.identify_state!="detecting");self.truncated=ready.truncated;self.reason=Some(format!("live_iq_{origin}"));}
+        if let Some(origin)=ready.origin {self.region=None;self.signals.retain(|s|s.identify_state!="detecting");self.truncated=ready.truncated;self.reason=Some(if ready.empty_region{"no_signal_detected".into()}else{format!("live_iq_{origin}")});}
         let incoming=ready.incoming;
         let now=Instant::now();let mut auto_queue=Vec::new();
         for (r,source) in incoming {
@@ -349,15 +455,23 @@ impl Data {
                 // for its audio sidebands, bounded by the user's selected band.
                 let scope=if source=="region"{selected_bounds}else{None}.unwrap_or(((meta.center-meta.bandwidth/2.0).max(0.0),meta.center+meta.bandwidth/2.0));
                 s.analysis_bandwidth_hz=if source=="channel"{s.bandwidth_hz}else{s.bandwidth_hz.max(12_000.0).min(2.0*(s.center_hz-scope.0).min(scope.1-s.center_hz)).max(s.bandwidth_hz)};
+                // A few milliseconds of FM occupancy need not cover its next
+                // modulation excursion. Keep a wider, bounded source available
+                // for a dedicated pilot check, while retaining the narrow test
+                // for every signal that lacks that evidence.
+                let capture=((meta.center-meta.bandwidth/2.0).max(0.0),meta.center+meta.bandwidth/2.0);
+                s.probe_bandwidth_hz=if source!="channel"&&r.hi-r.lo>=40_000.0&&s.analysis_bandwidth_hz<180_000.0
+                    &&s.center_hz-90_000.0>=scope.0&&s.center_hz+90_000.0<=scope.1
+                    &&s.center_hz-117_000.0>=capture.0&&s.center_hz+117_000.0<=capture.1 {180_000.0}else{s.analysis_bandwidth_hz};
             }
             // Keep reception advice stable under ordinary bin jitter.
             s.excess_db=r.excess;s.power_v2_db=10.0*r.power.max(1e-30).log10();
             let active=r.excess>=if s.hits>0 {5.0}else if source=="channel"{self.threshold}else{self.threshold-3.0};
             if active {s.hits+=1;s.history|=1;s.stable|=s.history.count_ones()>=2;s.last_seen=Some(now);s.activity=if source=="region"||s.stable{"active"}else{"short"}.into();}else if source=="channel"&&s.hits==0{s.activity="unseen".into();}
             s.observations=s.observations.max(1);s.observed_hit_ratio=s.hits as f64/s.observations as f64;s.observed_hit_ratio=s.observed_hit_ratio.min(1.0);
-            if source=="region"{s.activity=if active{"active"}else{"not_detected"}.into();s.flags.push("current_samples".into());}
+            if source=="region"{s.activity=if active{"active"}else{"not_detected"}.into();s.flags.push("current_samples".into());if r.power==0.0{s.flags.push("requested_window".into());}}
             if r.edge&&!s.flags.iter().any(|f|f=="capture_edge"){s.flags.push("capture_edge".into());}
-            if (s.center_hz-meta.center).abs()<meta.rate/FFT as f64*2.0&&!s.flags.iter().any(|f|f=="possible_dc"){s.flags.push("possible_dc".into());}
+            if (s.center_hz-meta.center).abs()<meta.rate/self.fft_size as f64*2.0&&!s.flags.iter().any(|f|f=="possible_dc"){s.flags.push("possible_dc".into());}
             if source=="region" || (self.auto&&s.hits>=2&&s.identify_state=="idle") {auto_queue.push(s.id.clone());}
         }
         self.signals.retain(|s|s.source=="region"||s.activity=="ignored"||s.last_seen.or(s.created).is_some_and(|t|t.elapsed()<Duration::from_secs(30)));
@@ -365,6 +479,7 @@ impl Data {
         let (manual,background):(Vec<_>,Vec<_>)=auto_queue.into_iter().partition(|id|self.signals.iter().any(|s|s.id==*id&&s.source=="region"));
         for id in background {let _=self.enqueue(&id,false);}
         for id in manual.into_iter().rev() {let _=self.enqueue(&id,true);}
+        self.changed();
     }
 }
 
@@ -392,6 +507,20 @@ fn isolate_region(iq:&[f32],rate:f64,offset:f64,bandwidth:f64)->Result<(Vec<f32>
 }
 
 struct Features {label:&'static str,verdict:&'static str,mode:Option<&'static str>,evidence:Value}
+fn can_finish_early(result:&Features,bandwidth:f64,excess:f64)->bool {
+    if excess<EARLY_MARGIN_DB {return false;}
+    let cv=result.evidence["envelope_cv"].as_f64().unwrap_or(f64::INFINITY);
+    let carrier=result.evidence["carrier_fraction"].as_f64().unwrap_or(0.0);
+    let deviation=result.evidence["frequency_deviation_rms_hz"].as_f64().unwrap_or(0.0);
+    match result.mode {
+        Some("am")=>carrier>0.25&&(0.04..0.65).contains(&cv),
+        // A short unmodulated carrier may be an AM speech pause. Keep its
+        // full observation instead of prematurely recommending CW reception.
+        Some("wfm")=>deviation>1000.0&&(result.evidence["fm_19khz_pilot"]==true&&cv<0.55
+            ||bandwidth>=60_000.0&&cv<0.15&&deviation>5000.0&&carrier<0.1),
+        _=>false,
+    }
+}
 fn refined_center(signal:&Signal,result:&Features)->Option<f64> {
     let key=match result.mode{Some("am")=>"carrier_peak_offset_hz",Some("wfm")=>"residual_frequency_hz",_=>return None};
     let shift=result.evidence[key].as_f64()?;let hz=signal.center_hz+shift;
@@ -412,6 +541,23 @@ impl FeatureFft {
 #[derive(Default)]
 struct FeatureAnalyzer {ffts:BTreeMap<usize,FeatureFft>,fm:Vec<f64>}
 impl FeatureAnalyzer {
+fn observation(&mut self,job:&FeatureJob)->Result<(Features,Vec<f32>,f64,f64,f64),String> {
+    let (narrow,rate,delay)=isolate_region(&job.iq,job.rate,job.offset,job.bandwidth)?;
+    let original=self.analyze(&narrow,rate,0.0);
+    let fm_or_unknown=original.label=="unknown"||matches!(original.mode,Some("wfm"|"nfm"));
+    if let Some(bandwidth)=job.wide_bandwidth.filter(|_|fm_or_unknown) {
+        if let Ok((iq,rate,delay))=isolate_region(&job.iq,job.rate,job.offset,bandwidth) {
+            let mut result=self.analyze(&iq,rate,0.0);
+            let shift=result.evidence["residual_frequency_hz"].as_f64().unwrap_or(f64::INFINITY);
+            let cv=result.evidence["envelope_cv"].as_f64().unwrap_or(f64::INFINITY);
+            if result.mode==Some("wfm")&&result.evidence["fm_19khz_pilot"]==true&&cv<0.25&&shift>=job.limits.0&&shift<=job.limits.1 {
+                result.evidence["wide_pilot_check"]=json!(true);
+                return Ok((result,iq,rate,delay,bandwidth));
+            }
+        }
+    }
+    Ok((original,narrow,rate,delay,job.bandwidth))
+}
 fn carrier_line(&mut self,iq:&[f32],rate:f64)->(f64,f64) {
     let size=(iq.len()/2).next_power_of_two().min(16384)/2;
     if size<1024{return(0.0,0.0);}
@@ -445,7 +591,7 @@ fn stereo_pilot(&mut self,fm:&[f64],rate:f64)->bool {
 }
 fn analyze(&mut self,iq:&[f32],rate:f64,offset:f64)->Features {
     let n=iq.len()/2;let unknown=|evidence|Features{label:"unknown",verdict:"unknown",mode:None,evidence};
-    if n<4096 || !rate.is_finite() || rate<=0.0 {return unknown(json!({"reason":"insufficient_iq"}));}
+    if n<1024 || !rate.is_finite() || rate<=0.0 {return unknown(json!({"reason":"insufficient_iq"}));}
     let mut fm=std::mem::take(&mut self.fm);fm.clear();fm.reserve_exact(n-1);
     let mut amp_sum=0.0;let mut power_sum=0.0;let mut prev=Complex32::default();
     for (i,v) in iq.chunks_exact(2).enumerate(){
@@ -466,16 +612,27 @@ fn analyze(&mut self,iq:&[f32],rate:f64,offset:f64)->Features {
     // Discrete discriminator plateaus are only a family hint. Require most
     // samples near 2/4 narrow clusters so sinusoidal FM is not called FSK.
     let mut histogram=[0usize;128];let spread=(deviation*4.0).max(1.0);
-    for f in &fm {let i=((*f/spread+0.5)*128.0).floor() as isize;if (0..128).contains(&i){histogram[i as usize]+=1;}}
+    let digital=!pilot&&power>=1e-30&&cv<0.18;
+    if digital&&deviation>150.0 {for f in &fm {let i=((*f/spread+0.5)*128.0).floor() as isize;if (0..128).contains(&i){histogram[i as usize]+=1;}}}
     let mut peaks:Vec<usize>=(2..126).filter(|&i|histogram[i]>histogram[i-1]&&histogram[i]>=histogram[i+1]&&histogram[i]>fm.len()/25).collect();
     peaks.sort_by_key(|&i|std::cmp::Reverse(histogram[i]));
     let mut clusters=Vec::new();for i in peaks {if clusters.iter().all(|j:&usize|i.abs_diff(*j)>8){clusters.push(i);}if clusters.len()==4{break;}}
     let covered:usize=clusters.iter().map(|&i|histogram[i.saturating_sub(2)..=(i+2).min(127)].iter().sum::<usize>()).sum();
     let fsk=if covered as f64/fm.len() as f64>0.72&&deviation>150.0&&cv<0.18 {match clusters.len(){2=>Some("2FSK-like"),4=>Some("4FSK-like"),_=>None}}else{None};
     let mut moment2=Complex32::default();let mut moment4=Complex32::default();let mut moment1=Complex32::default();
-    for (i,v) in iq.chunks_exact(2).enumerate(){let z=Complex32::new(v[0],v[1]);let phase=-std::f64::consts::TAU*(offset+freq_mean)*i as f64/rate;let u=z/z.norm().max(1e-12)*Complex32::from_polar(1.0,phase as f32);moment1+=u;moment2+=u*u;moment4+=u*u*u*u;}
+    let phase_features=digital&&fsk.is_none()&&n>=4096;
+    if phase_features {
+        let step=-std::f64::consts::TAU*(offset+freq_mean)/rate;
+        let (sin,cos)=step.sin_cos();let (mut re,mut im)=(1.0f64,0.0f64);
+        for (i,v) in iq.chunks_exact(2).enumerate(){
+            let z=Complex32::new(v[0],v[1]);let u=z/z.norm().max(1e-12)*Complex32::new(re as f32,im as f32);
+            moment1+=u;moment2+=u*u;moment4+=u*u*u*u;
+            (re,im)=(re*cos-im*sin,re*sin+im*cos);
+            if i%1024==1023 {let norm=re.hypot(im);re/=norm;im/=norm;}
+        }
+    }
     let mut phase_line=0.0f64;
-    if cv<0.18 && moment1.norm() as f64/(n as f64)<0.3 {
+    if phase_features && moment1.norm() as f64/(n as f64)<0.3 {
         let size=4096;let work=self.ffts.entry(size).or_insert_with(||FeatureFft::new(size));let mut windows=0;
         for values in iq.chunks_exact(size*2).take(3) {
             for (i,v) in values.chunks_exact(2).enumerate(){let z=Complex32::new(v[0],v[1]);let u=z/z.norm().max(1e-12);work.buffer[i]=u*u*u*u;}
@@ -497,7 +654,7 @@ fn analyze(&mut self,iq:&[f32],rate:f64,offset:f64)->Features {
         else {("unknown","unknown",None)};
     let result=Features{label,verdict,mode,evidence:json!({"sample_rate_hz":rate,"samples":n,"duration_seconds":n as f64/rate,
         "envelope_cv":cv,"frequency_deviation_rms_hz":deviation,"residual_frequency_hz":freq_mean,"carrier_fraction":carrier,"carrier_peak_offset_hz":carrier_hz-offset,
-        "fm_19khz_pilot":pilot,"discriminator_clusters":clusters.len(),"cluster_sample_fraction":covered as f64/fm.len() as f64,"phase_fourth_power_line_fraction":phase_line,"phase_second_moment":moment2.norm() as f64/n as f64,"phase_fourth_moment":moment4.norm() as f64/n as f64,"protocol_evidence":[],"limitations":"Shape evidence does not confirm a protocol; short live observation."})};
+        "fm_19khz_pilot":pilot,"discriminator_clusters":clusters.len(),"cluster_sample_fraction":covered as f64/fm.len() as f64,"phase_fourth_power_line_fraction":phase_line,"phase_features_computed":phase_features,"phase_second_moment":phase_features.then_some(moment2.norm() as f64/n as f64),"phase_fourth_moment":phase_features.then_some(moment4.norm() as f64/n as f64),"protocol_evidence":[],"limitations":"Shape evidence does not confirm a protocol; short live observation."})};
     if fm.capacity()<=MAX_RETAINED_FEATURE_SAMPLES {self.fm=fm;}result
 }
 }
@@ -508,6 +665,25 @@ fn features_iq(iq:&[f32],rate:f64,offset:f64)->Features {
 
 pub(super) struct Probe {slot:u32,original:ChannelConfig,entry:sdr_pipeline::ChannelRegistryEntry}
 impl Probe {pub fn matches(&self,frame:&IqFrame)->bool {let h=frame.header();h.len()>=40&&u32::from_le_bytes(h[32..36].try_into().unwrap())==self.entry.channel_id&&u32::from_le_bytes(h[36..40].try_into().unwrap())==self.entry.epoch}}
+fn probe_channel(signal:&Signal,slot:u32,rate:f64,center:f64,bandwidth:f64,taps:usize)->Result<(ChannelConfig,f64),String> {
+    let build=|bw:f64| {
+        let mut config=ChannelConfig::for_slot(slot);config.enabled=true;config.processing_enabled=false;config.freq=signal.center_hz;
+        config.baseband=Some(BasebandConfig{passband_hz:bw,transition_hz:(bw*0.15).max(1000.0),minimum_rate_hz:(bw*1.4).max(48_000.0)});
+        let source=service_ddc::source_plan(rate,&config)?;
+        service_ddc::validate_source_frequency(center,bandwidth,rate,taps,config.freq,&source)?;
+        if source.plan().output_rate>1e6 {return Err("probe_bandwidth_budget".into());}
+        Ok((config,bw))
+    };
+    let measured=signal.analysis_bandwidth_hz.max(2000.0);
+    let preferred=signal.probe_bandwidth_hz.max(measured);
+    // The optional pilot window must not make an otherwise valid narrow
+    // candidate unavailable near a coarse-bin edge.
+    build(preferred).or_else(|error|if preferred>measured {build(measured)}else{Err(error)})
+}
+fn is_probe_passband_error(error:&str)->bool {
+    matches!(error,"baseband requirements exceed coarse rate"|"channel occupied bandwidth and transition exceed capture or coarse passband"
+        |"channel filter and transition exceed usable capture bandwidth"|"probe_bandwidth_budget")
+}
 impl DevState {
     pub(super) fn flush_scan_control(&mut self,app:&App) {
         if !self.pending_receiver.audio.is_empty() || !self.pending_receiver.decode.is_empty() {service_stream::deliver_retiring(self,app);}
@@ -551,22 +727,25 @@ impl DevState {
             d=engine.data.lock();
         }
         let (pressure,queue_full)=self.pipeline.as_ref().map_or((false,0),|p|p.scan_pressure());
+        let pressure=pressure||self.recordings.as_ref().is_some_and(|manager|manager.scan_pressure());
         if pressure || queue_full>d.last_queue_full {d.pressure_until=Some(Instant::now()+Duration::from_secs(2));d.pressure_ticks=d.pressure_ticks.saturating_add(1);d.metrics.overloads+=1;}
         d.last_queue_full=queue_full;
         if d.pressure_until.is_some_and(|t|t>Instant::now()) {
+            let notify=d.reason.as_deref()!=Some("capture_pressure")||(d.pressure_ticks>=3&&d.state!="throttled");
             d.metrics.rate_hz=2.0;d.reason=Some("capture_pressure".into());
             if let Some(c)=d.collector.take(){let _=d.enqueue(&c.id,true);}
             if d.pressure_ticks>=3 {d.state="throttled".into();}
+            if notify {d.changed();}
             drop(d);let _=self.retire_scan_probe();return;
         } else if d.pressure_until.take().is_some(){d.pressure_ticks=0;d.reason=None;d.metrics.rate_hz=5.0;}
         let timed_out=d.collector.as_ref().is_some_and(|c|c.started.elapsed()>Duration::from_secs(2));
-        if timed_out {if let Some(c)=d.collector.take(){if let Some(s)=d.signals.iter_mut().find(|s|s.id==c.id){s.identify_state="insufficient_iq".into();}}}
+        if timed_out {if let Some(c)=d.collector.take(){if let Some(s)=d.signals.iter_mut().find(|s|s.id==c.id){s.identify_state="insufficient_iq".into();}d.changed();}}
         let retire=self.scan_probe.is_some()&&d.collector.is_none();
         drop(d);
         if retire && self.retire_scan_probe().is_err(){return;}
         let mut d=engine.data.lock();
         if d.collector.is_some()||self.scan_probe.is_some(){return;}
-        if Instant::now()<d.next_schedule {return;}d.next_schedule=Instant::now()+Duration::from_millis(200);
+        if Instant::now()<d.next_schedule||!d.feature_budget.wait(Instant::now()).is_zero() {return;}d.next_schedule=Instant::now()+Duration::from_millis(50);
         let Some(id)=d.queue.front().cloned() else {return;};
         let Some(signal)=d.signals.iter().find(|s|s.id==id).cloned() else {d.queue.pop_front();return;};
         if signal.activity=="stale" {d.queue.pop_front();return;}
@@ -576,33 +755,34 @@ impl DevState {
             let plan=service_ddc::source_plan(self.capture_input_rate(),c).ok()?;
             let entry=registry.iter().find(|e|e.channel==c.channel&&e.input_rate==self.capture_input_rate())?;
             let covered=(signal.center_hz-c.freq).abs()+signal.analysis_bandwidth_hz/2.0<=plan.plan().occupied_bandwidth_hz/2.0;
-            (covered&&entry.output_rate<=1e6&&entry.output_rate>=6000.0&&entry.output_rate>=signal.analysis_bandwidth_hz*1.2).then_some(entry.clone())
+            (covered&&entry.output_rate<=1e6&&entry.output_rate>=6000.0&&entry.output_rate>=signal.analysis_bandwidth_hz*1.2)
+                .then_some((entry.clone(),plan.plan().occupied_bandwidth_hz-2.0*(signal.center_hz-c.freq).abs()))
         });
         let mut receiver=None;
-        let result=if let Some(entry)=reusable {receiver=self.receiver_uid_for_slot(entry.channel).map(str::to_owned);Ok(entry)} else {
+        let result=if let Some((entry,available))=reusable {receiver=self.receiver_uid_for_slot(entry.channel).map(str::to_owned);Ok((entry,available))} else {
             // Definitions reserve slots even when stopped or out of band.
             self.remember_receiver_streams();
             let free=(2..=MAX_CHANNELS as u32).find(|&slot|self.receiver_uid_for_slot(slot).is_none());
             if let Some(slot)=free {
-                let original=configs[(slot-1) as usize].clone();let mut config=ChannelConfig::for_slot(slot);
-                config.enabled=true;config.processing_enabled=false;config.freq=signal.center_hz;
-                let bw=signal.analysis_bandwidth_hz.max(2000.0);let transition=(bw*0.15).max(1000.0);
-                config.baseband=Some(BasebandConfig{passband_hz:bw,transition_hz:transition,minimum_rate_hz:(bw*1.4).max(48_000.0)});
-                service_ddc::source_plan(self.capture_input_rate(),&config).and_then(|source|{
-                    service_ddc::validate_source_frequency(self.capture_center(),self.capture_bandwidth(),self.capture_input_rate(),self.sdr_pfb_taps_per_phase,config.freq,&source)?;
-                    if source.plan().output_rate>1e6 {return Err("probe_bandwidth_budget".into());}
+                let original=configs[(slot-1) as usize].clone();
+                probe_channel(&signal,slot,self.capture_input_rate(),self.capture_center(),self.capture_bandwidth(),self.sdr_pfb_taps_per_phase).and_then(|(config,bw)|{
                     self.ddc_channel_command(move|ddc|ddc.configure_service_channel(config))?;
                     let entry=self.stream_registry().iter().find(|e|e.channel==slot).cloned().ok_or("probe admission produced no source")?;
-                    self.scan_probe=Some(Probe{slot,original,entry:entry.clone()});Ok(entry)
+                    self.scan_probe=Some(Probe{slot,original,entry:entry.clone()});Ok((entry,bw))
                 })
             } else {Err("capacity".into())}
         };
         let mut d=engine.data.lock();if d.token!=token{return;}
         match result {
-            Ok(entry)=>{d.queue.pop_front();d.reason=None;
-                if let Some(s)=d.signals.iter_mut().find(|s|s.id==id){s.identify_state="sampling".into();s.iq_receiver_uid=receiver;}
-                d.collector=Some(Collector{id,token,entry,iq:Vec::new(),next_seq:None,next_index:None,first_index:None,started:Instant::now(),at:recording::millis()});}
-            Err(error)=>{d.reason=Some(error.clone());if let Some(s)=d.signals.iter_mut().find(|s|s.id==id){s.identify_state=if error=="capacity"{"waiting"}else{"unavailable"}.into();s.evidence=json!({"reason":error});}
+            Ok((entry,available_bandwidth))=>{d.queue.pop_front();d.reason=None;
+                let started=Instant::now();
+                if let Some(s)=d.signals.iter_mut().find(|s|s.id==id){s.identify_state="sampling".into();s.iq_receiver_uid=receiver;s.sampling_started=Some(started);s.flags.retain(|f|f!="analysis_passband_limit");}
+                d.collector=Some(Collector{id,token,entry,iq:Vec::new(),next_seq:None,next_index:None,first_index:None,started,at:recording::millis(),stage:first_observation_stage(signal.excess_db),in_flight:false,attempt:0,available_bandwidth});d.changed();}
+            Err(error)=>{let next=if error=="capacity"{"waiting"}else{"unavailable"};let limited=is_probe_passband_error(&error);let reason=if limited{"analysis_passband_limit"}else{&error};
+                let notify=d.reason.as_deref()!=Some(reason)||d.signals.iter().any(|s|s.id==id&&s.identify_state!=next);
+                d.reason=Some(reason.into());if let Some(s)=d.signals.iter_mut().find(|s|s.id==id){s.identify_state=next.into();s.evidence=json!({"reason":reason,"detail":error});
+                    if limited&&!s.flags.iter().any(|f|f=="analysis_passband_limit"){s.flags.push("analysis_passband_limit".into());}}
+                if notify {d.changed();}
                 if error=="capacity"{d.queue.rotate_left(1);}else{d.queue.pop_front();}}
         }
     }
@@ -642,7 +822,7 @@ impl DevState {
                 let threshold=request["threshold_db"].as_f64().unwrap_or(d.threshold);if !(5.0..=20.0).contains(&threshold){return Err("threshold must be 5..20 dB".into());}
                 let mut channels=if request.get("channels").is_none(){d.channels.clone()}else{vec![]};
                 if let Some(list)=request["channels"].as_array(){if list.len()>256{return Err("channel table exceeds 256 entries".into());}for c in list{let r=read_range(c)?;
-                    if r.1-r.0<8.0*d.capture["input_rate_hz"].as_f64().unwrap()/FFT as f64{return Err("channel requires at least 8 FFT bins; reduce actual capture bandwidth".into());}channels.push(r);}}
+                    let rate=d.capture["input_rate_hz"].as_f64().unwrap();if r.1-r.0<8.0*rate/discovery_fft(rate) as f64{return Err("channel requires at least 8 FFT bins; reduce actual capture bandwidth".into());}channels.push(r);}}
                 d.cancel();d.range=range;d.channels=channels;d.threshold=threshold;d.auto=request["auto_identify"].as_bool().unwrap_or(d.auto);d.signals.retain(|s|s.source=="region");}
             "identify_region"=>{
                 let (lo,hi)=read_range(&request)?;
@@ -661,7 +841,7 @@ impl DevState {
                 if kind=="identify"{d.enqueue(&signal,true)?;}else{d.queue.retain(|id|id!=&signal);if d.collector.as_ref().is_some_and(|c|c.id==signal){d.collector=None;}if let Some(s)=d.signals.iter_mut().find(|s|s.id==signal){s.activity="ignored".into();}}}
             _=>return Err("unsupported scan command".into())
         }
-        d.revision+=1;drop(d);
+        d.revision+=1;d.changed();drop(d);
         self.retire_scan_probe()?;
         self.scan_tick();
         let mut d=engine.data.lock();let mut reply=d.snapshot(&self.receivers.boot,self.scan_probe.is_some());reply["request_id"]=json!(id);d.replies.push_back((id,request,reply.clone()));if d.replies.len()>128{d.replies.pop_front();}Ok(reply)
@@ -672,6 +852,24 @@ pub(super) async fn snapshot(State(app):State<Arc<App>>)->Response {
     match tokio::task::spawn_blocking(move||{let mut state=app.state.lock().unwrap();state.scan.get_or_insert_with(Engine::new);state.scan_tick();state.flush_scan_control(&app);state.scan.as_ref().map_or_else(||{
         let mut d=Data::default();d.capture=state.capture_snapshot();d.snapshot(&state.receivers.boot,false)
     },|engine|engine.data.lock().snapshot(&state.receivers.boot,state.scan_probe.is_some()))}).await {Ok(value)=>Json(value).into_response(),Err(error)=>state_worker_failed(error).into_response()}
+}
+// Only coalesced change notifications cross this connection. A slow observer
+// retains one watch value, never IQ or a backlog of serialized snapshots.
+pub(super) async fn events(State(app):State<Arc<App>>,headers:HeaderMap)->Response {
+    if !browser_access(&headers){return StatusCode::FORBIDDEN.into_response();}
+    let rx={
+        let mut state=app.state.lock_async().await.unwrap();
+        let engine=state.scan.get_or_insert_with(Engine::new);
+        let d=engine.data.lock();
+        if d.updates.receiver_count()>=8 {return StatusCode::TOO_MANY_REQUESTS.into_response();}
+        d.updates.subscribe()
+    };
+    let stream=futures_util::stream::unfold(rx,|mut rx|async move {
+        rx.changed().await.ok()?;
+        let version=*rx.borrow_and_update();
+        Some((Ok::<_,std::convert::Infallible>(axum::response::sse::Event::default().data(version.to_string())),rx))
+    });
+    axum::response::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()).into_response()
 }
 pub(super) async fn command(State(app):State<Arc<App>>,headers:HeaderMap,body:String)->Response {
     if !browser_access(&headers){return StatusCode::FORBIDDEN.into_response();}
@@ -704,6 +902,7 @@ impl Engine {
     pub(super) fn decoded(&self,frames:&[Vec<u8>],registry:&[sdr_pipeline::ChannelRegistryEntry],uids:&[(u32,String)]) {
         let Some(mut d)=self.data.try_lock() else{return;};
         let running=d.running;if !d.signals.iter().any(|s|s.accepts_protocol(running)){return;}
+        let mut changed=false;
         for frame in frames {
             if frame.len()<8||frame.len()>128*1024 {continue;}
             let Ok(envelope)=serde_json::from_slice::<Value>(&frame[8..]) else{continue;};
@@ -718,7 +917,7 @@ impl Engine {
                 let compatible=if protocol=="FT8" {let hz=entry.frequency_hz+event["frequencyHz"].as_f64().unwrap_or(f64::INFINITY);hz>=signal.low_hz&&hz<=signal.high_hz}
                     else {(signal.center_hz-entry.frequency_hz).abs()<signal.bandwidth_hz*0.25};
                 if !compatible {continue;}
-                let mode=envelope["mode"].as_str().map(str::to_owned);if signal.protocol.as_deref()!=Some(protocol)||signal.suggested_mode!=mode {signal.advance_generation();}
+                let mode=envelope["mode"].as_str().map(str::to_owned);if signal.protocol.as_deref()!=Some(protocol)||signal.suggested_mode!=mode {signal.advance_generation();changed=true;}
                 signal.protocol=Some(protocol.into());signal.verdict="confirmed".into();
                 signal.evidence["protocol_evidence"]=json!({"protocol":protocol,"kind":"running_decoder_valid_output","at_ms":recording::millis(),"source_epoch":entry.epoch.to_string(),
                     "rds_groups":event["rdsGroups"],"drm_fac_ok":event["status"]["facOk"],"ft8_text":event["text"]});
@@ -728,6 +927,9 @@ impl Engine {
                 signal.receiver_available=true;signal.decoder_available=true;
             }
         }
+        // Group counters are on-demand evidence; only changed summary fields
+        // wake observers, rather than every decoder status packet.
+        if changed {d.changed();}
     }
 }
 
@@ -751,8 +953,8 @@ mod tests {
         p.fill(1.0);p[405..430].fill(100.0);let found=detect(m,&p,range,8.0).0;assert_eq!(found.len(),1);assert!(found[0].edge);
     }
     #[test]
-    fn psd_integral_preserves_complex_power(){let n=4096;let mut psd=Psd::new(n);let iq:Vec<i16>=(0..n*5/2).flat_map(|i|{let p=std::f64::consts::TAU*100.0*i as f64/n as f64;[(10000.0*p.cos()) as i16,(10000.0*p.sin()) as i16]}).collect();
-        let p=psd.compute(&iq,1e6,1e-4);let integral=p.iter().sum::<f64>()*1e6/n as f64;assert!((integral-1.0).abs()<0.001,"{integral}");}
+    fn psd_integral_preserves_complex_power(){for n in [4096,MAX_DISCOVERY_FFT] {let mut psd=Psd::new(n);let iq:Vec<i16>=(0..n*5/2).flat_map(|i|{let p=std::f64::consts::TAU*100.25*i as f64/n as f64;[(10000.0*p.cos()) as i16,(10000.0*p.sin()) as i16]}).collect();
+        let p=psd.compute(&iq,1e6,1e-4);let integral=p.iter().sum::<f64>()*1e6/n as f64;assert!((integral-1.0).abs()<0.001,"n={n}: {integral}");}}
     #[test]
     fn capture_crossing_zero_never_exposes_negative_rf_candidates(){
         let m=display_fft::Meta{center:100000.0,..meta()};let mut p=vec![1.0;4096];p[810..830].fill(1000.0);p[2440..2460].fill(1000.0);
@@ -772,6 +974,38 @@ mod tests {
         s.sdr_channels=DevState::preset_service_channels();s.sdr_channels[0].freq=100e6;
         let configs=s.channel_configs();s.ddc=Some(SendDdc(Ddc::configured_service(100e6,50e6,&mut None,16,IQ_FS,&configs).unwrap()));s.scan=Some(Engine::new());s.scan_tick();s}
     fn request(s:&DevState,kind:&str,id:&str)->Value{let d=s.scan.as_ref().unwrap().data.lock();json!({"service_id":s.receivers.boot,"request_id":id,"type":kind,"capture_epoch":d.capture["epoch"],"scan_id":format!("scan-{}",s.receivers.boot),"expected_revision":d.revision.to_string()})}
+    #[test]
+    fn empty_wide_search_does_not_turn_the_requested_window_into_a_signal(){
+        let m=display_fft::Meta{epoch:1,generation:1,center:17_854_668.510262143,rate:62_500_000.0,bandwidth:50e6,scale:1.0};
+        let power=vec![1.0;MAX_DISCOVERY_FFT];
+        for (lo,hi,empty) in [(9e6,10e6,true),(9_494_000.0,9_506_000.0,false)] {
+            let mut d=Data::default();let region=Region{lo,hi,origin:"manual".into(),token:d.token};d.region=Some(region.clone());
+            let mut pending=Signal::new(1,lo,hi,"region");pending.identify_state="detecting".into();d.signals.push(pending);
+            let ready=prepare_observation(m,&power,false,None,&[],Some(region),8.0,None);assert_eq!(ready.empty_region,empty);
+            d.apply_observation(m,ready);
+            if empty {assert!(d.signals.is_empty());assert!(d.queue.is_empty());assert_eq!(d.reason.as_deref(),Some("no_signal_detected"));d.cancel();assert!(d.reason.is_none());}
+            else {assert_eq!(d.signals.len(),1);assert_eq!(d.signals[0].activity,"not_detected");assert!(d.signals[0].flags.iter().any(|f|f=="requested_window"));}
+        }
+    }
+    #[test]
+    fn unsupported_probe_stays_local_to_its_candidate_and_preserves_formal_streams(){
+        let mut s=state();let before=s.stream_registry().iter().map(|e|(e.channel,e.channel_id,e.epoch,e.frequency_hz)).collect::<Vec<_>>();
+        let engine=s.scan.as_ref().unwrap().clone();
+        {let mut d=engine.data.lock();let hz=100e6+BIN_SPACING*0.49;d.signals.push(Signal::new(1,hz-250000.0,hz+250000.0,"region"));d.enqueue("s1",true).unwrap();}
+        s.scan_tick();assert!(s.scan_probe.is_none());
+        let d=engine.data.lock();assert_eq!(d.reason.as_deref(),Some("analysis_passband_limit"));let signal=&d.signals[0];
+        assert_eq!(signal.identify_state,"unavailable");assert!(signal.flags.iter().any(|f|f=="analysis_passband_limit"));
+        assert_eq!(signal.evidence["reason"],"analysis_passband_limit");assert_eq!(d.metrics.feature_jobs,0);drop(d);
+        assert_eq!(before,s.stream_registry().iter().map(|e|(e.channel,e.channel_id,e.epoch,e.frequency_hz)).collect::<Vec<_>>());
+    }
+    #[test]
+    fn paused_ignore_notifies_shared_observers_without_waiting_for_another_psd(){
+        let mut s=state();let engine=s.scan.as_ref().unwrap().clone();
+        engine.data.lock().signals.push(Signal::new(1,99_999_000.0,100_001_000.0,"region"));
+        let updates=engine.data.lock().updates.subscribe();let mut r=request(&s,"ignore","ignore-notify");
+        r["signal_id"]=json!("s1");r["signal_generation"]=json!("1");s.scan_command(r).unwrap();
+        assert!(updates.has_changed().unwrap());assert_eq!(engine.data.lock().signals[0].activity,"ignored");
+    }
     #[test]
     fn commands_deduplicate_reject_stale_and_keep_single_shot_independent(){let mut s=state();let mut r=request(&s,"identify_region","region");r["low_hz"]=json!(99_990_000);r["high_hz"]=json!(100_010_000);r["origin"]=json!("waterfall");
         let reply=s.scan_command(r.clone()).unwrap();assert_eq!(reply["running"],false);assert_eq!(s.scan_command(r.clone()).unwrap(),reply);
@@ -836,12 +1070,12 @@ mod budget_tests {
     fn copied_iq_gap_restarts_contiguous_collection_without_extending_lease() {
         let data=Arc::new(PLMutex::new(Data::default()));let started=Instant::now();
         let entry=sdr_pipeline::ChannelRegistryEntry{channel:2,channel_id:7,epoch:1,frequency_hz:10e6,output_rate:10000.0,input_rate:10000.0,group_delay_samples:0.0,state:"active"};
-        {let mut d=data.lock();d.capture=json!({"epoch":"1"});let mut signal=Signal::new(1,10e6-1000.0,10e6+1000.0,"region");signal.identify_state="sampling".into();d.signals.push(signal);d.collector=Some(Collector{id:"s1".into(),token:d.token,entry,iq:vec![],next_seq:None,next_index:None,first_index:None,started,at:"0".into()});}
+        {let mut d=data.lock();d.capture=json!({"epoch":"1"});let mut signal=Signal::new(1,10e6-1000.0,10e6+1000.0,"region");signal.identify_state="sampling".into();signal.excess_db=20.0;d.signals.push(signal);d.collector=Some(Collector{id:"s1".into(),token:d.token,entry,iq:vec![],next_seq:None,next_index:None,first_index:None,started,at:"0".into(),stage:0,in_flight:false,attempt:0,available_bandwidth:2000.0});}
         let (raw,_)=mpsc::sync_channel(1);let (features,rx)=mpsc::sync_channel(1);let engine=Engine{data:data.clone(),raw,features,skipped:AtomicU64::new(0)};
         let frame=|seq,index,value|IqFrame::native(websa_channelizer::BasebandMagic::Aux,seq,10000.0,10e6,7,1,index,0.0,10000.0,vec![value;6000]).unwrap();
-        engine.iq(&[frame(1,0,1.0)]);engine.iq(&[frame(3,6000,2.0)]);
+        engine.iq(&[frame(1,0,1.0)]);let old=rx.try_recv().unwrap();engine.iq(&[frame(3,6000,2.0)]);
         {let d=data.lock();let c=d.collector.as_ref().unwrap();assert_eq!(c.started,started);assert_eq!(c.iq.len(),6000);assert_eq!(c.first_index,Some(6000));assert_eq!(d.metrics.iq_restarts,1);}
-        engine.iq(&[frame(4,9000,3.0),frame(5,12000,4.0)]);let job=rx.try_recv().unwrap();assert_eq!(job.iq.len(),18000);assert_eq!(job.iq[0],2.0);assert_eq!(job.source["first_input_index"],"6000");assert!(data.lock().collector.is_none());
+        engine.iq(&[frame(4,9000,3.0),frame(5,12000,4.0)]);let job=rx.try_recv().unwrap();assert_eq!(job.iq.len(),3200);assert_eq!(job.iq[0],2.0);assert_eq!(job.source["first_input_index"],"6000");assert_ne!(job.attempt,old.attempt);assert_eq!(data.lock().collector.as_ref().unwrap().started,started);
     }
     #[test]
     fn calibration_refresh_keeps_region_and_rescales_background() {
@@ -886,7 +1120,7 @@ mod budget_tests {
         let m=display_fft::Meta{epoch:1,generation:1,center:100e6,rate:62_500_000.0,bandwidth:50e6,scale:1e-4};let iq=vec![0i16;SDR_PACKET_SAMPLES*2];let mut jobs=0;
         for seq in 0..3900 {let stamp=seq*SDR_PACKET_SAMPLES as u64*2;
             if seq%40==25 {let _guard=data.lock();tap.push(m,seq,stamp,&iq,0);}else{tap.push(m,seq,stamp,&iq,0);}
-            if rx.try_recv().is_ok(){jobs+=1;}
+            if let Ok(job)=rx.try_recv(){assert_eq!(job.job.iq.len(),discovery_fft(m.rate)*5);jobs+=1;}
         }
         assert!((3..=6).contains(&jobs),"a 5 Hz tap produced {jobs} jobs in one second");
     }
@@ -904,7 +1138,8 @@ mod budget_tests {
         let m=display_fft::Meta{epoch:1,generation:1,center:100e6,rate:65536.0,bandwidth:52428.8,scale:1.0};
         let mut power=vec![1.0;FFT];power[33000..33100].fill(10.0);
         let mut d=Data::default();d.running=true;let start=m.center-m.rate/2.0;d.channels=vec![(start+33000.0,start+33100.0),(start+33000.0,start+33200.0)];
-        d.observe(m,&power);assert_eq!(d.signals.len(),2);assert!((d.signals[0].excess_db-10.0).abs()<1e-6);assert!((d.signals[1].excess_db-10.0*5.5f64.log10()).abs()<1e-6);assert_eq!(d.signals[1].activity,"unseen","a below-threshold channel window has no observed activity");assert_eq!(d.signals[1].observed_hit_ratio,0.0);
+        let floor=vec![1.0;FFT];let ready=prepare_observation(m,&power,true,None,&d.channels,None,8.0,Some(&floor));d.apply_observation(m,ready);
+        assert_eq!(d.signals.len(),2);assert!((d.signals[0].excess_db-10.0).abs()<1e-6);assert!((d.signals[1].excess_db-10.0*5.5f64.log10()).abs()<1e-6);assert_eq!(d.signals[1].activity,"unseen","a below-threshold channel window has no observed activity");assert_eq!(d.signals[1].observed_hit_ratio,0.0);
     }
 }
 
@@ -933,14 +1168,17 @@ mod availability_tests {
         let engine=Engine::new();let rate=48000.0;
         {let mut d=engine.data.lock();d.running=true;let mut signal=Signal::new(1,99_997_000.0,100_003_000.0,"region");signal.identify_state="analyzing".into();d.signals.push(signal);}
         let iq:Vec<f32>=(0..38400).flat_map(|i|{let p=std::f64::consts::TAU*1000.0*i as f64/rate;[(0.3*(1.0+0.5*p.cos())) as f32,0.0]}).collect();
-        engine.features.send(FeatureJob{id:"s1".into(),token:1,rate,offset:0.0,bandwidth:6000.0,iq,at:recording::millis(),source:json!({})}).unwrap();
+        engine.features.send(FeatureJob{id:"s1".into(),token:1,rate,offset:0.0,bandwidth:6000.0,iq,at:recording::millis(),source:json!({}),stage:2,attempt:0,enqueued:Instant::now(),sampling_started:Instant::now(),wide_bandwidth:None,limits:(-3000.0,3000.0)}).unwrap();
         let deadline=Instant::now()+Duration::from_secs(2);
         while engine.data.lock().signals[0].identify_state!="complete" {assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
         {let d=engine.data.lock();let s=&d.signals[0];assert_eq!(s.label,"AM-like");assert!(s.receiver_available);assert!(!s.decoder_available);assert!(s.protocol.is_none());}
         let registry=[sdr_pipeline::ChannelRegistryEntry{channel:1,channel_id:7,epoch:8,frequency_hz:100e6,output_rate:240000.0,input_rate:IQ_FS,group_delay_samples:0.0,state:"active"}];
         let frame=|groups:u32,epoch:u32|websa_channelizer::encode_decode_event(&serde_json::to_vec(&json!({"channel_id":7,"epoch":epoch,"mode":"wfm","event":{"type":"wfm-info","rdsLocked":true,"rdsGroups":groups}})).unwrap()).unwrap();
-        engine.decoded(&[frame(0,8),frame(3,9)],&registry,&[]);assert!(engine.data.lock().signals[0].protocol.is_none());
+        let mut updates=engine.data.lock().updates.subscribe();
+        engine.decoded(&[frame(0,8),frame(3,9)],&registry,&[]);assert!(engine.data.lock().signals[0].protocol.is_none());assert!(!updates.has_changed().unwrap());
         engine.decoded(&[frame(3,8)],&registry,&[]);let d=engine.data.lock();assert_eq!(d.signals[0].protocol.as_deref(),Some("RDS"));assert!(d.signals[0].decoder_available);drop(d);
+        assert!(updates.has_changed().unwrap());updates.borrow_and_update();
+        engine.decoded(&[frame(4,8)],&registry,&[]);assert!(!updates.has_changed().unwrap(),"counter-only updates must not flood observers");
         {let mut d=engine.data.lock();d.running=false;d.signals[0].protocol=None;d.signals[0].decoder_available=false;}
         engine.decoded(&[frame(4,8)],&registry,&[]);assert!(engine.data.lock().signals[0].protocol.is_none(),"paused snapshots must ignore late protocol output");
     }

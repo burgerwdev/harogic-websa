@@ -8,20 +8,66 @@ press Esc to cancel. Both views show the selected band. Frozen plots and the wat
 current IQ, not historical IQ. **I** remains the IQ recording shortcut.
 
 Scanning automatically identifies stable candidates within its budget; More settings can disable
-automatic identification. Discovery uses an independent 65,536-point Hann FFT and four 50%-overlapping
-Welch linear PSD segments, normally five observations per second. Discontinuities or receiver load
+automatic identification. Discovery uses an independent 65,536 / 131,072 / 262,144-point Blackman–Harris FFT,
+chosen from the actual input rate to keep bin spacing at or below 250 Hz, and four 50%-overlapping
+Welch linear PSD segments, normally five observations per second. At 62.5 MS/s this gives 238.42 Hz
+spacing without changing shared capture geometry or allocating another receiver. The low-sidelobe window
+keeps strong carrier leakage from joining neighbouring stations; PSD normalization still preserves power.
+Discontinuities or receiver load
 skip whole blocks, reduce cadence or pause analysis. This does not provide continuous short-burst
 capture across the band. Fixed frequency windows integrate linear power and require at least eight
 FFT bins; reduce actual capture bandwidth if necessary. Display zoom adds no resolution.
 Above-background margin is neither RF SNR nor uncalibrated dBm. Activity ratios count actual observations.
 
+The noise reference is local to each RF frequency: ordered statistics from nearby cells within
+±750 kHz, with a ±12 kHz guard, replace the old cap relative to the quietest part of the entire
+capture. The 20th percentile is corrected for the mean of four noise periodograms (about ×1.7416),
+and anchor values are interpolated in log power. An observation uses its current local reference;
+an earlier low floor cannot remain frozen after noise rises. Nearby reference cells may extend
+outside the selected search region, so changing the selection alone does not change the reference
+for a given frequency. This follows frequency-dependent noise without using a dense band average.
+
+Neighbouring components use a fixed merge gap rather than a gap that grows with the merged width;
+this prevents a run of HF stations from becoming one unprobeable band. A candidate exceeding one analysis passband
+stays unavailable with `analysis_passband_limit`; the UI asks for a narrower signal selection and blocks
+preview/add configurations that cannot fit. This is a per-candidate analysis limit, not a rejection of the
+whole selected discovery region. Optional wider FM pilot capture falls back to the original analysis
+width when only that width fits. PFB passband, rate, cost and formal receiver admission remain unchanged.
+When no peak is detected and the entire requested region cannot fit one probe, discovery returns
+`no_signal_detected` with no region candidate or probe. An explicit narrow IQ measurement remains
+available below the discovery threshold and is marked `requested_window` / `not_detected`.
+
 Identification first taps compatible existing baseband IQ before demodulation, otherwise borrowing
 an unused non-Current slot. Wider tapped IQ passes through the existing planned DDC for region filtering
-and decimation before feature analysis. Workers collect about 0.8 seconds of IQ, bounded by two seconds
-or 8 MiB, and limit background duty cycle using measured thread CPU time. Candidates reserve no formal
-slots; stopped saved receivers retain theirs. Temporary DDC uses the same geometry/cost admission.
+and decimation before feature analysis. Observation checkpoints are 160, 400 and 800 ms. Strong AM
+and broadcast FM evidence must agree across two independent halves before early completion;
+other candidates continue collecting the same contiguous IQ. Pure carriers retain the full observation
+to avoid prematurely suggesting CW during an AM speech pause. Gaps reset checkpoints without joining
+samples across the gap or extending the original two-second lease. Each IQ buffer remains bounded
+by 8 MiB. Features are computed on demand; verified FM pilots skip digital modulation features.
+Measured thread CPU time is charged to a 1/11-core average budget with at most 20 ms of saved CPU
+burst credit. Cancellation and new selections do not erase CPU debt. Receiver pressure still slows
+or pauses scanning first. Candidates reserve no formal slots; stopped saved receivers retain theirs.
+There is at most one temporary probe. Temporary DDC uses the same geometry/cost admission.
 Formal creation waits for bounded synchronous probe retirement and never reuses an unreleased slot.
 At sixteen receivers, discovery and compatible IQ reuse remain possible; other identification waits for resources.
+
+Candidates whose detection margin cannot qualify for early completion go directly to the full
+800 ms observation, avoiding short-window computations that cannot finish the task early. They
+remain eligible for modulation verdicts from the full observation.
+
+Scanning yields when queued plus in-flight recording data reaches one quarter of its existing
+byte/item budget or its oldest unfinished input reaches 250 ms. Recording's hard byte/item/age
+limits remain unchanged. Scan admission never waits for a recording lock or disk I/O, and resumes
+after the existing pressure cooldown once the backlog drains.
+
+Instantaneous occupancy need not cover the next FM excursion. For candidates at least 40 kHz wide,
+the same single probe may retain 180 kHz IQ when selection/capture geometry permits. The original
+window is analyzed first. Only unknown/FM-like results may adopt a wider result, requiring a pilot,
+low envelope variation and a center inside the original measured window. Existing AM/FSK/PSK
+verdicts remain; compatible narrow IQ can still be reused, without reserving another slot for the
+wide check. Sampling and compute budgets still apply. Center refinement also shrinks subsequent
+probes to stay within the original analysis bounds.
 
 Detection smooths linear spectra, expands toward background and merges nearby regions to keep AM
 sidebands and FM components together. Measured carrier width differs from the analysis passband:
@@ -74,6 +120,10 @@ zero do not display negative-frequency images.
   of the measured window midpoint.
 - `GET /api/sdr/scan/signals/{id}`: on-demand features, protocol evidence, actual IQ source and sample
   times. Times are host reception times, not calibrated RF UTC.
+- `GET /api/sdr/scan/events`: coalesced SSE change notifications, limited to eight subscriptions per
+  engine. A slow observer retains the latest version, without queued IQ or full snapshots. Visible
+  windows refresh immediately on notification, fall back to 500 ms polling while disconnected and
+  close the subscription when hidden.
 - `POST /api/sdr/scan`: `start`, `pause`, `stop`, `configure`, `identify`, `identify_region`,
   `cancel_region`, `ignore`, `clear`.
 
@@ -110,6 +160,14 @@ Fake mode replays independent basebands without shared RF IQ and supplies no sim
 Separate synthetic tests cover scanning algorithms. RF accuracy, duration and high-load capacity require
 qualification on the actual device, rate and receiver configuration.
 
+Completed rows expose `timing`: `queue_ms`, `sampling_ms`, `feature_queue_ms`, `processing_ms`,
+`total_ms`, `observation_seconds`, `checkpoints` and `early_exit`. Durations use the host monotonic
+clock; sampling time includes analysis/budget waits between checkpoints. Total time starts at
+identification enqueue and excludes discovery. `checkpoints` is the last observation stage (1–3),
+not the actual job count. Statistics also expose
+feature jobs, completions, early completions, extended observations and current CPU-budget wait.
+Early completion does not raise a modulation verdict's confidence or confirm a protocol.
+
 ## Validation
 
 `cargo test --release -j 1 --manifest-path backend/Cargo.toml --bin websad -- --test-threads=1`
@@ -118,9 +176,17 @@ and `tools/bench-signal-scan.py` require `WEBSA_SCAN_LIVE=1` and a running hardw
 workflow and 1/8/16-receiver measurements. Specify artifacts outside the checkout. The latter requires
 a single-receiver baseline, tags its own receivers and removes its recordings/receivers on exit.
 
+The performance tool's `--mixed-audio` uses AM/NFM/USB/LSB receivers and subscribes to every IQ and
+audio stream to check sequences, stream identities and exact sample continuity. A WFM Current also
+subscribes to decoding events. The default still
+adds IQ-only receivers. Both modes check Current IQ/audio recordings, full-capacity waiting,
+existing IQ reuse and formal creation preempting the temporary probe. Recording checks traverse all
+volumes and index pages, reconciling block counts, sample totals and positions across blocks.
+
 `tools/verify-broadcast-scan.py` is an optional local regression for 9–10 MHz AM and 100–107 MHz broadcast FM.
 It requires `WEBSA_SCAN_LIVE=1`, a single Current baseline and external `--artifacts`. It temporarily
 retunes/restores capture, checks multiple detections and modulation/pilot evidence, and repeats three
-independent region requests per band. Missing broadcasts must fail; this is not a generic CI test or
+independent region requests per band. Per-candidate first completion and first/last result latency
+are saved with 50 ms polling granularity, measured from after the command response. Missing broadcasts must fail; this is not a generic CI test or
 RF accuracy measurement. Browser gates must wait for region `complete`; cancelled, stale or other
 terminal states cannot count as successful identification.

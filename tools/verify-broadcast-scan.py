@@ -59,10 +59,15 @@ def command(kind, **fields):
 def collect(name, seconds, region=False):
     start = time.monotonic()
     timeline = []
+    completed = {}
     while time.monotonic() - start < seconds:
-        time.sleep(0.25)
+        time.sleep(0.05)
         s = api("/api/sdr/scan")
         timeline.append(s)
+        elapsed = time.monotonic() - start
+        for row in s["signals"]:
+            if row["identify_state"] == "complete" and (not region or row["source"] == "region"):
+                completed.setdefault(row["id"], dict(seconds=elapsed, mode=row["suggested_mode"], label=row["label"]))
         if region:
             rows = [r for r in s["signals"] if r["source"] == "region"]
             if rows and all(
@@ -79,6 +84,10 @@ def collect(name, seconds, region=False):
             ):
                 break
     (root / (name + ".json")).write_text(json.dumps(timeline, ensure_ascii=False, indent=2))
+    latency = dict(elapsed_seconds=time.monotonic() - start, completed=completed,
+                   first_complete_seconds=min((r["seconds"] for r in completed.values()), default=None),
+                   last_complete_seconds=max((r["seconds"] for r in completed.values()), default=None))
+    (root / (name + "-latency.json")).write_text(json.dumps(latency, ensure_ascii=False, indent=2))
     rows = [r for r in s["signals"] if not region or r["source"] == "region"]
     print(
         name,
@@ -141,8 +150,14 @@ try:
         assert all(r["activity"] != "stale" for r in regions), (
             "unchanged RF capture was invalidated"
         )
-        selected = next((r for r in known if lo + 150000 < r["center_hz"] < hi - 150000), None)
+        selected = max(
+            (r for r in known if r["activity"] == "active" and lo + 150000 < r["center_hz"] < hi - 150000),
+            key=lambda r: r["excess_db"], default=None,
+        )
+        assert selected is not None, name + " has no active interior broadcast for repeat validation"
         if selected:
+            report[name]["repeat_frequency_hz"] = selected["center_hz"]
+            report[name]["repeat_margin_db"] = selected["excess_db"]
             width = max(selected["bandwidth_hz"], 16000 if mode == "am" else 220000)
             hz = selected["center_hz"]
             details = []

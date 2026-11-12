@@ -51,8 +51,11 @@
 .sdr-scan-error {color:var(--text);font-size:11px;margin:0;flex-shrink:0;}
 .sdr-scan-empty {display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--label);padding:14px 6px;text-align:center;}
 .sdr-scan-empty .mc-icon {width:22px;height:22px;}.sdr-scan-empty p {margin:0;}.sdr-scan-empty small {font-size:11px;}
-.sdr-identify-menu {position:fixed;z-index:10000;display:flex;flex-direction:column;padding:4px;background:var(--panel-bg,var(--bg));border:1px solid var(--border);border-radius:4px;font-size:12px;box-shadow:0 4px 14px #0004;}
-.sdr-identify-menu button {text-align:left;min-height:30px;}
+.sdr-identify-menu {position:fixed;z-index:10000;display:flex;flex-direction:column;padding:4px;background:var(--panel);border:1px solid var(--card-border);border-radius:4px;font-size:12px;box-shadow:0 4px 14px #0004;}
+/* Menu items use theme highlights instead of the browser's native focus frame. */
+.sdr-identify-menu button {appearance:none;outline:none;border:0;background:transparent;text-align:left;min-height:30px;cursor:pointer;}
+.sdr-identify-menu button:is(:hover,:focus-visible) {background:var(--btn-hover);}
+.sdr-identify-menu button:focus-visible {box-shadow:inset 2px 0 var(--text);}
 #sdr-scan-toggle {position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:28px;}
 #sdr-scan-toggle[data-running=true]::after {content:'';position:absolute;right:3px;top:3px;width:4px;height:4px;border-radius:50%;background:var(--text);}
 #sdr-scan-toggle[aria-pressed=true] {background:var(--head-bg);}

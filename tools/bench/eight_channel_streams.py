@@ -24,7 +24,7 @@ def input_stride(input_rate, output_rate):
 
 
 class StreamMonitor:
-    def __init__(self, origin, snapshot, *, all_iq=False):
+    def __init__(self, origin, snapshot, *, all_iq=False, include_broadcast_decode=False):
         self.origin, self.snapshot = origin.replace('http', 'ws'), snapshot
         self.rows, self.errors = {}, []
         self.lock, self.ready = threading.Lock(), threading.Event()
@@ -32,8 +32,11 @@ class StreamMonitor:
         self.thread = None
         self.started = time.monotonic()
         self.iq_receivers = snapshot['receivers'] if all_iq else snapshot['receivers'][-1:]
+        self.decode_uids = {r['receiver_uid'] for r in snapshot['receivers']
+            if r['confirmed']['purpose'] == 'digital' or include_broadcast_decode
+            and any(p.get('mode') == 'wfm' for p in r['confirmed']['processors'])}
         self.expected_connections = sum(bool(r['confirmed']['processors']) for r in snapshot['receivers']) + len(self.iq_receivers)
-        self.expected_connections += sum(r['confirmed']['purpose'] == 'digital' for r in snapshot['receivers'])
+        self.expected_connections += len(self.decode_uids)
 
     def __enter__(self):
         self.thread = threading.Thread(target=lambda: asyncio.run(self.run()), daemon=True)
@@ -71,7 +74,7 @@ class StreamMonitor:
         for receiver in self.snapshot['receivers']:
             if receiver['confirmed']['processors']:
                 tasks.append(asyncio.create_task(self.consume(receiver, 'audio')))
-            if receiver['confirmed']['purpose'] == 'digital':
+            if receiver['receiver_uid'] in self.decode_uids:
                 tasks.append(asyncio.create_task(self.consume(receiver, 'decode')))
         tasks.extend(asyncio.create_task(self.consume(receiver, 'iq')) for receiver in self.iq_receivers)
         try:
@@ -120,6 +123,9 @@ class StreamMonitor:
                         with self.lock:
                             row['identity'], row['packets'] = identity, row['packets'] + 1
                             row['last_position'] = envelope['input_index']
+                            if event.get('type') == 'wfm-info':
+                                row['rds_groups_max'] = max(row.get('rds_groups_max', 0), event.get('rdsGroups', 0))
+                                row['rds_locked'] = event.get('rdsLocked', False)
                             if event.get('type') == 'ft8':
                                 row['recent_decodes'].append(event)
                                 row['recent_decodes'] = row['recent_decodes'][-32:]
@@ -167,7 +173,9 @@ class StreamMonitor:
                         if row['first_position'] is None:
                             row['first_position'] = str(position)
                         row['packets'] += 1; row['samples'] += count
-                        row['energy'] += float(np.dot(values, values))
+                        # A BLAS-backed dot can spawn a host-sized thread pool
+                        # for each packet and contaminate the reception bench.
+                        row['energy'] += float(np.einsum('i,i->', values, values))
                     last_seq, last_position, last_count = sequence, position, count
                     if kind == 'audio':
                         last_audio_index = audio_index

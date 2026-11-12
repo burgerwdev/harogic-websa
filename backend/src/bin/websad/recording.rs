@@ -474,6 +474,18 @@ impl Manager {
     pub(super) fn wants_results(&self) -> bool {
         self.lanes.iter().any(|h| h.lane.kind == "results" && !h.lane.queue.lock().unwrap().sealed)
     }
+    // Yield optional scan work well before a recorder's hard byte/item/age
+    // limit. Include the writer's in-flight reservation; never wait for I/O.
+    pub(super) fn scan_pressure(&self) -> bool {
+        self.lanes.iter().any(|handle| {
+            let lane=&handle.lane;
+            if lane.done.load(Ordering::Acquire) {return false;}
+            let Ok(queue)=lane.queue.try_lock() else {return true;};
+            let age=queue.in_flight.or_else(||queue.items.front().map(|item|item.at));
+            queue.bytes>=MAX_BYTES/4||queue.items.len()+queue.in_flight_items>=MAX_ITEMS/4
+                ||age.is_some_and(|at|at.elapsed()>=Duration::from_millis(250))
+        })
+    }
     fn admit_input(&self, uid: &str, kind: &str, input: WorkInput) {
         for handle in self.lanes.iter().filter(|h| h.lane.uid == uid && h.lane.kind == kind) {
             let lane = &handle.lane;
@@ -1490,6 +1502,22 @@ mod tests {
         manager.shutdown();
         drop(manager);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn scanning_yields_before_recording_backlog_failure_and_resumes_after_drain() {
+        let root=directory();let mut manager=Manager::open(root.clone()).unwrap();
+        manager.start("uid-pressure","service","pressure").unwrap().wait().unwrap();
+        let lane=manager.lanes[0].lane.clone();
+        assert!(!manager.scan_pressure());
+        {let mut queue=lane.queue.lock().unwrap();queue.bytes=MAX_BYTES/4;}
+        assert!(manager.scan_pressure());assert!(lane.queue.lock().unwrap().failure.is_none());
+        {let mut queue=lane.queue.lock().unwrap();queue.bytes=0;queue.in_flight=Some(Instant::now()-Duration::from_millis(300));}
+        assert!(manager.scan_pressure());assert!(!Lane::overdue(&lane.queue.lock().unwrap()));
+        {let mut queue=lane.queue.lock().unwrap();queue.in_flight=None;}
+        assert!(!manager.scan_pressure());
+        let id=manager.snapshots()[0]["task_id"].as_str().unwrap().to_owned();manager.stop(&id).unwrap();wait(&mut manager);
+        assert_eq!(manager.snapshots()[0]["state"],"completed");assert!(!manager.scan_pressure());
+        drop(manager);fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn byte_and_age_backlog_fail_only_the_lane_without_unbounded_queue() {

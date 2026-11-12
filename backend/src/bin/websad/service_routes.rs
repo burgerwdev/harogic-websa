@@ -26,6 +26,7 @@ pub(super) fn router(app: Arc<App>) -> Router {
         .route("/ws/audio", get(service_stream::audio_ws_handler))
         .route("/ws/decode", get(service_stream::decode_ws_handler))
         .route("/api/sdr/scan", get(super::scan::snapshot).post(super::scan::command))
+        .route("/api/sdr/scan/events", get(super::scan::events))
         .route("/api/sdr/scan/signals/{id}", get(super::scan::detail))
         .route("/api/sdr/plugins", get(channel_controls::plugins))
         .route(

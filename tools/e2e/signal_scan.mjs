@@ -14,7 +14,27 @@ const eventually = async (condition, message, timeout = 12000) => { const deadli
 const before = await api('/api/sdr/receivers?detail=live'); assert.equal(before.capture.state, 'running');
 const initial = new Set(before.receivers.map(r => r.receiver_uid)); const primary = before.receivers.find(r => r.display_number === 1);
 const browser = await chromium.launch({ executablePath: process.env.WEBSA_CHROMIUM ?? '/usr/bin/chromium', headless: true, args: ['--no-sandbox'] });
-const page = await browser.newPage({ viewport: { width: 1440, height: 980 } }); const errors = [], commands = [], gets = [];
+const page = await browser.newPage({ viewport: { width: 1440, height: 980 } }); const errors = [], commands = [], gets = [], notifications = [];
+let delayRegionReply = false, delayedSignal = '', finishDelayedReply, failDelayedReply, blockedCandidate = null, emptyRegionFixture = false;
+const delayedReply = new Promise((resolve, reject) => { finishDelayedReply = resolve; failDelayedReply = reject; });
+await page.route('**/api/sdr/scan', async route => {
+  const request = route.request();
+  if (request.method() === 'GET' && (blockedCandidate || emptyRegionFixture)) {
+    const response = await route.fetch(), value = await response.json(); value.signals = emptyRegionFixture ? [] : [blockedCandidate];
+    if (emptyRegionFixture) value.reason = 'no_signal_detected';
+    return route.fulfill({response,body:JSON.stringify(value),contentType:'application/json'});
+  }
+  if (!delayRegionReply || request.method() !== 'POST' || request.postDataJSON().type !== 'identify_region') return route.continue();
+  delayRegionReply = false;
+  try {
+    const response = await route.fetch();
+    const state = await eventually(async () => { const s = await api('/api/sdr/scan'); const r = s.signals.filter(r => r.source === 'region'); return r.length && r.every(r => r.identify_state === 'complete') ? s : false; }, 'Delayed command did not complete');
+    delayedSignal = state.signals.find(r => r.source === 'region').id;
+    await page.waitForTimeout(150);
+    await route.fulfill({ response }); finishDelayedReply();
+  } catch (error) { failDelayedReply(error); await route.abort().catch(() => {}); }
+});
+page.on('response', response => { if (response.url().endsWith('/api/sdr/scan/events')) notifications.push(response.status()); });
 page.on('pageerror', error => errors.push(error.message));
 page.on('request', request => { if (request.method() === 'POST') commands.push({ url: request.url(), body: request.postDataJSON() }); if (new URL(request.url()).pathname === '/api/sdr/scan' && request.method() === 'GET') gets.push(Date.now()); });
 page.setDefaultTimeout(10000);
@@ -28,6 +48,7 @@ try {
   await page.goto(origin); await page.waitForFunction(() => document.querySelector('#sdr-scan-toggle') && document.querySelector('#spectrum')?.dataset.sdrWindow !== '');
   await page.waitForTimeout(1500); await page.locator('#sdr-scan-toggle').click();
   const root = page.locator('#sdr-scan-window'); await root.waitFor({ state: 'visible' });
+  await eventually(async () => notifications.includes(200), 'Scan change notification connection did not open');
   await page.waitForFunction(() => document.querySelector('[data-scan-run]')?.disabled === false);
   assert.equal((await api('/api/sdr/scan')).running, false, 'Opening the window must not start scanning');
   const geometryBefore = await root.boundingBox();
@@ -41,8 +62,33 @@ try {
   await root.locator('[data-scan-select]').click();
   await page.mouse.move(c.x + c.width * .35, c.y + c.height * .5); await page.mouse.down(); await page.mouse.move(c.x + c.width * .37, c.y + c.height * .8, { steps: 10 });
   await page.screenshot({ path: `${artifacts}/选区-双图同步.png` }); await page.mouse.up();
-  await eventually(async () => (await api('/api/sdr/scan')).signals.some(s => s.source === 'region' && s.identify_state === 'complete' && s.activity !== 'stale'), 'One-shot identification did not finish');
+  await eventually(async () => { const s=await api('/api/sdr/scan'); return s.reason==='no_signal_detected'||s.signals.some(r => r.source === 'region' && r.identify_state === 'complete' && r.activity !== 'stale'); }, 'One-shot identification did not finish');
   let current = await api('/api/sdr/scan'); assert.equal(current.running, false); assert.equal(current.range, null); report.oneShot = current;
+  // Return the old command receipt after the completed-result notification.
+  // It must not leave a paused one-shot view stuck on the old placeholder.
+  delayRegionReply = true;
+  await page.evaluate(({ hz, epoch }) => document.dispatchEvent(new CustomEvent('websa:identify-region', { detail: { low_hz: hz - 2000, high_hz: hz + 2000, origin: 'manual', capture_epoch: epoch } })), { hz: before.capture.center_hz + 900000, epoch: before.capture.epoch });
+  await delayedReply;
+  await root.locator(`[data-signal="${delayedSignal}"][data-identify-state="complete"]`).waitFor({state:'visible'});
+  report.lateCommandReceipt = true;
+  // A genuine over-wide candidate must not offer an invalid configuration,
+  // including after choosing an explicit audio mode. An empty region is a
+  // completed discovery with no signal, not a cancelled/failed classification.
+  current=await api('/api/sdr/scan');
+  blockedCandidate = {...current.signals.find(r=>r.source==='region'),id:'wide-analysis-fixture',activity:'active',identify_state:'unavailable',
+    label:'unknown',suggested_mode:null,flags:['analysis_passband_limit'],bandwidth_hz:751495.0};
+  await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  const wideRow=root.locator('[data-signal="wide-analysis-fixture"]');await wideRow.waitFor({state:'visible'});
+  assert.match(await wideRow.innerText(),/analysis passband|单路分析通带/);
+  await wideRow.click();await root.locator('.sdr-scan-footer select').selectOption('am');
+  assert.equal(await wideRow.locator('[data-scan-add]').isDisabled(),true);
+  assert.equal(await wideRow.locator('[data-scan-listen]').isDisabled(),true);
+  blockedCandidate=null;emptyRegionFixture=true;await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await wideRow.waitFor({state:'detached'});report.analysisPassbandLimit=true;
+  await eventually(async()=>/No signal detected|选区内未发现信号/.test(await root.locator('.sdr-scan-empty').innerText()),'Empty region did not show a no-signal result');
+  assert.equal(await root.locator('[data-scan-add]').count(),0);report.noSignalRegionUI=true;
+  emptyRegionFixture=false;await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await root.locator(`[data-signal="${delayedSignal}"]`).waitFor({state:'visible'});
   assert.equal(commands.slice(baselineCommands).some(c => c.url.endsWith('/api/config')), false, 'Selection emitted a tuning command');
   let receivers = await api('/api/sdr/receivers?detail=live'); assert.equal(receivers.receivers.find(r => r.receiver_uid === primary.receiver_uid).stream.epoch, primary.stream.epoch);
   // A second selection replaces the temporary group and leaves reception alone.
@@ -130,7 +176,7 @@ try {
   report.finalPrimary = (await api('/api/sdr/receivers?detail=live')).receivers.find(r => r.receiver_uid === primary.receiver_uid);
   assert.equal(report.finalPrimary.reception?.interruptions ?? 0,primary.reception?.interruptions ?? 0,'Scan interrupted formal audio processing');
   assert.equal(await page.locator('#sdr-scan-toggle svg').count(),1);
-  report.browserErrors = errors; report.hiddenPolling = true; assert.deepEqual(errors, []);
+  report.browserErrors = errors; report.hiddenPolling = true; report.notificationResponses = notifications; assert(notifications.every(status => status === 200)); assert.deepEqual(errors, []);
 } catch (error) {
   await page.screenshot({path:`${artifacts}/失败现场.png`});
   report.failure=String(error); report.actionGeometry=await page.locator('.sdr-scan-row-actions').first().evaluate(e=>({cell:e.getBoundingClientRect().toJSON(),style:getComputedStyle(e).cssText,buttons:[...e.querySelectorAll('button')].map(b=>({box:b.getBoundingClientRect().toJSON(),padding:getComputedStyle(b).padding,display:getComputedStyle(b).display,position:getComputedStyle(b).position}))})).catch(()=>null);

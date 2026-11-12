@@ -2,10 +2,13 @@
 """Opt-in live SDR scan CPU/RSS, capacity-race and recording continuity gate."""
 
 import argparse
+import contextlib
 import json
 import os
 import pathlib
+import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -14,6 +17,7 @@ parser.add_argument("--origin", default="http://127.0.0.1:8080")
 parser.add_argument("--artifacts", type=pathlib.Path, required=True)
 parser.add_argument("--seconds", type=float, default=10)
 parser.add_argument("--warmup", type=float, default=3)
+parser.add_argument("--mixed-audio", action="store_true", help="Exercise AM/NFM/USB/LSB audio and monitor every IQ/audio stream")
 args = parser.parse_args()
 if os.environ.get("WEBSA_SCAN_LIVE") != "1":
     parser.error("set WEBSA_SCAN_LIVE=1; this exercises a live SDR")
@@ -72,6 +76,28 @@ def wait(condition, seconds=8):
     raise AssertionError("timed out waiting for live state")
 
 
+def recording_index(recording, task):
+    entries, volumes = [], []
+    track = task["tracks"][0]
+    for volume in track.get("volumes", []):
+        offset = 0
+        while True:
+            query = urllib.parse.urlencode(dict(volume=volume["index"], offset=offset))
+            page = api("/api/sdr/recordings/" + recording + "/index?" + query)
+            assert int(page["offset"]) == offset
+            assert int(page["next_offset"]) == offset + len(page["entries"])
+            entries.extend(page["entries"])
+            assert len(entries) <= 100000, "recording index exceeds bounded bench evidence"
+            offset = int(page["next_offset"])
+            if len(page["entries"]) < 128:
+                break
+        volumes.append(dict(index=volume["index"], blocks=offset))
+    assert len(entries) == int(track.get("blocks", 0)), "recording index was truncated"
+    samples = sum(int(entry["meta"]["clock"]["samples"]) for entry in entries)
+    assert samples == sum(int(segment.get("samples", 0)) for segment in track["segments"]), "recording sample totals differ"
+    return dict(entries=entries, volumes=volumes, samples=str(samples), complete=True)
+
+
 initial = receivers()
 assert initial["capture"]["state"] == "running"
 known = {r["receiver_uid"] for r in initial["receivers"]}
@@ -101,6 +127,7 @@ def sample():
     return dict(
         time=time.monotonic(),
         cpu=(int(fields[13]) + int(fields[14])) / os.sysconf("SC_CLK_TCK"),
+        bench_cpu=time.process_time(),
         rss=rss,
     )
 
@@ -125,6 +152,7 @@ def measure(label):
         label=label,
         seconds=last["time"] - start["time"],
         cpu_core_percent=100 * (last["cpu"] - start["cpu"]) / (last["time"] - start["time"]),
+        bench_core_percent=100 * (last["bench_cpu"] - start["bench_cpu"]) / (last["time"] - start["time"]),
         rss_mean=sum(s["rss"] for s in samples) / len(samples),
         rss_peak=max(s["rss"] for s in samples),
         receivers=r,
@@ -151,7 +179,7 @@ listen = primary["confirmed"]["baseband"]["frequency_hz"]
 
 def config(index):
     hz = center - 800000 + index * 50000
-    return dict(
+    result = dict(
         name=f"Scan bench {index}",
         color="#6b9b73",
         tags=[bench_tag],
@@ -160,6 +188,23 @@ def config(index):
         baseband=dict(frequency_hz=hz, passband_hz=8000, transition_hz=1000, minimum_rate_hz=24000),
         processors=[],
     )
+    if args.mixed_audio:
+        mode = ["am", "nfm", "usb", "lsb"][index % 4]
+        result["purpose"] = "listen"
+        result["processors"] = [dict(id=f"scan-bench-{index}", kind="demodulator",
+                                     mode=mode, bandwidth_hz=2400 if mode in ["usb", "lsb"] else 6000,
+                                     minimum_rate_hz=0, pcm_gain=0.7, agc=True, squelch_dbm=-120,
+                                     nr=False)]
+    return result
+
+
+def stream_monitor():
+    if not args.mixed_audio:
+        return contextlib.nullcontext(None)
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "bench"))
+    from eight_channel_streams import StreamMonitor
+
+    return StreamMonitor(args.origin, receivers(), all_iq=True, include_broadcast_decode=True)
 
 
 recordings = {}
@@ -187,11 +232,16 @@ try:
             receiver_command("create", config=config(len(receivers()["receivers"])))
         scan("pause")
         scan("cancel_region")
-        time.sleep(args.warmup)
-        off = measure(f"{count}-scan-off")
-        scan("start")
-        time.sleep(args.warmup)
-        on = measure(f"{count}-scan-on")
+        with stream_monitor() as monitor:
+            time.sleep(args.warmup)
+            off = measure(f"{count}-scan-off")
+            scan("start")
+            time.sleep(args.warmup)
+            on = measure(f"{count}-scan-on")
+            if monitor is not None:
+                streams = monitor.status()
+                assert len(streams) == monitor.expected_connections and all(row["packets"] > 0 for row in streams.values()), streams
+                (args.artifacts / f"{count}-stream-continuity.json").write_text(json.dumps(streams, indent=2))
         results[str(count)] = {
             "added_core_percent": on["cpu_core_percent"] - off["cpu_core_percent"],
             "added_rss_mib": (on["rss_mean"] - off["rss_mean"]) / 1048576,
@@ -248,9 +298,14 @@ try:
     assert len(receivers()["receivers"]) == 16
     results["formal_create_retires_probe"] = True
 finally:
+    primary_error = sys.exc_info()[1]
+    cleanup_errors = []
     try:
-        scan("pause")
-        scan("cancel_region")
+        for operation in ["pause", "cancel_region"]:
+            try:
+                scan(operation)
+            except Exception as error:
+                cleanup_errors.append(f"{operation}: {error}")
         for kind, recording in recordings.items():
             try:
                 receiver_command("record_stop", task_id=recording)
@@ -265,7 +320,7 @@ finally:
                     ),
                     15,
                 )
-                index = api("/api/sdr/recordings/" + recording + "/index") if kind == "iq" else None
+                index = recording_index(recording, finished) if kind == "iq" else None
                 (args.artifacts / (kind + "-recording-continuity.json")).write_text(
                     json.dumps(dict(task=finished, index=index), ensure_ascii=False, indent=2)
                 )
@@ -275,19 +330,40 @@ finally:
                     and a.get("next_audio_index") == b.get("first_audio_index")
                     for a, b in zip(segments, segments[1:], strict=False)
                 )
+                if kind == "iq":
+                    entries = index["entries"]
+                    continuous = continuous and bool(entries) and all(
+                        int(b["meta"]["clock"]["first_output_index"])
+                        == int(a["meta"]["clock"]["first_output_index"]) + int(a["meta"]["clock"]["samples"])
+                        for a, b in zip(entries, entries[1:], strict=False)
+                    )
                 results[kind + "_recording"] = {
                     "state": finished["state"],
                     "segments": len(segments),
                     "continuous": continuous,
                 }
                 assert finished["state"] == "completed" and continuous, results[kind + "_recording"]
+            except Exception as error:
+                cleanup_errors.append(f"{kind}: {error}")
             finally:
-                receiver_command("record_delete", task_id=recording)
+                try:
+                    receiver_command("record_delete", task_id=recording)
+                except Exception as error:
+                    cleanup_errors.append(f"delete {kind}: {error}")
     finally:
-        for r in reversed(receivers()["receivers"]):
-            if bench_tag in r["confirmed"]["tags"]:
-                receiver_command("retire", receiver_uid=r["receiver_uid"])
-        (args.artifacts / "performance-summary.json").write_text(
-            json.dumps(results, ensure_ascii=False, indent=2)
-        )
+        try:
+            for r in reversed(receivers()["receivers"]):
+                if bench_tag in r["confirmed"]["tags"]:
+                    try:
+                        receiver_command("retire", receiver_uid=r["receiver_uid"])
+                    except Exception as error:
+                        cleanup_errors.append(f"retire {r['receiver_uid']}: {error}")
+        finally:
+            if cleanup_errors:
+                results["cleanup_errors"] = cleanup_errors
+            (args.artifacts / "performance-summary.json").write_text(
+                json.dumps(results, ensure_ascii=False, indent=2)
+            )
+    if cleanup_errors and primary_error is None:
+        raise AssertionError(cleanup_errors)
 print(json.dumps(results, ensure_ascii=False, indent=2))

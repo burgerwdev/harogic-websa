@@ -18,6 +18,16 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+def test_scan_monitor_includes_broadcast_protocol_evidence_without_changing_receiver_purpose():
+    receivers = [dict(receiver_uid='fm', confirmed=dict(purpose='listen', processors=[dict(mode='wfm')])),
+                 dict(receiver_uid='am', confirmed=dict(purpose='listen', processors=[dict(mode='am')]))]
+    snapshot = dict(capture=dict(input_rate_hz=62500000), receivers=receivers)
+    monitor = module.StreamMonitor('http://127.0.0.1', snapshot, all_iq=True, include_broadcast_decode=True)
+    assert monitor.expected_connections == 5
+    assert monitor.decode_uids == {'fm'}
+    assert all(r['confirmed']['purpose'] == 'listen' for r in receivers)
+
+
 @pytest.mark.parametrize('offset', [-173.37, .13, 96.84])
 @pytest.mark.parametrize('seconds', [.11, 1.01])
 @pytest.mark.parametrize('expected', [-1800, 2000])

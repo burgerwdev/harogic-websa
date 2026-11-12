@@ -6,6 +6,8 @@ export interface ScanSignal {
   decoder_available: boolean; receiver_uid: string | null; source: string;
   sampled_at_ms: string | null; evidence?: Record<string, unknown>; flags: string[];
   observed_hit_ratio: number;
+  timing?: { queue_ms: number; sampling_ms: number; feature_queue_ms: number; processing_ms: number;
+    total_ms: number; observation_seconds: number; checkpoints: number; early_exit: boolean };
 }
 
 export interface ScanSnapshot {
