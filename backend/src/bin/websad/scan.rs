@@ -716,7 +716,11 @@ impl DevState {
             d.background_reliable=false;d.reason=Some("source_changed".into());d.revision+=1;}
         d.capture=capture;
         let healthy=d.capture["state"]=="running"&&d.capture["source_kind"]=="hardware";
-        if !healthy {d.state="unavailable".into();d.cancel();drop(d);let _=self.retire_scan_probe();return;}
+        if !healthy {
+            // Snapshot reads must not emit another event for the same state.
+            if d.state!="unavailable" {d.state="unavailable".into();d.cancel();}
+            drop(d);let _=self.retire_scan_probe();return;
+        }
         if !d.running&&d.region.is_none()&&d.queue.is_empty()&&d.collector.is_none()&&self.scan_probe.is_none(){return;}
         if !d.tap_attached && (d.running||d.region.is_some()) {
             drop(d);let observer=engine.clone();
@@ -997,6 +1001,19 @@ mod tests {
         assert_eq!(signal.identify_state,"unavailable");assert!(signal.flags.iter().any(|f|f=="analysis_passband_limit"));
         assert_eq!(signal.evidence["reason"],"analysis_passband_limit");assert_eq!(d.metrics.feature_jobs,0);drop(d);
         assert_eq!(before,s.stream_registry().iter().map(|e|(e.channel,e.channel_id,e.epoch,e.frequency_hz)).collect::<Vec<_>>());
+    }
+    #[test]
+    fn unavailable_capture_notifies_once_without_snapshot_feedback() {
+        let mut s=DevState::new(json!({}),json!({}));
+        let engine=Engine::new();s.scan=Some(engine.clone());
+        let mut updates=engine.data.lock().updates.subscribe();
+        s.scan_tick();
+        assert!(updates.has_changed().unwrap());updates.borrow_and_update();
+        let token=engine.data.lock().token;
+        for _ in 0..10 {s.scan_tick();}
+        let d=engine.data.lock();
+        assert_eq!(d.state,"unavailable");assert_eq!(d.token,token);
+        assert!(!updates.has_changed().unwrap());
     }
     #[test]
     fn paused_ignore_notifies_shared_observers_without_waiting_for_another_psd(){

@@ -135,7 +135,12 @@ python3 tools/fixtures/gen_sstv_fixtures.py --check
 `make ci` runs the in-process Rust/Python/frontend and fixture/static gates, including
 `soapy-check-patch`, without hardware or the vendor SDK. Hosted CI also runs the SDK-free
 patch check. `soapy-check-stream` is a separate gate for hosts with the real vendor headers
-and SoapySDR development files. See [fixture ownership](../tests/fixtures/README.md) before
+and SoapySDR development files. With built frontend/service assets and Playwright Chromium,
+`python3 tools/e2e/themes.py --artifacts /tmp/websa-themes` checks theme selection, opacity,
+popouts and viewport bounds; hosted CI runs it against an isolated fixture service.
+`python3 tools/e2e/content_fit.py --browser firefox --artifacts /tmp/websa-content-fit`
+also checks minimum browser font sizes and requires Playwright Firefox.
+See [fixture ownership](../tests/fixtures/README.md) before
 regenerating data. `tests/test_sdr_capture.py` uses an SDK-free ctypes stub: the Python reference
 reader accepts only consistent CS16 packets up to 4 MiB before copying. The separate production
 shim regression requires installed SDK headers/library but no hardware:

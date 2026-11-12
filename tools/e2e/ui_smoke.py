@@ -410,6 +410,24 @@ def main() -> int:
                 page.wait_for_timeout(2500)
                 dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
                 check('native decoded transport is enabled', 'enabled=true' in dbg and 'backend=1' in dbg, dbg)
+                scan_reads = []
+
+                def scan_request(request, reads=scan_reads):
+                    if request.method == 'GET' and request.url.endswith('/api/sdr/scan'):
+                        reads.append(request.url)
+
+                page.on('request', scan_request)
+                try:
+                    js_click(page, '#sdr-scan-toggle')
+                    page.locator('#sdr-scan-window').wait_for(state='visible')
+                    page.wait_for_timeout(1000)
+                    scan_reads.clear()
+                    page.wait_for_timeout(1000)
+                    check('unavailable scan snapshots do not cause an event refresh loop',
+                          len(scan_reads) <= 3, f'{len(scan_reads)} reads in one second')
+                    page.locator('#sdr-scan-window [data-close]').click()
+                finally:
+                    page.remove_listener('request', scan_request)
 
         print('4) measurement tabs render')
         js_click(page, '#btn-meas-onoff')
@@ -730,8 +748,7 @@ def main() -> int:
         check('the native FT8 message is rendered', 'CQ JO1WKO PM95' in rows_text, detail)
         check('the decode carries its measured frequency', 'MHz' in row_title, detail)
 
-        # The same head carries an opacity slider (user-visible behaviour, DEVELOPMENT §6): move it and
-        # assert the window's own style changed *and* persisted.
+        # Decode uses the shared floating-window opacity preference.
         if window_button is not None:
             page.evaluate("""() => {
                 const slider = document.getElementById('decode-window-opacity');
@@ -740,7 +757,7 @@ def main() -> int:
             }""")
             dimmed = page.evaluate("document.getElementById('decode-window').style.opacity")
             saved = page.evaluate(
-                "JSON.parse(localStorage.getItem('websa-decode-window') || '{}').opacity")
+                "Number(localStorage.getItem('web-sa-window-opacity'))")
             check('the FT8 window opacity slider dims the window and stores the level',
                   dimmed == '0.6' and saved is not None and abs(saved - 0.6) < 1e-6,
                   f'opacity={dimmed!r} stored={saved!r}')

@@ -34,12 +34,6 @@ export function setTheme(th: Theme) {
   listeners.forEach((fn) => fn(th));
 }
 
-export function toggleTheme(): Theme {
-  const th = current === 'dark' ? 'light' : 'dark';
-  setTheme(th);
-  return th;
-}
-
 export function onThemeChange(fn: (th: Theme) => void) {
   listeners.add(fn);
   return () => { listeners.delete(fn); };

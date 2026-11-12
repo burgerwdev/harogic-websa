@@ -21,7 +21,7 @@ Measurements report their bandwidth, method and validity; see [SNR definitions a
 - AM/DSB/USB/LSB/CW/NFM/WFM/PM, FM stereo/RDS, noise reduction, FT8, DRM/DRM+, SSTV
   and radiofax; optional external decoder providers extend the mode catalog.
 - IQ, audio and decoded-result recording, saved-file playback/export, receiver presets,
-  English/Chinese UI and light/dark themes.
+  English/Chinese UI, twelve appearance themes and shared floating-window opacity.
 - In-band signal discovery, spectrum/waterfall region identification, temporary listening
   and adding results to saved channels. See [Scan and identify](docs/en/reference/SIGNAL_SCAN.md).
 - Exclusive SoapySDRServer handoff for external SDR clients.

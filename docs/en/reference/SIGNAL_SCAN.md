@@ -1,6 +1,7 @@
 # In-band scan and identification
 
 The framed `i` icon beside the channel workbench opens **Scan / Identify** without starting a scan.
+**S** toggles the window in SDR mode, including inside its popout, outside text fields and other dialogs.
 Start/Pause controls the shared continuous scan. Hiding the window leaves scanning running and
 ends temporary listening; collapsing or popping it out changes only the view. Region identification
 works independently: drag a frequency band on the spectrum or waterfall, release to submit, or
@@ -19,10 +20,9 @@ capture across the band. Fixed frequency windows integrate linear power and requ
 FFT bins; reduce actual capture bandwidth if necessary. Display zoom adds no resolution.
 Above-background margin is neither RF SNR nor uncalibrated dBm. Activity ratios count actual observations.
 
-The noise reference is local to each RF frequency: ordered statistics from nearby cells within
-±750 kHz, with a ±12 kHz guard, replace the old cap relative to the quietest part of the entire
-capture. The 20th percentile is corrected for the mean of four noise periodograms (about ×1.7416),
-and anchor values are interpolated in log power. An observation uses its current local reference;
+The noise reference uses ordered statistics from cells within ±750 kHz of each RF frequency,
+excluding a ±12 kHz guard. The 20th percentile is corrected for the mean of four noise periodograms
+(about ×1.7416), and anchor values are interpolated in log power. An observation uses its current local reference;
 an earlier low floor cannot remain frozen after noise rises. Nearby reference cells may extend
 outside the selected search region, so changing the selection alone does not change the reference
 for a given frequency. This follows frequency-dependent noise without using a dense band average.
