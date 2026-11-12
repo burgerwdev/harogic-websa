@@ -353,7 +353,22 @@ def main() -> int:
             expect(popup.locator('html')).to_have_attribute('data-theme', theme)
             scheme = 'dark' if theme in DARK else 'light'
             expect(popup.locator('.mc-window')).to_have_css('color-scheme', scheme)
-            assert popup.locator('.mc-body').evaluate('e => e.scrollWidth <= e.clientWidth + 1'), theme
+            body = popup.locator('.mc-body')
+            size = body.evaluate('e => ({width:e.clientWidth, scroll:e.scrollWidth})')
+            assert size['scroll'] <= size['width'] + 1, (theme, size)
+            if theme == 'mecha':
+                # Host font fallbacks differ; CI's generic monospace is wider
+                # than the CJK fallback available on some development hosts.
+                popup.locator('html').evaluate("e => e.style.setProperty('--ui-font', 'monospace')")
+                try:
+                    size = body.evaluate('e => ({width:e.clientWidth, scroll:e.scrollWidth})')
+                    assert size['scroll'] <= size['width'] + 1, (theme, 'monospace', size)
+                    assert body.locator('.mc-tabs button').evaluate_all("""nodes => nodes.length === 3 && nodes.every(e => {
+                      const rect=e.getBoundingClientRect(), body=e.closest('.mc-body').getBoundingClientRect();
+                      return rect.left>=body.left && rect.right<=body.right;
+                    })"""), 'all workspace tabs must remain inside the popup'
+                finally:
+                    popup.locator('html').evaluate("e => e.style.removeProperty('--ui-font')")
             if theme in GLASS:
                 expect(popup.locator('.mc-window')).to_have_class(re.compile(r'liquid-panel'))
                 popup.wait_for_function("document.querySelector('.liquid-glass-defs feImage') !== null")
