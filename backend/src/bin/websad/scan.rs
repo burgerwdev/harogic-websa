@@ -9,6 +9,11 @@ const FFT:usize=65_536;
 const BLOCK:usize=FFT*5/2;
 const MAX_SIGNALS:usize=256;
 const MAX_IQ:usize=1_048_576; // complex f32: 8 MiB hard ceiling
+const MAX_RETAINED_FEATURE_SAMPLES:usize=262_144;
+
+#[cfg(test)]
+#[path = "scan_performance.rs"]
+mod performance;
 
 // Scale is calibration metadata, not source identity. The SDK can refresh it
 // without a tune, sample gap or new capture. Assemble each PSD at one scale,
@@ -112,11 +117,12 @@ impl Engine {
         let state=data.clone();
         thread::Builder::new().name("sdr-scan-identify".into()).spawn(move||{
             websa_channelizer::capture_scheduling::normal();
+            let mut analyzer=FeatureAnalyzer::default();
             while let Ok(job)=fx.recv() {
                 if state.lock().token!=job.token {continue;}
                 let cpu=receiver_workers::cpu_now();let start=Instant::now();
                 let mut result=match isolate_region(&job.iq,job.rate,job.offset,job.bandwidth) {
-                    Ok((iq,rate,delay))=>{let mut result=features_iq(&iq,rate,0.0);result.evidence["additional_filter_delay_seconds"]=json!(delay);result},
+                    Ok((iq,rate,delay))=>{let mut result=analyzer.analyze(&iq,rate,0.0);result.evidence["additional_filter_delay_seconds"]=json!(delay);result},
                     Err(reason)=>Features{label:"unknown",verdict:"unknown",mode:None,evidence:json!({"reason":reason})}
                 };result.evidence["source"]=job.source;
                 let cost=cpu.zip(receiver_workers::cpu_now()).map_or(start.elapsed().as_secs_f64(),|(a,b)|b.saturating_sub(a) as f64/1e9);
@@ -205,15 +211,15 @@ impl Psd {
     fn new(n:usize)->Self {let fft=FftPlanner::new().plan_fft_forward(n);let window:Vec<f32>=(0..n).map(|i|(0.5-0.5*(std::f64::consts::TAU*i as f64/n as f64).cos()) as f32).collect();
         let energy=window.iter().map(|w|(*w as f64).powi(2)).sum();let scratch=vec![Complex32::default();fft.get_inplace_scratch_len()];
         Self{n,fft,window,energy,buffer:vec![Complex32::default();n],scratch,background:vec![],background_meta:None}}
-    fn floor(&mut self,meta:display_fft::Meta,power:&[f64])->Vec<f64>{
-        let (_,estimate,_)=detect(meta,power,(meta.center-meta.bandwidth/2.0,meta.center+meta.bandwidth/2.0),8.0);
+    fn floor(&mut self,meta:display_fft::Meta,power:&[f64])->&[f64]{
+        let estimate=estimate_floor(meta,power);
         if self.background_meta.is_none_or(|old|!same_capture(old,meta))||self.background.len()!=estimate.len(){self.background=estimate;}
         else {for ((old,new),p) in self.background.iter_mut().zip(estimate).zip(power){
             if let Some(previous)=self.background_meta { *old*=(meta.scale as f64/previous.scale as f64).powi(2); }
             // Occupied bins cannot raise their own background. Decreases track
             // faster than increases; source/ref/scale changes reset the model.
             if new<*old {*old=0.9* *old+0.1*new;}else if *p<*old*3.0 {*old=0.98* *old+0.02*new;}
-        }}self.background_meta=Some(meta);self.background.clone()
+        }}self.background_meta=Some(meta);&self.background
     }
     fn compute(&mut self,iq:&[i16],rate:f64,scale:f32)->Vec<f64>{
         let n=self.n;let mut power=vec![0.0;n];let mut segments=0;
@@ -230,18 +236,31 @@ impl Psd {
 struct Detection {lo:f64,hi:f64,excess:f64,power:f64,edge:bool}
 /// Local lower quantiles resist narrow peaks; a global lower quantile prevents
 /// a broad occupied plateau from being incorporated into its own background.
-fn detect(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f64)->(Vec<Detection>,Vec<f64>,bool){detect_floor(meta,power,range,threshold,None)}
-fn detect_floor(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f64,floor:Option<&[f64]>)->(Vec<Detection>,Vec<f64>,bool){
+fn estimate_floor(meta:display_fft::Meta,power:&[f64])->Vec<f64>{
     let n=power.len();let bin=meta.rate/n as f64;let start=meta.center-meta.rate/2.0;
     let first=((((meta.center-meta.bandwidth/2.0).max(0.0)-start)/bin).ceil() as usize).min(n);
     let end=(((meta.center+meta.bandwidth/2.0-start)/bin).floor() as usize).min(n);
-    let capture_edges=(first,end);
-    if end<=first {return(vec![],vec![1e-30;n],false);}
+    if end<=first {return vec![1e-30;n];}
     let quantile=|values:&[f64]|{let mut a=values.to_vec();let k=a.len()/5;a.select_nth_unstable_by(k,|a,b|a.total_cmp(b));a[k].max(1e-30)};
     let global=quantile(&power[first..end]);let mut background=vec![global;n];
     for base in (first..end).step_by(512) {let stop=(base+512).min(end);let local=quantile(&power[base..stop]).min(global*4.0);
         background[base..stop].fill(local);}
-    if let Some(floor)=floor.filter(|f|f.len()==n){background.copy_from_slice(floor);}
+    background
+}
+#[cfg(test)]
+fn detect(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f64)->(Vec<Detection>,Vec<f64>,bool){
+    let (rows,floor,reliable)=detect_floor(meta,power,range,threshold,None);(rows,floor.into_owned(),reliable)
+}
+fn detect_floor<'a>(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f64,floor:Option<&'a [f64]>)->(Vec<Detection>,std::borrow::Cow<'a,[f64]>,bool){
+    let n=power.len();let bin=meta.rate/n as f64;let start=meta.center-meta.rate/2.0;
+    let first=((((meta.center-meta.bandwidth/2.0).max(0.0)-start)/bin).ceil() as usize).min(n);
+    let end=(((meta.center+meta.bandwidth/2.0-start)/bin).floor() as usize).min(n);
+    let capture_edges=(first,end);
+    let background=match floor.filter(|f|f.len()==n) {
+        Some(floor)=>std::borrow::Cow::Borrowed(floor),
+        None=>std::borrow::Cow::Owned(estimate_floor(meta,power)),
+    };
+    if end<=first {return(vec![],background,false);}
     // Like OnAir's detectRegions: seed on smoothed linear power, extend the
     // skirts towards the floor, then merge touching components. Raw-bin runs
     // split speech sidebands and FM modulation into unusably small probes.
@@ -250,8 +269,9 @@ fn detect_floor(meta:display_fft::Meta,power:&[f64],range:(f64,f64),threshold:f6
     if end<=first {return(vec![],background,true);}
     let mut sums=vec![0.0;n+1];let mut floors=vec![0.0;n+1];
     for i in 0..n {sums[i+1]=sums[i]+power[i];floors[i+1]=floors[i]+background[i];}
-    let ratio:Vec<f64>=(0..n).map(|i|{let a=i.saturating_sub(2);let b=(i+3).min(n);
-        10.0*((sums[b]-sums[a]).max(1e-30)/(floors[b]-floors[a]).max(1e-30)).log10()}).collect();
+    let mut ratio=vec![0.0;n];
+    for i in first..end {let a=i.saturating_sub(2);let b=(i+3).min(n);
+        ratio[i]=10.0*((sums[b]-sums[a]).max(1e-30)/(floors[b]-floors[a]).max(1e-30)).log10();}
     let mut runs:Vec<(usize,usize)>=vec![];let mut i=first;
     while i<end {
         if ratio[i]<threshold {i+=1;continue;}
@@ -377,27 +397,43 @@ fn refined_center(signal:&Signal,result:&Features)->Option<f64> {
     let shift=result.evidence[key].as_f64()?;let hz=signal.center_hz+shift;
     (shift.is_finite()&&shift.abs()>0.5&&shift.abs()<signal.analysis_bandwidth_hz*0.4&&hz>=signal.low_hz&&hz<=signal.high_hz).then_some(hz)
 }
-fn carrier_line(iq:&[f32],rate:f64)->(f64,f64) {
+struct FeatureFft {
+    fft:Arc<dyn rustfft::Fft<f32>>,window:Vec<f64>,buffer:Vec<Complex32>,scratch:Vec<Complex32>,power:Vec<f64>,
+}
+impl FeatureFft {
+    fn new(size:usize)->Self {
+        let fft=FftPlanner::new().plan_fft_forward(size);
+        let window=(0..size).map(|i|0.5-0.5*(std::f64::consts::TAU*i as f64/size as f64).cos()).collect();
+        let scratch=vec![Complex32::default();fft.get_inplace_scratch_len()];
+        Self{fft,window,buffer:vec![Complex32::default();size],scratch,power:vec![0.0;size]}
+    }
+    fn execute(&mut self){self.fft.process_with_scratch(&mut self.buffer,&mut self.scratch);}
+}
+#[derive(Default)]
+struct FeatureAnalyzer {ffts:BTreeMap<usize,FeatureFft>,fm:Vec<f64>}
+impl FeatureAnalyzer {
+fn carrier_line(&mut self,iq:&[f32],rate:f64)->(f64,f64) {
     let size=(iq.len()/2).next_power_of_two().min(16384)/2;
     if size<1024{return(0.0,0.0);}
-    let fft=FftPlanner::new().plan_fft_forward(size);let mut buffer=vec![Complex32::default();size];let mut power=vec![0.0;size];
+    let work=self.ffts.entry(size).or_insert_with(||FeatureFft::new(size));work.power.fill(0.0);
     for block in iq.chunks_exact(2*size).take(4) {
-        for (i,v) in block.chunks_exact(2).enumerate(){let w=(0.5-0.5*(std::f64::consts::TAU*i as f64/size as f64).cos()) as f32;buffer[i]=Complex32::new(v[0],v[1])*w;}
-        fft.process(&mut buffer);for (p,z) in power.iter_mut().zip(&buffer){*p+=z.norm_sqr() as f64;}
+        for (i,v) in block.chunks_exact(2).enumerate(){work.buffer[i]=Complex32::new(v[0],v[1])*work.window[i] as f32;}
+        work.execute();for (p,z) in work.power.iter_mut().zip(&work.buffer){*p+=z.norm_sqr() as f64;}
     }
+    let power=&work.power;
     let peak=(0..size).max_by(|&a,&b|power[a].total_cmp(&power[b])).unwrap_or(0);
     let fraction=[(peak+size-1)%size,peak,(peak+1)%size].iter().map(|&i|power[i]).sum::<f64>()/power.iter().sum::<f64>().max(1e-30);
     let frequency=if peak>size/2{peak as f64-size as f64}else{peak as f64}*rate/size as f64;
     (fraction,frequency)
 }
-fn stereo_pilot(fm:&[f64],rate:f64)->bool {
+fn stereo_pilot(&mut self,fm:&[f64],rate:f64)->bool {
     if rate<96_000.0||fm.len()<3*4096{return false;}
     let size=(fm.len()/3).next_power_of_two().min(32768)/2;
-    let fft=FftPlanner::new().plan_fft_forward(size);let mut buffer=vec![Complex32::default();size];
+    let work=self.ffts.entry(size).or_insert_with(||FeatureFft::new(size));
     for j in 0..3 {
         let begin=j*(fm.len()-size)/2;
-        for (i,z) in buffer.iter_mut().enumerate(){let w=0.5-0.5*(std::f64::consts::TAU*i as f64/size as f64).cos();*z=Complex32::new((fm[begin+i]*w) as f32,0.0);}
-        fft.process(&mut buffer);
+        for (i,z) in work.buffer.iter_mut().enumerate(){*z=Complex32::new((fm[begin+i]*work.window[i]) as f32,0.0);}
+        work.execute();let buffer=&work.buffer;
         let a=(18850.0*size as f64/rate).ceil() as usize;let b=(19150.0*size as f64/rate).floor() as usize;
         let peak=(a..=b).max_by(|&a,&b|buffer[a].norm_sqr().total_cmp(&buffer[b].norm_sqr())).unwrap_or(a);
         let line=(peak-1..=peak+1).map(|i|buffer[i].norm_sqr() as f64).sum::<f64>();
@@ -407,22 +443,26 @@ fn stereo_pilot(fm:&[f64],rate:f64)->bool {
         if line<neighbours[k]*3.0*16.0||line<total*0.0003{return false;}
     }true
 }
-fn features_iq(iq:&[f32],rate:f64,offset:f64)->Features {
+fn analyze(&mut self,iq:&[f32],rate:f64,offset:f64)->Features {
     let n=iq.len()/2;let unknown=|evidence|Features{label:"unknown",verdict:"unknown",mode:None,evidence};
     if n<4096 || !rate.is_finite() || rate<=0.0 {return unknown(json!({"reason":"insufficient_iq"}));}
-    let mut amp=Vec::with_capacity(n);let mut fm=Vec::with_capacity(n-1);let mut sum=Complex32::default();let mut prev=Complex32::default();
-    for (i,v) in iq.chunks_exact(2).enumerate(){let phase=-std::f64::consts::TAU*offset*i as f64/rate;
-        let z=Complex32::new(v[0],v[1])*Complex32::from_polar(1.0,phase as f32);amp.push(z.norm() as f64);sum+=z;
+    let mut fm=std::mem::take(&mut self.fm);fm.clear();fm.reserve_exact(n-1);
+    let mut amp_sum=0.0;let mut power_sum=0.0;let mut prev=Complex32::default();
+    for (i,v) in iq.chunks_exact(2).enumerate(){
+        let rotation=if offset==0.0 {Complex32::new(1.0,-offset as f32)}
+            else {let phase=-std::f64::consts::TAU*offset*i as f64/rate;Complex32::from_polar(1.0,phase as f32)};
+        let z=Complex32::new(v[0],v[1])*rotation;
+        let amp=z.norm() as f64;amp_sum+=amp;power_sum+=amp*amp;
         if i>0 {fm.push((z*prev.conj()).arg() as f64*rate/std::f64::consts::TAU);}prev=z;}
-    let mean=amp.iter().sum::<f64>()/n as f64;let power=amp.iter().map(|a|a*a).sum::<f64>()/n as f64;
+    let mean=amp_sum/n as f64;let power=power_sum/n as f64;
     let cv=(power-mean*mean).max(0.0).sqrt()/mean.max(1e-15);
     let freq_mean=fm.iter().sum::<f64>()/fm.len() as f64;for f in &mut fm {*f-=freq_mean;}
     let deviation=(fm.iter().map(|f|f*f).sum::<f64>()/fm.len() as f64).sqrt();
     // A coherent mean at exactly DC misses every carrier with a small offset.
     // Use a Hann spectral line, as in OnAir's powerLines, rather than requiring
     // an AM carrier to land on the requested window's exact centre.
-    let (carrier,carrier_hz)=carrier_line(iq,rate);
-    let pilot=stereo_pilot(&fm,rate);
+    let (carrier,carrier_hz)=self.carrier_line(iq,rate);
+    let pilot=self.stereo_pilot(&fm,rate);
     // Discrete discriminator plateaus are only a family hint. Require most
     // samples near 2/4 narrow clusters so sinusoidal FM is not called FSK.
     let mut histogram=[0usize;128];let spread=(deviation*4.0).max(1.0);
@@ -436,10 +476,10 @@ fn features_iq(iq:&[f32],rate:f64,offset:f64)->Features {
     for (i,v) in iq.chunks_exact(2).enumerate(){let z=Complex32::new(v[0],v[1]);let phase=-std::f64::consts::TAU*(offset+freq_mean)*i as f64/rate;let u=z/z.norm().max(1e-12)*Complex32::from_polar(1.0,phase as f32);moment1+=u;moment2+=u*u;moment4+=u*u*u*u;}
     let mut phase_line=0.0f64;
     if cv<0.18 && moment1.norm() as f64/(n as f64)<0.3 {
-        let size=4096;let fft=FftPlanner::new().plan_fft_forward(size);let mut buffer=vec![Complex32::default();size];let mut scratch=vec![Complex32::default();fft.get_inplace_scratch_len()];let mut windows=0;
+        let size=4096;let work=self.ffts.entry(size).or_insert_with(||FeatureFft::new(size));let mut windows=0;
         for values in iq.chunks_exact(size*2).take(3) {
-            for (i,v) in values.chunks_exact(2).enumerate(){let z=Complex32::new(v[0],v[1]);let u=z/z.norm().max(1e-12);buffer[i]=u*u*u*u;}
-            fft.process_with_scratch(&mut buffer,&mut scratch);let total=buffer.iter().map(|z|z.norm_sqr() as f64).sum::<f64>();
+            for (i,v) in values.chunks_exact(2).enumerate(){let z=Complex32::new(v[0],v[1]);let u=z/z.norm().max(1e-12);work.buffer[i]=u*u*u*u;}
+            work.execute();let buffer=&work.buffer;let total=buffer.iter().map(|z|z.norm_sqr() as f64).sum::<f64>();
             let peak=buffer.iter().enumerate().max_by(|a,b|a.1.norm_sqr().total_cmp(&b.1.norm_sqr())).map(|(i,_)|i).unwrap_or(0);
             phase_line+=[(peak+size-1)%size,peak,(peak+1)%size].iter().map(|&i|buffer[i].norm_sqr() as f64).sum::<f64>()/total.max(1e-30);windows+=1;
         }
@@ -455,9 +495,15 @@ fn features_iq(iq:&[f32],rate:f64,offset:f64)->Features {
         else if cv<0.25&&rate>=128_000.0&&deviation>5000.0 {("FM-like","tentative",Some("wfm"))}
         else if cv<0.12&&deviation>100.0 {("FM-like","tentative",Some("nfm"))}
         else {("unknown","unknown",None)};
-    Features{label,verdict,mode,evidence:json!({"sample_rate_hz":rate,"samples":n,"duration_seconds":n as f64/rate,
+    let result=Features{label,verdict,mode,evidence:json!({"sample_rate_hz":rate,"samples":n,"duration_seconds":n as f64/rate,
         "envelope_cv":cv,"frequency_deviation_rms_hz":deviation,"residual_frequency_hz":freq_mean,"carrier_fraction":carrier,"carrier_peak_offset_hz":carrier_hz-offset,
-        "fm_19khz_pilot":pilot,"discriminator_clusters":clusters.len(),"cluster_sample_fraction":covered as f64/fm.len() as f64,"phase_fourth_power_line_fraction":phase_line,"phase_second_moment":moment2.norm() as f64/n as f64,"phase_fourth_moment":moment4.norm() as f64/n as f64,"protocol_evidence":[],"limitations":"Shape evidence does not confirm a protocol; short live observation."})}
+        "fm_19khz_pilot":pilot,"discriminator_clusters":clusters.len(),"cluster_sample_fraction":covered as f64/fm.len() as f64,"phase_fourth_power_line_fraction":phase_line,"phase_second_moment":moment2.norm() as f64/n as f64,"phase_fourth_moment":moment4.norm() as f64/n as f64,"protocol_evidence":[],"limitations":"Shape evidence does not confirm a protocol; short live observation."})};
+    if fm.capacity()<=MAX_RETAINED_FEATURE_SAMPLES {self.fm=fm;}result
+}
+}
+#[cfg(test)]
+fn features_iq(iq:&[f32],rate:f64,offset:f64)->Features {
+    FeatureAnalyzer::default().analyze(iq,rate,offset)
 }
 
 pub(super) struct Probe {slot:u32,original:ChannelConfig,entry:sdr_pipeline::ChannelRegistryEntry}
@@ -806,7 +852,7 @@ mod budget_tests {
         let newer=display_fft::Meta{scale:1.01e-4,..m};let token=data.lock().token;
         tap.push(newer,1,0,&vec![0;SDR_PACKET_SAMPLES*2],0);
         {let d=data.lock();assert_eq!(d.token,token);assert!(d.region.is_some());assert_eq!(d.signals[0].identify_state,"detecting");assert_eq!(d.metrics.scale_updates,1);}
-        let mut psd=Psd::new(4096);let old=psd.floor(m,&vec![1.0;4096]);let ratio=(newer.scale as f64/m.scale as f64).powi(2);let next=psd.floor(newer,&vec![ratio;4096]);assert!((next[2048]/old[2048]-ratio).abs()<1e-6);
+        let mut psd=Psd::new(4096);let old=psd.floor(m,&vec![1.0;4096]).to_vec();let ratio=(newer.scale as f64/m.scale as f64).powi(2);let next=psd.floor(newer,&vec![ratio;4096]);assert!((next[2048]/old[2048]-ratio).abs()<1e-6);
         tap.push(display_fft::Meta{generation:8,..newer},2,SDR_PACKET_SAMPLES as u64*16,&vec![0;SDR_PACKET_SAMPLES*2],0);
         assert!(data.lock().token>token);assert_eq!(data.lock().signals[0].activity,"stale");
     }

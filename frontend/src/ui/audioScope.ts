@@ -12,6 +12,7 @@ export function drawAudioScope(
 	if (!ctx) return;
 	const w = canvas.width;
 	const h = canvas.height;
+	if (!w || !h || !traces.length) { ctx.clearRect(0, 0, w, h); return; }
 	let colors = palette.get(canvas);
 	if (!colors || colors.theme !== getTheme() || colors.document !== canvas.ownerDocument) {
 		const styles = (canvas.ownerDocument.defaultView ?? window).getComputedStyle(canvas);
@@ -50,11 +51,29 @@ export function drawAudioScope(
 		const t = traces[lane];
 		const mid = laneH * lane + laneH / 2;
 		ctx.beginPath();
-		for (let i = 0; i < t.length; i++) {
-			const x = (i / (t.length - 1)) * (w - 1);
-			const y = mid - t[i] * scale;
-			if (i === 0) ctx.moveTo(x, y);
-			else ctx.lineTo(x, y);
+		const xScale = t.length > 1 ? (w - 1) / (t.length - 1) : 0;
+		let pen = false, i = 0;
+		while (i < t.length) {
+			if (!Number.isFinite(t[i])) { pen = false; i++; continue; }
+			const start = i, column = Math.floor(i * xScale);
+			let min = i, max = i;
+			i++;
+			while (i < t.length && Number.isFinite(t[i]) && Math.floor(i * xScale) === column) {
+				if (t[i] < t[min]) min = i;
+				if (t[i] > t[max]) max = i;
+				i++;
+			}
+			// Keep extrema in time order: short impulses survive at every scope width.
+			let previous = -1;
+			for (let vertex = 0; vertex < 4; vertex++) {
+				const index = vertex === 0 ? start : vertex === 3 ? i - 1
+					: vertex === 1 ? Math.min(min, max) : Math.max(min, max);
+				if (index === previous) continue;
+				previous = index;
+				const x = index * xScale, y = mid - t[index] * scale;
+				if (pen) ctx.lineTo(x, y);
+				else { ctx.moveTo(x, y); pen = true; }
+			}
 		}
 		ctx.stroke();
 	}

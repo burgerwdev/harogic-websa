@@ -35,6 +35,22 @@ afterEach(() => {
 });
 
 describe('native waterfall history', () => {
+  it('owns retained axes independently of the transport payload', () => {
+    S.setSdrMode(true);
+    const packet = new ArrayBuffer(1024 * 1024);
+    const axis = new Float64Array(packet, 24, 5);
+    axis.set([10, 12, 14, 16, 18]);
+    pushSpectrumRow(Float32Array.of(-110, -90, -30, NaN, -80), axis, 10, 18, 100);
+    const row = S.waterfallRows[0];
+    const projection = sliceWaterfallRow(row, 5, 10, 18).slice();
+    const floor = retainedViewFloor(10, 18);
+    structuredClone(packet, { transfer: [packet] });
+    expect(packet.byteLength).toBe(0);
+    expect(sliceWaterfallRow(row, 5, 10, 18)).toEqual(projection);
+    expect(retainedViewFloor(10, 18)).toBe(floor);
+    expect(S.waterfallBytes).toBe(row.byteLength + 5 * 8);
+  });
+
   it.each([1, 2])('keeps incremental ring pixels identical to a full repaint at row height %i', rowHeight => {
     S.setSdrMode(false);
     const buffers = new WeakMap<HTMLCanvasElement, Uint32Array>();

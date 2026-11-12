@@ -18,6 +18,7 @@ import { sdrPassbandVisible } from '../ui/sdrPassbandState';
 import { displayOffset } from '../ui/displayState';
 import { waterfallHeadroom, waterfallLUT } from './waterfallPalette';
 import { chooseViewFloor, observedFloor, waterfallDisplayBounds, WaterfallAutoLevels } from '../dsp/waterfallLevels';
+import { WaterfallProjectionCache } from './waterfallProjection';
 
 const MAX_HISTORY_COLUMNS = 16384;
 const MAX_SDR_COLUMNS = 65536;
@@ -30,6 +31,7 @@ type RowGeometry = {
 	level?: { lo: number; step: number; windowLo: number; windowHi: number };
 };
 const rowGeometry = new WeakMap<Uint16Array, RowGeometry>();
+const projectedRows = new WaterfallProjectionCache();
 let historyFreq: Float64Array | null = null;
 let historyScratch = new Float32Array(0);
 // One current display mapping per retained axis, never a cache of zoom histories.
@@ -249,6 +251,7 @@ document.addEventListener('visibilitychange', () => {
   if (wfHistory) { wfHistory.width = 0; wfHistory.height = 0; }
   wfHistory = null; wfHistoryCtx = null;
   wfImg = null; wfPixels = null; wfCanvas = null;
+  projectedRows.clear();
 });
 
 function overlayContext(): CanvasRenderingContext2D | null {
@@ -358,6 +361,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   const theme = getTheme();
   const dmax = Math.max(1, maxDensity || 20);
   if (!n) {
+    projectedRows.clear();
     ctx.fillStyle = canvasColors().bg; ctx.fillRect(0, 0, W, H);
     wfLastPushes = S.waterfallPushes;
     wfCanvas = canvas;
@@ -436,8 +440,12 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
       continue;
     }
     if (!sliceScratch || sliceScratch.length !== W) sliceScratch = new Uint16Array(W);
-    const ds = view ? sliceWaterfallRow(row, W, view.lo, view.hi, sliceScratch)
-      : sliceDensityRow(row, W, f0, f1, sliceScratch);
+    let ds = view ? projectedRows.get(row, W, view.lo, view.hi) : undefined;
+    if (!ds) {
+      ds = view ? sliceWaterfallRow(row, W, view.lo, view.hi, sliceScratch)
+        : sliceDensityRow(row, W, f0, f1, sliceScratch);
+      if (view) projectedRows.put(row, ds);
+    }
     const level = rowGeometry.get(row)?.level;
     const top = fixedBounds ? fixedTop : localWindow?.hi ?? level?.windowHi ?? 0;
     const bottom = fixedBounds ? fixedBottom : localWindow?.lo ?? level?.windowLo ?? 0;
@@ -523,7 +531,10 @@ export function pushSpectrumRow(levels: Float32Array, freq: Float64Array, lo: nu
   let source = levels;
   let axis: Float64Array | null = null;
   if (levels.length <= (S.sdrMode ? MAX_SDR_COLUMNS : MAX_HISTORY_COLUMNS)) {
-    if (!sameFrequencyGrid(historyFreq, freq)) historyFreq = freq;
+    if (!sameFrequencyGrid(historyFreq, freq)) {
+      // Retaining a wire-frame view would also pin its power/density payload.
+      historyFreq = freq.byteOffset || freq.byteLength !== freq.buffer.byteLength ? freq.slice() : freq;
+    }
     axis = historyFreq;
   } else {
     if (historyScratch.length !== MAX_HISTORY_COLUMNS) historyScratch = new Float32Array(MAX_HISTORY_COLUMNS);

@@ -52,6 +52,11 @@ try {
   await page.keyboard.press('Escape'); assert.equal(await page.locator('.sdr-identify-menu').count(), 0);
   await root.locator('[data-scan-select]').click(); await page.keyboard.press('Enter');
   await eventually(async () => { const s = await api('/api/sdr/scan'); return s.signals.some(r => r.source === 'region' && r.identify_state === 'complete' && r.activity !== 'stale'); }, 'Keyboard selection did not finish');
+  // Keep Current and the preview at distinct frequencies for the mixer assertions.
+  const previewHz = before.capture.center_hz + (primary.confirmed.baseband.frequency_hz < before.capture.center_hz ? 1 : -1) * Math.min(100000, before.capture.usable_bandwidth_hz / 4);
+  await scan('identify_region', { low_hz: previewHz - 3000, high_hz: previewHz + 3000, origin: 'manual' });
+  const separate = await eventually(async () => (await api('/api/sdr/scan')).signals.find(r => r.source === 'region' && r.identify_state === 'complete' && Math.abs(r.center_hz - primary.confirmed.baseband.frequency_hz) > 12000), 'Separate preview selection did not finish');
+  await root.locator(`[data-signal="${separate.id}"]`).click();
   await page.waitForTimeout(600);
   const selectedId = await root.locator('tr[aria-selected="true"]').getAttribute('data-signal');
   const row = root.locator(`[data-signal="${selectedId}"]`);
