@@ -17,7 +17,7 @@ import { autoPeakThr, updatePeakTable, renderPeakMarks, peakListOn } from './pea
 import { updateMarkerTable } from './markerTable';
 import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
-import { renderWaterfall, renderWaterfallOverlay } from './waterfall';
+import { renderWaterfall, renderWaterfallOverlay, releaseWaterfallCanvas } from './waterfall';
 import { setInteractionRenderer, setRenderer } from './redraw';
 import { peakListVisible } from '../ui/measurePrefs';
 import { getViewRenderer, registerViewRenderer } from './registry';
@@ -26,6 +26,8 @@ import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
 import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, paintProbabilityDensity, probabilityColour, MAX_DENSITY, type DensityGrid, type DensityPalette, type DensityRasterBounds } from '../dsp/rtaDensity';
 import { DensityRelease } from '../dsp/densityRelease';
+import { DensityTexture } from './densityTexture';
+import { TraceTexture } from './traceTexture';
 import { sameFrequencyGrid, visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
@@ -60,6 +62,16 @@ function cur() {
 // Fixed plot rectangle: W/H/MARGIN move with the window, so this is recomputed per draw
 // rather than cached - allocating one small object per frame is not the hot path (points are).
 const frequencyLabels = new CanvasLayer(), levelLabels = new CanvasLayer();
+let traceTexture: TraceTexture | null = null;
+function tracePath(p: ReturnType<typeof plotRect>): TraceTexture | CanvasRenderingContext2D {
+  traceTexture ??= new TraceTexture();
+  const gpu = traceTexture.begin(p, pixelRatio), renderer = gpu ? 'webgl2' : 'canvas2d';
+  if (ctx.canvas.dataset.traceRenderer !== renderer) ctx.canvas.dataset.traceRenderer = renderer;
+  return gpu ? traceTexture : ctx;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { traceTexture?.dispose(); traceTexture = null; }
+});
 function drawFreqRow(lo: number, hi: number, col: any, p: any) {
   const key = `${lo}:${hi}:${col.axis}:${col.text}:${W}`;
   if (frequencyLabels.draw(ctx, key, p.x, p.y + p.h + 8, W - p.x, 18, pixelRatio,
@@ -168,6 +180,7 @@ export function renderTraceLine(t: S.TraceState) {
   ctx.strokeStyle = col.traces[t.id - 1] || col.traces[0];
   ctx.lineWidth = 1.5;
   ctx.beginPath();
+  const path = tracePath(p);
   let pen = false;
   const view = previewFreqWindow() ?? (isZoomed() ? getView() : getCapture());
   const freq = S.freqArray;
@@ -203,10 +216,12 @@ export function renderTraceLine(t: S.TraceState) {
       previous = index;
       const x = xFirst + ((nativeAxis ? nativeAxis[index] : index) - axisFirst) * xScale;
       const y = getY(data[index]);
-      if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
+      if (!pen) { path.moveTo(x, y); pen = true; } else path.lineTo(x, y);
     }
   }
-  ctx.stroke();
+  if (path instanceof TraceTexture) {
+    path.stroke(col.traces[t.id - 1] || col.traces[0], 1.5); path.composite(ctx);
+  } else ctx.stroke();
   ctx.restore();
 }
 
@@ -812,6 +827,7 @@ function renderRta() {
     ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
     ctx.beginPath();
     let pen = false;
+    const path = tracePath(p);
     const end = Math.min(dn, afterBin);
     // Keep native samples in storage; the canvas only needs each device column's
     // first/min/max/last original vertices. Split runs at every missing bin.
@@ -838,17 +854,20 @@ function renderRta() {
         const x = p.x + (d.freq[index] - lo) * xScale;
         let y = p.y + (levelRef - (disp[index] + levelOffset)) * yScale;
         if (levelTransform) y = p.y + (y - p.y) * levelTransform.sy + levelTransform.dyFrac * p.h;
-        if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
+        if (!pen) { path.moveTo(x, y); pen = true; } else path.lineTo(x, y);
       }
     }
     // SDR uses a single fine stroke; persistence already supplies its measured trail.
-    if (!thinTraces && !S.sdrMode) {
+    if (path instanceof TraceTexture) {
+      if (!thinTraces && !S.sdrMode) path.stroke(tcol, 5, 0.22);
+      path.stroke(tcol, S.sdrMode ? 1 : 1.5); path.composite(ctx);
+    } else if (!thinTraces && !S.sdrMode) {
       ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.strokeStyle = tcol;
       ctx.stroke();
     }
     // main line
     ctx.globalAlpha = 1; ctx.lineWidth = S.sdrMode ? 1 : 1.5; ctx.strokeStyle = tcol;
-    ctx.stroke();
+    if (!(path instanceof TraceTexture)) ctx.stroke();
     ctx.restore();
   });
   ctx.restore();
@@ -981,6 +1000,7 @@ function sizeWaterfall(wf: HTMLCanvasElement): void {
 
 function renderWaterfallIfOn() {
   if (!waterfallOn.get()) {
+    if (wfSized) releaseWaterfallCanvas();
     wfSized = false;
     return;
   }
@@ -992,6 +1012,9 @@ function renderWaterfallIfOn() {
 
 
 let rtaDensLayer: HTMLCanvasElement | null = null;
+let rtaDensTexture: DensityTexture | null = null;
+let lastDensGpu = false;
+let lastDensCols = 0, lastDensRows = 0;
 let rtaDensCtx: CanvasRenderingContext2D | null = null;
 let rtaDensImage: ImageData | null = null;
 let rtaDensRaster = new Float32Array(0);
@@ -1028,6 +1051,8 @@ function clearRtaDensityRelease(): void {
 
 function releaseRtaDensityRaster(): void {
   clearRtaDensityRelease();
+  rtaDensTexture?.dispose(); rtaDensTexture = null;
+  lastDensGpu = false; lastDensCols = lastDensRows = 0;
   if (rtaDensLayer) { rtaDensLayer.width = 0; rtaDensLayer.height = 0; }
   rtaDensLayer = null; rtaDensCtx = null; rtaDensImage = null;
   if (rtaDensRaster.length) rtaDensRaster = new Float32Array(0);
@@ -1046,15 +1071,9 @@ function drawRtaDensityLayer(
   grid: DensityGrid, freq: Float64Array, lo: number, hi: number,
   p: { x: number; y: number; w: number; h: number },
 ) {
-  if (!rtaDensLayer) {
-    rtaDensLayer = document.createElement('canvas');
-    rtaDensCtx = rtaDensLayer.getContext('2d');
-  }
   const cols = Math.max(1, Math.ceil(p.w * pixelRatio));
   const rows = Math.max(1, Math.ceil(p.h * pixelRatio));
-  const resized = rtaDensLayer.width !== cols || rtaDensLayer.height !== rows;
-  if (resized) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
-  const lc = rtaDensCtx!;
+  const resized = lastDensCols !== cols || lastDensRows !== rows;
   const theme = document.documentElement.dataset.theme;
   const themeChanged = lastDensTheme !== theme || !rtaDensLut;
   if (themeChanged) { rtaDensLut = densityLut(isLightTheme()); lastDensTheme = theme; }
@@ -1113,7 +1132,8 @@ function drawRtaDensityLayer(
         if (rtaDensFiniteMask[i] !== finite) reset = true;
         rtaDensFiniteMask[i] = finite;
       }
-      rtaDensRelease.apply(rtaDensRaster, grid.lastMs, rtaHalflife.get(), reset);
+      rtaDensRelease.apply(rtaDensRaster, grid.lastMs, rtaHalflife.get(), reset,
+        Math.min(rtaDensBounds.firstBin, rtaDensBounds.endBin) * cols, rtaDensBounds.endBin * cols);
       // The release floor retains old rows even when the current projection moves away.
       rtaDensReleaseBounds.firstBin = reset ? rtaDensBounds.firstBin
         : Math.min(rtaDensReleaseBounds.firstBin, rtaDensBounds.firstBin);
@@ -1122,14 +1142,30 @@ function drawRtaDensityLayer(
       lastDensFirst = first; lastDensEnd = end;
     } else clearRtaDensityRelease();
   }
-  if (rasterChanged || themeChanged || lastDensContrast !== contrast
-      || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
-    const bounds = softFootprint ? rtaDensReleaseBounds : rtaDensBounds;
-    const paintCentre = softFootprint ? 0.5 : centre, paintPitch = softFootprint ? 1 : pitch;
-    const top = Math.max(0, Math.min(rows, Math.floor(paintCentre + bounds.firstBin * paintPitch - width / 2)));
-    const bottom = bounds.firstBin < bounds.endBin
-      ? Math.max(top, Math.min(rows, Math.ceil(paintCentre + (bounds.endBin - 1) * paintPitch + width / 2))) : top;
-    const height = bottom - top;
+  const bounds = softFootprint ? rtaDensReleaseBounds : rtaDensBounds;
+  const paintCentre = softFootprint ? 0.5 : centre, paintPitch = softFootprint ? 1 : pitch;
+  const top = Math.max(0, Math.min(rows, Math.floor(paintCentre + bounds.firstBin * paintPitch - width / 2)));
+  const bottom = bounds.firstBin < bounds.endBin
+    ? Math.max(top, Math.min(rows, Math.ceil(paintCentre + (bounds.endBin - 1) * paintPitch + width / 2))) : top;
+  const height = bottom - top;
+  rtaDensTexture ??= new DensityTexture();
+  const gpu = height > 0 && rtaDensTexture.draw({
+    raster: softFootprint ? rtaDensRelease.values : rtaDensRaster,
+    columns: cols, bins: softFootprint ? rows : grid.bins, rows, top, height,
+    centre: paintCentre, pitch: paintPitch, width, soft: softFootprint, probability,
+    palette: rtaDensPalette!, bounds, changed: rasterChanged,
+  });
+  const renderer = gpu ? 'webgl2' : 'canvas2d';
+  if (ctx.canvas.dataset.densityRenderer !== renderer) ctx.canvas.dataset.densityRenderer = renderer;
+  if (!gpu && (lastDensGpu || rasterChanged || themeChanged || lastDensContrast !== contrast
+      || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch)) {
+    if (!rtaDensLayer) {
+      rtaDensLayer = document.createElement('canvas');
+      rtaDensCtx = rtaDensLayer.getContext('2d');
+    }
+    if (rtaDensLayer.width !== cols) rtaDensLayer.width = cols;
+    if (rtaDensLayer.height !== rows) rtaDensLayer.height = rows;
+    const lc = rtaDensCtx!;
     // Keep physical-pixel coverage, but never paint or upload the empty amplitude area.
     // Grow in bands so fluctuating signal bounds reuse the same backing allocation.
     if (height > 0) {
@@ -1145,6 +1181,9 @@ function drawRtaDensityLayer(
     // Erase history which left the occupied band, including a completely empty frame.
     if (!resized && lastDensPaintTop < top) lc.clearRect(0, lastDensPaintTop, cols, Math.min(top, lastDensPaintEnd) - lastDensPaintTop);
     if (!resized && lastDensPaintEnd > bottom) lc.clearRect(0, Math.max(bottom, lastDensPaintTop), cols, lastDensPaintEnd - Math.max(bottom, lastDensPaintTop));
+  }
+  if (gpu || rasterChanged || themeChanged || lastDensContrast !== contrast
+      || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
     lastDensPaintTop = top; lastDensPaintEnd = bottom;
     lastDensGrid = grid; lastDensRevision = grid.revision;
     lastDensFreq = freq;
@@ -1154,8 +1193,17 @@ function drawRtaDensityLayer(
     lastDensSource = grid.source; lastDensBins = grid.bins;
     lastDensRefTop = grid.refTop; lastDensDbPerBin = grid.dBPerBin;
     lastDensPlotWidth = p.w; lastDensPlotHeight = p.h; lastDensPixelRatio = pixelRatio;
+    lastDensCols = cols; lastDensRows = rows;
   }
-  if (lastDensPaintEnd > lastDensPaintTop) {
+  lastDensGpu = gpu;
+  if (gpu) {
+    if (rtaDensLayer) { rtaDensLayer.width = rtaDensLayer.height = 0; }
+    rtaDensLayer = null; rtaDensCtx = null; rtaDensImage = null;
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(rtaDensTexture.canvas, 0, 0, cols, height,
+      p.x, p.y + top / rows * p.h, p.w, height / rows * p.h);
+    ctx.restore();
+  } else if (lastDensPaintEnd > lastDensPaintTop && rtaDensLayer) {
     // Include transparent neighbours for the existing smoothed detail interpolation.
     const top = Math.max(0, lastDensPaintTop - 1), bottom = Math.min(rows, lastDensPaintEnd + 1);
     ctx.save();

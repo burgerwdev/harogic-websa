@@ -246,12 +246,15 @@ function paintHistory(ctx: CanvasRenderingContext2D, width: number, height: numb
   if (wfHead) ctx.drawImage(wfHistory!, 0, 0, width, wfHead, 0, tail, width, wfHead);
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) return;
+export function releaseWaterfallCanvas(): void {
   if (wfHistory) { wfHistory.width = 0; wfHistory.height = 0; }
   wfHistory = null; wfHistoryCtx = null;
   wfImg = null; wfPixels = null; wfCanvas = null;
+  wfNewestRow = null; sliceScratch = null;
   projectedRows.clear();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) releaseWaterfallCanvas();
 });
 
 function overlayContext(): CanvasRenderingContext2D | null {
@@ -413,9 +416,10 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   wfCanvas = canvas;
   wfNewestRow = rows[n - 1];
   const paintHeight = wfHistoryCtx ? scroll || H : H;
-  if (!wfImg || wfImg.width !== W || wfImg.height !== paintHeight) {
-    wfImg = ctx.createImageData(W, paintHeight);
-    wfPixels = new Uint32Array(wfImg.data.buffer, wfImg.data.byteOffset, W * paintHeight);
+  const capacity = Math.min(H, Math.ceil(paintHeight / 8) * 8);
+  if (!wfImg || wfImg.width !== W || wfImg.height < paintHeight || wfImg.height > Math.max(16, capacity * 2)) {
+    wfImg = ctx.createImageData(W, capacity);
+    wfPixels = new Uint32Array(wfImg.data.buffer, wfImg.data.byteOffset, W * capacity);
   }
   const img = wfImg;
   const pixels = wfPixels!;

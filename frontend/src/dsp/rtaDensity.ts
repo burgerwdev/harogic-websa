@@ -178,6 +178,8 @@ export interface DensityRasterBounds {
 	endBin: number;
 }
 
+let rasterWeights = new Float64Array(0);
+
 /**
  * Max-composite linearly reconstructed native frequency samples into a reusable raster.
  * Wide native bins taper to their neighbours instead of expanding into rectangular cells.
@@ -190,13 +192,16 @@ export function rasterDensity(
 	out.fill(0);
 	if (bounds) { bounds.firstBin = grid.bins; bounds.endBin = 0; }
 	if (!(hi > lo) || freq.length !== grid.heads.length) return;
+	const { bins, samples, heads, next, values } = grid;
+	let firstBin = bins, endBin = 0;
+	if (rasterWeights.length < width) rasterWeights = new Float64Array(width);
 	const [first, end] = visibleBinRange(freq, lo, hi);
 	const scale = width / (hi - lo);
 	for (let i = first; i < end; i++) {
-		if (!Number.isFinite(grid.samples[i])) continue;
+		if (!Number.isFinite(samples[i])) continue;
 		const hz = freq[i];
-		const left = i === 0 || !Number.isFinite(grid.samples[i - 1]) ? hz : freq[i - 1];
-		const right = i === freq.length - 1 || !Number.isFinite(grid.samples[i + 1]) ? hz : freq[i + 1];
+		const left = i === 0 || !Number.isFinite(samples[i - 1]) ? hz : freq[i - 1];
+		const right = i === freq.length - 1 || !Number.isFinite(samples[i + 1]) ? hz : freq[i + 1];
 		if (right < lo || left > hi) continue;
 		const x0 = Math.max(0, Math.floor((left - lo) * scale));
 		const x1 = Math.min(width, Math.ceil((right - lo) * scale));
@@ -208,27 +213,38 @@ export function rasterDensity(
 		// Keep every native frequency/amplitude cell, without repeating the
 		// interpolation arithmetic for each occupied amplitude row.
 		const peakOnly = (hz - left) * scale <= 0.5 && (right - hz) * scale <= 0.5 && hz >= lo && hz <= hi;
-		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
-			const bin = cell % grid.bins;
-			if (bounds) {
-				bounds.firstBin = Math.min(bounds.firstBin, bin);
-				bounds.endBin = Math.max(bounds.endBin, bin + 1);
+		const column = i * bins;
+		if (peakOnly) {
+			for (let cell = heads[i]; cell !== -1; cell = next[cell]) {
+				const bin = cell - column, at = bin * width + peakX;
+				if (bin < firstBin) firstBin = bin;
+				if (bin + 1 > endBin) endBin = bin + 1;
+				if (values[cell] > out[at]) out[at] = values[cell];
 			}
+			continue;
+		}
+		// The frequency footprint is identical for every occupied amplitude cell.
+		for (let x = x0; x < x1; x++) {
+			const sampleHz = lo + (x + 0.5) / scale;
+			const weight = sampleHz < left || sampleHz > right ? 0 : sampleHz <= hz
+				? (hz === left ? 1 : (sampleHz - left) / (hz - left))
+				: (hz === right ? 1 : (right - sampleHz) / (right - hz));
+			rasterWeights[x] = Math.max(0, Math.min(1, weight));
+		}
+		for (let cell = heads[i]; cell !== -1; cell = next[cell]) {
+			const bin = cell - column;
+			if (bin < firstBin) firstBin = bin;
+			if (bin + 1 > endBin) endBin = bin + 1;
 			const base = bin * width;
-			const value = grid.values[cell];
-			if (peakOnly) { out[base + peakX] = Math.max(out[base + peakX], value); continue; }
+			const value = values[cell];
 			for (let x = x0; x < x1; x++) {
-				const sampleHz = lo + (x + 0.5) / scale;
-				if (sampleHz < left || sampleHz > right) continue;
-				const weight = sampleHz <= hz
-					? (hz === left ? 1 : (sampleHz - left) / (hz - left))
-					: (hz === right ? 1 : (right - sampleHz) / (right - hz));
-				const contribution = value * Math.max(0, Math.min(1, weight));
+				const contribution = value * rasterWeights[x];
 				out[base + x] = resolved ? out[base + x] + contribution : Math.max(out[base + x], contribution);
 			}
 			if ((!resolved || left === right) && hz >= lo && hz <= hi) out[base + peakX] = Math.max(out[base + peakX], value);
 		}
 	}
+	if (bounds) { bounds.firstBin = firstBin; bounds.endBin = endBin; }
 }
 
 // Reused by sparse projections; at most 2 * bins - 1 monotone quantile segments.
@@ -271,7 +287,8 @@ export function rasterSparseDensity(
 	out.fill(0);
 	if (bounds) { bounds.firstBin = projection?.bins ?? grid.bins; bounds.endBin = 0; }
 	if (!(hi > lo) || !(width > 0) || freq.length !== grid.heads.length) return;
-	const bins = grid.bins;
+	const { bins, samples, heads, next, values } = grid;
+	let occupiedFirst = projection?.bins ?? bins, occupiedEnd = 0;
 	const outputBins = projection?.bins ?? bins;
 	const origin = projection?.origin ?? 0, rowScale = projection?.scale ?? 1;
 	if (sparseLeft.length < bins) {
@@ -289,24 +306,24 @@ export function rasterSparseDensity(
 	sparseLeft.fill(0, 0, bins);
 	sparseRight.fill(0, 0, bins);
 	for (let i = first; i + 1 < end; i++) {
-		if (!Number.isFinite(grid.samples[i]) || !Number.isFinite(grid.samples[i + 1])) continue;
+		if (!Number.isFinite(samples[i]) || !Number.isFinite(samples[i + 1])) continue;
 		const left = freq[i], right = freq[i + 1];
 		if (!(right > left) || right < lo || left > hi) continue;
 		// Clear through the sparse lists below; they already record exactly the touched rows.
 		let leftTotal = 0, rightTotal = 0;
-		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
+		for (let cell = heads[i]; cell !== -1; cell = next[cell]) {
 			const row = cell % bins;
-			sparseLeft[row] = grid.values[cell];
-			leftTotal += grid.values[cell];
+			sparseLeft[row] = values[cell];
+			leftTotal += values[cell];
 		}
-		for (let cell = grid.heads[i + 1]; cell !== -1; cell = grid.next[cell]) {
+		for (let cell = heads[i + 1]; cell !== -1; cell = next[cell]) {
 			const row = cell % bins;
-			sparseRight[row] = grid.values[cell];
-			rightTotal += grid.values[cell];
+			sparseRight[row] = values[cell];
+			rightTotal += values[cell];
 		}
 		if (!(leftTotal > 0) || !(rightTotal > 0)) {
-			for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) sparseLeft[cell % bins] = 0;
-			for (let cell = grid.heads[i + 1]; cell !== -1; cell = grid.next[cell]) sparseRight[cell % bins] = 0;
+			for (let cell = heads[i]; cell !== -1; cell = next[cell]) sparseLeft[cell % bins] = 0;
+			for (let cell = heads[i + 1]; cell !== -1; cell = next[cell]) sparseRight[cell % bins] = 0;
 			continue;
 		}
 		let a = 0, b = 0, aMass = 0, bMass = 0, aUsed = 0, bUsed = 0, segments = 0;
@@ -352,9 +369,9 @@ export function rasterSparseDensity(
 				const inverseHigh = highSpan < 1e-9 ? 0 : 1 / highSpan;
 				const firstRow = Math.max(0, Math.floor(lowMin + 0.5));
 				const endRow = Math.min(outputBins, Math.ceil(highMax + 0.5));
-				if (bounds && firstRow < endRow) {
-					bounds.firstBin = Math.min(bounds.firstBin, firstRow);
-					bounds.endBin = Math.max(bounds.endBin, endRow);
+				if (firstRow < endRow) {
+					occupiedFirst = Math.min(occupiedFirst, firstRow);
+					occupiedEnd = Math.max(occupiedEnd, endRow);
 				}
 				for (let bin = firstRow; bin < endRow; bin++) {
 					const edge = bin - 0.5;
@@ -365,16 +382,16 @@ export function rasterSparseDensity(
 				}
 			}
 		}
-		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) sparseLeft[cell % bins] = 0;
-		for (let cell = grid.heads[i + 1]; cell !== -1; cell = grid.next[cell]) sparseRight[cell % bins] = 0;
+		for (let cell = heads[i]; cell !== -1; cell = next[cell]) sparseLeft[cell % bins] = 0;
+		for (let cell = heads[i + 1]; cell !== -1; cell = next[cell]) sparseRight[cell % bins] = 0;
 	}
 	// Resolved pairs already contain their endpoints as continuous bands. Only isolated
 	// points, an uncovered right endpoint, and subpixel carriers need a native projection.
 	for (let i = first; i < end; i++) {
-		if (!Number.isFinite(grid.samples[i]) || freq[i] < lo || freq[i] > hi || grid.heads[i] === -1) continue;
+		if (!Number.isFinite(samples[i]) || freq[i] < lo || freq[i] > hi || heads[i] === -1) continue;
 		const x = Math.min(width - 1, Math.floor((freq[i] - lo) * scale));
-		const hasLeft = i > 0 && Number.isFinite(grid.samples[i - 1]) && grid.heads[i - 1] !== -1 && freq[i] > freq[i - 1];
-		const hasRight = i + 1 < freq.length && Number.isFinite(grid.samples[i + 1]) && grid.heads[i + 1] !== -1 && freq[i + 1] > freq[i];
+		const hasLeft = i > 0 && Number.isFinite(samples[i - 1]) && heads[i - 1] !== -1 && freq[i] > freq[i - 1];
+		const hasRight = i + 1 < freq.length && Number.isFinite(samples[i + 1]) && heads[i + 1] !== -1 && freq[i + 1] > freq[i];
 		// A one-pixel span can put both endpoints in the same clamped device column.
 		// It cannot resolve their separate peaks, so retain the native MAX there too.
 		const subpixel = (hasLeft && (freq[i] - freq[i - 1]) * scale <= 1)
@@ -385,16 +402,16 @@ export function rasterSparseDensity(
 		if (!subpixel && (hasLeft || hasRight) && covered) continue;
 		sparseLeft.fill(0, 0, bins);
 		let firstBin = bins, endBin = 0;
-		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
+		for (let cell = heads[i]; cell !== -1; cell = next[cell]) {
 			const bin = cell % bins;
-			sparseLeft[bin] = grid.values[cell];
+			sparseLeft[bin] = values[cell];
 			firstBin = Math.min(firstBin, bin); endBin = Math.max(endBin, bin + 1);
 		}
 		const firstRow = Math.max(0, Math.floor(origin + (firstBin - 0.5) * rowScale + 0.5));
 		const endRow = Math.min(outputBins, Math.ceil(origin + (endBin - 0.5) * rowScale + 0.5));
-		if (bounds && firstRow < endRow) {
-			bounds.firstBin = Math.min(bounds.firstBin, firstRow);
-			bounds.endBin = Math.max(bounds.endBin, endRow);
+		if (firstRow < endRow) {
+			occupiedFirst = Math.min(occupiedFirst, firstRow);
+			occupiedEnd = Math.max(occupiedEnd, endRow);
 		}
 		for (let row = firstRow; row < endRow; row++) {
 			const low = (row - 0.5 - origin) / rowScale, high = (row + 0.5 - origin) / rowScale;
@@ -406,6 +423,7 @@ export function rasterSparseDensity(
 			out[k] = Math.max(out[k], value);
 		}
 	}
+	if (bounds) { bounds.firstBin = occupiedFirst; bounds.endBin = occupiedEnd; }
 }
 /** Destination geometry: a raster row's CENTRE is its raw-dBm bin, just like the trace. */
 export function densityLevelPlacement(

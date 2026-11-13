@@ -3,6 +3,19 @@ import { DensityRelease } from '../dsp/densityRelease';
 import { advanceDensity, densityLut, paintDensity, rasterSparseDensity } from '../dsp/rtaDensity';
 
 describe('fixed-coordinate density release', () => {
+	it('retains the fading old band and clears it on a bounded geometry reset', () => {
+		const release = new DensityRelease(), raw = new Float32Array(20);
+		raw[3] = 8;
+		release.apply(raw, 0, 1, false, 3, 4);
+		raw[3] = 0; raw[12] = 6;
+		const values = release.apply(raw, 1000, 1, false, 12, 13);
+		expect(values[3]).toBe(4); expect(values[12]).toBe(6);
+		raw.fill(0);
+		release.apply(raw, 2000, 1, false, 0, 0);
+		expect(values[3]).toBe(2); expect(values[12]).toBe(3);
+		release.apply(raw, 2100, 1, true, 0, 0);
+		expect(values).toEqual(new Float32Array(20));
+	});
 	it('releases sudden zero input by elapsed half-life without accumulating steady input', () => {
 		const release = new DensityRelease();
 		const raw = new Float32Array([8]);
