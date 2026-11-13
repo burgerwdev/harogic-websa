@@ -5,7 +5,7 @@ import { getDisplayTop, getDisplayRange } from '../ui/displayRef';
 import { ctx, onCanvasResize, pixelRatio, W, H } from '../core/store';
 import { getX, getY, plotRect, plottableLevel } from './plot';
 import { previewFreqWindow, previewLevelWindow, yAxisTransform } from '../ui/axisDrag';
-import { canvasColors } from '../core/theme';
+import { canvasColors, isLightTheme } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
 import { getDisplayPowers } from '../dsp/peaks';
@@ -24,9 +24,9 @@ import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
-import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, type DensityGrid, type DensityPalette, type DensityRasterBounds } from '../dsp/rtaDensity';
+import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, paintProbabilityDensity, probabilityColour, MAX_DENSITY, type DensityGrid, type DensityPalette, type DensityRasterBounds } from '../dsp/rtaDensity';
 import { DensityRelease } from '../dsp/densityRelease';
-import { visibleBinRange } from '../dsp/grid';
+import { sameFrequencyGrid, visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
 import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
@@ -781,7 +781,7 @@ function renderRta() {
   const densityOn = rtaHalflife.get() > 0 && rtaDensLayers.get() !== 'trace'
     && (rtaDensSource.get() === 'live' || activeTrace.mode !== 'OFF');
   const density = S.rtaDensity2d;
-  const densityVisible = densityOn && !!density && (!density.freq || density.freq === d.freq);
+  const densityVisible = densityOn && !!density && (!density.freq || sameFrequencyGrid(density.freq, d.freq));
   // Native history is rasterised only for this visible Hz window at screen resolution.
   if (densityVisible) drawRtaDensityLayer(density!, d.freq, lo, hi, p);
   else clearRtaDensityRelease();
@@ -852,6 +852,10 @@ function renderRta() {
     ctx.restore();
   });
   ctx.restore();
+  if (densityVisible && density!.population !== undefined) {
+    ctx.canvas.dataset.densitySpectra = String(density!.spectra);
+    drawDensityLegend(p);
+  }
   drawFreqRow(lo, hi, col, p);
   if (!spectrumOverlay()) renderRtaOverlays(ctx);
   // Markers on the active RTA trace (length-guarded)
@@ -860,6 +864,28 @@ function renderRta() {
     renderMarkersOnCanvas(actDisp);
     renderOSD(actDisp);
   }
+}
+
+function drawDensityLegend(p: { x: number; y: number; w: number; h: number }) {
+  const width = Math.min(200, p.w * 0.4), x = p.x + p.w - width - 12, y = p.y + 8;
+  const colours = densityLut(isLightTheme()), contrast = rtaDensContrast.get(), col = canvasColors();
+  const gradient = ctx.createLinearGradient(x, 0, x + width, 0);
+  for (let i = 0; i <= 16; i++) {
+    const colour = colours[Math.round(255 * Math.pow(i / 16, contrast))];
+    gradient.addColorStop(i / 16, `rgb(${colour & 255},${colour >>> 8 & 255},${colour >>> 16 & 255})`);
+  }
+  ctx.save();
+  ctx.fillStyle = col.labelBg; ctx.fillRect(x - 6, y - 4, width + 12, 43);
+  ctx.font = '10px sans-serif'; ctx.fillStyle = col.text;
+  ctx.textAlign = 'left'; ctx.fillText(t('density_probability'), x, y + 7);
+  ctx.fillStyle = gradient; ctx.fillRect(x, y + 13, width, 6);
+  ctx.fillStyle = col.text;
+  for (const [probability, label] of [[0.0001, '0.01%'], [0.01, '1%'], [0.1, '10%'], [1, '100%']] as const) {
+    const fraction = probabilityColour(probability, 1) / 255;
+    ctx.textAlign = probability === 1 ? 'right' : probability === 0.0001 ? 'left' : 'center';
+    ctx.fillText(label, x + fraction * width, y + 31);
+  }
+  ctx.restore();
 }
 
 function renderRtaOverlays(ctx: CanvasRenderingContext2D): void {
@@ -982,6 +1008,7 @@ let lastDensWidth = NaN, lastDensCentre = NaN, lastDensPitch = NaN;
 let rtaDensLut: Uint32Array | null = null;
 let rtaDensPalette: DensityPalette | undefined;
 let lastDensSoftFootprint = false;
+let lastDensProbability = false;
 const rtaDensRelease = new DensityRelease();
 let rtaDensFiniteMask = new Uint8Array(0);
 let lastDensFirst = -1, lastDensEnd = -1;
@@ -1030,8 +1057,9 @@ function drawRtaDensityLayer(
   const lc = rtaDensCtx!;
   const theme = document.documentElement.dataset.theme;
   const themeChanged = lastDensTheme !== theme || !rtaDensLut;
-  if (themeChanged) { rtaDensLut = densityLut(theme === 'light'); lastDensTheme = theme; }
+  if (themeChanged) { rtaDensLut = densityLut(isLightTheme()); lastDensTheme = theme; }
   const contrast = rtaDensContrast.get();
+  const probability = grid.population !== undefined;
   let softFootprint = false;
   let first = 0, end = 0;
   if (S.sdrMode && hi > lo) {
@@ -1040,8 +1068,9 @@ function drawRtaDensityLayer(
     softFootprint = end - first > 1
       && (freq[end - 1] - freq[first]) * p.w > 2 * (hi - lo) * (end - first - 1);
   }
-  if (themeChanged || lastDensContrast !== contrast || !rtaDensPalette) {
-    rtaDensPalette = densityPalette(contrast, rtaDensLut!);
+  if (themeChanged || lastDensContrast !== contrast || lastDensProbability !== probability || !rtaDensPalette) {
+    rtaDensPalette = densityPalette(contrast, rtaDensLut!, probability);
+    lastDensProbability = probability;
   }
   // Reproject frozen history on every offset/reference/scale/gesture change. The footprint
   // remains CSS pixels even when the native amplitude grid stretches or the DPR changes.
@@ -1050,7 +1079,7 @@ function drawRtaDensityLayer(
   const sy = yt ? yt.sy : 1;
   const pitch = level.height / grid.bins * sy * rows;
   const centre = (level.top * sy + (yt ? yt.dyFrac : 0)) * rows + pitch / 2;
-  const width = rtaDensWidth.get() * rows / p.h;
+  const width = Math.max(rtaDensWidth.get() * rows / p.h, probability ? Math.abs(pitch) : 0);
   // SDR native histories already replace their grid on a changed frequency axis;
   // packets may carry equal axes in freshly allocated arrays.
   const geometryChanged = resized || lastDensGrid !== grid || (!grid.freq && lastDensFreq !== freq)
@@ -1066,6 +1095,10 @@ function drawRtaDensityLayer(
     if (softFootprint) rasterSparseDensity(grid, freq, lo, hi, cols, rtaDensRaster,
       { bins: rows, origin: centre - 0.5, scale: pitch }, rtaDensBounds);
     else rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster, rtaDensBounds);
+    if (probability) {
+      const scale = MAX_DENSITY / grid.population!;
+      for (let i = 0; i < rtaDensRaster.length; i++) rtaDensRaster[i] *= scale;
+    }
     if (softFootprint) {
       let reset = geometryChanged || !rtaDensRelease.values.length
         || lastDensFirst !== first || lastDensEnd !== end;
@@ -1103,7 +1136,9 @@ function drawRtaDensityLayer(
       if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height < height || rtaDensImage.height > rows) {
         rtaDensImage = lc.createImageData(cols, Math.min(rows, Math.ceil(height / 64) * 64));
       }
-      paintDensity(softFootprint ? rtaDensRelease.values : rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
+      if (probability) paintProbabilityDensity(rtaDensRaster, cols, grid.bins, rtaDensImage.data,
+        paintCentre, paintPitch, width, rtaDensPalette!, top, height);
+      else paintDensity(softFootprint ? rtaDensRelease.values : rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
         paintCentre, paintPitch, width, contrast, rtaDensLut!, softFootprint, rtaDensPalette, bounds, top);
       lc.putImageData(rtaDensImage, 0, top, 0, 0, cols, height);
     }

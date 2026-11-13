@@ -61,13 +61,23 @@ async function load(mode: 'std' | 'rta' | 'sdr') {
 }
 
 function deliver(data: ArrayBuffer) { socket.onmessage!({ data } as MessageEvent); }
-function rta(peak: number, version = 1, shift = 0, trigger?: TriggerMetadata, saturated = false) {
+function rta(peak: number, version = 1, shift = 0, trigger?: TriggerMetadata, saturated = false,
+    packet?: { value: number; sequence: bigint }) {
   const points = 32;
-  const metadata = trigger ? new TextEncoder().encode(JSON.stringify(trigger)) : null;
+  const metadata = trigger || packet ? new TextEncoder().encode(JSON.stringify(trigger ?? {})) : null;
   const size = 24 + points * 12 + 2 + 8;
-  const data = new ArrayBuffer(size + (metadata ? 8 + metadata.length : 0));
+  const trailer = size + (packet ? 24 + points * 2 : 0);
+  const data = new ArrayBuffer(trailer + (metadata ? 8 + metadata.length : 0));
   const header = new DataView(data);
   new Uint8Array(data, 0, 4).set(metadata ? [82, 84, 65, 50] : [82, 84, 65, 70]);
+  if (packet) {
+    new Uint8Array(data, 0, 4).set([82, 84, 65, 51]);
+    header.setUint32(size, 0x534e4544, true);
+    header.setUint32(size + 4, points * 2, true);
+    header.setFloat32(size + 8, .5, true); header.setFloat32(size + 12, -120, true);
+    header.setBigUint64(size + 16, packet.sequence, true);
+    new Uint8Array(data, size + 24, points * 2).fill(packet.value);
+  }
   header.setUint32(4, version, true);
   header.setUint32(8, points, true);
   header.setUint16(12, 1, true);
@@ -78,9 +88,9 @@ function rta(peak: number, version = 1, shift = 0, trigger?: TriggerMetadata, sa
   spec.fill(saturated ? peak : -120); spec[16] = peak;
   header.setFloat64(size - 8, 1e9 + shift + 3200, true);
   if (metadata) {
-    header.setUint32(size, 0x47495254, true);
-    header.setUint32(size + 4, metadata.length, true);
-    new Uint8Array(data, size + 8).set(metadata);
+    header.setUint32(trailer, 0x47495254, true);
+    header.setUint32(trailer + 4, metadata.length, true);
+    new Uint8Array(data, trailer + 8).set(metadata);
   }
   deliver(data);
 }
@@ -99,6 +109,42 @@ function sweep(kind: 'FREQ' | 'POWR', peak = -60, version = 1, shift = 0, extraS
 }
 
 describe('spectrum arrival cadence', () => {
+  it('keeps acquired RTA near 30 Hz with an 8 ms density paint', async () => {
+    const { S, redraw } = await load('rta');
+    const settings = await import('../ui/waterfallState');
+    settings.rtaDensSource.set('live');
+    const paints: number[] = [];
+    redraw.setRenderer(() => { paints.push(performance.now()); vi.advanceTimersByTime(8); });
+    let sequence = 1n;
+    while (performance.now() < 2000) {
+      rta(-100, 1, 0, undefined, false, { value: 20, sequence: sequence++ });
+      vi.advanceTimersByTime(5);
+    }
+    const elapsed = (paints.at(-1)! - paints[0]) / 1000;
+    expect((paints.length - 1) / elapsed).toBeGreaterThanOrEqual(28);
+    expect((paints.length - 1) / elapsed).toBeLessThanOrEqual(31);
+    expect(S.rtaDensity2d!.spectra).toBe(Number(sequence - 1n) * 2);
+  });
+
+  it('retains all acquired FFTs while coalescing RTA paints, including a one-packet transient', async () => {
+    const { S, redraw } = await load('rta');
+    const settings = await import('../ui/waterfallState');
+    settings.rtaDensSource.set('live'); settings.rtaAmpBins.set(128); settings.rtaHalflife.set(1);
+    vi.spyOn(redraw, 'streamRenderInterval').mockReturnValue(80);
+    rta(-100, 1, 0, undefined, false, { value: 20, sequence: 1n });
+    vi.advanceTimersByTime(20);
+    rta(-60, 1, 0, undefined, false, { value: 80, sequence: 2n });
+    vi.advanceTimersByTime(20);
+    rta(-100, 1, 0, undefined, false, { value: 20, sequence: 3n });
+    expect(S.rtaData.spec[16]).toBe(-100);
+    expect(S.rtaDensity2d!.spectra).toBe(6);
+    const transient = Math.floor((255 - 80) / 2);
+    expect(S.rtaDensity2d!.values[transient]).toBeGreaterThan(0);
+    vi.advanceTimersByTime(100);
+    expect(S.rtaDensity2d!.spectra).toBe(6);
+    expect(S.rtaDensity2d!.values[transient]).toBeGreaterThan(0);
+  });
+
   it('prepares only the latest replaceable RTA frame at the current paint cadence', async () => {
     const { S, redraw } = await load('rta');
     vi.spyOn(redraw, 'streamRenderInterval').mockReturnValue(80);

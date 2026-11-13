@@ -161,7 +161,7 @@ async def measure_switch(ws, mode_payload: dict, timeout: float = 10.0) -> float
     await ws.send_json(mode_payload)
     deadline = started + timeout
     confirmed = False
-    expected_magic = (b'RTAF', b'RTA2') if mode_payload['mode'] in ('rta', 'sdr') else (b'POWR',)
+    expected_magic = (b'RTAF', b'RTA2', b'RTA3') if mode_payload['mode'] in ('rta', 'sdr') else (b'POWR',)
     while time.monotonic() < deadline:
         try:
             message = await asyncio.wait_for(ws.receive(), timeout=min(3, deadline - time.monotonic()))

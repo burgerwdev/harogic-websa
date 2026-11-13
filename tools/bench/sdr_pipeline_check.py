@@ -84,7 +84,7 @@ class Receiver(threading.Thread):
                 if not isinstance(frame, bytes):
                     continue
                 with self.lock:
-                    if frame[:4] in (b"RTAF", b"RTA2"):
+                    if frame[:4] in (b"RTAF", b"RTA2", b"RTA3"):
                         self.spectra += 1
                         continue
                     if frame[:4] not in (b"IQBF", b"IQAX"):

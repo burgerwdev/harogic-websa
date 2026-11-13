@@ -1,6 +1,7 @@
 /** Native-frequency persistence. Only occupied amplitude cells are visited for decay. */
 import { percentileApprox } from './stats';
 import { sameFrequencyGrid, visibleBinRange } from './grid';
+import type { RtaPacket } from '../core/model';
 
 export const MAX_DENSITY = 40;
 const DENSITY_FLOOR = 0.05;
@@ -26,6 +27,62 @@ export interface DensityGrid {
 	source: DensitySource;
 	/** Wall clock of the last advance; -1 means the next advance uses the reference cadence. */
 	lastMs: number;
+  population?: number;
+  packetSequence?: bigint;
+  version?: number;
+  spectra?: number;
+}
+
+/** Equal-weight hits from every acquired FFT; drawing cadence does not sample this history. */
+export function advancePacketDensity(
+  prev: DensityGrid | null, packet: RtaPacket, spec: Float32Array, freq: Float64Array,
+  bins: number, halflife: number, version: number, now: number,
+): DensityGrid | null {
+  if (!(halflife > 0)) return null;
+  const refTop = packet.offset + (255.5 - 128 / bins) * packet.scale, dBPerBin = 256 * packet.scale / bins;
+  const reuse = prev?.population !== undefined && prev.version === version && prev.bins === bins
+    && prev.dBPerBin === dBPerBin && sameFrequencyGrid(prev.freq ?? null, freq);
+  const grid: DensityGrid = reuse ? prev! : {
+    values: new Float32Array(freq.length * bins), next: new Int32Array(freq.length * bins),
+    heads: new Int32Array(freq.length).fill(-1), bins, refTop, dBPerBin, revision: 0,
+    samples: spec, source: 'live', lastMs: now, population: 0, version, spectra: 0,
+  };
+  grid.freq = freq;
+  grid.samples = spec;
+  if (reuse && grid.packetSequence === packet.sequence) return grid;
+  const decay = Math.pow(2, -Math.max(0, now - grid.lastMs) / (1000 * halflife));
+  for (let i = 0; i < freq.length; i++) {
+    let previous = -1;
+    for (let cell = grid.heads[i]; cell !== -1;) {
+      const next = grid.next[cell], value = grid.values[cell] * decay;
+      if (value > 1e-5) { grid.values[cell] = value; previous = cell; }
+      else {
+        grid.values[cell] = 0;
+        if (previous === -1) grid.heads[i] = next; else grid.next[previous] = next;
+      }
+      cell = next;
+    }
+  }
+  const rows = new Int32Array(256);
+  for (let value = 0; value < 256; value++) {
+    rows[value] = Math.round((grid.refTop - packet.offset - value * packet.scale) / grid.dBPerBin);
+  }
+  for (let base = 0; base < packet.samples.length; base += freq.length) {
+    for (let i = 0; i < freq.length; i++) {
+      const row = rows[packet.samples[base + i]];
+      if (row < 0 || row >= bins) continue;
+      const cell = i * bins + row;
+      if (grid.values[cell] === 0) { grid.next[cell] = grid.heads[i]; grid.heads[i] = cell; }
+      grid.values[cell]++;
+    }
+  }
+  const spectra = packet.samples.length / freq.length;
+  grid.population = grid.population! * decay + spectra;
+  grid.spectra = (grid.spectra ?? 0) + spectra;
+  grid.packetSequence = packet.sequence;
+  grid.lastMs = now;
+  grid.revision++;
+  return grid;
 }
 
 /**
@@ -386,7 +443,12 @@ export interface DensityPalette {
 }
 
 /** Float32 exponent/mantissa buckets keep relative precision down to faint afterglow. */
-export function densityPalette(contrast: number, lut: Uint32Array): DensityPalette {
+export function probabilityColour(probability: number, contrast: number): number {
+  return Math.round(255 * Math.pow(Math.log1p(Math.max(0, Math.min(1, probability)) * 10000)
+    / Math.log1p(10000), contrast));
+}
+
+export function densityPalette(contrast: number, lut: Uint32Array, probability = false): DensityPalette {
 	const colours = new Uint32Array(65536), alpha = new Float32Array(65536);
 	const sample = new Float32Array(1), bits = new Uint32Array(sample.buffer);
 	sample[0] = MAX_DENSITY;
@@ -395,13 +457,45 @@ export function densityPalette(contrast: number, lut: Uint32Array): DensityPalet
 		// Midpoint of each bucket; above the density cap every entry saturates.
 		bits[0] = (Math.min(i, maxIndex) << 15) | 0x4000;
 		const n = Math.min(1, sample[0] / MAX_DENSITY);
-		colours[i] = lut[Math.round(255 * Math.pow(n, 0.45 * contrast))];
-		alpha[i] = 255 * (1 - Math.exp(-5 * Math.pow(n, 0.4)));
+		colours[i] = lut[probability ? probabilityColour(n, contrast) : Math.round(255 * Math.pow(n, 0.45 * contrast))];
+		alpha[i] = 255 * (1 - Math.exp(-(probability ? 8 : 5) * Math.pow(n, probability ? 0.25 : 0.4)));
 	}
 	return { colours, alpha, maxIndex };
 }
 
 let paintCoverage = new Float64Array(0);
+const probabilitySample = new Float32Array(1);
+const probabilityBits = new Uint32Array(probabilitySample.buffer);
+
+/** Interpolate histogram intensity before colour mapping to avoid seams between amplitude cells. */
+export function paintProbabilityDensity(
+  raster: Float32Array, cols: number, bins: number, pixels: Uint8ClampedArray,
+  firstCentre: number, rowPitch: number, footprint: number, palette: DensityPalette, rowOffset = 0,
+  height = pixels.length / (cols * 4),
+): void {
+  pixels.fill(0);
+  const packed = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4);
+  const radius = Math.max(0, (footprint / rowPitch - 1) / 2);
+  const at = (row: number, x: number) => row >= 0 && row < bins ? raster[row * cols + x] : 0;
+  for (let y = 0; y < Math.min(height, packed.length / cols); y++) {
+    const centre = (rowOffset + y + 0.5 - firstCentre) / rowPitch;
+    const low = centre - radius, high = centre + radius;
+    const a = Math.floor(low), b = Math.floor(high), left = low - a, right = high - b;
+    const aBase = a * cols, nextBase = (a + 1) * cols;
+    const hasA = a >= 0 && a < bins, hasNext = a + 1 >= 0 && a + 1 < bins;
+    for (let x = 0; x < cols; x++) {
+      let value = (hasA ? raster[aBase + x] : 0) * (1 - left) + (hasNext ? raster[nextBase + x] : 0) * left;
+      if (radius > 0) {
+        value = Math.max(value, at(b, x) * (1 - right) + at(b + 1, x) * right);
+        for (let row = Math.max(0, a + 1); row <= Math.min(b, bins - 1); row++) value = Math.max(value, at(row, x));
+      }
+      if (!(value > 0)) continue;
+      probabilitySample[0] = value;
+      const index = Math.min(palette.maxIndex, probabilityBits[0] >>> 15);
+      packed[y * cols + x] = (Math.round(palette.alpha[index]) << 24) | palette.colours[index];
+    }
+  }
+}
 
 /**
  * Paint native amplitude centres into a reusable screen-resolution RGBA image.

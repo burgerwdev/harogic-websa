@@ -26,6 +26,7 @@ const listeners = new Set<(th: Theme) => void>();
 let colors: CanvasColors | null = null;
 
 export function getTheme(): Theme { return current; }
+export function isLightTheme(): boolean { return THEMES.find(theme => theme.id === current)!.scheme === 'light'; }
 
 export function setTheme(th: Theme) {
   current = th;

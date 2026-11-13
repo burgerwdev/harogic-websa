@@ -121,7 +121,7 @@ def test_bench_start_requires_child_to_own_the_answering_socket(
             assert proc.terminated and proc.waited
 
 
-@pytest.mark.parametrize("magic", [b"RTAF", b"RTA2"])
+@pytest.mark.parametrize("magic", [b"RTAF", b"RTA2", b"RTA3"])
 def test_bench_display_uses_the_explicit_vendor_axis(monkeypatch, magic):
     axis = np.array([100_000_000.0, 100_000_250.5, 100_001_000.0], dtype="<f8")
     power = np.array([-90.0, -20.0, -80.0], dtype="<f4")

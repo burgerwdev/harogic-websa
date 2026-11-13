@@ -184,7 +184,7 @@ async def collect_rta(ws, duration: float, command_time: float) -> dict:
             break
         message = await asyncio.wait_for(ws.receive(), timeout=3)
         clients = note_clients(message, clients)
-        if message.type != aiohttp.WSMsgType.BINARY or message.data[:4] not in (b'RTAF', b'RTA2'):
+        if message.type != aiohttp.WSMsgType.BINARY or message.data[:4] not in (b'RTAF', b'RTA2', b'RTA3'):
             continue
         frame = message.data
         if first_frame_at is None:

@@ -1155,7 +1155,7 @@ impl DevState {
                 .fold(-120.0f32, f32::max);
             *value = ((peak + 120.0) * 40.95).clamp(0.0, 4095.0) as u16;
         }
-        encode_rta(
+        let mut encoded = encode_rta(
             version,
             &frame.freq,
             &frame.power,
@@ -1164,7 +1164,19 @@ impl DevState {
             frame.geometry.start,
             frame.geometry.stop,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        if let Some(packet) = frame.packet {
+            if !encoded.is_empty() {
+                encoded[..4].copy_from_slice(b"RTA3");
+                encoded.extend_from_slice(b"DENS");
+                encoded.extend_from_slice(&(packet.samples.len() as u32).to_le_bytes());
+                encoded.extend_from_slice(&packet.scale.to_le_bytes());
+                encoded.extend_from_slice(&packet.offset.to_le_bytes());
+                encoded.extend_from_slice(&packet.sequence.to_le_bytes());
+                encoded.extend_from_slice(&packet.samples);
+            }
+        }
+        encoded
     }
 
     /// FT8 slot replay (fake.py _ft8_baseband): the committed fixture is 48 kHz baseband.
@@ -3943,6 +3955,7 @@ async fn publisher_loop(
                     "rta" => {
                         display.push(state.step_rta().into());
                         if state.rta_completed_frame.is_some() { Duration::from_millis(200) }
+                        else if state.hardware_shim.is_some() { Duration::from_millis(1) }
                         else { Duration::from_millis(10) }
                     }
                     "sdr" if state.hardware_shim.is_some() => {
@@ -4129,7 +4142,7 @@ async fn publisher_loop(
                     }
                     if client.audio || client.decode {continue;}
                     for frame in &display {
-                        let version = (frame.starts_with(b"RTAF") || frame.starts_with(b"RTA2") || frame.starts_with(b"FREQ"))
+                        let version = (frame.starts_with(b"RTAF") || frame.starts_with(b"RTA2") || frame.starts_with(b"RTA3") || frame.starts_with(b"FREQ"))
                             .then_some(display_version);
                         enqueue(client, Outbound {
                             epoch, message: Message::Binary(frame.clone()).into(),
@@ -4231,7 +4244,7 @@ fn enqueue(client: &Client, packet: Outbound) {
     let (freq, trace) = match &packet.message {
         OutboundPayload::Single(Message::Binary(bytes)) => (
             bytes.starts_with(b"FREQ"),
-            bytes.starts_with(b"POWR") || bytes.starts_with(b"RTAF") || bytes.starts_with(b"RTA2"),
+            bytes.starts_with(b"POWR") || bytes.starts_with(b"RTAF") || bytes.starts_with(b"RTA2") || bytes.starts_with(b"RTA3"),
         ),
         _ => (false, false),
     };

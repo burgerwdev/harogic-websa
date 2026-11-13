@@ -1630,7 +1630,7 @@ async fn decode_send_rejects_expired_oldest_credit_with_available_capacity() {
 
 #[test]
 fn capture_epoch_fences_raw_iq_and_display_but_keeps_admitted_receiver_frames() {
-    for (magic,retained) in [(b"IQBF",false),(b"RTAF",false),(b"AUD2",true),(b"SDE2",true)] {
+    for (magic,retained) in [(b"IQBF",false),(b"RTAF",false),(b"RTA3",false),(b"AUD2",true),(b"SDE2",true)] {
         let packet=Outbound {epoch:1,status_revision:None,display_version:None,identity:None,
             message:Message::Binary(magic.to_vec().into()).into()};
         assert!(packet.epoch_current(1));
@@ -3241,6 +3241,28 @@ fn rta2_service_trailer_matches_golden_without_changing_legacy_payload() {
     assert_eq!(decode_rta_trigger(golden), manifest["rta2"]["metadata"]);
     assert_eq!(decode_rta_trigger(&frame), manifest["rta2"]["metadata"]);
     assert!(state.attach_rta_trigger(Vec::new()).is_empty());
+}
+
+#[test]
+fn rta3_preserves_packet_spectra_calibration_sequence_and_trigger() {
+    let state = hardware_state(None);
+    let samples = vec![20, 20, 20, 20, 180, 20];
+    let frame = RtaFrame {
+        geometry: hardware_rta::RtaGeometry { start: 100e6, stop: 101e6, points: 3, ..Default::default() },
+        freq: vec![100e6, 100.25e6, 100.5e6], power: vec![-110.0, -30.0, -110.0],
+        trigger: Default::default(),
+        packet: Some(hardware_rta::RtaPacket { samples: samples.clone(), scale: 0.5, offset: -120.0, sequence: 42 }),
+    };
+    let encoded = state.attach_rta_trigger(DevState::encode_hardware_rta(7, frame));
+    let offset = 32 + 3 * 12 + 224 * 2;
+    assert_eq!(&encoded[..4], b"RTA3");
+    assert_eq!(&encoded[offset..offset + 4], b"DENS");
+    assert_eq!(u32::from_le_bytes(encoded[offset + 4..offset + 8].try_into().unwrap()), 6);
+    assert_eq!(f32::from_le_bytes(encoded[offset + 8..offset + 12].try_into().unwrap()), 0.5);
+    assert_eq!(f32::from_le_bytes(encoded[offset + 12..offset + 16].try_into().unwrap()), -120.0);
+    assert_eq!(u64::from_le_bytes(encoded[offset + 16..offset + 24].try_into().unwrap()), 42);
+    assert_eq!(&encoded[offset + 24..offset + 30], samples);
+    assert_eq!(&encoded[offset + 30..offset + 34], b"TRIG");
 }
 
 #[test]

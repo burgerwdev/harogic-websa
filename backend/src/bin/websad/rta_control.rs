@@ -134,7 +134,7 @@ impl DevState {
 
     pub(super) fn attach_rta_trigger(&self, mut frame: Vec<u8>) -> Vec<u8> {
         if frame.is_empty() { return frame; }
-        frame[..4].copy_from_slice(b"RTA2");
+        if !frame.starts_with(b"RTA3") { frame[..4].copy_from_slice(b"RTA2"); }
         let metadata = self.rta_trigger_actual.to_string();
         frame.extend_from_slice(b"TRIG");
         frame.extend_from_slice(&(metadata.len() as u32).to_le_bytes());

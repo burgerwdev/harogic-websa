@@ -53,7 +53,7 @@ def main():
                     if not data or len(data) < 4:
                         return
                     magic = bytes(data[:4])
-                    if magic in (b'RTAF', b'RTA2'):
+                    if magic in (b'RTAF', b'RTA2', b'RTA3'):
                         counts['rtaf'] += 1
                     elif magic == b'AUD2':
                         if '/ws/audio' not in ws.url or len(data) < audio_header.size:

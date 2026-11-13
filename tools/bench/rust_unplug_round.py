@@ -75,7 +75,7 @@ class FrameRx(threading.Thread):
                 if not isinstance(data, bytes) or len(data) < 4:
                     continue
                 tag = data[:4].decode('ascii', 'replace')
-                if tag == 'RTA2':
+                if tag in ('RTA2', 'RTA3'):
                     tag = 'RTAF'
                 if tag == 'IQBF':
                     import struct

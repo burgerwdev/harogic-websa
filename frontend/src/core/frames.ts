@@ -11,6 +11,8 @@
  *   RTAF  magic + ver(u32) pts(u32) wfLen(u16) maxD(u16) startHz(f64)   (8-byte aligned)
  *         + float64[pts] + float32[pts] + uint16[wfLen] + stopHz(f64)
  *   RTA2  RTAF layout + 'TRIG' + JSON byte length(u32) + UTF-8 capture metadata
+ *   RTA3  RTAF layout + 'DENS' + bytes(u32) scale(f32) offset(f32) sequence(u64)
+ *         + uint8[bytes] (all packet spectra) + RTA2 TRIG trailer
  *   IQBF/IQAX  magic + ver(u32, 2) seq(u32) samples(u32) rate(f64) centerHz(f64)
  *              + channel_id(u32) epoch(u32) input_index(u64) group_delay(f64)
  *              + float32[2*samples] (interleaved IQ; seq 0 = empty boundary)
@@ -20,11 +22,13 @@
  * is not a frame this client understands.
  */
 import type { TriggerMetadata } from '../ui/triggerEvents';
+import type { RtaPacket } from './model';
 
 export const MAGIC_FREQ = 'FREQ';
 export const MAGIC_POWR = 'POWR';
 export const MAGIC_RTAF = 'RTAF';
 export const MAGIC_RTA2 = 'RTA2';
+export const MAGIC_RTA3 = 'RTA3';
 export const MAGIC_BASEBAND = 'IQBF';
 export const MAGIC_AUXILIARY = 'IQAX';
 
@@ -59,6 +63,7 @@ export interface RtaFrame extends FrameHeader {
 	spec: Float32Array;
 	wfRow: Uint16Array;
   trigger?: TriggerMetadata;
+  packet?: RtaPacket;
 }
 
 export interface BasebandFrame {
@@ -108,7 +113,7 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 		if (data.byteLength !== COMMON_HEADER_BYTES + points * 4) return null;
 		return { kind: 'powr', version, points, sweepMs, power: new Float32Array(data, COMMON_HEADER_BYTES, points) };
 	}
-	if (magic === MAGIC_RTAF || magic === MAGIC_RTA2) {
+	if (magic === MAGIC_RTAF || magic === MAGIC_RTA2 || magic === MAGIC_RTA3) {
 		if (data.byteLength < RTA_HEADER_BYTES) return null;
 		const hdr = new DataView(data, 4, 20);
 		const wfLen = hdr.getUint16(8, true);
@@ -117,14 +122,28 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 		const expected = RTA_HEADER_BYTES + points * 8 + points * 4 + wfLen * 2 + 8;
 		if (points < 2 || wfLen < 1 || data.byteLength < expected) return null;
 		let trigger: TriggerMetadata | undefined;
+    let packet: RtaPacket | undefined;
+    let trailerOffset = expected;
+    if (magic === MAGIC_RTA3) {
+      if (data.byteLength < expected + 24) return null;
+      const density = new DataView(data, expected, 24);
+      const length = density.getUint32(4, true);
+      const scale = density.getFloat32(8, true), offset = density.getFloat32(12, true);
+      if (density.getUint32(0, true) !== 0x534e4544 || !length || length > 16 * 1024 * 1024
+          || length % points !== 0 || !(scale > 0) || !Number.isFinite(scale) || !Number.isFinite(offset)
+          || data.byteLength < expected + 24 + length) return null;
+      packet = { samples: new Uint8Array(data, expected + 24, length), scale, offset,
+        sequence: density.getBigUint64(16, true) };
+      trailerOffset += 24 + length;
+    }
 		if (magic === MAGIC_RTAF) {
 			if (data.byteLength !== expected) return null;
 		} else {
-			if (data.byteLength < expected + 8) return null;
-			const trailer = new DataView(data, expected);
-			if (trailer.getUint32(0, true) !== 0x47495254 || trailer.getUint32(4, true) !== data.byteLength - expected - 8) return null;
+			if (data.byteLength < trailerOffset + 8) return null;
+			const trailer = new DataView(data, trailerOffset);
+			if (trailer.getUint32(0, true) !== 0x47495254 || trailer.getUint32(4, true) !== data.byteLength - trailerOffset - 8) return null;
 			try {
-				const value: unknown = JSON.parse(new TextDecoder().decode(new Uint8Array(data, expected + 8)));
+				const value: unknown = JSON.parse(new TextDecoder().decode(new Uint8Array(data, trailerOffset + 8)));
 				if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
 				const record = value as Record<string, unknown>;
 				for (const key of ['frames', 'generation', 'capture_id', 'packet_index', 'packet_count']) {
@@ -144,7 +163,7 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 		const wfRow = new Uint16Array(data, off, wfLen);
 		off += wfLen * 2;
 		const stopHz = new DataView(data, off, 8).getFloat64(0, true);
-		return { kind: 'rta', version, points, sweepMs, wfLen, maxDensity, startHz, stopHz, freq, spec, wfRow, trigger };
+		return { kind: 'rta', version, points, sweepMs, wfLen, maxDensity, startHz, stopHz, freq, spec, wfRow, trigger, packet };
 	}
 	return null;
 }

@@ -90,7 +90,7 @@ class DisplayRx(threading.Thread):
                     points = int.from_bytes(data[8:12], 'little')
                     power = np.frombuffer(data, '<f4', points, 16)
                     self.powr.append((self.last_freq, power))
-                elif tag in (b'RTAF', b'RTA2'):
+                elif tag in (b'RTAF', b'RTA2', b'RTA3'):
                     points = int.from_bytes(data[8:12], 'little')
                     freq = np.frombuffer(data, '<f8', points, 24)
                     power = np.frombuffer(data, '<f4', points, 24 + points * 8)

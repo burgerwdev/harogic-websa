@@ -59,7 +59,7 @@ class HotRx(threading.Thread):
                 if not isinstance(data, bytes) or len(data) < 16:
                     continue
                 tag = data[:4]
-                if tag in (b'RTAF', b'RTA2'):
+                if tag in (b'RTAF', b'RTA2', b'RTA3'):
                     self.rtaf += 1
                 elif tag == b'IQBF':
                     import struct

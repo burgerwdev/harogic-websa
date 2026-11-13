@@ -113,8 +113,8 @@ export function requestStreamRender(): void {
 }
 
 /** Share the display deadline with preparation of replaceable spectrum frames. */
-export function streamRenderInterval(): number {
-  return Math.min(MAX_INTERVAL, Math.max(MIN_INTERVAL, paintCost / DISPLAY_SHARE));
+export function streamRenderInterval(share = DISPLAY_SHARE): number {
+  return Math.min(MAX_INTERVAL, Math.max(MIN_INTERVAL, paintCost / share));
 }
 
 /** Read-only diagnostics; no JSON is built during normal painting. */

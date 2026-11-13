@@ -114,7 +114,7 @@ export function resetRtaDensityCfg() {
   rtaDensWidth.reset();
   rtaAmpBins.reset();
   rtaHalflife.confirm(defaultHalflife());
-  rtaDensSource.confirm('trace');
+  rtaDensSource.confirm(S.sdrMode ? 'trace' : 'live');
   rtaDensLayers.confirm('both');
   rtaDensContrast.confirm(1);
   rtaDensWidth.confirm(5);
@@ -149,10 +149,11 @@ export function restoreRtaDensityCfg() {
   const halflife = normalizeHalflife(storedHalflife === null ? defaultHalflife() : Number(storedHalflife));
   if (fadeSel) fadeSel.value = String(halflife);
   rtaHalflife.set(halflife);
-  if (src === 'trace' || src === 'live') {
-    rtaDensSource.set(src);
+  {
+    const source = src === 'trace' || src === 'live' ? src : S.sdrMode ? 'trace' : 'live';
+    rtaDensSource.set(source);
     const srcSel = document.getElementById('select-rta-dens-source') as HTMLSelectElement | null;
-    if (srcSel) srcSel.value = src;
+    if (srcSel) srcSel.value = source;
   }
   if (bn !== null) {
     const bins = normalizeBins(Number(bn));

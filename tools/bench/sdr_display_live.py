@@ -30,7 +30,7 @@ HOOK = r"""() => {
  window.WebSocket=class extends Native { constructor(...args){super(...args);this.addEventListener('message',event=>{
   const b=event.data;if(!(b instanceof ArrayBuffer)||b.byteLength<24)return;
   const v=new DataView(b),magic=String.fromCharCode(...new Uint8Array(b,0,4));
-  if(magic!=='RTAF'&&magic!=='RTA2')return;
+  if(magic!=='RTAF'&&magic!=='RTA2'&&magic!=='RTA3')return;
   const a=window.__fft,now=performance.now(),n=v.getUint32(8,true),power=new Float32Array(b,24+n*8,n),f=new Float64Array(b,24,n);
   let peak=-Infinity,hz=0;const noise=[];
   for(let i=0;i<n;i++){if(power[i]>peak){peak=power[i];hz=f[i];} if(i%8===0&&Math.abs(f[i]-100050000)>2000&&Number.isFinite(power[i]))noise.push(power[i]);}

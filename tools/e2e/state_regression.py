@@ -138,7 +138,7 @@ def main() -> int:
         native_pan: dict = {}
 
         def receive_frame(payload) -> None:
-            if not isinstance(payload, bytes) or payload[:4] not in (b"RTAF", b"RTA2"):
+            if not isinstance(payload, bytes) or payload[:4] not in (b"RTAF", b"RTA2", b"RTA3"):
                 return
             if len(payload) < 32:
                 errors.append("truncated native RTAF header")
@@ -148,16 +148,26 @@ def main() -> int:
             if points < 2 or wf_len < 1 or len(payload) < base_size:
                 errors.append("invalid native RTA spectrum length")
                 return
-            if payload[:4] == b"RTA2":
-                if len(payload) < base_size + 8 or payload[base_size:base_size + 4] != b"TRIG":
+            trailer_offset = base_size
+            if payload[:4] == b"RTA3":
+                if len(payload) < base_size + 24 or payload[base_size:base_size + 4] != b"DENS":
+                    errors.append("invalid RTA3 density header")
+                    return
+                length, scale, offset = struct.unpack_from("<Iff", payload, base_size + 4)
+                if not length or length % points or not math.isfinite(scale) or scale <= 0 or not math.isfinite(offset):
+                    errors.append("invalid RTA3 density geometry")
+                    return
+                trailer_offset += 24 + length
+            if payload[:4] in (b"RTA2", b"RTA3"):
+                if len(payload) < trailer_offset + 8 or payload[trailer_offset:trailer_offset + 4] != b"TRIG":
                     errors.append("invalid RTA2 trigger trailer")
                     return
-                metadata_size = struct.unpack_from("<I", payload, base_size + 4)[0]
-                if len(payload) != base_size + 8 + metadata_size:
+                metadata_size = struct.unpack_from("<I", payload, trailer_offset + 4)[0]
+                if len(payload) != trailer_offset + 8 + metadata_size:
                     errors.append("invalid RTA2 trigger metadata length")
                     return
                 try:
-                    json.loads(payload[base_size + 8:])
+                    json.loads(payload[trailer_offset + 8:])
                 except (ValueError, UnicodeDecodeError):
                     errors.append("invalid RTA2 trigger metadata JSON")
                     return

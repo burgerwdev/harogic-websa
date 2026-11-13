@@ -32,6 +32,23 @@ type Reconfig = unsafe extern "C" fn(*mut c_void, *const RtaRequest, *mut RtaAct
 type Next = unsafe extern "C" fn(*mut c_void, *mut f64, *mut f32, u32, *mut u32) -> i32;
 type Close = unsafe extern "C" fn(*mut c_void) -> i32;
 type TriggerActual = unsafe extern "C" fn(*mut c_void, *mut RtaTriggerActual) -> c_int;
+type PacketRead = unsafe extern "C" fn(*mut c_void, *mut u8, u32, *mut PacketInfo) -> c_int;
+
+#[repr(C)]
+#[derive(Default)]
+struct PacketInfo {
+    length: u32,
+    scale: f32,
+    offset: f32,
+    sequence: u64,
+}
+
+pub struct RtaPacket {
+    pub samples: Vec<u8>,
+    pub scale: f32,
+    pub offset: f32,
+    pub sequence: u64,
+}
 
 /// Layout = versioned `San90RtaTriggerActual`; independent of the legacy actual ABI.
 #[repr(C)]
@@ -197,6 +214,7 @@ pub struct RtaFrame {
     pub freq: Vec<f64>,
     pub power: Vec<f32>,
     pub trigger: RtaTriggerActual,
+    pub packet: Option<RtaPacket>,
 }
 
 /// `VBWMode_TypeDef`. Unknown names map to EqualToRBW (Python rta.py `_vbw_map` fallback).
@@ -311,6 +329,7 @@ struct Device {
     close: Close,
     gnss: Option<Gnss>,
     trigger_actual: TriggerActual,
+    packet_read: Option<PacketRead>,
     /// Stale after a bus error (-8/-9): never hand the handle back to the vendor library.
     abandoned: bool,
     geometry: RtaGeometry,
@@ -368,6 +387,8 @@ impl Device {
             let gnss_ptr = unsafe { dlsym(library, b"san90_gnss_v1\0".as_ptr().cast()) };
             let gnss: Option<Gnss> =
                 (!gnss_ptr.is_null()).then(|| unsafe { std::mem::transmute(gnss_ptr) });
+            let packet_ptr = unsafe { dlsym(library, b"san90_rta_packet_v1\0".as_ptr().cast()) };
+            let packet_read = (!packet_ptr.is_null()).then(|| unsafe { std::mem::transmute(packet_ptr) });
             Ok(Self {
                 library,
                 handle,
@@ -376,6 +397,7 @@ impl Device {
                 close,
                 gnss,
                 trigger_actual,
+                packet_read,
                 abandoned: false,
                 geometry,
             })
@@ -466,7 +488,27 @@ impl Device {
             freq,
             power,
             trigger: self.read_trigger()?,
+            packet: self.read_packet()?,
         })
+    }
+
+    fn read_packet(&self) -> Result<Option<RtaPacket>, SdkFailure> {
+        let Some(read) = self.packet_read else { return Ok(None); };
+        let mut info = PacketInfo::default();
+        let mut status = unsafe { read(self.handle, std::ptr::null_mut(), 0, &mut info) };
+        let capacity = info.length;
+        if status == 0 && (capacity == 0 || capacity > 16 * 1024 * 1024
+            || capacity % self.geometry.points != 0 || !info.scale.is_finite()
+            || info.scale <= 0.0 || !info.offset.is_finite()) { status = -102; }
+        if status != 0 {
+            return Err(SdkFailure { status, message: format!("SDK RTA packet geometry status={status}") });
+        }
+        let mut samples = vec![0; capacity as usize];
+        status = unsafe { read(self.handle, samples.as_mut_ptr(), capacity, &mut info) };
+        if status != 0 || info.length != capacity {
+            return Err(SdkFailure { status, message: format!("SDK RTA packet read status={status}") });
+        }
+        Ok(Some(RtaPacket { samples, scale: info.scale, offset: info.offset, sequence: info.sequence }))
     }
 
     fn defaults(&mut self) -> Result<SwpDefaults, String> {

@@ -91,6 +91,41 @@ describe('decodeFrame', () => {
 		expect(frame.stopHz).toBe(manifest.rta.stop_hz);
 	});
 
+  it('decodes all RTA3 packet spectra and rejects invalid density geometry', () => {
+    const base = bytes('rta.bin'), metadata = new TextEncoder().encode('{"frames":1}');
+    const samples = new Uint8Array(manifest.rta.points * 19).fill(80);
+    const data = new ArrayBuffer(base.byteLength + 24 + samples.length + 8 + metadata.length);
+    const header = new DataView(data);
+    new Uint8Array(data).set(new Uint8Array(base));
+    new Uint8Array(data, 0, 4).set([82, 84, 65, 51]);
+    const offset = base.byteLength, trailer = offset + 24 + samples.length;
+    header.setUint32(offset, 0x534e4544, true);
+    header.setUint32(offset + 4, samples.length, true);
+    header.setFloat32(offset + 8, .5, true);
+    header.setFloat32(offset + 12, -120, true);
+    header.setBigUint64(offset + 16, 1234567890123n, true);
+    new Uint8Array(data, offset + 24, samples.length).set(samples);
+    header.setUint32(trailer, 0x47495254, true);
+    header.setUint32(trailer + 4, metadata.length, true);
+    new Uint8Array(data, trailer + 8).set(metadata);
+    const frame = decodeFrame(data);
+    expect(frame?.kind).toBe('rta');
+    if (frame?.kind !== 'rta') return;
+    expect(frame.packet?.sequence).toBe(1234567890123n);
+    expect(frame.packet?.samples).toEqual(samples);
+    expect(frame.packet?.scale).toBe(.5);
+    expect(frame.trigger?.frames).toBe(1);
+    for (const value of [0, -1, NaN, Infinity]) {
+      const bad = data.slice(0); new DataView(bad).setFloat32(offset + 8, value, true);
+      expect(decodeFrame(bad)).toBeNull();
+    }
+    for (const length of [0, samples.length - 1, 0xffffffff]) {
+      const bad = data.slice(0); new DataView(bad).setUint32(offset + 4, length, true);
+      expect(decodeFrame(bad)).toBeNull();
+    }
+    expect(decodeFrame(data.slice(0, -1))).toBeNull();
+  });
+
 	it('rejects truncated, malformed and overlong RTA2 capture trailers', () => {
 		const data = bytes('rta2.bin');
 		const base = bytes('rta.bin').byteLength;

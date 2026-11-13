@@ -1,6 +1,13 @@
 // Shared state types (leaf: no imports, so store.ts and results.ts can both use them).
 // Measurement results remain independent of core/store.ts.
 
+export interface RtaPacket {
+  samples: Uint8Array;
+  scale: number;
+  offset: number;
+  sequence: bigint;
+}
+
 export interface TraceState {
   id: number;
   mode: string;

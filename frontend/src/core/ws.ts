@@ -43,7 +43,7 @@ import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { confirmMeasurementSession, endMeasurementSessions } from '../meas/session';
 import { plausibleSpectrum } from '../dsp/stats';
-import { advanceDensity } from '../dsp/rtaDensity';
+import { advanceDensity, advancePacketDensity } from '../dsp/rtaDensity';
 import { alignToDisplayWindow, sameFrequencyGrid } from '../dsp/grid';
 import { displayRefDiverges, getDisplayRef, rawToDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
@@ -149,6 +149,7 @@ let sdrTransition: { center: number; decimate: number; version: number } | null 
 
 // Only spectrum arrivals use this trailing throttle; UI redraws remain synchronous.
 const SPECTRUM_INTERVAL = 1000 / 30;
+const RTA_DISPLAY_SHARE = .3;
 const BACKGROUND_SPECTRUM_INTERVAL = 1000;
 let spectrumTimer: number | null = null;
 let pendingSpectrumWork: (() => void) | null = null;
@@ -168,7 +169,7 @@ function drawSpectrumFrame(immediate = false) {
   if (immediate || first) requestRender(); else requestStreamRender();
 }
 
-function scheduleSpectrumWork(work: () => void, immediate = false) {
+function scheduleSpectrumWork(work: () => void, immediate = false, packetDensity = false) {
   const mode = currentGraphMode(), view = S.viewMode, owner = deviceMode.get();
   // Rejected settling packets still consume a processing slot without a draw.
   const lastWork = mode === 'rta' || mode === 'sdr' ? Math.max(lastSpectrumDraw, lastRtaProcess) : lastSpectrumDraw;
@@ -183,7 +184,7 @@ function scheduleSpectrumWork(work: () => void, immediate = false) {
   // CPU on superseded display frames. Use the same deadline as painting. Armed
   // triggers still admit synchronously; receiver IQ/audio/decodes are separate.
   const interval = document.hidden && !S.trigArmed ? BACKGROUND_SPECTRUM_INTERVAL
-    : Math.max(SPECTRUM_INTERVAL, streamRenderInterval());
+    : Math.max(SPECTRUM_INTERVAL, streamRenderInterval(packetDensity ? RTA_DISPLAY_SHARE : undefined));
   // Keep armed trigger admission immediate; background display snapshots only
   // need the newest packet. Audio, decode and backend recording keep their clocks.
   if (immediate && (!document.hidden || S.trigArmed) || performance.now() - lastWork >= interval) {
@@ -389,6 +390,13 @@ export function connectWS() {
         if (ver <= sdrTransition.version) return;
       } else sdrTransition = null;
       const processAt = performance.now();
+      const packetDensity = !S.sdrMode && !!frame.packet && rtaDensSource.get() === 'live';
+      if (packetDensity) {
+        if (captureFrame === 'first') S.setRtaDensity2d(null);
+        S.setRtaDensity2d(document.hidden || rtaDensLayers.get() === 'trace' ? null
+          : advancePacketDensity(S.rtaDensity2d, frame.packet!, spec, freq,
+            rtaAmpBins.get(), rtaHalflife.get(), ver, processAt));
+      }
       // The first packet of a new capture must replace both layers immediately.
       const immediate = geometryChanged || captureFrame === 'first' || S.trigArmed;
       const processRtaFrame = () => {
@@ -432,7 +440,7 @@ export function connectWS() {
           if (plausible) observeCarrierSpectrum(capFreq, capSpec, performance.now(), `${ver}:${startHz.toFixed(1)}:${stopHz.toFixed(1)}`);
         }
         if (axisChanged || captureFrame === 'first') {
-          S.setRtaDensity2d(null);
+          if (!packetDensity) S.setRtaDensity2d(null);
           for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
           for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
           if (currentGraphMode() !== 'sdr' || !previous || captureFrame === 'first') S.resetWaterfall();
@@ -489,7 +497,7 @@ export function connectWS() {
           : rtaAmpBins.get();
         // Density is display history. Hidden pages and trace-only views have
         // no density consumer; release live history, retaining a frozen VIEW.
-        S.setRtaDensity2d(document.hidden || rtaDensLayers.get() === 'trace'
+        if (!packetDensity) S.setRtaDensity2d(document.hidden || rtaDensLayers.get() === 'trace'
           ? (densSource === 'trace' && active.mode === 'VIEW' ? S.rtaDensity2d : null) : advanceDensity(S.rtaDensity2d, densSpec,
           bins, rtaHalflife.get(), getDisplayRef() - displayOffset.get(), range / bins,
           densSource === 'live' ? 'CLEAR_WRITE' : active.mode, freq, densSource, processAt));
@@ -503,9 +511,9 @@ export function connectWS() {
         const captureComplete = triggerMode() === 'rta' && noteFrameArrived(frame.trigger);
         // Capture listeners synchronously paint the completed packet and its overlay.
         if (captureComplete) lastSpectrumDraw = performance.now();
-        else drawSpectrumFrame(immediate);
+        else drawSpectrumFrame(immediate || !!frame.packet);
       };
-      scheduleSpectrumWork(processRtaFrame, immediate);
+      scheduleSpectrumWork(processRtaFrame, immediate, !!frame.packet);
       return;
     }
     if (frame.kind === 'freq') {

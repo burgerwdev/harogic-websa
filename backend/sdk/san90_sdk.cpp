@@ -759,6 +759,7 @@ struct San90RtaDevice {
     RTA_Profile_TypeDef configured{};
     San90RtaTriggerActual actual{};
     bool packet_continuity = true;
+    uint64_t packet_serial = 0;
     std::vector<uint8_t> trace;
     std::vector<uint16_t> bitmap;
     std::vector<float> capture_power;
@@ -1085,8 +1086,7 @@ extern "C" int san90_rta_next_v2(San90RtaDevice* state, double* freq, float* pow
         // A packet contains PacketFrame traces. Preserve activity across the whole
         // acquired packet rather than silently displaying only its first trace.
         float peak = static_cast<float>(state->trace[i]) * state->plot.ScaleTodBm + state->plot.OffsetTodBm;
-        const uint32_t traces = state->configured.TriggerMode == FixedPoints
-            ? std::min(state->info.PacketFrame, state->info.PacketValidPoints / width) : 1;
+        const uint32_t traces = std::min(state->info.PacketFrame, state->info.PacketValidPoints / width);
         for (uint32_t trace = 1; trace < traces; ++trace) {
             const float sample = static_cast<float>(state->trace[static_cast<size_t>(trace) * width + i]) *
                 state->plot.ScaleTodBm + state->plot.OffsetTodBm;
@@ -1101,6 +1101,7 @@ extern "C" int san90_rta_next_v2(San90RtaDevice* state, double* freq, float* pow
         }
     }
     *points = width;
+    ++state->packet_serial;
     auto& a = state->actual;
     a.first_data_timestamp = state->trigger.SysTimerCountOfFirstDataPoint;
     a.trigger_edges = state->trigger.InPacketTriggerEdges;
@@ -1112,6 +1113,32 @@ extern "C" int san90_rta_next_v2(San90RtaDevice* state, double* freq, float* pow
     a.complete = state->packet_continuity && finite_level && (status == -301 || status == -303) ? 1 :
         state->packet_continuity && finite_level && a.packet_count > 0 && a.packet_index <= a.packet_count
         ? static_cast<int>(a.packet_index == a.packet_count) : -1;
+    return 0;
+}
+
+struct San90RtaPacket {
+    uint32_t length;
+    float scale;
+    float offset;
+    uint64_t sequence;
+};
+
+// All acquired spectra, byte-quantized by the FPGA. A null buffer queries capacity.
+extern "C" int san90_rta_packet_v1(San90RtaDevice* state, uint8_t* samples,
+                                   uint32_t capacity, San90RtaPacket* packet) {
+    SAN90_DISPATCH(state, san90_rta_packet_v1(state, samples, capacity, packet));
+    if (!state || !packet || !state->packet_serial) return -100;
+    const uint32_t traces = std::min(state->info.PacketFrame,
+        state->info.PacketValidPoints / state->info.FrameWidth);
+    const uint64_t length = static_cast<uint64_t>(traces) * state->info.FrameWidth;
+    if (!length || length > 16u * 1024u * 1024u ||
+        !std::isfinite(state->plot.ScaleTodBm) || state->plot.ScaleTodBm <= 0 ||
+        !std::isfinite(state->plot.OffsetTodBm)) return -102;
+    *packet = {static_cast<uint32_t>(length), state->plot.ScaleTodBm,
+        state->plot.OffsetTodBm, state->packet_serial};
+    if (!samples) return 0;
+    if (capacity < length) return -100;
+    std::memcpy(samples, state->trace.data(), static_cast<size_t>(length));
     return 0;
 }
 

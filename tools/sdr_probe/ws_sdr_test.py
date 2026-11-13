@@ -78,7 +78,7 @@ async def run_ws(mode):
                         status = obj
                     elif obj.get('cmd') == 'ERROR':
                         raise RuntimeError(f'backend error: {obj}')
-                elif msg.type == aiohttp.WSMsgType.BINARY and msg.data[:4] in (b'RTAF', b'RTA2'):
+                elif msg.type == aiohttp.WSMsgType.BINARY and msg.data[:4] in (b'RTAF', b'RTA2', b'RTA3'):
                     rtaf += 1
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     raise RuntimeError('display socket closed')

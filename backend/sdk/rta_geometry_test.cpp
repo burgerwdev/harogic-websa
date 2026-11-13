@@ -84,6 +84,14 @@ extern "C" int RTA_Configuration(void**, const RTA_Profile_TypeDef* input,
 }
 extern "C" int RTA_BusTriggerStart(void**) { ++starts; return 0; }
 extern "C" int RTA_BusTriggerStop(void**) { ++stops; return 0; }
+extern "C" int RTA_GetRealTimeSpectrum(void**, uint8_t* trace, uint16_t*,
+        RTA_PlotInfo_TypeDef* plot, RTA_TriggerInfo_TypeDef* trigger, MeasAuxInfo_TypeDef*) {
+    std::fill(trace, trace + good.PacketValidPoints, 20);
+    trace[good.FrameWidth + 17] = 180;
+    *plot = {0.5f, -120.0f, 0};
+    *trigger = {};
+    return 0;
+}
 
 static RTA_FrameInfo_TypeDef normal_geometry() {
     RTA_FrameInfo_TypeDef frame{};
@@ -200,6 +208,35 @@ int main() {
     inject = reject_restore = false;
     candidate_error = 0;
     check(san90_session_release_v1() == 0, "recovery", "session did not release after rollback failure");
+
+    good = normal_geometry();
+    good.PacketFrame = 3;
+    good.PacketValidPoints = good.FrameWidth * good.PacketFrame;
+    initial.trigger_source = Bus;
+    state = nullptr;
+    check(san90_rta_open_v2(&state, &initial, &actual) == 0, "packet", "adaptive open failed");
+    if (state) {
+        std::vector<double> freq(good.FrameWidth);
+        std::vector<float> power(good.FrameWidth);
+        uint32_t points = 0;
+        check(san90_rta_next_v2(state, freq.data(), power.data(), good.FrameWidth, &points) == 0,
+            "packet", "adaptive read failed");
+        check(power[17] == -30.0f && power[16] == -110.0f,
+            "packet", "adaptive trace discarded a late FFT event");
+        San90RtaPacket packet{};
+        check(san90_rta_packet_v1(state, nullptr, 0, &packet) == 0
+            && packet.length == good.PacketValidPoints && packet.sequence == 1,
+            "packet", "packet geometry or sequence lost");
+        std::vector<uint8_t> samples(packet.length + 1, 99);
+        check(san90_rta_packet_v1(state, samples.data(), packet.length - 1, &packet) == -100
+            && samples[0] == 99, "packet", "short capacity wrote output");
+        check(san90_rta_packet_v1(state, samples.data(), packet.length, &packet) == 0
+            && samples[good.FrameWidth + 17] == 180 && samples[packet.length - 1] == 20
+            && samples[packet.length] == 99 && packet.scale == 0.5f && packet.offset == -120.0f,
+            "packet", "packet samples, calibration or output bound lost");
+        san90_rta_close_v1(state);
+    }
+    check(san90_session_release_v1() == 0, "packet", "packet session did not release");
 
     // Two individually valid shapes must not retain >64 MiB of vector capacity,
     // or allocate the new large buffer before retiring the previous large one.
