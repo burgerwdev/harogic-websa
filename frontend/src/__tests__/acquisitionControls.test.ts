@@ -161,7 +161,7 @@ describe('preset acknowledgement boundary', () => {
     expect(syncPresetStatus('SET_PRESET', accepted)).toBe(true);
     expect(S.dbPerDiv).toBe(10);
     expect([rtaHalflife.get(), rtaDensLayers.get(), rtaDensSource.get(), rtaDensContrast.get(), rtaDensWidth.get(), rtaAmpBins.get()])
-      .toEqual([0.5, 'both', 'live', 1, 5, 128]);
+      .toEqual([0.2, 'both', 'live', 1, 5, 128]);
   });
 
   it('cancels wheel commits before and during a preset request', () => {

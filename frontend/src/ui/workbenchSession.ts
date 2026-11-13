@@ -88,6 +88,8 @@ export class WorkbenchSession {
     this.clearAudition();
     this.silencedCurrent = null;
     this.generation++; this.mutationTail = Promise.resolve(); this.recoveries.clear();
+    this.clearingChannels = false;
+    this.retirements.clear();
     if (this.monitorMode === 'follow' && this.selected) this.routes.set(this.selected, { ...this.route(this.selected), enabled: true });
     this.audioPreferences = workbenchAudioDefaults();
     this.modeMemory.reset(); this.edits.clear(); this.notify();
@@ -120,6 +122,7 @@ export class WorkbenchSession {
     if (serviceChanged) {
       this.silencedCurrent = null;
       this.retiredServices.add(this.snapshot.service_id); this.generation++;
+      this.clearingChannels = false;
       this.clearedInterruptions.clear();
       this.recoveries.clear(); this.routes.clear(); this.edits.clear(); this.retirements.clear(); this.mutationTail = Promise.resolve();
     }
@@ -332,9 +335,13 @@ export class WorkbenchSession {
         }
       });
     } finally {
-      this.clearingChannels = false;
-      if (!this.disposed && generation === this.generation && faults.length) this.fault = { ...faults[0], message: faults.map(f => f.message).join('; ') };
-      this.notify();
+      // An invalidated clear no longer owns the busy flag or the new session's
+      // errors. Its transport reply can arrive after another clear has started.
+      if (!this.disposed && generation === this.generation) {
+        this.clearingChannels = false;
+        if (faults.length) this.fault = { ...faults[0], message: faults.map(f => f.message).join('; ') };
+        this.notify();
+      }
     }
   }
   dispose(): void { this.disposed = true; this.clearAudition(); this.generation++; document.removeEventListener('websa:preset-applied', this.resetPreset); this.stop(); this.listeners.clear(); this.resultListeners.clear(); this.retirements.clear(); }

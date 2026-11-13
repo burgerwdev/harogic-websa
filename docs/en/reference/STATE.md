@@ -33,12 +33,12 @@ SWP starts with Blackman-Nuttall window (`1`), spur bypass, automatic attenuatio
 
 Preset keeps the confirmed acquisition mode. The current native receiver service owns the first STATUS: reload/reconnect does not replay browser-saved modes or receiver configurations. Joining an existing SDR restores local playback preferences and requests one display-only fit. Older services without the native receiver API retain the saved-mode compatibility flow.
 
-An explicit request to enter SDR waits for a connected SDR STATUS before submitting entry settings. A disconnected report retains that request until the device is ready; periodic STATUS does not repeat it. If `sdr.ref_set` is already true, entry preserves the stored hardware level and does not fit; pressing Auto explicitly requests a new decision.
+An explicit request to enter SDR waits for a connected SDR STATUS before submitting entry settings. A disconnected report retains that request until the device is ready; periodic STATUS does not repeat it. Mode-request timeout discards the staged entry settings, so a later SDR STATUS cannot replay the expired tuning intent. If `sdr.ref_set` is already true, entry preserves the stored hardware level and does not fit; pressing Auto explicitly requests a new decision.
 
 Page exit releases the workbench's session, subscriptions, windows and pending connection ownership.
 A late connection cannot remount the retired page. A new user action rebuilds the workbench on return;
 `pageshow` does not replay configuration. Preset, service replacement and disposal invalidate old edits,
-listening previews and file-operation confirmations. Operations already committed to the service may still complete.
+listening previews and file-operation confirmations. Operations already committed to the service may still complete. Clear-all and deletion busy state belongs to that session generation; late completions cannot unlock a newer operation. A service replacement attaches the new Current receiver's default local listening route once, while preserving master gain/mute and subsequent explicit listening choices. It sends no receiver configuration commands.
 
 ## STATUS and Commands
 
@@ -112,7 +112,7 @@ Amplitude offset is applied once to displayed absolute levels, including markers
 
 SDR initially loads with AVERAGE 16; custom 64/infinite averaging survives leaving and returning to that acquisition family. A successful Preset restores SDR trace 1 to AVERAGE 16 and SWP/RTA trace 1 to CLEAR_WRITE, clears average histories and selects trace 1. Frequency, filter and display placement retain their own acknowledgement and fitting paths. SWP waterfall rows come only from accepted new POWR data, using raw power with its matching frequency grid and at least 100 ms between samples; redraws do not add rows. RTA/SDR waterfall consumes raw RTA frames. CSV exports the active family's selected trace and matching frequency array; an Off or missing active trace reports no data instead of falling back to another trace.
 
-Preset cancels pending axis gestures when requested and when acknowledged. A matching acknowledgement restores 10 dB/div and the density defaults: Both layers, Trace source, 0.5 s half-life, Medium contrast, 128 amplitude bins and 5 CSS px display width. First load uses the same defaults unless a preference was saved. Rejection or timeout keeps the current display settings. Layers and More sit below Normalize/Clear. More reveals the remaining density controls; they start collapsed on page load.
+Preset cancels pending axis gestures when requested and when acknowledged. A matching acknowledgement restores 10 dB/div and the density defaults: Both layers, Trace source, 0.2 s half-life, Medium contrast, 128 amplitude bins and 5 CSS px display width. First load uses the same defaults unless a preference was saved. Rejection or timeout keeps the current display settings. Layers and More sit below Normalize/Clear. More reveals the remaining density controls; they start collapsed on page load.
 
 The AGC toggle shares the squelch row but has an explicit AGC On/Off label. It is independent of RF squelch and RF front-end gain. Its command carries a request ID; rejection, timeout, disconnect or leaving SDR clears pending intent without changing squelch. No supported AGC speed or target control exists.
 

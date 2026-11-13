@@ -42,6 +42,28 @@ function controlledSession() {
 }
 
 describe('workbench state generations and command ordering', () => {
+  it.each(['restart', 'preset'])('releases an interrupted clear on %s without letting its late completion unlock a newer clear', async reason => {
+    const c = controlledSession();
+    const old = session.clearChannels(['fixture-c1', 'fixture-c2'], 'fixture-c1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.clearingChannels).toBe(true);
+    const replacement = { ...clone(c.initial), service_id: reason === 'restart' ? 'service-b' : 'service-a' };
+    if (reason === 'restart') c.accept(replacement);
+    else document.dispatchEvent(new Event('websa:preset-applied'));
+    expect(session.clearingChannels).toBe(false);
+    const current = session.clearChannels(['fixture-c1'], 'fixture-c1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.dispatch).toHaveBeenCalledTimes(2);
+    c.replies[0]({ request_id: c.dispatch.mock.calls[0][0].request_id, snapshot: c.initial, fault: null });
+    await old;
+    expect(session.clearingChannels).toBe(true);
+    expect(c.dispatch).toHaveBeenCalledTimes(2);
+    c.replies[1]({ request_id: c.dispatch.mock.calls[1][0].request_id, snapshot: replacement, fault: null });
+    await current;
+    expect(session.clearingChannels).toBe(false);
+    expect(session.snapshot.service_id).toBe(replacement.service_id);
+  });
+
   it('does not guess a created receiver when external additions make the reply ambiguous', async () => {
     const c = controlledSession();
     const pending = session.create(c.initial.receivers[0].confirmed);
@@ -106,12 +128,14 @@ describe('workbench state generations and command ordering', () => {
     c.accept(c.initial); expect(session.snapshot.service_id).toBe('service-b');
   });
 
-  it('keeps new-service retirement ownership when an old callback completes', async () => {
+  it.each(['restart', 'preset'])('keeps new retirement ownership when a callback predating %s completes', async reason => {
     const c = controlledSession();
     const first = session.send({ type: 'retire', request_id: 'old-first', receiver_uid: 'fixture-c1' });
     const queued = session.send({ type: 'retire', request_id: 'old-queued', receiver_uid: 'fixture-c2' });
     await vi.advanceTimersByTimeAsync(0);
-    const restarted = { ...clone(c.initial), service_id: 'service-b' }; c.accept(restarted);
+    const restarted = { ...clone(c.initial), service_id: reason === 'restart' ? 'service-b' : 'service-a' };
+    if (reason === 'restart') c.accept(restarted);
+    else document.dispatchEvent(new Event('websa:preset-applied'));
     const current = session.send({ type: 'retire', request_id: 'new', receiver_uid: 'fixture-c2' });
     await vi.advanceTimersByTimeAsync(0); expect(c.dispatch).toHaveBeenCalledTimes(2);
     c.replies[0]({ request_id: 'old-first', snapshot: c.initial, fault: null });

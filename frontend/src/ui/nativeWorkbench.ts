@@ -40,22 +40,36 @@ async function ensureNativeWorkbench(): Promise<NativeWorkbenchOwner | null> {
     if (version !== generation) { adapter.dispose(); return null; }
     const session = new WorkbenchSession(adapter,sharedReceiverModeMemory);
     session.setCurrentReceiverSource(() => session.snapshot.receivers.find(r => r.display_number === 1)?.receiver_uid ?? null);
-    const syncReceivers = () => confirmSdrReceiverNumbers(session.snapshot.receivers.map(r => r.display_number), session.snapshot,
-      session.snapshot.receivers.map(r => {
-        const tasks = session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid
-          && ['preparing', 'waiting', 'recording', 'finalizing'].includes(t.state));
-        return { channel: r.display_number, listening: session.listening(r.receiver_uid) && receiverHasAudio(session.snapshot, r.confirmed),
-          audioRecording: tasks.some(t => t.tracks.some(track => track.kind === 'audio')),
-          iqRecording: tasks.some(t => t.tracks.some(track => track.kind === 'iq')) };
-      }));
+    let monitorService = session.snapshot.service_id;
+    let initializeMonitor = true;
+    const syncReceivers = () => {
+      if (monitorService !== session.snapshot.service_id) {
+        monitorService = session.snapshot.service_id;
+        initializeMonitor = true;
+      }
+      // A restarted service gives Current a new UID and clears the old routes.
+      // Attach its default route once, just as on a fresh page; keep later local
+      // listening choices and wait if the new directory has no Current yet.
+      if (initializeMonitor) {
+        const current = session.snapshot.receivers.find(r => r.display_number === currentSdrChannel());
+        if (current) {
+          initializeMonitor = false;
+          session.selected = current.receiver_uid;
+          if (!session.routes.has(current.receiver_uid))
+            session.routes.set(current.receiver_uid, { ...session.route(current.receiver_uid), enabled: true });
+        }
+      }
+      confirmSdrReceiverNumbers(session.snapshot.receivers.map(r => r.display_number), session.snapshot,
+        session.snapshot.receivers.map(r => {
+          const tasks = session.snapshot.recordings.filter(t => t.receiver_uid === r.receiver_uid
+            && ['preparing', 'waiting', 'recording', 'finalizing'].includes(t.state));
+          return { channel: r.display_number, listening: session.listening(r.receiver_uid) && receiverHasAudio(session.snapshot, r.confirmed),
+            audioRecording: tasks.some(t => t.tracks.some(track => track.kind === 'audio')),
+            iqRecording: tasks.some(t => t.tracks.some(track => track.kind === 'iq')) };
+        }));
+    };
     const stopReceivers = session.subscribe(syncReceivers); syncReceivers();
     session.masterMuted = !sdrAudioOn.get();
-    const current = session.snapshot.receivers.find(r => r.display_number === currentSdrChannel());
-    if (current) {
-      session.select(current.receiver_uid);
-      session.routes.set(current.receiver_uid, { ...session.route(current.receiver_uid), enabled: true });
-    }
-    syncReceivers();
     const host = document.createElement('div'); host.hidden = true; document.body.append(host);
     const streams = session.snapshot.capabilities.monitor_mixing ? mountNativeWorkbenchStreams(session) : undefined;
     let opened: ReturnType<typeof mountWorkbench> | null = null;

@@ -151,6 +151,20 @@ function nativeEntryStatus(mode: string, version: number, revision: string, extr
 }
 
 describe('SDR entry and reload', () => {
+  it('discards staged SDR entry settings when the mode request times out before confirmation', async () => {
+    const { controls } = await load();
+    const { GRAPH_MODE_TTL_MS, pendingGraphMode } = await import('../ui/graphMode');
+    receive(nativeEntryStatus('rta', 10, '10'));
+    controls.setGraphMode('sdr');
+    expect(pendingGraphMode()).toBe('sdr');
+    vi.advanceTimersByTime(GRAPH_MODE_TTL_MS + 1);
+    expect(pendingGraphMode()).toBeNull();
+    socket.sent.length = 0;
+    receive(nativeEntryStatus('sdr', 12, '12'));
+    expect(controls.currentGraphMode()).toBe('sdr');
+    expect(socket.sent.filter(command => ['SET_SDR', 'SET_SDR_CHANNEL'].includes(String(command.cmd)))).toEqual([]);
+  });
+
   it.each(['std', 'rta', 'server'].flatMap(mode => [false, true].map(disconnected => ({ mode, disconnected }))))(
     'restores custom SDR tuning after $mode using the capture acknowledgement revision (disconnected=$disconnected)', async ({ mode, disconnected }) => {
     const { controls } = await load();

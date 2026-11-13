@@ -29,7 +29,7 @@ export const wfHiDbm = createParam<number>('wf.hi', { fallback: -30, scope: 'wf'
 /** Freeze the waterfall rows (they stop scrolling). */
 export const wfPaused = createParam<boolean>('wf.paused', { fallback: false, scope: 'wf', authoritative: true });
 /** Density afterglow half-life in seconds; 0 = Off, the density layer is not drawn at all. */
-export const rtaHalflife = createParam<number>('rta.halflife', { fallback: 0.5, scope: 'wf', authoritative: true, ...num(1, 6) });
+export const rtaHalflife = createParam<number>('rta.halflife', { fallback: 0.2, scope: 'wf', authoritative: true, ...num(1, 6) });
 /** Density input: the processed active trace, or the received frames before any accumulator. */
 export const rtaDensSource = createParam<'trace' | 'live'>('rta.densSource', { fallback: 'trace', scope: 'wf', authoritative: true });
 /** Which layers are visible: both (default), density only, or trace only. Display-only. */

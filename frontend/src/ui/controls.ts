@@ -358,8 +358,8 @@ function flashHint(id: string, text: string, holdMs = 5000): void {
 }
 
 setGraphModeTimeoutHandler((want) => {
+  releaseGraphModePending();
   flashHint('mode-hint', t('mode_switch_timeout', { mode: want.toUpperCase() }));
-  syncModeButtons();
 });
 setDisplayRefTimeoutHandler(() => {
   // Same place as the Auto Scale outcome: it is a message about the reference the user is

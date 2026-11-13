@@ -49,12 +49,12 @@ export function clearRtaAccum() {
 
 // The afterglow gears are half-lives in seconds; Off (0) switches the density layer off
 // entirely (see dsp/rtaDensity.ts).
-const defaultHalflife = () => S.sdrMode ? 0.2 : 0.5;
-const RTA_HALFLIFE_GEARS = [0, 0.2, 0.5, 2, 5, 10];
+const DEFAULT_HALFLIFE = 0.2;
+const RTA_HALFLIFE_GEARS = [0, 0.05, 0.1, 0.2, 0.5, 2, 5, 10];
 const RTA_DENSITY_BINS = [64, 96, 128, 192];
 
 function normalizeHalflife(value: number): number {
-  return RTA_HALFLIFE_GEARS.includes(value) ? value : defaultHalflife();
+  return RTA_HALFLIFE_GEARS.includes(value) ? value : DEFAULT_HALFLIFE;
 }
 
 function normalizeBins(value: number): number {
@@ -113,7 +113,7 @@ export function resetRtaDensityCfg() {
   rtaDensContrast.reset();
   rtaDensWidth.reset();
   rtaAmpBins.reset();
-  rtaHalflife.confirm(defaultHalflife());
+  rtaHalflife.confirm(DEFAULT_HALFLIFE);
   rtaDensSource.confirm(S.sdrMode ? 'trace' : 'live');
   rtaDensLayers.confirm('both');
   rtaDensContrast.confirm(1);
@@ -137,7 +137,7 @@ export function resetRtaDensityCfg() {
 }
 
 export function restoreRtaDensityCfg() {
-  // Saved user choices take precedence over the mode's default.
+  // Saved user choices take precedence over the default.
   try { localStorage.removeItem('rta-fade'); } catch { /* ignore */ }
   let storedHalflife: string | null = null, src: string | null = null, bn: string | null = null;
   try {
@@ -146,7 +146,7 @@ export function restoreRtaDensityCfg() {
     bn = localStorage.getItem('rta-bins');
   } catch { /* Optional browser preferences; retain usable session defaults. */ }
   const fadeSel = document.getElementById('select-rta-fade') as HTMLSelectElement | null;
-  const halflife = normalizeHalflife(storedHalflife === null ? defaultHalflife() : Number(storedHalflife));
+  const halflife = normalizeHalflife(storedHalflife === null ? DEFAULT_HALFLIFE : Number(storedHalflife));
   if (fadeSel) fadeSel.value = String(halflife);
   rtaHalflife.set(halflife);
   {

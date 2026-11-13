@@ -423,12 +423,12 @@ describe('the persistence setting', () => {
 
 	it('restores usable density defaults when browser storage is blocked', () => {
 		S.setSdrMode(false);
-		densSelect('<option value="0.5">0.5 s</option>');
+		densSelect('<option value="0.2">0.2 s</option>');
 		rtaHalflife.set(10);
 		const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('Blocked', 'SecurityError'); });
 		try {
 			expect(() => restoreRtaDensityCfg()).not.toThrow();
-			expect(rtaHalflife.get()).toBe(0.5);
+			expect(rtaHalflife.get()).toBe(0.2);
 		} finally { read.mockRestore(); }
 	});
 
@@ -443,21 +443,21 @@ describe('the persistence setting', () => {
 		expect(rtaHalflife.get()).toBe(0);
 	});
 
-	it('selects 0.2 s and restores that exact choice from storage', () => {
-		densSelect('<option value="0">Off</option><option value="0.2">0.2 s</option><option value="0.5" selected>0.5 s</option>');
-		setRtaHalflife(0.2);
-		expect(rtaHalflife.get()).toBe(0.2);
-		expect(localStorage.getItem('rta-halflife')).toBe('0.2');
-		expect((document.getElementById('select-rta-fade') as HTMLSelectElement).value).toBe('0.2');
+	it.each([0.05, 0.1, 0.2, 0.5])('selects %s s and restores that exact choice from storage', halflife => {
+		densSelect('<option value="0">Off</option><option value="0.05">0.05 s</option><option value="0.1">0.1 s</option><option value="0.2" selected>0.2 s</option><option value="0.5">0.5 s</option>');
+		setRtaHalflife(halflife);
+		expect(rtaHalflife.get()).toBe(halflife);
+		expect(localStorage.getItem('rta-halflife')).toBe(String(halflife));
+		expect((document.getElementById('select-rta-fade') as HTMLSelectElement).value).toBe(String(halflife));
 		rtaHalflife.set(2);
 		restoreRtaDensityCfg();
-		expect(rtaHalflife.get()).toBe(0.2);
-		expect((document.getElementById('select-rta-fade') as HTMLSelectElement).value).toBe('0.2');
+		expect(rtaHalflife.get()).toBe(halflife);
+		expect((document.getElementById('select-rta-fade') as HTMLSelectElement).value).toBe(String(halflife));
 	});
 
 	it('uses the panel default when storage is absent, a real gear for invalid input, and drops the old per-frame key', () => {
 		localStorage.setItem('rta-fade', '0.975');
-		const sel = densSelect('<option value="0">Off</option><option value="0.5" selected>0.5 s</option><option value="2">2 s</option>');
+		const sel = densSelect('<option value="0">Off</option><option value="0.2" selected>0.2 s</option><option value="2">2 s</option>');
 		restoreRtaDensityCfg();
 		expect(rtaHalflife.get()).toBe(Number(sel.value));
 		expect(localStorage.getItem('rta-fade')).toBeNull();
@@ -465,8 +465,8 @@ describe('the persistence setting', () => {
 		expect(rtaHalflife.get()).toBeGreaterThan(0);
 		localStorage.setItem('rta-halflife', '0.975');
 		restoreRtaDensityCfg();
-		expect(rtaHalflife.get()).toBe(0.5);
-		expect(sel.value).toBe('0.5');
+		expect(rtaHalflife.get()).toBe(0.2);
+		expect(sel.value).toBe('0.2');
 	});
 
 	it('restores the source into both the slot and the select', () => {

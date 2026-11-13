@@ -150,9 +150,10 @@ e2e-fake: build  ## UI smoke against the native fixture service; production rema
 	trap cleanup EXIT; \
 	python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT; \
 	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT; \
+	python3 tools/e2e/sdr_mode_audio.py; \
 	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT \
 		--check --no-inventory; \
-	echo "OK: fake-backend UI smoke + state-machine contract + resolution sweep (no hardware)"'
+	echo "OK: fake-backend UI smoke + state-machine contract + restart audio + resolution sweep (no hardware)"'
 
 VIEWPORT_JSON ?= /tmp/websa-viewport.json
 
