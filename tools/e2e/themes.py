@@ -177,8 +177,8 @@ def check_glass_motion(page) -> None:
         assert button.bounding_box() == before, 'only the glass layer should stretch'
     finally:
         page.mouse.up()
-    page.wait_for_timeout(500)
-    assert button.evaluate("e => getComputedStyle(e, '::before').transform") == 'none'
+    page.wait_for_function("e => getComputedStyle(e, '::before').transform === 'none'",
+                           arg=button.element_handle(), timeout=5000)
     page.emulate_media(reduced_motion='reduce')
     button.hover(); page.mouse.down()
     try:
