@@ -103,8 +103,7 @@ def drifted(name: str, committed: bytes, produced: bytes, manifest: dict) -> str
     last bits, while the DDC chain (add/multiply/FIR) stays bit-stable. Measured here: forcing
     numpy off FMA3/AVX2 keeps every file identical, so the difference is per-kernel, not our DSP.
 
-    The integer input block and the manifest stay exact: they are synthetic integers and
-    parameters, not float results.
+    The integer input and manifest stay exact; computed diagnostics use f32 precision.
     """
     if len(committed) != len(produced):
         return f'{name}: {len(committed)} bytes committed, {len(produced)} produced'
@@ -443,15 +442,14 @@ def build() -> tuple[dict[str, bytes], dict]:
         ],
         'demod': demod_entries,
         'stereo_rds': stereo_entry['stereo_rds'],
-        # Readable expectations: the wanted tone sits at DC after the mix, and the FIR rejects the
-        # interferer (so the decimated block is dominated by the wanted signal).
+        # Match the fixtures' f32 precision instead of recording libm's last bits.
         'checks': {
             'wanted_peak_after_mix_hz': _peak_hz(mixed, FS_IN),
-            'wanted_amp_after_mix': _tone_amp(mixed, FS_IN, 0.0),
+            'wanted_amp_after_mix': float(np.float32(_tone_amp(mixed, FS_IN, 0.0))),
             'peak_after_resample_hz': _peak_hz(resampled, OUT_RATE),
-            'interferer_suppression_db': float(20.0 * np.log10(
+            'interferer_suppression_db': float(np.float32(20.0 * np.log10(
                 _tone_amp(filtered, FS_IN, INTERFERER_HZ - OFFSET_HZ)
-                / (INTERFERER_AMP + 1e-12) + 1e-12)),
+                / (INTERFERER_AMP + 1e-12) + 1e-12))),
         },
     }
     return files, manifest

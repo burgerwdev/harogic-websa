@@ -1,8 +1,8 @@
 {
  "checks": {
-  "interferer_suppression_db": -81.31593087202776,
+  "interferer_suppression_db": -81.31593322753906,
   "peak_after_resample_hz": 0.0,
-  "wanted_amp_after_mix": 0.39999021413701547,
+  "wanted_amp_after_mix": 0.3999902009963989,
   "wanted_peak_after_mix_hz": 0.0
  },
  "cutoff_hz": 40000.0,

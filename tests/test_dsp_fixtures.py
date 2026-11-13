@@ -101,7 +101,8 @@ def test_the_fixture_does_not_clip_and_the_wanted_tone_survives_the_mixer():
     iq = np.frombuffer(files['iq_block.bin'], dtype='<i2')
     assert np.abs(iq.astype(np.float64) / 32768.0).max() < 1.0, 'the IQ block clips'
     checks = manifest['checks']
-    assert checks['wanted_amp_after_mix'] == np.float32(checks['wanted_amp_after_mix'])
+    for key in ('wanted_amp_after_mix', 'interferer_suppression_db'):
+        assert checks[key] == float(np.float32(checks[key]))
     assert 0.38 < checks['wanted_amp_after_mix'] < 0.42, checks['wanted_amp_after_mix']
     assert abs(checks['wanted_peak_after_mix_hz']) < 1.0, checks  # the tone lands on DC
     assert checks['interferer_suppression_db'] < -60.0, checks
