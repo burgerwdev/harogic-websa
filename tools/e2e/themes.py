@@ -55,6 +55,37 @@ def close_icon_is_centered(page) -> None:
     assert dx <= .5 and dy <= .5, (page.locator('html').get_attribute('data-theme'), dx, dy)
 
 
+def check_select_contrast(page, theme: str) -> None:
+    # Native Chromium menus composite translucent field colours over white.
+    # Inspect the actual options, including controls in collapsed sections, so
+    # palette-only checks cannot miss a glass field producing unreadable menus.
+    menus = page.locator('select option, select optgroup').evaluate_all("""nodes => {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      const rgba = color => {
+        ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+        return Array.from(ctx.getImageData(0, 0, 1, 1).data);
+      };
+      const luminance = rgb => rgb.slice(0, 3).map(v => v / 255)
+        .map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)
+        .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+      return nodes.map(e => {
+        const s = getComputedStyle(e), fg = rgba(s.color), bg = rgba(s.backgroundColor);
+        const x = luminance(fg), y = luminance(bg), select = e.closest('select');
+        return {select: select.id || select.name, option: e.label || e.textContent.trim(),
+          alpha: bg[3], contrast: (Math.max(x, y) + .05) / (Math.min(x, y) + .05),
+          scheme: s.colorScheme, background: bg};
+      });
+    }""")
+    assert menus, (theme, 'no menu options checked')
+    scheme = 'dark' if theme in DARK else 'light'
+    for menu in menus:
+        assert menu['scheme'] == scheme, (theme, menu)
+        assert menu['alpha'] == 255 and menu['contrast'] >= 4.5, (theme, menu)
+        # The menu must also belong to the selected light/dark palette.
+        assert (max(menu['background'][:3]) < 128) == (theme in DARK), (theme, menu)
+
+
 def check_detail_popover_layers(page, theme: str) -> None:
     def foreground(kind: str) -> None:
         popover = page.locator(f'#{kind}-popover')
@@ -280,6 +311,7 @@ def main() -> int:
             assert page.evaluate("localStorage.getItem('web-sa-theme')") == theme
             palette = page.evaluate(PALETTE)
             assert palette['scheme'] == ('dark' if theme in DARK else 'light'), (theme, palette)
+            check_select_contrast(page, theme)
             backgrounds.add(tuple(palette['bg']))
             if theme not in {'dark', 'light'}:
                 assert min(palette[key] for key in ['text', 'label', 'input', 'active']) >= 4.5, (theme, palette)
@@ -375,6 +407,8 @@ def main() -> int:
             expect(popup.locator('html')).to_have_attribute('data-theme', theme)
             scheme = 'dark' if theme in DARK else 'light'
             expect(popup.locator('.mc-window')).to_have_css('color-scheme', scheme)
+            check_select_contrast(page, theme)
+            check_select_contrast(popup, theme)
             body = popup.locator('.mc-body')
             size = body.evaluate('e => ({width:e.clientWidth, scroll:e.scrollWidth})')
             assert size['scroll'] <= size['width'] + 1, (theme, size)

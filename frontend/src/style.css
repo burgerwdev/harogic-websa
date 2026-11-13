@@ -890,6 +890,13 @@ select {
 
 select:hover { border-color: var(--text); }
 select:focus { border-color: var(--text); }
+/* Native menus must not reuse translucent glass fields: Chromium composites
+   their popup over white, which hides light text in dark themes. Give options
+   and group labels an opaque palette while retaining native selection colours. */
+select option, select optgroup {
+  background: var(--input-bg); color: var(--text);
+}
+select option:disabled, select optgroup:disabled { color: var(--label); }
 /* Keep NR options in the page so Chromium can show their individual hover tips. */
 @supports (appearance: base-select) {
   #select-sdr-nr-algo, #select-sdr-nr-algo::picker(select) { appearance: base-select; }

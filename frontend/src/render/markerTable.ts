@@ -61,7 +61,7 @@ export function initMarkerTable() {
     const td4 = document.createElement('td');
     const selr = document.createElement('select');
     for (let i = 0; i < 4; i++) {
-      const op = document.createElement('option'); op.value = String(i + 1); op.style.color = S.MARKER_COLORS[i]; op.textContent = `M${i + 1}`; selr.appendChild(op);
+      const op = document.createElement('option'); op.value = String(i + 1); op.textContent = `M${i + 1}`; selr.appendChild(op);
     }
     selr.value = String(m.refId);
     selr.onchange = () => {
