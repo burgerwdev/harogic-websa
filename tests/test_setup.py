@@ -42,7 +42,7 @@ printf '#!/bin/sh\nexit 0\n' > backend/target/release/websa-gnss
 chmod +x backend/target/release/websa-gnss''')
     tools = checkout / 'tools'
     tools.mkdir()
-    for name in ('sdr-decoders', 'rtty-decoder', 'gnss-decoder'):
+    for name in ('sdr-decoders', 'rtty-decoder', 'dtmb-decoder', 'dtmb-player', 'gnss-decoder'):
         (tools / f'setup-{name}.sh').write_text(
             f'printf "{name} %s\\n" "$*" >> "$SETUP_CALLS"\n')
 
@@ -61,8 +61,9 @@ def test_full_setup_uses_shared_directory_and_keeps_service_launch_explicit(setu
     assert lines[0] == 'make frontend native'
     assert lines[1] == 'sdr-decoders multimon rtl433 onair'
     assert lines[2] == 'rtty-decoder '
-    assert '--bin websa-gnss' in lines[3]
-    assert lines[4] == 'gnss-decoder '
+    assert lines[3:5] == ['dtmb-decoder ', 'dtmb-player ']
+    assert '--bin websa-gnss' in lines[5]
+    assert lines[6] == 'gnss-decoder '
     assert (prefix / 'bin/websa-gnss').is_file()
     assert 'WEBSA_FAKE=1 make run' in result.stdout
     assert 'make restart' in result.stdout
@@ -72,7 +73,7 @@ def test_full_setup_uses_shared_directory_and_keeps_service_launch_explicit(setu
 def test_installed_decoders_are_reused_without_gps_build_dependencies(setup_checkout):
     invoke, prefix, calls, command = setup_checkout
     (prefix / 'bin').mkdir(parents=True)
-    for name in ('multimon-ng', 'rtl_433', 'onair-server', 'websa-rtty', 'gnss-sdr', 'websa-gnss'):
+    for name in ('multimon-ng', 'rtl_433', 'onair-server', 'websa-rtty', 'websa-dtmb', 'websa-dtmb-ffmpeg', 'gnss-sdr', 'websa-gnss'):
         executable = prefix / 'bin' / name
         executable.write_text('#!/bin/sh\nexit 0\n')
         executable.chmod(0o755)

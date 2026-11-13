@@ -5,7 +5,7 @@
 # bound their own parallelism (Cargo: one job, Vitest: two workers).
 .NOTPARALLEL:
 
-.PHONY: run stop restart status setup decoders-status \
+.PHONY: run stop restart status setup decoders-status dtmb \
 	build frontend native sdk-shim soapy-driver package-runtime wasm wasm-dsp wasm-dfn dev clean clean-all \
 	test wasm-test ci wasm-check soapy-check-patch soapy-check-stream \
 	hw-test bench bench-record e2e-fake viewport-baseline viewport-check \
@@ -35,6 +35,10 @@ setup:    ## Prepare frontend, service and all external decoders after cloning
 
 decoders-status: ## Show decoder availability reported by the running service
 	./status.sh --decoders
+
+dtmb: ## Install the DTMB decoder and AVS+ browser player (C++20, FFTW3, x264 required)
+	bash tools/setup-dtmb-decoder.sh
+	bash tools/setup-dtmb-player.sh
 
 ##@ Build
 

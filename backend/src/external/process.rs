@@ -51,10 +51,15 @@ pub struct Process {
     done: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     stats:Arc<InputStats>,
+    input_limit: u64,
 }
 impl Process {
-    pub fn spawn(path: &Path, args: &[String]) -> Result<Self, String> { Self::start(path, args, None, Duration::ZERO) }
-    fn start(path: &Path, args: &[String], probe_exit: Option<i32>, probe_timeout: Duration) -> Result<Self, String> {
+    pub fn spawn(path: &Path, args: &[String]) -> Result<Self, String> { Self::start(path, args, None, Duration::ZERO, INPUT_BYTES) }
+    pub fn spawn_buffered(path: &Path, args: &[String], input_limit: u64) -> Result<Self, String> {
+        if !(INPUT_BYTES..=256*1024*1024).contains(&input_limit) { return Err("decoder input budget out of range".into()); }
+        Self::start(path, args, None, Duration::ZERO, input_limit)
+    }
+    fn start(path: &Path, args: &[String], probe_exit: Option<i32>, probe_timeout: Duration, input_limit: u64) -> Result<Self, String> {
         let probe = probe_exit.is_some();
         let mut command = Command::new(path);
         command.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -196,7 +201,7 @@ impl Process {
             worker_done.store(true, Ordering::Release);
         }).map_err(|e| format!("starting decoder supervisor: {e}"))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self { input: tx, output: out_rx, recycled: recycle_rx, error, stop, done, thread: Some(thread),stats }),
+            Ok(Ok(())) => Ok(Self { input: tx, output: out_rx, recycled: recycle_rx, error, stop, done, thread: Some(thread),stats, input_limit }),
             outcome => { stop.store(true, Ordering::Release); let _ = thread.join();
                 Err(outcome.ok().and_then(Result::err).unwrap_or_else(|| "decoder supervisor stopped during startup".into())) }
         }
@@ -206,7 +211,7 @@ impl Process {
         serde_json::json!({"input_held_bytes":load(&self.stats.bytes),"input_executing_bytes":load(&self.stats.executing),
             "input_blocks":load(&self.stats.blocks),"written_bytes":load(&self.stats.written),
             "done":self.done.load(Ordering::Acquire),"max_input_blocks":INPUT_QUEUE,
-            "max_input_held_bytes":INPUT_BYTES,"max_input_block_bytes":BLOCK_LIMIT})
+            "max_input_held_bytes":self.input_limit,"max_input_block_bytes":BLOCK_LIMIT})
     }
     pub fn buffer(&self) -> Vec<u8> { self.recycled.try_recv().unwrap_or_default() }
     fn check(&self) -> Result<(), String> {
@@ -219,8 +224,8 @@ impl Process {
         if !bytes.is_empty() {
             let size=bytes.len() as u64;
             self.stats.bytes.try_update(Ordering::AcqRel,Ordering::Acquire,
-                |held|held.checked_add(size).filter(|sum|*sum<=INPUT_BYTES))
-                .map_err(|_|format!("decoder retained input exceeds {INPUT_BYTES} bytes"))?;
+                |held|held.checked_add(size).filter(|sum|*sum<=self.input_limit))
+                .map_err(|_|format!("decoder retained input exceeds {} bytes", self.input_limit))?;
             self.stats.blocks.fetch_add(1,Ordering::Relaxed);
             self.input.try_send(Input::Data(bytes,InputReservation {stats:self.stats.clone(),remaining:size,executing:false})).map_err(|e| {
                 match e {
@@ -308,7 +313,7 @@ pub(super) fn probe(path: &Path, argument: &str, expected_exit: i32) -> Result<S
     probe_with_timeout(path, argument, expected_exit, Duration::from_secs(2))
 }
 pub(super) fn probe_with_timeout(path: &Path, argument: &str, expected_exit: i32, timeout: Duration) -> Result<String, String> {
-    let mut process = Process::start(path, &[argument.into()], Some(expected_exit), timeout)?;
+    let mut process = Process::start(path, &[argument.into()], Some(expected_exit), timeout, INPUT_BYTES)?;
     Ok(process.finish()?.join("\n"))
 }
 
@@ -360,23 +365,26 @@ mod tests {
     }
     #[test]
     fn fragmented_input_shares_one_byte_budget_including_executing_input() {
-        let mut process=Process::spawn(Path::new("/usr/bin/python3"),&["-c".into(),
-            "import time; time.sleep(30)".into()]).unwrap();
+      for limit in [INPUT_BYTES, 128*1024*1024] {
+        let mut process=Process::spawn_buffered(Path::new("/usr/bin/python3"),&["-c".into(),
+            "import time; time.sleep(30)".into()], limit).unwrap();
         // The consumer does not read. More than 32 small blocks must still fit
         // within the same bounded retention budget as one large block.
         for _ in 0..96 {process.push(vec![42;4096]).unwrap();}
         let stats=process.stats.clone();
         let mut rejected=false;
-        for _ in 0..QUEUE+1 {
+        for _ in 0..limit as usize/BLOCK_LIMIT+1 {
             if let Err(error)=process.push(vec![42;BLOCK_LIMIT]) {
                 assert!(error.starts_with("decoder retained input exceeds "));rejected=true;break;
             }
         }
         assert!(rejected);
-        assert!(stats.bytes.load(Ordering::Acquire)<=INPUT_BYTES);
+        assert!(stats.bytes.load(Ordering::Acquire)<=limit);
+        assert_eq!(process.buffer_status()["max_input_held_bytes"], limit);
         drop(process);
         assert_eq!(stats.bytes.load(Ordering::Acquire),0);
         assert_eq!(stats.blocks.load(Ordering::Acquire),0);
+      }
     }
     #[test]
     fn abnormal_exit_is_an_explicit_error() {

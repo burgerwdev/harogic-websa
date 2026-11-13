@@ -1,0 +1,70 @@
+--- a/core/src/dtmb/dtmb_ldpc.cpp
++++ b/core/src/dtmb/dtmb_ldpc.cpp
+@@ -10,6 +10,9 @@
+ #include <mutex>
+ #include <stdexcept>
+ #include <type_traits>
++#if defined(__SSE2__) && !defined(DECT2_NO_SIMD)
++#include <xmmintrin.h>
++#endif
+ 
+ namespace dect2::dtmb {
+ 
+@@ -249,11 +252,18 @@
+         if (!((have >> col) & 1)) {
+             const float* u = &lv_[(size_t)col * 128];
+             uint64_t w[2] = {0, 0};
++#if defined(__SSE2__) && !defined(DECT2_NO_SIMD)
++            for (int g = 0; g < 32; g++) {
++                const unsigned bits = _mm_movemask_ps(_mm_cmplt_ps(_mm_loadu_ps(u + g * 4), _mm_setzero_ps()));
++                w[g >> 4] |= (uint64_t)bits << (4 * (g & 15));
++            }
++#else
+             for (int g = 0; g < 16; g++) {
+                 uint32_t byte = 0;
+                 for (int k = 0; k < 8; k++) byte |= (uint32_t)(u[g * 8 + k] < 0.f) << k;
+                 w[g >> 3] |= (uint64_t)byte << (8 * (g & 7));
+             }
++#endif
+             hard_[(size_t)col * 2] = w[0]; hard_[(size_t)col * 2 + 1] = w[1] & kMaskHi;   // bit 127 is the padding slot
+             have |= 1ull << col;
+         }
+--- a/core/include/dect2/dtmb/dtmb_chain.h
++++ b/core/include/dect2/dtmb/dtmb_chain.h
+@@ -86,6 +86,9 @@
+     ConvInterleaver<float> bitDe_;               // 4QAM-NR bit de-interleaver
+     struct SymVar { cf32 s; float v; };
+     ConvInterleaver<SymVar> symDe_;
++    std::vector<SymVar> symbols_, deinterleaved_;
++    std::vector<cf32> demapSymbols_;
++    std::vector<float> demapVariance_, frameLlr_;
+     LdpcCode::Decoder syncDec_;                  // used by the alignment search and the synchronous mode
+ 
+     // worker pool
+--- a/core/src/dtmb/dtmb_chain.cpp
++++ b/core/src/dtmb/dtmb_chain.cpp
+@@ -99,11 +99,12 @@
+         out.insert(out.end(), deint.begin(), deint.end());
+         return;
+     }
+-    std::vector<SymVar> in((size_t)kDataSymbols), de((size_t)kDataSymbols);
++    auto& in = symbols_; auto& de = deinterleaved_;
++    in.resize(kDataSymbols); de.resize(kDataSymbols);
+     for (int i = 0; i < kDataSymbols; i++) in[(size_t)i] = SymVar{sym[i], var[i]};
+     symDe_.process(in.data(), de.data(), in.size());
+-    std::vector<cf32> xs((size_t)kDataSymbols);
+-    std::vector<float> vs((size_t)kDataSymbols);
++    auto& xs = demapSymbols_; auto& vs = demapVariance_;
++    xs.resize(kDataSymbols); vs.resize(kDataSymbols);
+     for (int i = 0; i < kDataSymbols; i++) { xs[(size_t)i] = de[(size_t)i].s; vs[(size_t)i] = de[(size_t)i].v; }
+     const int bps = bitsPerSymbol(m);
+     const size_t at = out.size();
+@@ -112,7 +113,7 @@
+ }
+ 
+ void FecChain::pushFrame(const cf32* sym, const float* var) {
+-    std::vector<float> l;
++    auto& l = frameLlr_; l.clear();
+     llrFrame(sym, var, l);
+     frames_++;
+     if (frames_ <= primed_) return;   // the de-interleaver still holds its start-up zeros

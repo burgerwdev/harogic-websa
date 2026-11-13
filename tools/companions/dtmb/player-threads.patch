@@ -1,0 +1,24 @@
+--- a/libavcodec/libcavs.c
++++ b/libavcodec/libcavs.c
+@@ -16575,7 +16575,10 @@
+ {
+     cavs_decoder *p = (cavs_decoder *)p_decoder;
+ 
+-	p->param.i_thread_num = cavs_cpu_num_processors();
++    if (p->param.i_thread_num <= 0)
++        p->param.i_thread_num = cavs_cpu_num_processors();
++    if (p->param.i_thread_num < 1) p->param.i_thread_num = 1;
++    if (p->param.i_thread_num > 64) p->param.i_thread_num = 64;
+ 
+     return 0;    
+ }
+--- a/libavcodec/libcavsdec.c
++++ b/libavcodec/libcavsdec.c
+@@ -125,6 +125,7 @@
+ 
+     /* creat decoder */
+ 	h->param.b_accelerate = 1;
++    h->param.i_thread_num = avctx->thread_count;
+     i_result = cavs_decoder_create( &h->p_decoder, &h->param );
+     if( h->p_decoder == NULL || i_result != 0 )
+     {

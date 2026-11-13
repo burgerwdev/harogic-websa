@@ -277,6 +277,28 @@ def main() -> int:
             const prototype = CanvasRenderingContext2D.prototype;
             const fillText = prototype.fillText, clearRect = prototype.clearRect;
             const layers = new WeakMap();
+            const gpuLayers = new WeakMap(), gpuBuffers = new WeakMap();
+            const gpuPrototype = window.WebGL2RenderingContext?.prototype;
+            const bufferSubData = gpuPrototype?.bufferSubData;
+            const drawArraysInstanced = gpuPrototype?.drawArraysInstanced;
+            if (gpuPrototype) {
+                gpuPrototype.bufferSubData = function(target, offset, data, ...args) {
+                    if (target === this.ARRAY_BUFFER && offset === 0 && data instanceof Float32Array)
+                        gpuBuffers.set(this.canvas, data.slice());
+                    return bufferSubData.call(this, target, offset, data, ...args);
+                };
+                gpuPrototype.drawArraysInstanced = function(mode, first, count, instances) {
+                    const program = this.getParameter(this.CURRENT_PROGRAM);
+                    const origin = program && this.getUniformLocation(program, 'originY');
+                    const data = gpuBuffers.get(this.canvas);
+                    if (origin && mode === this.TRIANGLES && count === 6 && data?.length >= instances*4) {
+                        const y0 = this.getUniform(program, origin), points = [];
+                        for (let i = 0; i < instances; i++) points.push({x: data[i*4], y: data[i*4+1]-y0});
+                        gpuLayers.set(this.canvas, points);
+                    }
+                    return drawArraysInstanced.call(this, mode, first, count, instances);
+                };
+            }
             let path = [];
             ctx.beginPath = function(...args) { path = []; return saved.beginPath.apply(this, args); };
             for (const name of ['moveTo', 'lineTo']) ctx[name] = function(x, y) {
@@ -304,12 +326,16 @@ def main() -> int:
             };
             ctx.drawImage = function(image, ...args) {
                 const labels = layers.get(image);
-                if (labels?.length > 1) {
+                const points = gpuLayers.get(image);
+                if (labels?.length > 1 || points?.length > 20) {
                     const [sx, sy, sw, sh, dx, dy, dw, dh] = args.length === 8 ? args
                         : [0, 0, image.width, image.height, ...args,
                             ...(args.length === 2 ? [image.width, image.height] : [])];
-                    sample.labels = labels.map(label => ({
+                    if (labels?.length > 1) sample.labels = labels.map(label => ({
                         y: dy + (label.y-sy)*dh/sh, value: label.value,
+                    }));
+                    if (points?.length > 20) sample.points = points.map(point => ({
+                        x: dx + (point.x-sx)*dw/sw, y: dy + (point.y-sy)*dh/sh,
                     }));
                 }
                 return saved.drawImage.call(this, image, ...args);
@@ -317,6 +343,7 @@ def main() -> int:
             window.offsetCanvasSample = sample;
             window.restoreOffsetCanvas = () => {
                 Object.assign(ctx, saved); prototype.fillText = fillText; prototype.clearRect = clearRect;
+                if (gpuPrototype) Object.assign(gpuPrototype, {bufferSubData, drawArraysInstanced});
                 delete window.offsetCanvasSample;
             };
         }""")

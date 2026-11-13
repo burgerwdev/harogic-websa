@@ -1,0 +1,18 @@
+--- a/core/src/dtmb/dtmb_rx.cpp
++++ b/core/src/dtmb/dtmb_rx.cpp
+@@ -961,6 +961,7 @@
+             x = s.scrub.data();
+         }
+         // a channel recorded beside the centre: until the system information is found, the spectrum says where it is
++#ifndef WEBSA_DTMB_CENTERED
+         if (!s.siOk) {
+             double hz; bool found;
+             if (s.locator.feed(x, n, hz, found) && found && std::fabs(hz - s.mixer.hz) > 100e3) {   // (the search covers +-54 kHz itself; a spectrum shaped by echoes moves the estimate by tens of kHz)
+@@ -969,6 +970,7 @@
+                 s.mixer.set(hz, s.inRate); s.doReset();
+             }
+         }
++#endif
+         if (s.mixer.hz != 0 || s.mirror) {
+             if (x != s.scrub.data()) s.scrub.assign(x, x + n);
+             s.mixer.apply(s.scrub.data(), n);

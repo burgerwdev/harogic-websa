@@ -55,7 +55,7 @@ already maintained under their upstream terms:
   dependencies, and their license and notice files.
 - `backend/src/bin/websa_gnss/schema.rs` retains **BSD-3-Clause** and its
   Carles Fernandez-Prades copyright/notice, copied in `LICENSES/BSD-3-Clause-GNSS-SDR.txt`.
-- `tools/companions/rtty/main.cpp`, `tools/pluto/pluto_digital_source.cpp` and
+- `tools/companions/rtty/main.cpp`, `tools/companions/dtmb/`, `tools/pluto/pluto_digital_source.cpp` and
   `tools/pluto/build-digital-source.sh` remain **GPL-3.0-or-later**. Independently
   installed decoders/drivers/simulators retain their respective licenses.
 - Existing `runtime/` artifacts retain the terms of the source/dependencies

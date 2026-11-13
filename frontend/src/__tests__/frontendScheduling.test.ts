@@ -1,7 +1,20 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { batchRender, requestRender, requestStreamRender, setInteractionRenderer, setRenderer } from '../render/redraw';
+import { batchRender, limitStreamRendering, requestRender, requestStreamRender, setInteractionRenderer, setRenderer, streamRenderInterval } from '../render/redraw';
 
 afterEach(() => { setRenderer(null); setInteractionRenderer(null); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it('reserves display time for concurrent players without delaying user actions, then restores cadence', () => {
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+  const paint = vi.fn(); setRenderer(paint);
+  const releaseFirst = limitStreamRendering(5), releaseSecond = limitStreamRendering(10);
+  try {
+    expect(streamRenderInterval()).toBe(200);
+    requestRender(); expect(paint).toHaveBeenCalledOnce();
+    releaseFirst(); releaseFirst();
+    expect(streamRenderInterval()).toBe(100);
+  } finally { releaseFirst(); releaseSecond(); }
+  expect(streamRenderInterval()).toBeLessThan(100);
+});
 
 it('keeps incoming spectrum paints scheduled while independently painting pointer overlays', async () => {
   vi.useFakeTimers(); vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);

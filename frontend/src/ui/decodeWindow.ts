@@ -37,7 +37,8 @@ import {
 	type RadiofaxPage,
 } from '../sdr/radiofaxLog';
 import { sstvModeTable, modeDescriptor, modeOutputs } from '../sdr/registry';
-import { clearDecoderLog, subscribeDecoderLog } from '../sdr/decoderLog';
+import { clearDecoderLog, decoderLog, subscribeDecoderLog } from '../sdr/decoderLog';
+import { dtmbStatus, mountDtmbPlayer, type DtmbPlayer } from './dtmbPlayer';
 import { drawAudioScope as drawScope } from './audioScope';
 import { renderDecoderResults } from './decoderResults';
 import { createDecodePopout, type DecodePopout } from './decodePopout';
@@ -82,7 +83,9 @@ export interface RadiofaxConfigPatch {
 ///
 /// `sstv` is here for its picture: the station sends a still image, and the pane fills in while the
 /// transmission is still running.
-const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv', 'radiofax', 'wfm', 'am'] as const;
+const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv', 'radiofax', 'wfm', 'am', 'dtmb'] as const;
+let dtmbPlayer: DtmbPlayer | null = null;
+let dtmbHost: HTMLElement | null = null;
 export type DecodeMode = string | null;
 
 const LS_KEY = 'websa-decode-window';
@@ -575,6 +578,22 @@ function renderContent(): void {
 	if (!showRadiofax) closeRadiofaxMenus();
 	const showWfm = mode === 'wfm';
 	const showAm = mode === 'am';
+	const showDtmb = mode === 'dtmb';
+	const dtmb = element('decode-window-dtmb');
+	if (dtmb) {
+		dtmb.style.display = showDtmb ? 'flex' : 'none';
+		if (showDtmb && dtmbHost !== dtmb) { dtmbPlayer?.dispose(); dtmbPlayer = mountDtmbPlayer(dtmb); dtmbHost = dtmb; }
+	}
+	const televisionWindow = showDtmb && open ? element('decode-window') : null;
+	if (televisionWindow && !televisionWindow.dataset.dtmbSized) {
+		televisionWindow.dataset.dtmbSized = 'true';
+		if (!readGeometry() && !portal?.isPoppedOut()) {
+			applyGeometry(televisionWindow, clampToViewport({ ...currentGeometry(televisionWindow),
+				x: Math.max(0, (window.innerWidth - 640) / 2), w: 640, h: 440 }));
+		}
+	}
+	const dtmbEntry = showDtmb ? decoderLog(selectedChannel, 'dtmb').entries.find(entry => entry.kind === 'status' && dtmbStatus(entry.data)) : null;
+	dtmbPlayer?.update(dtmbStatus(dtmbEntry?.data), showDtmb && open && active && !channelErrors[selectedChannel]);
 	const showGeneric = mode !== null && !(DECODING_MODES as readonly string[]).includes(mode);
 	const generic = element('decode-window-results');
 	if (generic) generic.style.display = showGeneric ? '' : 'none';
@@ -591,6 +610,7 @@ function renderContent(): void {
 	renderSstvClearConfirmation();
 	element('decode-window-body')?.classList.toggle('decode-window-body-sstv', showSstv);
 	element('decode-window-body')?.classList.toggle('decode-window-body-radiofax', showRadiofax);
+	element('decode-window-body')?.classList.toggle('decode-window-body-dtmb', showDtmb);
 	if (table) table.style.display = showFt8 ? '' : 'none';
 	if (cw) cw.style.display = showCw ? '' : 'none';
 	if (drm) drm.style.display = showDrm ? '' : 'none';
@@ -610,10 +630,10 @@ function renderContent(): void {
 	if (hint) hint.style.display = 'none';
 	// Radiofax shares the persisted local/UTC preference for first browser image receipt times.
 	const utc = element('btn-decode-utc');
-	if (utc) utc.style.display = showDrm || showWfm || showSstv || showAm ? 'none' : '';
+	if (utc) utc.style.display = showDrm || showWfm || showSstv || showAm || showDtmb ? 'none' : '';
 	const clear = element('btn-decode-clear');
 	// Show Clear only for panes with accumulated content.
-	if (clear) clear.style.display = showDrm || showWfm || showRadiofax || showAm ? 'none' : '';
+	if (clear) clear.style.display = showDrm || showWfm || showRadiofax || showAm || showDtmb ? 'none' : '';
 	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM')
 		: showSstv ? 'SSTV' : showRadiofax ? 'Radiofax' : showWfm ? 'FM' : showAm ? 'AM' : showFt8 ? 'FT8'
 		: mode ? (modeDescriptor(mode)?.label ?? mode.toUpperCase()) : '—';
@@ -1447,7 +1467,7 @@ function syncOpen(): void {
 		toggle.textContent = open ? t('on') : t('off');
 		toggle.classList.toggle('active', open);
 	}
-	if (!open) closeRadiofaxMenus();
+	if (!open) { closeRadiofaxMenus(); dtmbPlayer?.update(null, false); }
 	if (open) {
 		renderContent();
 		if (!unsubscribe) unsubscribe = subscribeAll(renderContent);
@@ -1593,6 +1613,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	const head = element('decode-window-head');
 	bindRadiofaxOutside();
 	portal = createDecodePopout(win, () => {
+		dtmbPlayer?.beforeMove();
 		closeRadiofaxMenus();
 		radiofaxHistoryInteracting = false;
 		if (pendingPaint !== null) { paintWindow?.cancelAnimationFrame(pendingPaint); pendingPaint = null; }
@@ -1604,6 +1625,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		}
 		bindRadiofaxOutside();
 		renderContent();
+		dtmbPlayer?.afterMove();
 	});
 	button('btn-decode-popout')?.addEventListener('click', () => portal?.popout());
 	button('btn-decode-dock')?.addEventListener('click', () => portal?.dock());

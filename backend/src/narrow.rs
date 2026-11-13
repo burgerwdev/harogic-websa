@@ -303,8 +303,10 @@ pub fn channel_open_planned(fs: f64, offset: f64, plan: &crate::rate_plan::RateP
     // Wide minimum IQ clocks with a narrow RF passband can require thousands
     // of taps at every output sample. Apply that same final FIR in blocks;
     // short analog filters keep the direct SIMD kernel.
-    let final_fft = stages.last().filter(|stage| stage.taps.len() >= 1024)
-        .map(|stage| crate::fir_fft::FirFft::new(&stage.taps));
+    let final_fft = stages.last().filter(|stage| stage.taps.len() >= 1024
+        || (plan.output_rate >= 8_000_000.0 && stage.taps.len() >= 64))
+        .map(|stage| if plan.output_rate >= 8_000_000.0 { crate::fir_fft::FirFft::wideband(&stage.taps) }
+            else { crate::fir_fft::FirFft::new(&stage.taps) });
     #[cfg(target_arch = "x86_64")]
     let avx2 = std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma");
     #[cfg(not(target_arch = "x86_64"))]
@@ -547,6 +549,15 @@ fn process_multistage<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut 
     let mut produced = 0;
     let stages = c.stages.as_mut().unwrap();
     let direct_stages = stages.len() - usize::from(c.final_fft.is_some());
+    if direct_stages == 0 && c.wr == 1.0 && c.wi == 0.0 && c.re == 1.0 && c.im == 0.0 {
+        let frames = iq.len()/2;
+        for (target, &sample) in out.iter_mut().zip(&iq[..2*frames]) { *target = sample.into() as f32; }
+        c.final_fft.as_mut().unwrap().process(&mut out[..2*frames]);
+        c.normalize = (c.normalize + frames) % 4096;
+        c.input_samples += frames as u64;
+        c.output_samples += frames as u64;
+        return frames as i32;
+    }
     for sample in iq.chunks_exact(2) {
         let (ir, ii): (f64, f64) = (sample[0].into(), sample[1].into());
         let mut value = Some(((ir * c.re - ii * c.im) as f32, (ir * c.im + ii * c.re) as f32));
@@ -582,11 +593,13 @@ mod tests {
 
     #[test]
     fn long_planned_fir_matches_direct_filter_and_packet_clocks() {
-        let fs = 976_562.5;
-        for (minimum, transition) in [(250_000.0, 1_000.0), (500_000.0, 500.0)] {
-            let plan = crate::rate_plan::RatePlan::baseband(fs, 16_000.0, transition, minimum).unwrap();
-            let mut optimized = unsafe { Box::from_raw(channel_open_planned(fs, 12_345.0, &plan)) };
-            let mut direct = unsafe { Box::from_raw(channel_open_planned(fs, 12_345.0, &plan)) };
+        for (fs, passband, minimum, transition, offset) in [(976_562.5, 16_000.0, 250_000.0, 1_000.0, 12_345.0),
+            (976_562.5, 16_000.0, 500_000.0, 500.0, 12_345.0),
+            (15_625_000.0, 8_000_000.0, 15_625_000.0, 1_000_000.0, 12_345.0),
+            (15_625_000.0, 8_000_000.0, 15_625_000.0, 1_000_000.0, 0.0)] {
+            let plan = crate::rate_plan::RatePlan::baseband(fs, passband, transition, minimum).unwrap();
+            let mut optimized = unsafe { Box::from_raw(channel_open_planned(fs, offset, &plan)) };
+            let mut direct = unsafe { Box::from_raw(channel_open_planned(fs, offset, &plan)) };
             assert!(optimized.final_fft.is_some());
             direct.final_fft = None;
             assert_eq!(unsafe { channel_delay(&*optimized) }, unsafe { channel_delay(&*direct) });
@@ -600,10 +613,27 @@ mod tests {
                 assert_eq!(produced, process_samples(&mut direct, &iq, &mut b));
                 assert_eq!((optimized.input_samples, optimized.output_samples),
                     (direct.input_samples, direct.output_samples));
+                assert_eq!(optimized.normalize, direct.normalize);
                 let max_error = a.iter().zip(&b).map(|(a,b)| (a-b).abs()).fold(0.0f32, f32::max);
                 assert!(max_error < 3e-6, "maximum absolute error {max_error}");
                 index += count;
             }
+        }
+    }
+
+    #[test]
+    fn centered_wideband_integer_input_preserves_filter_and_clocks() {
+        let plan = crate::rate_plan::RatePlan::new(15_625_000.0, "dtmb", 8_000_000.0).unwrap();
+        let mut fast = unsafe { Box::from_raw(channel_open_planned(15_625_000.0, 0.0, &plan)) };
+        let mut direct = unsafe { Box::from_raw(channel_open_planned(15_625_000.0, 0.0, &plan)) };
+        direct.final_fft = None;
+        let iq: Vec<i16> = (0..131_072).map(|n| ((n as f64 * 0.17).sin()*30_000.0) as i16).collect();
+        for block in iq.chunks(1018) {
+            let mut actual = vec![0.0; block.len()];
+            let mut expected = actual.clone();
+            assert_eq!(process_samples(&mut fast, block, &mut actual), process_samples(&mut direct, block, &mut expected));
+            assert!(actual.iter().zip(&expected).all(|(a,b)| (a-b).abs() < 0.03));
+            assert_eq!((fast.input_samples, fast.output_samples, fast.normalize), (direct.input_samples, direct.output_samples, direct.normalize));
         }
     }
 

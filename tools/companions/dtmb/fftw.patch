@@ -1,0 +1,16 @@
+--- a/core/src/dsp/dsp_compat.cpp
++++ b/core/src/dsp/dsp_compat.cpp
+@@ -317,11 +317,13 @@
++#ifndef WEBSA_DTMB_FFTW
+ void fftSplit(float* re, float* im, int log2n, bool inverse) {
+     if (log2n < 1) return;
+     if (inverse) forward(im, re, log2n);   // ifft(x) = swap(fft(swap(x))): the unnormalised inverse
+     else forward(re, im, log2n);
+ }
++#endif
+ 
+ DECT2_SIMD_BODY void convCorrBody(const float* a, const float* f, float* c, int strideC, int n, int p) {
+     if (p <= 32) { convCorrShortBody(a, f, c, strideC, n, p); return; }
+     for (int i = 0; i < n; i++) {
+         float acc[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+         const float* x = a + i;

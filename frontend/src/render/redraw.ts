@@ -21,6 +21,7 @@ let streamFrame: number | undefined;
 let lastPaint = -Infinity;
 let paintCost = 0;
 let paints = 0, streamPaints = 0, paintMs = 0;
+const streamLimits = new Map<symbol, number>();
 // Display work gets a bounded share of the main thread. Ingestion, trace
 // accumulation, waterfall history, triggers and media clocks remain independent.
 // Canvas commands also incur browser raster/compositing work after returning.
@@ -114,7 +115,17 @@ export function requestStreamRender(): void {
 
 /** Share the display deadline with preparation of replaceable spectrum frames. */
 export function streamRenderInterval(share = DISPLAY_SHARE): number {
-  return Math.min(MAX_INTERVAL, Math.max(MIN_INTERVAL, paintCost / share));
+  let interval = Math.min(MAX_INTERVAL, Math.max(MIN_INTERVAL, paintCost / share));
+  for (const limit of streamLimits.values()) interval = Math.max(interval, limit);
+  return interval;
+}
+
+/** Leave CPU/GPU time for video; pointer updates and acquisition keep their clocks. */
+export function limitStreamRendering(fps: number): () => void {
+  const key = Symbol();
+  streamLimits.set(key, 1000 / Math.max(1, fps));
+  cancelStreamPaint();
+  return () => { streamLimits.delete(key); };
 }
 
 /** Read-only diagnostics; no JSON is built during normal painting. */

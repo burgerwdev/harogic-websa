@@ -5,6 +5,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 CHECK=0
 GPS=1
+DTMB=1
 SDK_ROOT="${SDK_ROOT:-/opt/htraapi}"
 export WEBSA_DECODERS_PREFIX="${WEBSA_DECODERS_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/websa/decoders}"
 PREFIX="$WEBSA_DECODERS_PREFIX"
@@ -12,20 +13,23 @@ while (($#)); do
   case "$1" in
     --check) CHECK=1; shift ;;
     --without-gps) GPS=0; shift ;;
+    --without-dtmb) DTMB=0; shift ;;
     --help|-h)
       cat <<'HELP'
-Usage: ./setup.sh [--check] [--without-gps]
+Usage: ./setup.sh [--check] [--without-gps] [--without-dtmb]
 Prepare the frontend, native service, NR runtime, multimon-ng, rtl_433,
-OnAir, RTTY and GPS decoders. Installed decoders are reused. Builds use one job.
+OnAir, RTTY, DTMB and GPS decoders. Installed decoders are reused. Builds use at most two jobs.
 If SDK_ROOT (default /opt/htraapi) contains the HAROGIC SDK, also build its shim
 and Soapy driver. Without the SDK, the fixture service remains available.
 --check only checks prerequisites; it does not download, build or install.
 --without-gps omits the large GNSS-SDR source build and its build dependencies.
+--without-dtmb omits the DTMB companion and AVS+ television player.
 WEBSA_DECODERS_PREFIX overrides the shared user-local decoder directory.
 No root commands are run. Install system build dependencies before setup:
-  Rust >=1.95, Node 22.22+/24.15+/>=26, npm, Python >=3.10, C/C++17,
+  Rust >=1.95, Node 22.22+/24.15+/>=26, npm, Python >=3.10, C/C++20,
   make, CMake >=3.15, pkg-config, curl, Git, tar, coreutils, util-linux;
   FDK AAC >=2.0.3 development files.
+DTMB additionally needs patch, perl, xz, FFTW3 and x264 development files.
 GPS additionally needs the development libraries listed by
   bash tools/setup-gnss-decoder.sh --help
 and build-time Python with Mako (WEBSA_BUILD_PYTHON can select its interpreter).
@@ -61,6 +65,17 @@ if command -v node >/dev/null; then
   node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit((a===22&&b>=22)||(a===24&&b>=15)||a>=26?0:1)' || MISSING+=('Node 22.22+/24.15+/>=26')
 fi
 NEED_GPS=0
+if [[ "$DTMB" == 1 ]]; then
+  command -v patch >/dev/null || MISSING+=('DTMB command: patch')
+  command -v perl >/dev/null || MISSING+=('DTMB command: perl')
+  command -v xz >/dev/null || MISSING+=('DTMB command: xz')
+  if [[ ! -x "$PREFIX/bin/websa-dtmb" ]] && ! pkg-config --exists fftw3f; then
+    MISSING+=('DTMB development library: fftw3f')
+  fi
+  if [[ ! -x "$PREFIX/bin/websa-dtmb-ffmpeg" ]] && ! pkg-config --exists x264; then
+    MISSING+=('DTMB development library: x264')
+  fi
+fi
 if [[ "$GPS" == 1 && ! -x "$PREFIX/bin/gnss-sdr" ]]; then
   NEED_GPS=1
   for library in gnuradio-runtime protobuf fftw3f; do
@@ -105,6 +120,10 @@ if ((${#PROVIDERS[@]})); then
   bash tools/setup-sdr-decoders.sh "${PROVIDERS[@]}"
 fi
 [[ -x "$PREFIX/bin/websa-rtty" ]] || bash tools/setup-rtty-decoder.sh
+if [[ "$DTMB" == 1 ]]; then
+  [[ -x "$PREFIX/bin/websa-dtmb" ]] || bash tools/setup-dtmb-decoder.sh
+  [[ -x "$PREFIX/bin/websa-dtmb-ffmpeg" ]] || bash tools/setup-dtmb-player.sh
+fi
 if [[ "$GPS" == 1 ]]; then
   if [[ ! -x "$PREFIX/bin/websa-gnss" ]]; then
     cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websa-gnss

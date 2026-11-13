@@ -4,10 +4,11 @@ import * as dict_trigger from './i18n/dict.trigger';
 import * as dict_sdr from './i18n/dict.sdr';
 import * as dict_limits from './i18n/dict.limits';
 import * as dict_keypad from './i18n/dict.keypad';
+import * as dict_dtmb from './i18n/dict.dtmb';
 
 const dict = {
-  en: { ...dict_core.en, ...dict_trigger.en, ...dict_sdr.en, ...dict_limits.en, ...dict_keypad.en },
-  zh: { ...dict_core.zh, ...dict_trigger.zh, ...dict_sdr.zh, ...dict_limits.zh, ...dict_keypad.zh },
+  en: { ...dict_core.en, ...dict_trigger.en, ...dict_sdr.en, ...dict_limits.en, ...dict_keypad.en, ...dict_dtmb.en },
+  zh: { ...dict_core.zh, ...dict_trigger.zh, ...dict_sdr.zh, ...dict_limits.zh, ...dict_keypad.zh, ...dict_dtmb.zh },
 };
 
 export type Lang = 'en' | 'zh';

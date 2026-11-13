@@ -2,6 +2,7 @@
 pub mod onair;
 pub mod rtty;
 pub mod gnss;
+pub mod dtmb;
 mod process;
 
 use serde_json::{json, Value};
@@ -91,6 +92,7 @@ pub enum ExternalDecoder {
     OnAir(onair::OnAirBridge),
     Rtty(rtty::RttyBridge),
     Gnss(gnss::GnssBridge),
+    Dtmb(dtmb::DtmbBridge),
 }
 impl ExternalDecoder {
     pub fn buffer_status(&self)->Value {
@@ -98,6 +100,7 @@ impl ExternalDecoder {
             Self::Multimon {process,..}|Self::Rtl433 {process}=>process.buffer_status(),
             Self::Rtty(bridge)=>bridge.buffer_status(),Self::Gnss(bridge)=>bridge.buffer_status(),
             Self::OnAir(bridge)=>bridge.buffer_status(),
+            Self::Dtmb(bridge)=>bridge.buffer_status(),
         }
     }
     pub fn new(mode: &str, rate: u32, center_hz: u64) -> Result<Self, String> {
@@ -128,6 +131,7 @@ impl ExternalDecoder {
             "onair" => Ok(Self::OnAir(onair::OnAirBridge::spawn(mode, rate, center_hz)?)),
             "onair-rtty" => Ok(Self::Rtty(rtty::RttyBridge::spawn(mode, rate)?)),
             "gnss-sdr" => Ok(Self::Gnss(gnss::GnssBridge::spawn(rate, center_hz)?)),
+            "dtmb" => Ok(Self::Dtmb(dtmb::DtmbBridge::spawn(rate)?)),
             _ => Err(format!("{mode} is not an external decoder")),
         }
     }
@@ -164,6 +168,7 @@ impl ExternalDecoder {
             Self::OnAir(bridge) => bridge.push_iq(iq),
             Self::Rtty(bridge) => bridge.push_iq(iq),
             Self::Gnss(bridge) => bridge.push_iq(iq),
+            Self::Dtmb(bridge) => bridge.push_iq(iq),
         }
     }
     /// Live replacement drains admitted input and available results without an EOF wait.
@@ -172,6 +177,7 @@ impl ExternalDecoder {
             Self::OnAir(bridge) => return bridge.retire(),
             Self::Rtty(bridge) => return bridge.retire(),
             Self::Gnss(bridge) => return bridge.retire(),
+            Self::Dtmb(bridge) => return bridge.retire(),
             Self::Multimon { process, mode, .. } => ("multimon", mode.as_str(), decode_lines("multimon", mode, process.retire()?)?),
             Self::Rtl433 { process } => ("rtl433", "ism", decode_lines("rtl433", "ism", process.retire()?)?),
         };
@@ -188,6 +194,7 @@ impl ExternalDecoder {
             Self::OnAir(bridge) => bridge.finish(),
             Self::Rtty(bridge) => bridge.finish(),
             Self::Gnss(bridge) => bridge.finish(),
+            Self::Dtmb(bridge) => bridge.finish(),
         }
     }
 }

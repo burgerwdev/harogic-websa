@@ -29,6 +29,7 @@ pub(super) fn router(app: Arc<App>) -> Router {
         .route("/api/sdr/scan/events", get(super::scan::events))
         .route("/api/sdr/scan/signals/{id}", get(super::scan::detail))
         .route("/api/sdr/plugins", get(channel_controls::plugins))
+        .route("/api/sdr/dtmb/{stream}/{program}/live.mp4", get(dtmb_play))
         .route(
             "/api/sdr/receivers",
             get(multichannel::snapshot).post(multichannel::command),
@@ -102,6 +103,11 @@ pub(super) fn browser_access(headers: &HeaderMap) -> bool {
                 .or_else(|| origin.strip_prefix("https://"))
         })
         .is_some_and(|origin_host| origin_host == host)
+}
+
+async fn dtmb_play(Path((stream, program)): Path<(String, u16)>, headers: HeaderMap) -> Response {
+    if !browser_access(&headers) { return StatusCode::FORBIDDEN.into_response(); }
+    websa_channelizer::external::dtmb::play(stream, program).await
 }
 
 pub(super) fn error_body(msg: &str, code: &str) -> Value {

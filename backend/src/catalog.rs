@@ -33,7 +33,7 @@ const MULTIMON: &[(&str, &str, &str)] = &[
     ("ufsk1200", "UFSK 1200", "packet"), ("clipfsk", "CLIP FSK", "packet"),
 ];
 pub fn is_external(mode: &str) -> bool {
-    mode == "ism" || matches!(mode, "ais" | "aprs" | "ft4" | "wspr" | "meteor" | "adsb" | "rtty" | "rtty-reverse" | "gps")
+    mode == "ism" || matches!(mode, "ais" | "aprs" | "ft4" | "wspr" | "meteor" | "adsb" | "rtty" | "rtty-reverse" | "gps" | "dtmb")
         || MULTIMON.iter().any(|(id, _, _)| *id == mode)
 }
 /// Exact adapter rate and minimum channel IQ cadence, independent of dependency discovery.
@@ -41,6 +41,7 @@ pub fn external_rates(mode: &str) -> Option<(u32, u32)> {
     if MULTIMON.iter().any(|(id, _, _)| *id == mode) { return Some((22_050, 22_050)); }
     if matches!(mode, "rtty" | "rtty-reverse") { return Some((48_000, 48_000)); }
     if mode == "gps" { return Some((4_000_000, 2_600_000)); }
+    if mode == "dtmb" { return Some((15_625_000, 15_625_000)); }
     match mode { "ism" | "ais" | "aprs" | "ft4" | "wspr" => Some((250_000, 250_000)),
         "meteor" => Some((288_000, 288_000)), "adsb" => Some((2_000_000, 2_500_000)), _ => None }
 }
@@ -130,6 +131,17 @@ pub fn mode(id: &str) -> Option<ModeInfo> {
         info.available = info.unavailable_reason.is_none();
         return Some(info);
     }
+    if id == "dtmb" {
+        let mut info = base(id, "DTMB TV", "broadcast", 8_000_000.0);
+        info.provider = "dtmb".into(); info.input_rate_hz = Some(15_625_000); info.minimum_rate_hz = 15_625_000;
+        info.startup_timeout_ms = 15_000;
+        info.outputs = vec!["video".into(), "status".into()];
+        info.aliases = vec!["digital television".into(), "地面数字电视".into(), "DMB-T/H".into()];
+        info.description = "8 MHz DTMB television with automatic PN, constellation and FEC acquisition, program selection and browser playback".into();
+        info.unavailable_reason = crate::external::dtmb::unavailable_reason();
+        info.available = info.unavailable_reason.is_none();
+        return Some(info);
+    }
     if id == "gps" {
         let mut info = base(id, "GPS L1 C/A", "satellite", 2_046_000.0);
         info.provider = "gnss-sdr".into();
@@ -178,7 +190,7 @@ pub fn manifest() -> Vec<Value> {
     for kind in [PluginKind::Analog, PluginKind::Digital] {
         for plugin in plugins(kind) { if let Some(info) = mode(plugin.id) { result.push(json!(info)); } }
     }
-    for id in MULTIMON.iter().map(|(id, _, _)| *id).chain(["ism", "ais", "aprs", "ft4", "wspr", "meteor", "adsb", "rtty", "rtty-reverse", "gps"]) {
+    for id in MULTIMON.iter().map(|(id, _, _)| *id).chain(["ism", "ais", "aprs", "ft4", "wspr", "meteor", "adsb", "rtty", "rtty-reverse", "gps", "dtmb"]) {
         if let Some(info) = mode(id) { result.push(json!(info)); }
     }
     for (kind, family) in [("audio", PluginKind::Audio), ("ddc", PluginKind::Ddc)] {

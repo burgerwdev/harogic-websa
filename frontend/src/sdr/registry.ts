@@ -1,6 +1,6 @@
 // Receiver and SSTV metadata supplied by the backend's plugin catalog.
 export type PluginKind = 'analog' | 'digital' | 'audio' | 'ddc';
-export type PluginOutput = 'audio' | 'text' | 'table' | 'image' | 'status';
+export type PluginOutput = 'audio' | 'text' | 'table' | 'image' | 'video' | 'status';
 export type PluginSideband = 'symmetric' | 'upper' | 'lower';
 export const PLUGIN_KINDS: readonly PluginKind[] = ['analog', 'digital', 'audio', 'ddc'];
 interface PluginBase {
@@ -57,7 +57,7 @@ function parsePlugin(value: unknown): PluginInfo {
 		|| strings.some((key) => typeof p[key] !== 'string') || !p.id || !p.label || !p.provider
 		|| booleans.some((key) => typeof p[key] !== 'boolean')
 		|| !Array.isArray(p.aliases) || !p.aliases.every((alias) => typeof alias === 'string')
-		|| !Array.isArray(p.outputs) || !p.outputs.every((kind) => ['audio', 'text', 'table', 'image', 'status'].includes(kind))
+		|| !Array.isArray(p.outputs) || !p.outputs.every((kind) => ['audio', 'text', 'table', 'image', 'video', 'status'].includes(kind))
 		|| !['symmetric', 'upper', 'lower'].includes(p.sideband as string)
 		|| !(p.unavailableReason === null || typeof p.unavailableReason === 'string')
 		|| !(p.audioCompanion === null || typeof p.audioCompanion === 'string')

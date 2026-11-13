@@ -1135,7 +1135,7 @@ impl ReceiverWorkers {
         let mut frames=self.finish()?;
         for &channel in channels {
             let slot=channel.checked_sub(1).filter(|&slot|(slot as usize)<MAX_CHANNELS).ok_or("invalid radiofax channel")? as usize;
-            if self.threads[slot].is_none() {continue;}
+            if self.threads[slot].as_ref().is_none_or(JoinHandle::is_finished) {continue;}
             let generation=self.shared.generations[slot].load(Ordering::Acquire);
             let pending=Pending::queued(&self.shared,slot%WORKERS,0);
             self.inputs[slot%WORKERS].try_send(PendingWork {
@@ -1788,6 +1788,19 @@ mod tests {
         assert_eq!(state.config_version, revision);
         assert_eq!(state.reception.snapshot(1), reception);
         assert!(state.receiver_failure.is_none());
+    }
+
+    #[test]
+    fn finishing_an_exited_owner_does_not_enqueue_to_its_closed_input() {
+        let mut workers = ReceiverWorkers::new().unwrap();
+        let (input, receiver) = mpsc::sync_channel(1);
+        drop(receiver);
+        workers.inputs[0] = input;
+        let owner = thread::spawn(|| {});
+        while !owner.is_finished() { thread::yield_now(); }
+        workers.threads[0] = Some(owner);
+        workers.finish_radiofax(&[1]).unwrap();
+        assert_eq!(workers.shared.pending.load(Ordering::Acquire), 0);
     }
 
     #[test]

@@ -19,7 +19,7 @@ const HELP: &str = "Usage: sdr_decode --input IQ.f32 --mode MODE --input-rate HZ
 Modes: am dsb usb lsb cw nfm wfm pm ft8 sstv drm drmplus radiofax;\n\
 external: pocsag512 pocsag1200 pocsag2400 flex flex_next eas afsk1200 afsk2400\n\
 afsk2400_2 afsk2400_3 hapn4800 fsk9600 dtmf zvei1 zvei2 zvei3 dzvei pzvei\n\
-eea eia ccir morse_cw ufsk1200 clipfsk ism ais aprs ft4 wspr meteor adsb gps rtty rtty-reverse.\n\
+eea eia ccir morse_cw ufsk1200 clipfsk ism ais aprs ft4 wspr meteor adsb gps rtty rtty-reverse dtmb.\n\
 Input: little-endian interleaved f32 I,Q pairs at the stated input rate.\n\
 Output: little-endian interleaved f32 PCM, with actual sample rate and channel count\n\
 recorded in formats. A PCM file requires a single format; a format change is an error.\n\

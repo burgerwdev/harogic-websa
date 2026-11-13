@@ -175,7 +175,7 @@ impl DirectChannel {
         let delay=unsafe {websa_channelizer::channel_delay(handle)};
         Ok(Self {handle,id,rate:plan.output_rate,delay,decimate:plan.decimate as u64,
             epoch,origin,next_seq:seq,input:0,output:0,
-            scratch:vec![0.0;2*(16240/plan.decimate as usize+2)],framer})
+            scratch:vec![0.0;2*(super::SDR_BATCH_SAMPLES/plan.decimate as usize+2)],framer})
     }
     pub(super) fn detach(&mut self,slot:u32)->Result<Self,String> {
         let framer=if slot==1 {BasebandFramer::new(self.id,self.epoch,0.0,self.rate)}
@@ -187,20 +187,22 @@ impl DirectChannel {
     pub(super) fn detached(&self)->bool {self.handle.is_null()}
     pub(super) fn clock(&self)->(u64,u64) {(self.input,self.output)}
     pub fn process(&mut self,seq:u64,stamp:u64,input_index:u64,raw:&[i16])->Result<IqFrames,String> {
-        if self.handle.is_null() || seq!=self.next_seq || input_index!=self.origin+self.input || raw.len()!=2*16240 {
+        let samples = raw.len()/2;
+        if self.handle.is_null() || seq!=self.next_seq || input_index!=self.origin+self.input
+            || raw.len()%2 != 0 || !matches!(samples, super::SDR_PACKET_SAMPLES | super::SDR_BATCH_SAMPLES) {
             return Err("direct source sequence/clock mismatch".into());
         }
         let first=self.origin.checked_add((self.output+1).checked_mul(self.decimate)
             .ok_or("direct sample clock overflow")?).and_then(|n|n.checked_sub(1))
             .ok_or("direct sample clock overflow")?;
         let count=unsafe {websa_channelizer::channel_process(self.handle,raw.as_ptr(),
-            16240,self.scratch.as_mut_ptr(),(self.scratch.len()/2) as i32)};
+            samples as i32,self.scratch.as_mut_ptr(),(self.scratch.len()/2) as i32)};
         if count<0 {return Err("direct channel processing failed".into());}
         let frames=self.framer.push_native(&websa_channelizer::FineOutput {channel_id:self.id,epoch:self.epoch,
             bin:0,seq,stamp,input_index:first,output_index:self.output,output_rate:self.rate,
             center_offset_hz:None,delay_samples:self.delay,iq:&self.scratch[..2*count as usize]})
             .map_err(str::to_owned)?;
-        self.input+=16240;
+        self.input+=samples as u64;
         self.output+=count as u64;
         self.next_seq=self.next_seq.checked_add(1).ok_or("direct sequence overflow")?;
         Ok(frames)
@@ -1010,6 +1012,60 @@ mod tests {
             &mut native_input, &mut native_output) }, 0);
         assert_eq!((native_input, native_output), (input, output));
         assert_eq!((channel.input, channel.output), (input, output));
+    }
+
+    #[test]
+    fn direct_wideband_batch_is_admitted_after_tuning_an_existing_capture() {
+        for fs in [15_625_000.0, 31_250_000.0] {
+            let mut config = receiver_workers::ChannelConfig::for_slot(1);
+            config.enabled = true; config.freq = 498e6; config.mode = "am".into(); config.if_bw = 6000.0;
+            let mut ddc = Ddc::configured_service(498e6, fs*0.8, &mut None, 16, fs, &[config.clone()]).unwrap();
+            let epoch = ddc.stream.epoch();
+            ddc.process_capture_packet(&vec![0; 2*SDR_PACKET_SAMPLES], 0).unwrap();
+            config.mode = "dtmb".into(); config.if_bw = 8_000_000.0;
+            ddc.configure_service_channel(config).unwrap();
+            assert_eq!(ddc.stream.epoch(), epoch);
+            for n in 0..3 {
+                ddc.process_capture_packet(&vec![0; 2*SDR_BATCH_SAMPLES],
+                    (SDR_PACKET_SAMPLES+n*SDR_BATCH_SAMPLES) as u64).unwrap();
+            }
+            assert_eq!(ddc.input_pos, (SDR_PACKET_SAMPLES+3*SDR_BATCH_SAMPLES) as u64);
+            ddc.stream.flush_pending().unwrap();
+            ddc.drain().unwrap();
+        }
+    }
+
+    #[test]
+    fn direct_wideband_batches_preserve_samples_and_source_clocks() {
+        for fs in [15_625_000.0, 31_250_000.0, 62_500_000.0] {
+          for offset in [0.0, 350_000.0] {
+            let plan = websa_channelizer::rate_plan::RatePlan::new(fs, "dtmb", 8_000_000.0).unwrap();
+            let make = || DirectChannel::new(1, 7, 11, fs, 498e6, 498e6+offset, &plan, 137, 0).unwrap();
+            let (mut batched, mut single) = (make(), make());
+            let (mut actual, mut expected) = (Vec::new(), Vec::new());
+            for batch in 0..3 {
+                let first = batch * SDR_BATCH_SAMPLES;
+                let raw: Vec<i16> = (2*first..2*(first+SDR_BATCH_SAMPLES)).map(|i|
+                    ((i as f64*0.019).sin()*20_000.0) as i16).collect();
+                actual.extend(batched.process(batch as u64, first as u64, 137+first as u64, &raw).unwrap());
+                for (part, block) in raw.chunks(2*SDR_PACKET_SAMPLES).enumerate() {
+                    let at = first + part*SDR_PACKET_SAMPLES;
+                    expected.extend(single.process((batch*SDR_BATCH_PACKETS+part) as u64,
+                        at as u64, 137+at as u64, block).unwrap());
+                }
+            }
+            actual.extend(batched.framer.finish_native().unwrap());
+            expected.extend(single.framer.finish_native().unwrap());
+            assert_eq!(actual.len(), expected.len());
+            for (a, b) in actual.iter().zip(&expected) { assert_eq!(&a[..56], &b[..56]); }
+            let (a, b) = (direct_test_iq(&actual), direct_test_iq(&expected));
+            assert_eq!(a.len(), b.len());
+            assert!(a.iter().zip(&b).all(|(a,b)| (a[0]-b[0]).abs()<3e-6 && (a[1]-b[1]).abs()<3e-6));
+            let input = 3*SDR_BATCH_SAMPLES as u64;
+            assert_direct_test_clocks(&batched, input, input/plan.decimate as u64);
+            assert_direct_test_clocks(&single, input, input/plan.decimate as u64);
+          }
+        }
     }
 
     #[test]

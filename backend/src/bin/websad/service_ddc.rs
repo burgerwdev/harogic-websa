@@ -140,7 +140,7 @@ impl Ddc {
         }
         super::service_cost::admit_service(configs,fs,taps,bins.len())?;
         let epoch = allocate_dsp_epoch()?;
-        let packet_capacity = if fs == IQ_FS { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
+        let packet_capacity = if fs >= 15_625_000.0 { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
         let stream = PfbStream::with_taps(fs, packet_capacity, bins, epoch as u64, taps).ok_or("PFB unavailable")?;
         let mut bank = FineBank::new(&stream, bandwidth, packet_capacity / stream.input_hop() + 2,
             MAX_CHANNELS, COARSE_RATE * MAX_CHANNELS as f64, CONSUMER_BUDGET).ok_or("fine bank unavailable")?;

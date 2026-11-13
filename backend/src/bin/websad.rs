@@ -2380,7 +2380,7 @@ impl Ddc {
             }
         }
         let epoch = allocate_dsp_epoch()?;
-        let packet_capacity = if fs == IQ_FS { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
+        let packet_capacity = if fs >= 15_625_000.0 { SDR_BATCH_SAMPLES } else { SDR_PACKET_SAMPLES };
         let stream = PfbStream::with_taps(fs, packet_capacity, bins, epoch as u64, taps_per_phase).ok_or("PFB unavailable")?;
         let rate = stream.sample_rate / decimate as f64;
         let hop = stream.input_hop();
@@ -2715,7 +2715,9 @@ impl Ddc {
     }
 
     fn capture_batch_packets(&self) -> usize {
-        if self.hardware.is_some() && self.device_decimate == 1 && self.direct.is_empty() {
+        let television = self.service_configs.as_ref().is_some_and(|configs|
+            configs.iter().any(|config| config.enabled && config.mode == "dtmb"));
+        if self.hardware.is_some() && (television || self.device_decimate == 1 && self.direct.is_empty()) {
             SDR_BATCH_PACKETS
         } else { 1 }
     }
@@ -2804,8 +2806,7 @@ impl Ddc {
     /// Raw capture input follows the same PFB, fine filters and framing for hardware and probes.
     fn process_capture_packet(&mut self, raw: &[i16], stamp:u64) -> Result<IqFrames,String> {
         let count = raw.len()/2;
-        if !matches!(count, SDR_PACKET_SAMPLES | SDR_BATCH_SAMPLES) || raw.len()%2 != 0
-            || (count != SDR_PACKET_SAMPLES && !self.direct.is_empty()) {
+        if !matches!(count, SDR_PACKET_SAMPLES | SDR_BATCH_SAMPLES) || raw.len()%2 != 0 {
             return Err("invalid capture packet size".into());
         }
         self.input_pos += count as u64;
@@ -3969,7 +3970,7 @@ async fn publisher_loop(
                                 Err(error) => state.hardware_presentation_failed(error),
                             }
                         }
-                        Duration::from_millis(1)
+                        Duration::from_millis(if state.sdr_demod == "dtmb" { 4 } else { 1 })
                     }
                     "sdr" => {
                         let (pan,retiring_iq,retiring_aux,_)=state.step_sdr(0,0,display_clients,0);

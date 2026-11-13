@@ -1,0 +1,26 @@
+--- a/core/src/dtmb/dtmb_demod.cpp
++++ b/core/src/dtmb/dtmb_demod.cpp
+@@ -160,9 +160,9 @@
+         if (h == cf32(0, 0)) continue;
+         const int m = mi - ha.pre;
+         const cf32 hv = h * pa;
+-        for (int tp = -pre; tp < post; tp++) {
++        const int first = std::max(-pre, m - Lh), last = std::min(post, m);
++        for (int tp = first; tp < last; tp++) {
+             const int n = tp + Lh - m;
+-            if (n < 0 || n >= Lh) continue;
+             z[tp + pre] -= hv * (float)chipsA[n];
+         }
+     }
+@@ -172,9 +172,9 @@
+         if (h == cf32(0, 0)) continue;
+         const int m = mi - hb.pre;
+         const cf32 hv = h * pa;
+-        for (int tp = N - pre; tp < N + post; tp++) {
++        const int first = std::max(N - pre, N + m), last = std::min(N + post, N + m + Lh);
++        for (int tp = first; tp < last; tp++) {
+             const int n = tp - N - m;
+-            if (n < 0 || n >= Lh) continue;
+             z[tp + pre] -= hv * (float)chipsB[n];
+         }
+     }
