@@ -3691,7 +3691,7 @@
           "minimum": 0
         },
         "retry_limit": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0
         },
         "retry_in_ms": {

@@ -252,6 +252,7 @@ impl DevState {
             for config in &mut configs {config.recovery_settle=self.ddc_error.is_some();if self.reception.source_stopped(config.channel) {config.enabled=false;}}
             let aux=configs.iter().filter(|c|c.channel>1 && c.enabled).map(|c|(c.channel,c.freq)).collect();
             if self.ddc_error.is_some() {self.reception.begin_capture();}
+            else {self.reception.reset_capture_backoff();}
             self.pipeline = Some(Pipeline::start_service(PipelineConfig {
                 center:self.sdr_center, listen:self.sdr_listen, fine:2, display_decimate:self.sdr_decimate as i32,
                 front_end:self.front_end(self.sdr_ref), shim:self.hardware_shim.clone().unwrap(),
@@ -275,6 +276,7 @@ impl DevState {
         self.status_warning = pipeline.warning();
         let presentation = pipeline.presentation();
         let (packets, warning) = pipeline.packet_observation();
+        self.reception.observe_capture(packets);
         if packets > self.auto.iqs_packets {
             self.auto.iqs_packets = packets;
             self.note_auto_acquisition(warning);
@@ -336,7 +338,7 @@ impl DevState {
         self.ddc_error_last = Some(error.clone());
         self.ddc_error = Some(error);
         self.pipeline = None;
-        self.ddc_retry_at = Some(std::time::Instant::now()+Duration::from_secs(1));
+        self.ddc_retry_at = None;
     }
 
     fn remember_capture_failure(&mut self, diagnostics: Value) {

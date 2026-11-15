@@ -1,4 +1,4 @@
-//! Bounded interruption supervision. A retry never implies continuous samples.
+//! Interruption supervision. A retry never implies continuous samples.
 use super::*;
 use std::collections::VecDeque;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -7,6 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 const RETRY_LIMIT: u8 = 3;
 const RETRY_INITIAL_MS: u64 = 500;
 const RETRY_FAILURE_MS: u64 = 1000;
+const CAPTURE_RETRY_MAX: Duration = Duration::from_secs(30);
 const PROGRESS_MAX_GAP: Duration = Duration::from_secs(1);
 const STABLE_PROGRESS: Duration = Duration::from_secs(30);
 const CHECK_PERIOD: Duration = Duration::from_millis(100);
@@ -69,10 +70,10 @@ impl FaultKind {
     }
     pub fn capture(error: &str) -> Self {
         // Clock/ADC warnings can follow a brief RF/hardware disturbance. Discard
-        // this stream and reconfigure with a fresh epoch under the bounded retry
+        // this stream and reconfigure with a fresh epoch under the retry
         // policy. Never publish those samples as a continuous, valid clock.
         // The IQS owner explicitly retires sustained USB/timeout stalls. Those
-        // can reopen through the same bounded, fresh-epoch recovery path.
+        // can reopen through the same fresh-epoch recovery path.
         // Unqualified device errors and panics still require repair.
         let reconfigure = (-19..=-14).any(|status| error.starts_with("SDK IQS ") && error.contains(&format!("status={status} ")));
         let stalled = error.starts_with("SDK IQS ")
@@ -134,6 +135,10 @@ struct Lane {
     last_error: Option<String>,
 }
 impl Lane {
+    fn persistent_capture(&self) -> bool {
+        self.shared && self.interruption.kind == FaultKind::SourceGap && self.policy == Policy::Continuous
+    }
+
     fn note_progress(&mut self, now: Instant, progressing: bool) {
         if progressing {
             self.last_progress = Some(now);
@@ -150,11 +155,57 @@ impl Lane {
         }
     }
 }
+
+fn capture_retry_delay(attempts: u32) -> Duration {
+    Duration::from_millis(RETRY_INITIAL_MS << attempts.min(6)).min(CAPTURE_RETRY_MAX)
+}
+
+// Capture also serves the spectrum when no receiver is enabled. Its retry
+// clock must not depend on the existence or continuity policy of a receiver.
+#[derive(Default)]
+struct CaptureRecovery {
+    attempts: u32,
+    due: Option<Instant>,
+    stable: Option<Instant>,
+    last_progress: Option<Instant>,
+    packets: u64,
+}
+impl CaptureRecovery {
+    fn failed(&mut self, kind: FaultKind) {
+        self.due = (kind == FaultKind::SourceGap)
+            .then(|| Instant::now() + capture_retry_delay(self.attempts));
+        self.stable = None;
+        self.last_progress = None;
+        self.packets = 0;
+    }
+
+    fn begin(&mut self) {
+        self.attempts = self.attempts.saturating_add(1);
+        self.due = None;
+        self.stable = None;
+        self.last_progress = None;
+        self.packets = 0;
+    }
+
+    fn observe(&mut self, now: Instant, packets: u64) {
+        if self.last_progress.is_none_or(|last| now.duration_since(last) > PROGRESS_MAX_GAP) {
+            self.stable = None;
+        }
+        if packets > self.packets {
+            self.last_progress = Some(now);
+            if now.duration_since(*self.stable.get_or_insert(now)) >= STABLE_PROGRESS {
+                self.attempts = 0;
+            }
+        }
+        self.packets = packets;
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Supervisor {
     lanes: BTreeMap<u32, Lane>,
     positions: BTreeMap<u32, Position>,
-    shared_retry: bool,
+    capture: CaptureRecovery,
     shared_serial: u64,
     next_check: Option<Instant>,
 }
@@ -171,13 +222,22 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 impl Supervisor {
+    pub fn reset_capture_backoff(&mut self) {
+        self.capture = CaptureRecovery::default();
+    }
+
+    pub fn observe_capture(&mut self, packets: u64) {
+        self.capture.observe(Instant::now(), packets);
+    }
+
     pub fn awaiting_decoder(&self, slot: u32) -> bool {
         self.lanes.get(&slot).is_some_and(|lane| lane.phase == "recovering" && lane.needs_processing)
     }
 
     pub fn snapshot(&self, slot: u32) -> Value {
         self.lanes.get(&slot).map_or(Value::Null,|r|json!({"policy":r.policy,"state":r.phase,
-            "interruptions":r.count,"attempts":r.attempts,"retry_limit":RETRY_LIMIT,
+            "interruptions":r.count,"attempts":r.attempts,
+            "retry_limit":if r.persistent_capture() {None} else {Some(RETRY_LIMIT)},
             "retry_in_ms":(r.phase=="recovering").then(||r.due.saturating_duration_since(Instant::now()).as_millis() as u64),
             "manual_recovery_allowed":r.phase=="stopped" && r.interruption.kind.recoverable(),
             "last_error":r.last_error,"last_interruption":r.interruption,"history":r.history,
@@ -240,7 +300,9 @@ impl Supervisor {
         while history.len() > HISTORY_LIMIT {
             history.pop_front();
         }
-        let recover = policy == Policy::Continuous && kind.recoverable() && attempts < RETRY_LIMIT;
+        let persistent_capture = shared && kind == FaultKind::SourceGap && policy == Policy::Continuous;
+        let recover = policy == Policy::Continuous && kind.recoverable()
+            && (attempts < RETRY_LIMIT || persistent_capture);
         self.lanes.insert(
             slot,
             Lane {
@@ -349,19 +411,16 @@ impl Supervisor {
         );
     }
     pub fn capture_allowed(&self) -> bool {
-        self.shared_retry
-            && self
-                .lanes
-                .values()
-                .any(|r| r.shared && r.phase == "recovering" && r.due <= Instant::now())
+        self.capture.due.is_some_and(|due| due <= Instant::now())
     }
     pub fn begin_capture(&mut self) {
+        self.capture.begin();
         for lane in self
             .lanes
             .values_mut()
             .filter(|r| r.shared && r.phase == "recovering")
         {
-            lane.attempts += 1;
+            lane.attempts = lane.attempts.saturating_add(1);
         }
     }
     pub fn manual(&mut self, slot: u32) -> Result<(), String> {
@@ -380,7 +439,8 @@ impl Supervisor {
         r.phase = "recovering";
         r.due = Instant::now();
         if r.shared {
-            self.shared_retry = true;
+            self.capture = CaptureRecovery::default();
+            self.capture.due = Some(Instant::now());
         }
         Ok(())
     }
@@ -399,7 +459,7 @@ impl DevState {
     pub(super) fn reception_preparation_failed(&mut self, error: &str) {
         for config in self.missing_reception_preparations() {
             if let Some(lane) = self.reception.lanes.get_mut(&config.channel) {
-                lane.attempts += 1;
+                lane.attempts = lane.attempts.saturating_add(1);
                 lane.last_error = Some(format!("decoder preparation failed: {error}"));
                 lane.phase = "stopped";
             }
@@ -412,7 +472,7 @@ impl DevState {
         self.remember_receiver_streams();
         let kind = FaultKind::capture(error);
         self.reception.shared_serial += 1;
-        self.reception.shared_retry = kind == FaultKind::SourceGap;
+        self.reception.capture.failed(kind);
         for config in self.channel_configs().into_iter().filter(|c| c.enabled) {
             let slot = config.channel;
             let Some(uid) = self.receiver_uid_for_slot(slot).map(str::to_owned) else {
@@ -438,6 +498,9 @@ impl DevState {
             );
             if let Some(lane) = self.reception.lanes.get_mut(&slot) {
                 lane.needs_processing = config.processing_enabled;
+                if let Some(due) = self.reception.capture.due {
+                    lane.due = due;
+                }
             }
         }
     }
@@ -624,7 +687,7 @@ impl DevState {
                 continue;
             }
             if !lane.shared {
-                lane.attempts += 1;
+                lane.attempts = lane.attempts.saturating_add(1);
             }
             let result = self.recover_reception_channel(slot);
             let lane = self.reception.lanes.get_mut(&slot).unwrap();
@@ -636,7 +699,7 @@ impl DevState {
                 Err(error) => {
                     lane.last_error = Some(error);
                     lane.due = now + Duration::from_millis(RETRY_FAILURE_MS << lane.attempts.min(RETRY_LIMIT));
-                    if lane.attempts >= RETRY_LIMIT
+                    if !lane.persistent_capture() && lane.attempts >= RETRY_LIMIT
                         || !lane
                             .last_error
                             .as_ref()
@@ -918,10 +981,170 @@ mod tests {
             assert!(state.reception.source_stopped(2));
             assert!(!state.reception.capture_allowed(), "backoff is enforced");
             state.reception.lanes.get_mut(&1).unwrap().due = Instant::now();
+            state.reception.capture.due = Some(Instant::now());
             assert!(state.reception.capture_allowed());
             state.reception.begin_capture();
             assert_eq!(state.reception.snapshot(1)["attempts"], 1);
             assert_eq!(state.reception.snapshot(2)["attempts"], 0);
+        }
+    }
+
+    #[test]
+    fn capture_retries_outlive_receiver_limit_with_capped_backoff_and_strict_fencing() {
+        let mut state = DevState::new(json!({"preset_defaults":{}}), json!({}));
+        state.sdr_channels[1].enabled = true;
+        state.sdr_channels[1].continuity = Policy::Strict;
+        for attempt in 0..300 {
+            let before = Instant::now();
+            state.reception_capture_failed("USB IQ capture handoff queue full: status=-130 samples=0; capture continuity lost");
+            let due = state.reception.capture.due.unwrap();
+            assert!(due >= before + capture_retry_delay(attempt));
+            assert!(due <= Instant::now() + CAPTURE_RETRY_MAX);
+            let continuous = state.reception.snapshot(1);
+            assert_eq!(continuous["state"], "recovering");
+            assert!(continuous["retry_limit"].is_null());
+            assert!(!continuous["manual_recovery_allowed"].as_bool().unwrap());
+            assert_eq!(state.reception.snapshot(2)["state"], "stopped");
+            assert!(state.reception.source_stopped(2));
+            assert!(!state.reception.capture_allowed());
+            state.reception.capture.due = Some(Instant::now());
+            assert!(state.reception.capture_allowed());
+            state.reception.begin_capture();
+            assert_eq!(state.reception.capture.attempts, attempt + 1);
+        }
+        assert_eq!(capture_retry_delay(0), Duration::from_millis(500));
+        assert_eq!(capture_retry_delay(1), Duration::from_secs(1));
+        assert_eq!(capture_retry_delay(5), Duration::from_secs(16));
+        assert_eq!(capture_retry_delay(u32::MAX), CAPTURE_RETRY_MAX);
+        assert_eq!(state.reception.lanes[&1].history.len(), HISTORY_LIMIT);
+        assert_eq!(state.reception.lanes[&1].attempts, u8::MAX);
+        for error in ["SDK IQS open_v8 status=-110", "capture owner panicked"] {
+            state.reception_capture_failed(error);
+            assert!(!state.reception.capture_allowed());
+            assert!(state.reception.capture.due.is_none());
+            assert_eq!(state.reception.snapshot(1)["state"], "stopped");
+        }
+    }
+
+    #[test]
+    fn capture_backoff_resets_only_after_sustained_packet_progress() {
+        let now = Instant::now();
+        let mut capture = CaptureRecovery { attempts: 6, ..Default::default() };
+        capture.observe(now, 1);
+        capture.observe(now + STABLE_PROGRESS, 2);
+        assert_eq!(capture.attempts, 6, "a packet after a long gap is not sustained progress");
+        capture.observe(now + STABLE_PROGRESS * 2, 2);
+        assert_eq!(capture.attempts, 6, "an idle capture cannot clear backoff");
+        for packets in 3..=34 {
+            capture.observe(now + Duration::from_secs(60 + packets), packets);
+        }
+        assert_eq!(capture.attempts, 0);
+        capture.failed(FaultKind::SourceGap);
+        assert!(capture.due.unwrap() <= Instant::now() + capture_retry_delay(0));
+    }
+
+    #[test]
+    fn repeated_usb_overflow_recaptures_iq_display_and_audio_after_retry_limit() {
+        let _guard = hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let injection = "/tmp/websa_fake_iqs_fail.txt";
+        for path in [injection, "/tmp/websa_fake_iqs_open_fail.txt", "/tmp/websa_fake_iqs_reconfig_fail.txt", "/tmp/websa_fake_iqs_auto.txt"] {
+            let _ = std::fs::remove_file(path);
+        }
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.hardware_shim = Some(hardware_iqs::tests::compile_fake_iqs_display_shim());
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        state.sdr_decimate = 16;
+        let mut epochs = std::collections::BTreeSet::new();
+        for attempt in 0..6 {
+            std::fs::write(injection, "-130 1000").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let error = loop {
+                match state.take_hardware_presentation(1) {
+                    Err(error) => break error,
+                    _ => {
+                        assert!(Instant::now() < deadline, "overflow was not observed");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            };
+            assert!(error.starts_with("USB IQ capture handoff queue full:"), "{error}");
+            assert!(epochs.insert(state.pipeline.as_ref().unwrap().snapshot.epoch));
+            state.hardware_presentation_failed(error);
+            assert_eq!(state.ddc_error_count, attempt + 1);
+            assert_eq!(state.reception.snapshot(1)["state"], "recovering");
+            state.reception.capture.due = Some(Instant::now());
+            state.reception.lanes.get_mut(&1).unwrap().due = Instant::now();
+            state.ddc_retry_at = Some(Instant::now());
+        }
+        std::fs::remove_file(injection).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut iq, mut spectrum, mut audio) = (false, false, false);
+        loop {
+            let presentation = state.take_hardware_presentation(1).unwrap().unwrap().finish().unwrap();
+            iq |= presentation.frames.iter().any(|frame| frame.len() > 56);
+            spectrum |= !presentation.pan.is_empty();
+            multichannel::tag_iq(&mut state, presentation.frames);
+            audio |= !state.drain_receiver_frames().unwrap().audio.is_empty();
+            state.reception.next_check = None;
+            state.advance_reception_recovery();
+            assert!(state.receiver_failure.is_none(), "{:?}", state.receiver_failure);
+            if iq && spectrum && audio && state.reception.snapshot(1)["state"] == "receiving" { break; }
+            assert!(Instant::now() < deadline, "recapture did not resume all outputs: {}", state.reception.snapshot(1));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!epochs.contains(&state.pipeline.as_ref().unwrap().snapshot.epoch));
+        assert_eq!(state.swp.mode, "sdr");
+        assert!(state.ddc_error.is_none());
+        assert_eq!(state.reception.snapshot(1)["interruptions"], 6);
+        assert!(state.reception.snapshot(1)["last_interruption"]["missing_input_samples"].is_null());
+    }
+
+    #[test]
+    fn display_recaptures_without_resuming_strict_or_disabled_receivers() {
+        let _guard = hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let injection = "/tmp/websa_fake_iqs_fail.txt";
+        for path in [injection, "/tmp/websa_fake_iqs_open_fail.txt", "/tmp/websa_fake_iqs_reconfig_fail.txt", "/tmp/websa_fake_iqs_auto.txt"] {
+            let _ = std::fs::remove_file(path);
+        }
+        for enabled in [false, true] {
+            let (golden, schema) = load_golden();
+            let mut state = DevState::new(golden, schema);
+            state.hardware_shim = Some(hardware_iqs::tests::compile_fake_iqs_display_shim());
+            state.swp.mode = "sdr".into();
+            state.sdr_center = 100e6;
+            state.sdr_listen = 100e6;
+            state.sdr_decimate = 16;
+            state.sdr_channels[0].enabled = enabled;
+            state.sdr_channels[0].continuity = Policy::Strict;
+            std::fs::write(injection, "-130 1000").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let error = loop {
+                match state.take_hardware_presentation(1) {
+                    Err(error) => break error,
+                    _ => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            };
+            state.hardware_presentation_failed(error);
+            std::fs::remove_file(injection).unwrap();
+            state.reception.capture.due = Some(Instant::now());
+            state.ddc_retry_at = Some(Instant::now());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let presentation = state.take_hardware_presentation(1).unwrap().unwrap().finish().unwrap();
+                assert!(presentation.frames.is_empty(), "stopped receiver must not emit IQ");
+                if !presentation.pan.is_empty() { break; }
+                assert!(Instant::now() < deadline, "spectrum-only capture did not resume");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(state.ddc_error.is_none());
+            if enabled { assert_eq!(state.reception.snapshot(1)["state"], "stopped"); }
+            else { assert!(state.reception.snapshot(1).is_null()); }
         }
     }
 
@@ -932,7 +1155,7 @@ mod tests {
         for path in [injection, "/tmp/websa_fake_iqs_open_fail.txt", "/tmp/websa_fake_iqs_reconfig_fail.txt", "/tmp/websa_fake_iqs_auto.txt"] {
             let _ = std::fs::remove_file(path);
         }
-        for status in [-15, -8, -9, -10] {
+        for status in [-130, -15, -8, -9, -10] {
             let (golden, schema) = load_golden();
             let mut state = DevState::new(golden, schema);
             state.hardware_shim = Some(hardware_iqs::tests::compile_fake_iqs_display_shim());
@@ -955,6 +1178,7 @@ mod tests {
             state.hardware_presentation_failed(error);
             assert_eq!(state.reception.snapshot(1)["state"], "recovering");
             state.reception.lanes.get_mut(&1).unwrap().due = Instant::now();
+            state.reception.capture.due = Some(Instant::now());
             state.ddc_retry_at = Some(Instant::now());
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut iq = false;

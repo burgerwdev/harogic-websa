@@ -32,7 +32,7 @@ export interface Fault {
 }
 export interface ReceptionState {
   policy:'continuous'|'strict'; state:'recovering'|'preparing'|'receiving'|'stopped';
-  interruptions:number; attempts:number; retry_limit:number; retry_in_ms:number|null;
+  interruptions:number; attempts:number; retry_limit:number|null; retry_in_ms:number|null;
   manual_recovery_allowed:boolean; last_error:string|null;
   last_interruption:{kind:'overload'|'source_gap'|'device'|'internal';scope:string;reason:string;at_ms:number;recovered_at_ms:number|null;before:unknown;after:unknown;missing_input_samples:string|null};
 }

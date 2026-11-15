@@ -430,6 +430,9 @@ def test_receiver_schema_checks_nonempty_faults_and_recovery_history():
                  'attempts': 0, 'retry_limit': 3, 'retry_in_ms': 500,
                  'manual_recovery_allowed': False, 'last_error': None,
                  'last_interruption': interruption, 'history': [], 'startup': 'fresh state'}
+    capture_reception = copy.deepcopy(reception)
+    capture_reception.update(attempts=6, retry_limit=None, retry_in_ms=30000)
+    capture_reception['last_interruption'].update(kind='source_gap', scope='capture')
     receipt = {'receiver_uid': 'receiver-1', 'service_id': 'service-1', 'revision': '12',
                'processing_generation': '7', 'request_id': 'control-1', 'action_id': None,
                'status': 'applied', 'reason': None, 'boundary': {
@@ -447,6 +450,7 @@ def test_receiver_schema_checks_nonempty_faults_and_recovery_history():
         ('reception', reception, ('last_interruption', 'before', 'input_index'), 1),
         ('reception', reception, ('state',), 'active'),
         ('reception', reception, ('last_interruption', 'missing_input_samples'), 100),
+        ('reception', capture_reception, ('retry_limit',), -1),
         ('control_receipt', receipt, ('boundary', 'fraction_den'), '0'),
         ('control_receipt', receipt, ('boundary', 'delay_input_samples'), -1),
         ('control_receipt', receipt, ('status',), 'accepted'),
