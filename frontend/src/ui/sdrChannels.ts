@@ -22,6 +22,8 @@ export interface SdrChannelMark {
 }
 
 let active: SdrChannel = 1;
+let bandRevision = 0;
+export const sdrBandRevision = (): number => bandRevision;
 let channels: SdrChannelMark[] = [];
 let receiverNumbers: number[] | null = null;
 let activities: readonly SdrChannelActivity[] = [];
@@ -44,7 +46,9 @@ export function confirmSdrReceiverNumbers(numbers: number[] | null, directory?: 
     service: directory.service_id, actionToken: directory.action_token,
     receivers: new Map(directory.receivers.map(r => [r.display_number, { uid: r.receiver_uid, revision: r.revision }])),
   } : null;
-  const changed = JSON.stringify(numbers) !== JSON.stringify(receiverNumbers) || JSON.stringify(activities) !== JSON.stringify(activity);
+  const numbersChanged = JSON.stringify(numbers) !== JSON.stringify(receiverNumbers);
+  if (numbersChanged) bandRevision++;
+  const changed = numbersChanged || JSON.stringify(activities) !== JSON.stringify(activity);
   activities = activity;
   if (!changed) return;
   receiverNumbers = numbers; requestRender();
@@ -66,7 +70,7 @@ export function confirmSdrChannels(next: SdrChannelMark[]): void {
       || mark.processing_enabled !== previous.processing_enabled || mark.baseband?.passband_hz !== previous.baseband?.passband_hz;
   });
   channels = marks;
-  if (changed) requestRender();
+  if (changed) { bandRevision++; requestRender(); }
 }
 
 /** Freeze the identity observed when an edit is created, including unsent tuning. */

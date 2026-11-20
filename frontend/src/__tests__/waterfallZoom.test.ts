@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { pushSpectrumRow, renderWaterfall, retainedViewFloor, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
+import { pushSpectrumRow, renderWaterfall, renderWaterfallOverlay, retainedViewFloor, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
 import * as S from '../core/store';
-import { wfContrast, wfFloorSource, wfPaused, wfPalette, wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
+import { waterfallOn, wfContrast, wfFloorSource, wfPaused, wfPalette, wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
 import { __testSeedCapture, zoomEnabled } from '../ui/spectrumViewport';
 import { clearSdrBadgeDrag, sdrBadgeGeometry, startSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 import { sdrListenHz } from '../ui/sdrState';
@@ -133,6 +133,99 @@ describe('native waterfall history', () => {
     expect(retainedViewFloor(1e6 + 100, 1e6 + 199)).toBeCloseTo(-120, 0);
     expect(retainedViewFloor(2e6, 2e6 + 1000)).toBeNaN();
     expect(S.waterfallRows[0]).toEqual(original);
+  });
+
+  it.each([false, true])('renders a dark noise floor and distinct carriers in SDR Dark (SDR receiver=%s)', sdr => {
+    S.setSdrMode(sdr);
+    wfRangeMode.set('sdr');
+    const columns = 128, binsPerPixel = 64;
+    const freq = Float64Array.from({ length: columns * binsPerPixel }, (_, i) => 1e6 + i);
+    const levels = Float32Array.from(freq, (_, i) => {
+      const q = ((i % binsPerPixel) + 0.5) / binsPerPixel;
+      return -110 + 10 * Math.log10(-Math.log1p(-q));
+    });
+    const carriers = [-99, -96, -90, -80, -72, -55, -32];
+    carriers.forEach((dbm, i) => { levels[(i + 1) * 5 * binsPerPixel] = dbm; });
+    levels.fill(NaN, 40 * binsPerPixel, 41 * binsPerPixel);
+    const lo = freq[0], hi = lo + freq.length;
+    __testSeedCapture({ lo, hi });
+    pushSpectrumRow(levels, freq, lo, hi, 100);
+    let pixels = new Uint8ClampedArray();
+    const context = {
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData: (image: ImageData) => { pixels = image.data.slice(); },
+    };
+    const canvas = { width: columns, height: 2, getContext: () => context } as unknown as HTMLCanvasElement;
+    const rgb = (x: number) => [...pixels.slice(4 * x, 4 * x + 3)];
+    const luma = (x: number) => {
+      const [r, g, b] = rgb(x);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    for (const palette of ['classic', 'blue', 'viridis', 'amber'] as const) {
+      wfPalette.set(palette);
+      wfRangeMode.set('sdr');
+      renderWaterfall(canvas, 100);
+      expect(rgb(1)).toEqual([0, 0, 0]); // Peak projection raises every noise-only column.
+      expect(rgb(40)).toEqual([0, 0, 0]); // Missing observation.
+      expect(rgb(columns)).toEqual([0, 0, 0]); // Empty history.
+      const weak = luma(10);
+      expect(weak).toBeGreaterThan(60);
+      const colours = carriers.map((_, i) => rgb((i + 1) * 5));
+      for (let i = 1; i < colours.length; i++) {
+        const separation = Math.max(...colours[i].map((v, channel) => Math.abs(v - colours[i - 1][channel])));
+        expect(separation, `${palette}: ${carriers[i - 1]} to ${carriers[i]} dBm`).toBeGreaterThan(12);
+      }
+      if (palette === 'classic') {
+        const [blue, , green, yellowGreen, amber, red, peak] = colours;
+        expect(blue[2] - blue[1]).toBeGreaterThan(40);
+        expect(green[1] - Math.max(green[0], green[2])).toBeGreaterThan(80);
+        expect(Math.min(yellowGreen[0], yellowGreen[1]) - yellowGreen[2]).toBeGreaterThan(100);
+        expect(amber[0] - amber[1]).toBeGreaterThan(40);
+        expect(amber[1] - amber[2]).toBeGreaterThan(110);
+        expect(red[0] - red[1]).toBeGreaterThan(150);
+        expect(Math.min(...peak)).toBeGreaterThan(175);
+      }
+      if (!sdr) continue;
+      wfRangeMode.set('auto');
+      renderWaterfall(canvas, 100);
+      expect(luma(1)).toBeGreaterThan(0);
+      expect(weak).toBeGreaterThan(luma(10));
+    }
+  });
+
+  it('fades the overlay on a paused waterfall and reveals it again on retune', () => {
+    vi.useFakeTimers();
+    const base = document.createElement('canvas'), overlay = document.createElement('canvas');
+    base.id = 'waterfall'; overlay.id = 'waterfall-overlay'; base.width = 100; base.height = 40;
+    document.body.append(base, overlay);
+    let dialOpacity = 0;
+    const context = {
+      canvas: overlay, globalAlpha: 1, clearRect: () => { dialOpacity = 0; },
+      fillRect(x: number, _y: number, w: number) { if (x > 0 && w === 2) dialOpacity = this.globalAlpha; },
+      save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, moveTo() {}, lineTo() {}, stroke() {}, setLineDash() {},
+    };
+    vi.spyOn(overlay, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    try {
+      waterfallOn.set(true); wfPaused.set(true); S.setSdrMode(true);
+      S.setRtaData({ freq: Float64Array.of(10_000, 20_000), startHz: 10_000, stopHz: 20_000 });
+      sdrListenHz.set(15_000);
+      renderWaterfallOverlay();
+      expect(dialOpacity).toBe(1);
+      vi.advanceTimersByTime(1400);
+      renderWaterfallOverlay(); // Ordinary repaints must not postpone the fade.
+      expect(dialOpacity).toBe(1);
+      vi.advanceTimersByTime(325);
+      expect(dialOpacity).toBeGreaterThan(0);
+      expect(dialOpacity).toBeLessThan(1);
+      vi.advanceTimersByTime(325);
+      expect(dialOpacity).toBe(0);
+      sdrListenHz.set(16_000);
+      renderWaterfallOverlay();
+      expect(dialOpacity).toBe(1);
+    } finally {
+      sdrListenHz.reset(); waterfallOn.reset();
+      base.remove(); overlay.remove(); vi.useRealTimers();
+    }
   });
 
   it('keeps the current passband after a badge drag on an empty waterfall', () => {

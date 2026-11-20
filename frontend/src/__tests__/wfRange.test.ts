@@ -22,10 +22,26 @@ beforeEach(() => {
   localStorage.removeItem('websa-wf-range');
   S.resetWaterfall();
   S.setSdrMode(false);
-  document.body.innerHTML = `<div id="graph-panel"><div id="waterfall-settings"><select id="select-wf-range"><option value="auto">Auto</option><option value="fixed">Fixed</option></select><label>Low<input id="input-wf-lo" type="number"></label><label>High<input id="input-wf-hi" type="number"></label><div id="wf-floor-source-row"><select id="select-wf-floor-source"><option value="capture">Full Capture</option><option value="view">Current View</option></select></div><select id="select-wf-palette"><option value="classic">Classic Colour</option><option value="blue">SDR Blue</option><option value="viridis">Viridis</option><option value="amber">Amber</option></select><input type="range" id="input-wf-contrast" min="0.5" max="2" step="0.05"><output id="wf-contrast-value"></output></div></div>`;
+  document.body.innerHTML = `<div id="graph-panel"><div id="waterfall-settings"><select id="select-wf-range"><option value="auto">Auto</option><option value="sdr">SDR Dark</option><option value="fixed">Fixed</option></select><label>Low<input id="input-wf-lo" type="number"></label><label>High<input id="input-wf-hi" type="number"></label><div id="wf-floor-source-row"><select id="select-wf-floor-source"><option value="capture">Full Capture</option><option value="view">Current View</option></select></div><select id="select-wf-palette"><option value="classic">Classic Colour</option><option value="blue">SDR Blue</option><option value="viridis">Viridis</option><option value="amber">Amber</option></select><input type="range" id="input-wf-contrast" min="0.5" max="2" step="0.05"><output id="wf-contrast-value"></output></div></div>`;
 });
 
 afterEach(() => S.setSdrMode(false));
+
+it('restores SDR Dark and preserves paused SDR history when switching range', () => {
+  S.setSdrMode(true);
+  initWfRange();
+  push();
+  const row = S.waterfallRows[0];
+  wfPaused.set(true);
+  edit('select-wf-range', 'sdr');
+  expect(S.waterfallRows).toEqual([row]);
+  expect((document.querySelector('#select-wf-floor-source') as HTMLSelectElement).disabled).toBe(false);
+  expect((document.querySelector('#input-wf-lo') as HTMLInputElement).disabled).toBe(true);
+  wfRangeMode.reset();
+  initWfRange();
+  expect(wfRangeMode.get()).toBe('sdr');
+  expect((document.querySelector('#select-wf-range') as HTMLSelectElement).value).toBe('sdr');
+});
 
 it('preserves open waterfall menus until focus leaves, then applies the latest state', () => {
   S.setSdrMode(true); deviceMode.confirm('sdr'); initWfRange();

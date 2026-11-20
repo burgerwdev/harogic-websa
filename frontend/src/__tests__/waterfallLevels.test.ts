@@ -1,8 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { chooseViewFloor, observedFloor, waterfallDisplayBounds, WaterfallAutoLevels } from '../dsp/waterfallLevels';
+import { chooseViewFloor, darkWaterfallBounds, observedFloor, waterfallDisplayBounds, WaterfallAutoLevels } from '../dsp/waterfallLevels';
 import { waterfallHeadroom, waterfallLUT } from '../render/waterfallPalette';
 
 describe('SDR waterfall levels', () => {
+  it('raises black for scattered noise and recovers detail as the noise narrows', () => {
+    const level = { lo: -180, step: 0.01 };
+    const code = (dbm: number) => 1 + Math.round((dbm - level.lo) / level.step);
+    const row = (spread: number) => Uint16Array.from({ length: 512 }, (_, i) => {
+      const q = (i + 0.5) / 512;
+      const deviation = 10 * Math.log10(-Math.log1p(-q) / Math.LN2);
+      return code(-110 + spread * deviation);
+    });
+    const bounds = (pixels: Uint16Array) => darkWaterfallBounds(-113, pixels, level, 1, 1);
+    const noisy = row(1), quiet = row(0.2);
+    const quietRange = bounds(quiet);
+    const range = bounds(noisy);
+    expect(range.lo - quietRange.lo).toBeGreaterThan(2);
+    const firstColour = code(range.lo + 0.06 * (range.hi - range.lo));
+    expect(noisy.filter(x => x > firstColour).length / noisy.length).toBeLessThan(0.1);
+    expect((-99 - range.lo) / (range.hi - range.lo)).toBeGreaterThan(0.35);
+    // A burst in the loud tail must not pump the rest of the row.
+    noisy.fill(code(-45), 475);
+    expect(bounds(noisy)).toEqual(range);
+    expect(bounds(quiet)).toEqual(quietRange);
+  });
   it('uses finite native bins and falls back for narrow, missing or signal-filled views', () => {
     const levels = new Float32Array(1000).fill(-90);
     levels.fill(-120, 100, 200); levels[150] = -10; levels[160] = NaN;

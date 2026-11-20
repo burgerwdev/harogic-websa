@@ -15,9 +15,11 @@ import { demodBandHz, sdrDemod, sdrListenHz, sdrPitchHz } from '../ui/sdrState';
 import { filterPreviewHz } from '../ui/sdrFilter';
 import { filterHandlesVisible, passbandDragFrequency, renderFilterHandles } from '../ui/sdrFilterGesture';
 import { sdrPassbandVisible } from '../ui/sdrPassbandState';
+import { currentSdrChannel, sdrBandRevision } from '../ui/sdrChannels';
+import { requestRender } from './redraw';
 import { displayOffset } from '../ui/displayState';
 import { waterfallHeadroom, waterfallLUT } from './waterfallPalette';
-import { chooseViewFloor, observedFloor, waterfallDisplayBounds, WaterfallAutoLevels } from '../dsp/waterfallLevels';
+import { chooseViewFloor, darkWaterfallBounds, observedFloor, waterfallDisplayBounds, WaterfallAutoLevels } from '../dsp/waterfallLevels';
 import { WaterfallProjectionCache } from './waterfallProjection';
 
 const MAX_HISTORY_COLUMNS = 16384;
@@ -27,13 +29,14 @@ type RowGeometry = {
 	freq: Float64Array | null; lo: number; hi: number;
 	/** Peak-projected columns are samples at cell centres, not capture endpoints. */
 	uniform?: UniformRowGrid;
-	/** SDR stores raw amplitude codes, with zero reserved for missing observations. */
-	level?: { lo: number; step: number; windowLo: number; windowHi: number };
+	/** Affine dBm codes with zero reserved for missing observations. */
+	level?: { lo: number; step: number; windowLo: number; windowHi: number; binsPerColumn: number };
 };
 const rowGeometry = new WeakMap<Uint16Array, RowGeometry>();
 const projectedRows = new WaterfallProjectionCache();
 let historyFreq: Float64Array | null = null;
 let historyScratch = new Float32Array(0);
+let projectedHistoryGrid: UniformRowGrid | undefined;
 // One current display mapping per retained axis, never a cache of zoom histories.
 const rowMappings = new WeakMap<Float64Array, { w: number; lo: number; hi: number; first: Int32Array; end: Int32Array }>();
 type LevelMapping = {
@@ -240,6 +243,48 @@ let wfHistory: HTMLCanvasElement | null = null;
 let wfHistoryCtx: CanvasRenderingContext2D | null = null;
 let wfHead = 0;
 
+const PASSBAND_HOLD_MS = 1500;
+const PASSBAND_FADE_MS = 450;
+let passbandKey = '';
+let passbandHoldUntil = -Infinity;
+let passbandTimer: number | undefined;
+
+function resetPassbandFade(): void {
+  window.clearTimeout(passbandTimer);
+  passbandTimer = undefined;
+  passbandKey = '';
+  passbandHoldUntil = -Infinity;
+}
+
+/** Both plot surfaces can preview a passband. Only pointer activity and a
+ * change in tuning geometry renew the hold, never incoming spectrum rows. */
+export function revealWaterfallPassband(): void {
+  if (!S.sdrMode || !waterfallOn.get() || !sdrPassbandVisible.get()) return;
+  const now = performance.now();
+  const fading = now >= passbandHoldUntil;
+  passbandHoldUntil = now + PASSBAND_HOLD_MS;
+  if (fading) requestRender();
+}
+
+function passbandOpacity(key: string, dragging: boolean): number {
+  const now = performance.now();
+  if (key !== passbandKey) {
+    passbandKey = key;
+    passbandHoldUntil = now + PASSBAND_HOLD_MS;
+  }
+  if (dragging) return 1;
+  const hold = passbandHoldUntil - now;
+  const opacity = Math.min(1, Math.max(0, 1 + hold / PASSBAND_FADE_MS));
+  if (opacity > 0 && passbandTimer === undefined && waterfallOn.get() && !document.hidden) {
+    // A frozen waterfall still fades. Refresh just the overlay during the transition.
+    passbandTimer = window.setTimeout(() => {
+      passbandTimer = undefined;
+      if (!document.hidden && waterfallOn.get()) renderWaterfallOverlay();
+    }, Math.max(32, hold));
+  }
+  return opacity;
+}
+
 function paintHistory(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   const tail = height - wfHead;
   ctx.drawImage(wfHistory!, 0, wfHead, width, tail, 0, 0, width, tail);
@@ -247,6 +292,7 @@ function paintHistory(ctx: CanvasRenderingContext2D, width: number, height: numb
 }
 
 export function releaseWaterfallCanvas(): void {
+  resetPassbandFade();
   if (wfHistory) { wfHistory.width = 0; wfHistory.height = 0; }
   wfHistory = null; wfHistoryCtx = null;
   wfImg = null; wfPixels = null; wfCanvas = null;
@@ -278,11 +324,17 @@ export function renderWaterfallOverlay(): void {
 /** Paint channel indicators independently of the retained history pixels. */
 function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   if (ctx.canvas?.id === 'waterfall' && overlayContext()) { renderWaterfallOverlay(); return; }
-  const frequency = S.sdrMode && sdrPassbandVisible.get()
-    ? sdrBadgeDragFrequency() ?? passbandDragFrequency() ?? sdrListenHz.get() : null;
   const view = sdrSpectrumWindow();
+  const show = view && S.sdrMode && sdrPassbandVisible.get();
+  const drag = show ? sdrBadgeDragFrequency() ?? passbandDragFrequency() : null;
+  const frequency = show ? drag ?? sdrListenHz.get() : null;
+  let opacity = 0;
+  if (show) {
+    const key = `${sdrBandRevision()}:${currentSdrChannel()}:${frequency}:${sdrDemod.get()}:${filterPreviewHz()}:${sdrPitchHz.get()}:${view.lo}:${view.hi}:${drag !== null}`;
+    opacity = passbandOpacity(key, drag !== null);
+  } else if (passbandKey) resetPassbandFade();
   if (view) {
-    renderSdrChannelBands(ctx, view.lo, view.hi, { x: 0, y: 0, w: width, h: height });
+    if (opacity > 0) renderSdrChannelBands(ctx, view.lo, view.hi, { x: 0, y: 0, w: width, h: height }, false, opacity);
     renderIdentifyBand(ctx, view.lo, view.hi, { x: 0, y: 0, w: width, h: height });
   }
   const selection = getMarqueePreview();
@@ -294,17 +346,17 @@ function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, heigh
     ctx.strokeStyle = canvasColors().text; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
     ctx.strokeRect(x, 0, w, height); ctx.restore();
   }
-  wfOverlayX = frequency !== null && view && frequency >= view.lo && frequency <= view.hi
+  wfOverlayX = opacity > 0 && frequency !== null && view && frequency >= view.lo && frequency <= view.hi
     ? Math.max(0, Math.min(width - 1, Math.round((frequency - view.lo) / (view.hi - view.lo) * width))) : null;
-  if (frequency === null || !view) return;
+  if (!opacity || frequency === null || !view) return;
   const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), filterPreviewHz(), sdrPitchHz.get());
   const scale = width / (view.hi - view.lo);
   const left = (frequency + bandLo - view.lo) * scale;
   const right = (frequency + bandHi - view.lo) * scale;
   ctx.save();
   const colors = canvasColors();
+  ctx.globalAlpha = opacity;
   drawPassband(ctx, left, right, 0, 0, width, height, colors, true);
-  ctx.globalAlpha = 1;
   ctx.fillStyle = colors.rta;
   if (wfOverlayX !== null) ctx.fillRect(wfOverlayX, 0, Math.min(2, width - wfOverlayX), height);
   ctx.restore();
@@ -312,7 +364,7 @@ function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, heigh
   if (filterHandlesVisible()) {
     const ratio = S.pixelRatio;
     ctx.save(); ctx.scale(ratio, ratio);
-    renderFilterHandles(ctx, { plot: { x: 0, y: 0, w: width / ratio, h: height / ratio }, width: width / ratio, view });
+    renderFilterHandles(ctx, { plot: { x: 0, y: 0, w: width / ratio, h: height / ratio }, width: width / ratio, view }, opacity);
     ctx.restore();
   }
 }
@@ -363,9 +415,12 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   const n = rows.length;
   const theme = getTheme();
   const dmax = Math.max(1, maxDensity || 20);
+  const rangeMode = wfRangeMode.get();
+  const dark = rangeMode === 'sdr';
+  const bg = dark ? '#000000' : canvasColors().bg;
   if (!n) {
     projectedRows.clear();
-    ctx.fillStyle = canvasColors().bg; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
     wfLastPushes = S.waterfallPushes;
     wfCanvas = canvas;
     paintBadgeIndicator(ctx, W, H);
@@ -383,7 +438,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
     f1 = (view.hi - cap.lo) / (cap.hi - cap.lo);
   }
   const viewKey = `${view?.lo}:${view?.hi}:${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
-  const localWindow = S.sdrMode && wfRangeMode.get() === 'auto' && wfFloorSource.get() === 'view' && view
+  const localWindow = S.sdrMode && rangeMode !== 'fixed' && wfFloorSource.get() === 'view' && view
     ? currentViewWindow(view.lo, view.hi, () => { if (canvas.isConnected) renderWaterfall(canvas, maxDensity, rowPixels); }) : null;
   if (canvas.dataset) {
     const diagnostic = JSON.stringify({ lo: view?.lo, hi: view?.hi, rows: n, bytes: S.waterfallBytes,
@@ -392,7 +447,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
     if (canvas.dataset.history !== diagnostic) canvas.dataset.history = diagnostic;
   }
   const boundsKey = S.sdrMode ? `${displayOffset.get()}` : '';
-  const imageKey = `${W}x${H}:${rowHeight}:${wfRangeMode.get()}:${localWindow?.lo}:${wfLoDbm.get()}:${wfHiDbm.get()}:${wfPalette.get()}:${wfContrast.get()}:${viewKey}:${boundsKey}`;
+  const contrast = wfContrast.get();
+  const imageKey = `${W}x${H}:${rowHeight}:${rangeMode}:${localWindow?.lo}:${wfLoDbm.get()}:${wfHiDbm.get()}:${wfPalette.get()}:${contrast}:${viewKey}:${boundsKey}`;
   const sameImage = !historyResized && wfCanvas === canvas && wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
   const pushed = S.waterfallPushes - wfLastPushes;
   if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) {
@@ -425,10 +481,9 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   const pixels = wfPixels!;
   if (scroll && !wfHistoryCtx) pixels.copyWithin(scroll * W, 0, (H - scroll) * W);
   const lut = waterfallLUT(wfPalette.get());
-  const fixedBounds = wfRangeMode.get() === 'fixed';
+  const fixedBounds = rangeMode === 'fixed';
   const fixedBottom = wfLoDbm.get() - (S.sdrMode ? displayOffset.get() : 0);
   const fixedTop = wfHiDbm.get() - (S.sdrMode ? displayOffset.get() : 0);
-  const bg = canvasColors().bg;
   const bgPixel = (255 << 24) | (parseInt(bg.slice(5, 7), 16) << 16)
     | (parseInt(bg.slice(3, 5), 16) << 8) | parseInt(bg.slice(1, 3), 16);
   for (let y = 0; y < (scroll || H); y++) {
@@ -450,14 +505,17 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
         : sliceDensityRow(row, W, f0, f1, sliceScratch);
       if (view) projectedRows.put(row, ds);
     }
-    const level = rowGeometry.get(row)?.level;
+    const geometry = rowGeometry.get(row);
+    const level = geometry?.level;
     const top = fixedBounds ? fixedTop : localWindow?.hi ?? level?.windowHi ?? 0;
     const bottom = fixedBounds ? fixedBottom : localWindow?.lo ?? level?.windowLo ?? 0;
     // Retained automatic windows contain the smoothed floor even in Fixed mode.
     // Neither instantaneous peaks nor live frames behind a pause set contrast.
     const floor = (localWindow?.lo ?? level?.windowLo ?? 0) + 6;
-    const bounds = level ? waterfallDisplayBounds(bottom, top, floor, wfContrast.get())
-      : waterfallDisplayBounds(0, 1, 0.26, wfContrast.get());
+    const viewFraction = view && geometry && geometry.hi > geometry.lo ? (view.hi - view.lo) / (geometry.hi - geometry.lo) : 1;
+    const bounds = !level ? waterfallDisplayBounds(0, 1, 0.26, contrast)
+      : dark ? darkWaterfallBounds(floor, ds, level, level.binsPerColumn * Math.max(1, row.length * viewFraction / W), contrast)
+      : waterfallDisplayBounds(bottom, top, floor, contrast);
     const lastColour = lut.length - 1;
     const scale = level ? level.step / (bounds.hi - bounds.lo) * lastColour
       : lastColour / (dmax * (bounds.hi - bounds.lo));
@@ -466,7 +524,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
     const rowStart = y * W;
     for (let x = 0; x < W; x++) {
       let mapped = ds[x] * scale + bias;
-      if (level && !fixedBounds) mapped = waterfallHeadroom(mapped / lastColour) * lastColour;
+      if (level && !fixedBounds) mapped = waterfallHeadroom(mapped / lastColour, dark) * lastColour;
       const colour = ds[x] === 0 ? 0 : Math.max(0, Math.min(lastColour, Math.round(mapped)));
       pixels[rowStart + x] = level && ds[x] === 0 ? bgPixel : lut[colour];
     }
@@ -481,8 +539,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number, r
   paintBadgeIndicator(ctx, W, H);
 }
 
-// SWP/RTA density rows are mapped at ingestion. SDR stores native amplitude
-// codes instead, retaining the automatic window alongside each observation.
+// Legacy SWP/RTA density rows are mapped at ingestion. SDR reception and the
+// dark display retain amplitude codes and the automatic window for each row.
 function buildRow(levels: ArrayLike<number>, maxDensity: number, lo: number, hi: number, offset: boolean): Uint16Array {
   const span = hi - lo;
   const row = new Uint16Array(levels.length);
@@ -502,7 +560,7 @@ let autoCapture: { freq: Float64Array; lo: number; hi: number } | null = null;
 function windowFor(levels: ArrayLike<number>, freq: Float64Array, capLo: number, capHi: number): { lo: number; hi: number; offset: boolean } {
   // Always retain the automatic window with SDR observations, even when Fixed
   // is selected, so switching back to Auto can recolour the complete history.
-  if (S.sdrMode) {
+  if (S.sdrMode || wfRangeMode.get() === 'sdr') {
     const reset = !S.waterfallRows.length || !autoCapture || autoCapture.lo !== capLo || autoCapture.hi !== capHi
       || !sameFrequencyGrid(autoCapture.freq, freq);
     if (reset) autoCapture = { freq, lo: capLo, hi: capHi };
@@ -546,8 +604,16 @@ export function pushSpectrumRow(levels: Float32Array, freq: Float64Array, lo: nu
   }
   let row: Uint16Array;
   const geometry: RowGeometry = { freq: axis, lo, hi };
-  if (axis && S.sdrMode) geometry.uniform = nativeUniformGrid(axis);
-  if (S.sdrMode) {
+  if (S.sdrMode || wfRangeMode.get() === 'sdr') {
+    if (axis) geometry.uniform = nativeUniformGrid(axis);
+    else {
+      const step = (hi - lo) / source.length;
+      const first = lo + step / 2;
+      if (!projectedHistoryGrid || projectedHistoryGrid.first !== first || projectedHistoryGrid.step !== step) {
+        projectedHistoryGrid = { first, step, length: source.length };
+      }
+      geometry.uniform = projectedHistoryGrid;
+    }
     let min = Infinity, max = -Infinity;
     for (let i = 0; i < source.length; i++) {
       if (!Number.isFinite(source[i])) continue;
@@ -559,7 +625,7 @@ export function pushSpectrumRow(levels: Float32Array, freq: Float64Array, lo: nu
     for (let i = 0; i < source.length; i++) {
       if (Number.isFinite(source[i])) row[i] = 1 + Math.round((source[i] - min) / step);
     }
-    geometry.level = { lo: min, step, windowLo: win.lo, windowHi: win.hi };
+    geometry.level = { lo: min, step, windowLo: win.lo, windowHi: win.hi, binsPerColumn: levels.length / source.length };
   } else {
     row = buildRow(source, maxDensity, win.lo, win.hi, win.offset);
   }

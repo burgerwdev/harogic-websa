@@ -379,7 +379,7 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
 }
 
 /** Draw after the plot clip is restored so outward controls can use the canvas margins. */
-export function renderFilterHandles(context = ctx, surface?: FilterSurface): void {
+export function renderFilterHandles(context = ctx, surface?: FilterSurface, opacity = 1): void {
   if (!filterHandlesVisible()) return;
   const g = filterGeometry(undefined, undefined, surface);
   if (!g) return;
@@ -394,7 +394,7 @@ export function renderFilterHandles(context = ctx, surface?: FilterSurface): voi
   for (const { edge, x, y } of g.handles) {
     const active = drag?.semantic === edge || hover === edge;
     const direction = edge === 'low' ? -1 : 1;
-    context.globalAlpha = active ? 1 : 0.72;
+    context.globalAlpha = opacity * (active ? 1 : 0.72);
     // A tiny filled arrowhead and short stem; no plate, grip or line through the band.
     context.beginPath();
     context.moveTo(x + direction * 4, y);
@@ -408,7 +408,7 @@ export function renderFilterHandles(context = ctx, surface?: FilterSurface): voi
     context.lineTo(x - direction * 4, y);
     context.stroke();
     if (!active) continue;
-    context.globalAlpha = 1;
+    context.globalAlpha = opacity;
     const cutoff = edge === 'low' ? g.band[0] : g.band[1];
     const label = `${cutoff > 0 ? '+' : ''}${formatFreqHz(cutoff)} · BW ${formatFreqHz(g.band[1] - g.band[0])}`;
     context.font = '11px monospace';

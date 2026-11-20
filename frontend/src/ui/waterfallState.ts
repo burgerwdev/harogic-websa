@@ -14,8 +14,8 @@ const num = (a: number, b: number) => ({
 
 /** Master waterfall enable (persisted). */
 export const waterfallOn = createParam<boolean>('wf.on', { fallback: false, scope: 'wf', authoritative: true });
-/** Colour range mode: SDR auto follows a smoothed noise floor; fixed maps absolute dBm. */
-export const wfRangeMode = createParam<'auto' | 'fixed'>('wf.rangeMode', { fallback: 'auto', scope: 'wf', authoritative: true });
+/** Automatic, noise-relative dark SDR display, or an absolute dBm window. */
+export const wfRangeMode = createParam<'auto' | 'sdr' | 'fixed'>('wf.rangeMode', { fallback: 'auto', scope: 'wf', authoritative: true });
 /** SDR auto floor: original acquisition or the shared visible RF window. */
 export const wfFloorSource = createParam<'capture' | 'view'>('wf.floorSource', { fallback: 'capture', scope: 'wf', authoritative: true });
 export type WaterfallPalette = 'classic' | 'blue' | 'viridis' | 'amber';

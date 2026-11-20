@@ -36,8 +36,16 @@ let cached: { palette: WaterfallPalette; lut: Uint32Array } | null = null;
 /** Automatic levels reserve colour headroom above the weak-signal region.
  * A fixed soft knee avoids pumping the entire image when a strong carrier
  * appears, and keeps signals above the nominal upper level distinguishable. */
-export function waterfallHeadroom(level: number): number {
-  const knee = 36 / 55;
+export function waterfallHeadroom(level: number, dark = false): number {
+  let knee = 36 / 55;
+  if (dark) {
+    // The SDR Dark input is in 12 dB units above the adaptive black level.
+    // Keep the weak-signal gain through +6 dB. Spread +6..30 dB across
+    // the middle colours and +30..60 dB across the warm highlights.
+    if (level <= 0.5) return level;
+    level = level <= 2.5 ? 0.5 + (level - 0.5) * 0.16 : 0.82 + (level - 2.5) * 0.06;
+    knee = 0.97;
+  }
   if (level <= knee) return level;
   const excess = level - knee, headroom = 1 - knee;
   return knee + headroom * excess / (headroom + excess);

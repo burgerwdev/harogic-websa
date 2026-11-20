@@ -27,6 +27,7 @@ import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTun
 import { beginSdrLocateClick, cancelSdrLocate, commitSdrLocateClick, updateSdrLocateHover } from './sdrLocate';
 import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, sdrPassbandToggleAt, sdrSpectrumWindow, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
 import { sdrPassbandVisible } from './sdrPassbandState';
+import { revealWaterfallPassband } from '../render/waterfall';
 import { sdrChannelLabels, type SdrChannelLabel } from '../render/sdrChannelBands';
 import { toggleSdrHelp } from './sdrHelp';
 import type { SdrQuickChannelAction } from './sdrQuickChannel';
@@ -2186,6 +2187,7 @@ export function bindCanvas() {
     const mode = currentGraphMode();
     const sdr = mode === 'sdr';
     const zoom = isSpectrumZoomOn();
+    if (sdr && x >= pr.x && x <= pr.x + pr.w && y >= pr.y && y <= pr.y + pr.h) revealWaterfallPassband();
     if (sdr && !e.ctrlKey && !e.metaKey && sdrPassbandToggleAt(x, y)) {
       toggleSdrPassband();
       e.preventDefault();
@@ -2359,6 +2361,9 @@ export function bindCanvas() {
   const updateCanvasHover = (x: number, y: number, ctrl: boolean, scale: number) => {
     if (canvasPointerId !== null || axisDragging() || filterDragging()) return;
     const plot = plotRectPub();
+    const inSdrPlot = currentGraphMode() === 'sdr' && x >= plot.x && x <= plot.x + plot.w
+      && y >= plot.y && y <= plot.y + plot.h;
+    if (inSdrPlot) revealWaterfallPassband();
     if (currentGraphMode() === 'sdr' && !ctrl && sdrPassbandToggleAt(x, y)) {
       setSdrHoverFrequency(null); setFilterHover(null); cancelSdrLocate();
       canvas.style.cursor = 'pointer';
@@ -2372,8 +2377,7 @@ export function bindCanvas() {
       canvas.title = `${channel.text} · ${channel.mark.freq.toLocaleString()} Hz · ${t('sdr_channel_label_tip')}`;
       return;
     }
-    setSdrHoverFrequency(currentGraphMode() === 'sdr' && x >= plot.x && x <= plot.x + plot.w
-      && y >= plot.y && y <= plot.y + plot.h ? spectrumFreqAtX(x) : null);
+    setSdrHoverFrequency(inSdrPlot ? spectrumFreqAtX(x) : null);
     const tolerance = 8 * scale;
     const marker = markerDiamondAt(x, y, canvas);
     const edge = currentGraphMode() === 'sdr' && !marker && !ctrl
@@ -2477,6 +2481,7 @@ export function bindCanvas() {
     waterfall.focus({ preventScroll: true });
     const rect = waterfall.getBoundingClientRect(), plot = plotRectPub();
     if (!(rect.width > 0 && rect.height > 0)) return;
+    revealWaterfallPassband();
     const zoom = isSpectrumZoomOn();
     const surface = waterfallFilterSurface();
     const localX = (event.clientX - rect.left) / rect.width * plot.w;
@@ -2510,6 +2515,7 @@ export function bindCanvas() {
     const y = plot.y + plot.h / 2;
     publishCursor(x, y);
     if (currentGraphMode() === 'sdr') {
+      revealWaterfallPassband();
       const surface = waterfallFilterSurface();
       const edge = surface ? updateFilterHover(x - plot.x, (wfY - rect.top) / getUiScale(), 8 * plot.w / rect.width, surface) : null;
       waterfall.style.cursor = edge ? 'ew-resize' : '';

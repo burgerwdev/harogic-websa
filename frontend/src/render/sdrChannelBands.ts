@@ -59,7 +59,7 @@ export function sdrChannelLabels(ctx: CanvasRenderingContext2D, lo: number, hi: 
 
 /** Same absolute-frequency geometry on the spectrum and waterfall. */
 export function renderSdrChannelBands(ctx: CanvasRenderingContext2D, lo: number, hi: number,
-  p: { x: number; y: number; w: number; h: number }, labels = false): void {
+  p: { x: number; y: number; w: number; h: number }, labels = false, opacity = 1): void {
   if (!S.sdrMode || !sdrPassbandVisible.get() || !(hi > lo)) return;
   const xAt = (hz: number) => p.x + (hz - lo) / (hi - lo) * p.w;
   ctx.save(); ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
@@ -75,9 +75,9 @@ export function renderSdrChannelBands(ctx: CanvasRenderingContext2D, lo: number,
     const x0 = xAt(channel.freq + low), x1 = xAt(channel.freq + high), dial = xAt(channel.freq);
     const color = CHANNEL_COLORS[(channel.channel - 1) % CHANNEL_COLORS.length];
     if (!selected || channel.processing_enabled === false || !bandVisible) {
-      ctx.fillStyle = color; ctx.globalAlpha = channel.enabled ? 0.12 : 0.04;
+      ctx.fillStyle = color; ctx.globalAlpha = opacity * (channel.enabled ? 0.12 : 0.04);
       if (bandVisible) ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
-      ctx.globalAlpha = channel.enabled ? 0.8 : 0.4; ctx.strokeStyle = color; ctx.lineWidth = 1;
+      ctx.globalAlpha = opacity * (channel.enabled ? 0.8 : 0.4); ctx.strokeStyle = color; ctx.lineWidth = 1;
       ctx.setLineDash(channel.enabled ? [] : [3, 4]);
       if (dialVisible) { ctx.beginPath(); ctx.moveTo(dial, p.y); ctx.lineTo(dial, p.y + p.h); ctx.stroke(); }
     }
@@ -90,7 +90,7 @@ export function renderSdrChannelBands(ctx: CanvasRenderingContext2D, lo: number,
     const [low, high] = demodBandHz(sdrDemod.get(), filterPreviewHz(), sdrPitchHz.get());
     const x0 = xAt(hover + low), x1 = xAt(hover + high);
     const colors = canvasColors();
-    ctx.globalAlpha = 1; ctx.fillStyle = colors.hoverPassband;
+    ctx.globalAlpha = opacity; ctx.fillStyle = colors.hoverPassband;
     ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
     ctx.setLineDash([3, 4]);
     ctx.strokeStyle = colors.passbandOutline; ctx.lineWidth = 3;

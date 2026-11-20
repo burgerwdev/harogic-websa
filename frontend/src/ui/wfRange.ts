@@ -47,7 +47,7 @@ function load(): void {
     if (d?.floorSource === 'view' || d?.floorSource === 'capture') wfFloorSource.set(d.floorSource);
     if (d?.palette === 'classic' || d?.palette === 'blue' || d?.palette === 'viridis' || d?.palette === 'amber') wfPalette.set(d.palette);
     if (typeof d?.contrast === 'number' && Number.isFinite(d.contrast) && d.contrast >= 0.5 && d.contrast <= 2) wfContrast.set(d.contrast);
-    if (d?.mode === 'fixed' || d?.mode === 'auto') wfRangeMode.set(d.mode);
+    if (d?.mode === 'fixed' || d?.mode === 'auto' || d?.mode === 'sdr') wfRangeMode.set(d.mode);
     if (validRange(d?.lo, d?.hi)) {
       wfLoDbm.set(d.lo);
       wfHiDbm.set(d.hi);
@@ -145,8 +145,9 @@ export function initWfRange(): void {
   });
   el<HTMLSelectElement>('select-wf-range')?.addEventListener('change', (e) => {
     const input = e.target as HTMLSelectElement;
-    if (input.disabled) return;
-    changeMapping(() => wfRangeMode.set(input.value === 'fixed' ? 'fixed' : 'auto'));
+    const mode = input.value;
+    if (input.disabled || (mode !== 'auto' && mode !== 'fixed' && mode !== 'sdr')) return;
+    changeMapping(() => wfRangeMode.set(mode));
     save();
     validation('');
   });
